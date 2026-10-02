@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS device (
   y REAL NOT NULL DEFAULT 50,
   status TEXT NOT NULL DEFAULT 'normal',
   stream_kind TEXT,
-  last_seen INTEGER
+  last_seen INTEGER,
+  state_since INTEGER
 );
 CREATE TABLE IF NOT EXISTS device_link (
   detector_id TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
@@ -45,7 +46,11 @@ CREATE TABLE IF NOT EXISTS incident (
   acked_at INTEGER,
   acked_by TEXT,
   closed_at INTEGER,
-  closed_by TEXT
+  closed_by TEXT,
+  confirmed_at INTEGER,
+  confirmation_reason TEXT,
+  hint TEXT,
+  hint_details TEXT
 );
 -- Un seul incident non cloture par detecteur : garanti par la base, pas seulement par le code.
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_incident_per_detector
@@ -67,9 +72,26 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 `;
 
+/** Colonnes ajoutees apres la premiere version : `CREATE TABLE IF NOT EXISTS` ne modifie pas une table existante. */
+const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
+  { table: 'device', column: 'state_since', definition: 'INTEGER' },
+  { table: 'incident', column: 'confirmed_at', definition: 'INTEGER' },
+  { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
+  { table: 'incident', column: 'hint', definition: 'TEXT' },
+  { table: 'incident', column: 'hint_details', definition: 'TEXT' },
+];
+
+function migrate(db: DatabaseSync): void {
+  for (const { table, column, definition } of ADDED_COLUMNS) {
+    const existing = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!existing.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db); // les donnees existantes sont conservees
   return db;
 }

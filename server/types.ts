@@ -32,6 +32,16 @@ export interface Incident {
   closedAt: number | null;
   closedBy: string | null;
   cameraIds: string[];
+  /**
+   * Un incident est « a confirmer » tant que rien ne le corrobore, puis « confirme » (detecteur voisin
+   * ou persistance). Ce n'est qu'une qualification : l'incident est visible et actif dans les deux cas.
+   */
+  confirmedAt: number | null;
+  /** `neighbor:<idDetecteur>` ou `persistence`. */
+  confirmationReason: string | null;
+  /** Suggestion pour l'operateur ; ne ferme jamais l'incident. */
+  hint: 'false_alarm_likely' | null;
+  hintDetails: string | null;
 }
 
 export interface AuditEntry {

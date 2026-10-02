@@ -5,7 +5,18 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createRunner, findScenario } from '../scripts/demo/runner.ts';
 import { HEIGHT, Scene, WIDTH } from '../scripts/demo/scene.ts';
-import { AUTO_SEQUENCE, DEMO_CAMERAS, DEMO_DETECTORS, DEMO_HEARTBEAT_S, DEMO_SILENT_TIMEOUT_S, SCENARIOS, lastStepAt } from '../scripts/demo/scenarios.ts';
+import {
+  AUTO_SEQUENCE,
+  DEMO_CAMERAS,
+  DEMO_CONFIRM_PERSIST_S,
+  DEMO_CONFIRM_WINDOW_S,
+  DEMO_DETECTORS,
+  DEMO_FALSE_ALARM_HINT_S,
+  DEMO_HEARTBEAT_S,
+  DEMO_SILENT_TIMEOUT_S,
+  SCENARIOS,
+  lastStepAt,
+} from '../scripts/demo/scenarios.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
 import { DEMO_DEVICES } from '../server/seed.ts';
@@ -162,25 +173,32 @@ describe('rendu des images de camera', () => {
 describe('signal de vie et detecteur muet (demo)', () => {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  /** Attend qu'une condition soit vraie (jusqu'a 4 s) : plus fiable qu'un delai fixe sur une machine chargee. */
+  async function until(condition: () => boolean, timeoutMs = 4000): Promise<void> {
+    const start = Date.now();
+    while (!condition() && Date.now() - start < timeoutMs) await wait(10);
+  }
+
   it('le signal de vie rejoue periodiquement l\'etat courant de chaque detecteur', async () => {
     const seen: string[] = [];
     const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), setFire: () => {}, log: () => {}, speed: 200 });
     runner.startHeartbeat(8); // 40 ms reelles
-    await wait(150);
+    await until(() => DEMO_DETECTORS.every((id) => seen.filter((x) => x === `${id}:normal`).length >= 2));
     runner.stopHeartbeat();
     for (const id of DEMO_DETECTORS) assert.ok(seen.filter((x) => x === `${id}:normal`).length >= 2, `${id} emet regulierement`);
   });
 
   it('un detecteur muet n\'emet plus rien, et reprend en le signalant tout de suite', async () => {
     const seen: string[] = [];
-    const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), setFire: () => {}, log: () => {}, speed: 200 });
-    runner.startHeartbeat(8);
-    runner.run(findScenario('detecteur-muet')!); // silence de 0 a 50 s = 250 ms reelles
-    await wait(150);
-    assert.ok(runner.isMuted('D-02'));
+    // 100x : le silence de 50 s dure 500 ms reelles, avec de la marge meme sur une machine chargee.
+    const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), setFire: () => {}, log: () => {}, speed: 100 });
+    runner.startHeartbeat(8); // 80 ms reelles
+    runner.run(findScenario('detecteur-muet')!);
+    await until(() => seen.filter((x) => x.startsWith('D-01')).length >= 2);
+    assert.ok(runner.isMuted('D-02'), 'silence en cours');
     assert.equal(seen.filter((x) => x.startsWith('D-02')).length, 0, 'rien de D-02 pendant le silence');
     assert.ok(seen.filter((x) => x.startsWith('D-01')).length >= 2, 'les autres continuent');
-    await wait(250);
+    await until(() => seen.includes('D-02:normal'));
     runner.stopHeartbeat();
     assert.ok(!runner.isMuted('D-02'));
     assert.ok(seen.includes('D-02:normal'), 'D-02 reprend');
@@ -244,5 +262,66 @@ describe('signal de vie et detecteur muet (demo)', () => {
     assert.equal(after, 'normal', 'il redevient normal en reprenant');
     const actions = engine.listAudit(100).filter((a) => a.deviceId === 'D-02').map((a) => a.action);
     assert.ok(actions.includes('detector_silent'));
+  });
+});
+
+describe('scenarios de demo et regles anti-fausses alarmes (de bout en bout)', () => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const SPEED = 100; // 1 s reelle = 100 s virtuelles : marge de 5 s virtuelles = 50 ms reelles
+
+  /** Rejoue un scenario contre le vrai moteur, avec les regles de la demo et une horloge acceleree. */
+  async function playWithRules(id: string, extraVirtualSeconds: number) {
+    const start = Date.now();
+    const virtualNow = () => 1_000_000_000_000 + (Date.now() - start) * SPEED;
+    const db = openDb(':memory:');
+    const { seedDemo } = await import('../server/seed.ts');
+    seedDemo(db, mkdtempSync(join(tmpdir(), 'psim-')), join(import.meta.dirname, '..', 'seed'));
+    const engine = createEngine(db, () => {}, virtualNow, {
+      confirmWindowMs: DEMO_CONFIRM_WINDOW_S * 1000,
+      persistMs: DEMO_CONFIRM_PERSIST_S * 1000,
+      hintMs: DEMO_FALSE_ALARM_HINT_S * 1000,
+    });
+    const runner = createRunner({
+      publish: (d, st) => engine.handleDetectorMessage(d, { state: st }),
+      setFire: () => {},
+      log: () => {},
+      speed: SPEED,
+    });
+    const watcher = setInterval(() => engine.tick(), 10);
+    await new Promise<void>((resolve) => runner.run(findScenario(id)!, resolve));
+    await wait((extraVirtualSeconds * 1000) / SPEED);
+    clearInterval(watcher);
+    runner.cancel();
+    const incident = (detector: string) => engine.getSnapshot().incidents.find((i) => i.detectorId === detector);
+    return { engine, incident };
+  }
+
+  it('fausse alarme (vapeur) : a confirmer, avec un indice « probable fausse alarme », jamais fermee', async () => {
+    const { incident } = await playWithRules('fausse-alarme-vapeur', 2);
+    const i = incident('D-01')!;
+    assert.equal(i.confirmedAt, null);
+    assert.equal(i.hint, 'false_alarm_likely');
+    assert.notEqual(i.status, 'closed');
+  });
+
+  it("incendie qui se propage : l'atelier et l'entrepot se confirment mutuellement", async () => {
+    const { incident } = await playWithRules('incendie-atelier', 2);
+    assert.equal(incident('D-06')?.confirmationReason, 'neighbor:D-05');
+    assert.equal(incident('D-05')?.confirmationReason, 'neighbor:D-06');
+  });
+
+  it('alarme isolee en salle serveurs : a confirmer d\'abord, puis confirmee par persistance', async () => {
+    const early = await playWithRules('surchauffe-serveurs', 10); // ~12 s virtuelles apres le debut
+    assert.equal(early.incident('D-03')?.confirmedAt, null, 'pas encore confirmee');
+    assert.equal(early.incident('D-03')?.severity, 'critical', 'mais deja critique et visible');
+    const late = await playWithRules('surchauffe-serveurs', 30);
+    assert.equal(late.incident('D-03')?.confirmationReason, 'persistence');
+  });
+
+  it('confirmation croisee : les deux detecteurs voisins sont confirmes, sans indice de fausse alarme', async () => {
+    const { incident } = await playWithRules('confirmation-croisee', 2);
+    assert.equal(incident('D-04')?.confirmationReason, 'neighbor:D-02');
+    assert.equal(incident('D-02')?.confirmationReason, 'neighbor:D-04');
+    assert.equal(incident('D-04')?.hint, null);
   });
 });

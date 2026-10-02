@@ -33,7 +33,7 @@ Cette commande lance tout l'environnement de test, sans aucun équipement :
 - **le PSIM**, sur une base vierge `data-demo/` (recréée à chaque lancement : votre `data/` n'est jamais touché), configuré pour lire ces caméras comme de vraies caméras, avec identifiants ;
 - **les détecteurs**, qui publient sur MQTT comme de vrais équipements, avec un signal de vie toutes les 8 secondes (la surveillance des détecteurs muets est active, à 30 s).
 
-Le PSIM de démonstration est sur http://127.0.0.1:3034 (broker MQTT sur 1884, RTSP sur 8554) : il peut tourner en même temps que votre installation habituelle. Sur la page de connexion, cliquer sur « Administrateur » ou « Opérateur » remplit les champs. Les identifiants de lecture des caméras (générés au hasard à chaque lancement) sont affichés dans le terminal : vous pouvez les saisir à la main dans *Source vidéo* pour essayer le formulaire.
+La démo applique ces règles avec des délais raccourcis (persistance 25 s au lieu de 120 s). Le PSIM de démonstration est sur http://127.0.0.1:3034 (broker MQTT sur 1884, RTSP sur 8554) : il peut tourner en même temps que votre installation habituelle. Sur la page de connexion, cliquer sur « Administrateur » ou « Opérateur » remplit les champs. Les identifiants de lecture des caméras (générés au hasard à chaque lancement) sont affichés dans le terminal : vous pouvez les saisir à la main dans *Source vidéo* pour essayer le formulaire.
 
 Scénarios (menu dans le terminal : taper le numéro, `r` pour tout remettre au calme, `a` pour le mode automatique, `q` pour quitter) :
 
@@ -45,6 +45,7 @@ Scénarios (menu dans le terminal : taper le numéro, `r` pour tout remettre au 
 | 4 | `defaut-detecteur` | Défaut technique : le statut change, aucun incident n'est créé |
 | 5 | `detecteur-muet` | Un détecteur cesse d'émettre sans rien annoncer : le PSIM le déclare hors ligne de lui-même, compteur « hors service » en haut de l'écran |
 | 6 | `detecteur-hors-ligne` | Un détecteur annonce lui-même qu'il est hors ligne |
+| 7 | `confirmation-croisee` | Deux détecteurs voisins (couloir, bureaux) se confirment mutuellement |
 
 Options : `npm run demo -- --no-onvif` (toutes les caméras en RTSP direct), `--auto` (enchaîne les scénarios en boucle, pour une présentation), `--scenario=incendie-atelier` (lance un scénario au démarrage), `--speed=2` (deux fois plus vite), `--duration=120` (s'arrête seul après 120 s). `Ctrl+C` arrête tout proprement.
 
@@ -73,6 +74,28 @@ npm run sim -- D-04 normal
 ```
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
+
+## Règles anti-fausses alarmes
+
+> **Principe : une règle anti-fausse alarme ne cache, ne retarde et ne ferme jamais une alarme.** Elle ne fait que **qualifier** l'incident pour aider l'opérateur à prioriser. Une alarme s'ouvre toujours immédiatement, à sa vraie gravité, reste visible et sonne ; seul un opérateur peut la clôturer, avec sa qualification (« feu confirmé » ou « fausse alarme »).
+
+Chaque incident porte une étiquette :
+
+| Étiquette | Signification |
+|---|---|
+| **À CONFIRMER** | Rien ne la corrobore pour l'instant. Elle reste à traiter. |
+| **CONFIRMÉE** | Corroborée par un détecteur voisin, ou persistante. Alerte renforcée (double bip aigu, tri prioritaire). |
+| *Probable fausse alarme* (indice bleu) | Suggestion : détecteur isolé revenu très vite à la normale. L'incident reste ouvert et à vérifier. |
+
+Trois règles, réglables (secondes ; `0` désactive la règle) :
+
+1. **Coïncidence** (`PSIM_CONFIRM_WINDOW_S`, 60) : un **détecteur voisin** est en préalarme ou en alarme, ou s'est déclenché dans cette fenêtre : les **deux** incidents sont confirmés. Sont voisins deux détecteurs de la **même zone**, ou qui partagent **au moins une caméra** (réglage *Caméras affichées* d'un détecteur : c'est donc l'administrateur qui définit le voisinage).
+2. **Persistance** (`PSIM_CONFIRM_PERSIST_S`, 120) : un détecteur toujours en alarme ou préalarme après ce délai est confirmé. Les signaux de vie répétés ne remettent pas le compteur à zéro ; un retour à la normale, si.
+3. **Indice de fausse alarme** (`PSIM_FALSE_ALARM_HINT_S`, 30) : un détecteur **isolé** (sans voisin) revenu à la normale en moins de ce délai reçoit l'indice « probable fausse alarme ». Il disparaît si le détecteur se redéclenche ou si un voisin confirme ensuite.
+
+Une confirmation est traitée comme une **aggravation** : un incident déjà acquitté redevient « non acquitté » et l'alerte repart. Chaque confirmation et chaque indice sont inscrits au journal avec leur raison.
+
+Les bases créées avant ces règles sont migrées automatiquement au démarrage, sans perte de données.
 
 ## Surveillance des détecteurs muets
 

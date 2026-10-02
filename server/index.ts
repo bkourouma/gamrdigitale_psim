@@ -23,7 +23,12 @@ seedUsers(db, config.adminPassword, config.operatorPassword);
 
 const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
-const engine = createEngine(db, publish, Date.now, { silentTimeoutMs: config.detectorTimeoutS * 1000 });
+const engine = createEngine(db, publish, Date.now, {
+  silentTimeoutMs: config.detectorTimeoutS * 1000,
+  confirmWindowMs: config.confirmWindowS * 1000,
+  persistMs: config.confirmPersistS * 1000,
+  hintMs: config.falseAlarmHintS * 1000,
+});
 const video = createVideoService({
   db,
   engine,
@@ -80,11 +85,8 @@ bus.on('event', (event: PsimEvent) => {
   }
 });
 
-// Surveillance des detecteurs muets : controle regulier, plusieurs fois par delai.
-const silentTimer =
-  config.detectorTimeoutS > 0
-    ? setInterval(() => engine.checkSilentDetectors(), Math.min(5000, Math.max(500, (config.detectorTimeoutS * 1000) / 4)))
-    : null;
+// Controle periodique : detecteurs muets et confirmation des incidents par persistance.
+const tickTimer = setInterval(() => engine.tick(), 1000);
 
 server.listen(config.port, config.host, () => {
   console.log(`[psim] interface  : http://${config.host}:${config.port}`);
@@ -93,6 +95,11 @@ server.listen(config.port, config.host, () => {
     config.detectorTimeoutS > 0
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
       : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
+  );
+  console.log(
+    `[psim] regles anti-fausses alarmes : confirmation par voisin ${config.confirmWindowS > 0 ? `${config.confirmWindowS} s` : 'off'}, ` +
+      `par persistance ${config.confirmPersistS > 0 ? `${config.confirmPersistS} s` : 'off'}, ` +
+      `indice fausse alarme ${config.falseAlarmHintS > 0 ? `< ${config.falseAlarmHintS} s` : 'off'} (qualification seule : aucune alarme n'est retardee ni masquee)`,
   );
   if (config.demoLogin) {
     console.warn('[psim] Mode demo : les comptes sont cliquables sur la page de connexion (poste local uniquement).');
@@ -103,7 +110,7 @@ server.listen(config.port, config.host, () => {
 });
 
 async function shutdown() {
-  if (silentTimer) clearInterval(silentTimer);
+  clearInterval(tickTimer);
   video.shutdown();
   wss.close();
   server.close();

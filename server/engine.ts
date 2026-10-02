@@ -62,6 +62,19 @@ export interface EngineOptions {
    * desactivee. Les detecteurs reels emettent un signal de vie periodique : le silence est un defaut.
    */
   silentTimeoutMs?: number;
+  /**
+   * Regles anti-fausses alarmes. IMPORTANT : elles ne font que QUALIFIER un incident (« a confirmer » /
+   * « confirme », ou une suggestion). Elles ne retardent, ne masquent ni ne ferment jamais une alarme.
+   * 0 = regle desactivee.
+   *
+   * Coincidence : un detecteur voisin (meme zone, ou camera en commun) est en prealarme/alarme, ou
+   * s'est declenche dans les `confirmWindowMs` dernieres millisecondes -> les deux incidents sont confirmes.
+   */
+  confirmWindowMs?: number;
+  /** Persistance : un detecteur reste en prealarme/alarme au moins `persistMs` -> incident confirme. */
+  persistMs?: number;
+  /** Indice : un detecteur isole revenu a la normale en moins de `hintMs` -> « probable fausse alarme ». */
+  hintMs?: number;
 }
 
 function describeDuration(ms: number): string {
@@ -78,6 +91,9 @@ export function createEngine(
   options: EngineOptions = {},
 ) {
   const silentTimeoutMs = options.silentTimeoutMs ?? 0;
+  const confirmWindowMs = options.confirmWindowMs ?? 0;
+  const persistMs = options.persistMs ?? 0;
+  const hintMs = options.hintMs ?? 0;
   // Un detecteur jamais entendu depuis le demarrage dispose du meme delai de grace, compte
   // a partir du demarrage : on ne le declare pas muet avant d'avoir pu l'entendre.
   const startedAt = now();
@@ -117,6 +133,10 @@ export function createEngine(
       closedAt: (r.closed_at as number | null) ?? null,
       closedBy: (r.closed_by as string | null) ?? null,
       cameraIds: linkedCameras(r.detector_id as string),
+      confirmedAt: (r.confirmed_at as number | null) ?? null,
+      confirmationReason: (r.confirmation_reason as string | null) ?? null,
+      hint: (r.hint as Incident['hint']) ?? null,
+      hintDetails: (r.hint_details as string | null) ?? null,
     };
   }
 
@@ -144,6 +164,88 @@ export function createEngine(
     publish({ type: 'incident', incident: incidentView(id) });
   }
 
+  // ---- Regles anti-fausses alarmes (qualification uniquement, jamais de suppression) -------------
+
+  /** Detecteurs voisins : meme zone (non vide) ou au moins une camera en commun. */
+  function neighborsOf(detectorId: string): string[] {
+    return (
+      db
+        .prepare(
+          `SELECT DISTINCT d2.id AS id FROM device d1
+             JOIN device d2 ON d2.kind = 'detector' AND d2.id <> d1.id
+            WHERE d1.id = ? AND (
+              (d1.zone <> '' AND d2.zone = d1.zone)
+              OR EXISTS (SELECT 1 FROM device_link a JOIN device_link b ON a.camera_id = b.camera_id
+                          WHERE a.detector_id = d1.id AND b.detector_id = d2.id))`,
+        )
+        .all(detectorId) as Row[]
+    ).map((r) => r.id as string);
+  }
+
+  /** Un voisin corrobore s'il est en prealarme/alarme maintenant, ou s'est declenche dans la fenetre. */
+  function corroboratingNeighbor(detectorId: string): string | null {
+    if (confirmWindowMs <= 0) return null;
+    const since = now() - confirmWindowMs;
+    for (const id of neighborsOf(detectorId)) {
+      const status = (db.prepare('SELECT status FROM device WHERE id = ?').get(id) as Row | undefined)?.status;
+      if (status === 'alarm' || status === 'prealarm') return id;
+      if (db.prepare('SELECT 1 AS x FROM incident WHERE detector_id = ? AND opened_at >= ? LIMIT 1').get(id, since)) return id;
+    }
+    return null;
+  }
+
+  function hasPersisted(detectorId: string, openedAt: number): boolean {
+    if (persistMs <= 0) return false;
+    const row = db.prepare('SELECT status, state_since FROM device WHERE id = ?').get(detectorId) as Row | undefined;
+    if (row?.status !== 'alarm' && row?.status !== 'prealarm') return false;
+    return now() - ((row.state_since as number | null) ?? openedAt) >= persistMs;
+  }
+
+  function confirm(incidentId: number, detectorId: string, reason: string): void {
+    // Une confirmation est une aggravation : un incident acquitte redevient « non acquitte »
+    // pour que l'alerte reparte (toutes les expressions SET lisent l'ancienne valeur de la ligne).
+    const res = db
+      .prepare(
+        `UPDATE incident SET confirmed_at = ?, confirmation_reason = ?, hint = NULL, hint_details = NULL,
+           status = CASE WHEN status = 'acknowledged' THEN 'open' ELSE status END,
+           acked_at = CASE WHEN status = 'acknowledged' THEN NULL ELSE acked_at END,
+           acked_by = CASE WHEN status = 'acknowledged' THEN NULL ELSE acked_by END
+         WHERE id = ? AND confirmed_at IS NULL AND status <> 'closed'`,
+      )
+      .run(now(), reason, incidentId);
+    if (res.changes === 0) return;
+    audit('systeme', 'incident_confirmed', { incidentId, deviceId: detectorId, details: reason });
+    publishIncident(incidentId);
+  }
+
+  function evaluateConfirmations(): void {
+    if (confirmWindowMs <= 0 && persistMs <= 0) return;
+    const rows = db
+      .prepare("SELECT id, detector_id, opened_at FROM incident WHERE status <> 'closed' AND confirmed_at IS NULL")
+      .all() as Row[];
+    for (const row of rows) {
+      const detectorId = row.detector_id as string;
+      const neighbor = corroboratingNeighbor(detectorId);
+      if (neighbor) confirm(row.id as number, detectorId, `neighbor:${neighbor}`);
+      else if (hasPersisted(detectorId, row.opened_at as number)) confirm(row.id as number, detectorId, 'persistence');
+    }
+  }
+
+  /** Detecteur isole revenu a la normale tres vite : on SUGGERE une fausse alarme (l'operateur decide). */
+  function maybeHint(detectorId: string): void {
+    if (hintMs <= 0) return;
+    const incident = db
+      .prepare("SELECT id, opened_at, hint FROM incident WHERE detector_id = ? AND status <> 'closed' AND confirmed_at IS NULL")
+      .get(detectorId) as Row | undefined;
+    if (!incident || incident.hint) return;
+    const duration = now() - (incident.opened_at as number);
+    if (duration > hintMs || corroboratingNeighbor(detectorId)) return;
+    const details = `retour a la normale en ${Math.round(duration / 1000)} s, sans detecteur voisin`;
+    db.prepare("UPDATE incident SET hint = 'false_alarm_likely', hint_details = ? WHERE id = ?").run(details, incident.id as number);
+    audit('systeme', 'incident_hint', { incidentId: incident.id as number, deviceId: detectorId, details });
+    publishIncident(incident.id as number);
+  }
+
   /** Point d'entree des messages MQTT `psim/detectors/<id>/state`. Ne leve jamais d'exception. */
   function handleDetectorMessage(deviceId: string, payload: unknown): void {
     if (typeof payload !== 'object' || payload === null) return;
@@ -153,35 +255,51 @@ export function createEngine(
     if (!device || device.kind !== 'detector') return;
 
     const previous = device.status;
-    db.prepare('UPDATE device SET status = ?, last_seen = ? WHERE id = ?').run(state, now(), deviceId);
+    const t = now();
+    db.prepare('UPDATE device SET status = ?, last_seen = ? WHERE id = ?').run(state, t, deviceId);
+    if (previous !== state) db.prepare('UPDATE device SET state_since = ? WHERE id = ?').run(t, deviceId);
     if (previous !== state) {
       audit('detecteur', 'device_state', { deviceId, details: `${previous} -> ${state}` });
     }
     publishDevice(deviceId);
 
     const s = state as DetectorState;
-    if (s !== 'prealarm' && s !== 'alarm') return;
+    if (s === 'prealarm' || s === 'alarm') {
+      const severity: Severity = s === 'alarm' ? 'critical' : 'warning';
+      const open = db
+        .prepare("SELECT id, severity, hint FROM incident WHERE detector_id = ? AND status <> 'closed'")
+        .get(deviceId) as { id: number; severity: Severity; hint: string | null } | undefined;
 
-    const severity: Severity = s === 'alarm' ? 'critical' : 'warning';
-    const open = db
-      .prepare("SELECT id, severity FROM incident WHERE detector_id = ? AND status <> 'closed'")
-      .get(deviceId) as { id: number; severity: Severity } | undefined;
-
-    if (!open) {
-      const res = db
-        .prepare('INSERT INTO incident (detector_id, severity, opened_at) VALUES (?, ?, ?)')
-        .run(deviceId, severity, now());
-      const id = Number(res.lastInsertRowid);
-      audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
-      publishIncident(id);
-    } else if (open.severity === 'warning' && severity === 'critical') {
-      // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
-      db.prepare(
-        "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
-      ).run(open.id);
-      audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
-      publishIncident(open.id);
+      if (!open) {
+        const res = db
+          .prepare('INSERT INTO incident (detector_id, severity, opened_at) VALUES (?, ?, ?)')
+          .run(deviceId, severity, now());
+        const id = Number(res.lastInsertRowid);
+        audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
+        publishIncident(id);
+      } else if (open.severity === 'warning' && severity === 'critical') {
+        // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
+        db.prepare(
+          "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
+        ).run(open.id);
+        audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
+        publishIncident(open.id);
+      }
+      if (open?.hint) {
+        // Le detecteur se redeclenche : la suggestion « fausse alarme » ne tient plus.
+        db.prepare('UPDATE incident SET hint = NULL, hint_details = NULL WHERE id = ?').run(open.id);
+        publishIncident(open.id);
+      }
+    } else if (s === 'normal' && (previous === 'alarm' || previous === 'prealarm')) {
+      maybeHint(deviceId);
     }
+    evaluateConfirmations();
+  }
+
+  /** Controle periodique (une fois par seconde environ) : detecteurs muets, confirmation par persistance. */
+  function tick(): void {
+    checkSilentDetectors();
+    evaluateConfirmations();
   }
 
   /**
@@ -392,6 +510,7 @@ export function createEngine(
   return {
     handleDetectorMessage,
     checkSilentDetectors,
+    tick,
     acknowledge,
     close,
     createDevice,

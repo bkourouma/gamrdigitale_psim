@@ -42,6 +42,8 @@ const ACTION_LABEL = {
   device_state: 'Changement d\'état',
   incident_opened: 'Incident ouvert',
   incident_escalated: 'Incident aggravé',
+  incident_confirmed: 'Incident confirmé',
+  incident_hint: 'Indice : fausse alarme probable',
   incident_acked: 'Incident acquitté',
   incident_closed: 'Incident clôturé',
   login: 'Connexion',
@@ -98,7 +100,12 @@ const isFiring = (d) => d && (d.status === 'alarm' || d.status === 'prealarm');
 function activeIncidents() {
   return [...S.incidents.values()]
     .filter(isActive)
-    .sort((a, b) => (b.severity === 'critical') - (a.severity === 'critical') || b.openedAt - a.openedAt);
+    .sort(
+      (a, b) =>
+        (b.severity === 'critical') - (a.severity === 'critical') ||
+        (b.confirmedAt !== null) - (a.confirmedAt !== null) ||
+        b.openedAt - a.openedAt,
+    );
 }
 
 function focusedIncident() {
@@ -489,6 +496,21 @@ $('wall-auto').addEventListener('click', () => {
 
 const cards = new Map(); // idIncident -> { el, refs }
 
+function confirmationText(reason) {
+  if (reason?.startsWith('neighbor:')) {
+    const id = reason.slice('neighbor:'.length);
+    const d = S.devices.get(id);
+    return `détecteur voisin ${id}${d ? ` (${d.name})` : ''} déclenché`;
+  }
+  if (reason === 'persistence') return "l'alarme persiste";
+  return reason ?? '';
+}
+
+function hintText(details) {
+  const m = /en (\d+) s/.exec(details ?? '');
+  return m ? `revenu à la normale en ${m[1]} s, sans détecteur voisin.` : (details ?? '');
+}
+
 function whereText(incident) {
   return `${incident.zone || 'Zone non renseignée'} - ouvert à ${time(incident.openedAt)} - depuis ${elapsed(incident.openedAt)}`;
 }
@@ -496,6 +518,9 @@ function whereText(incident) {
 function buildCard(incident) {
   const refs = {};
   refs.badge = h('span', { class: 'badge' });
+  refs.chip = h('span', { class: 'chip' });
+  refs.conf = h('p', { class: 'small conf-line' });
+  refs.advice = h('p', { class: 'small advice' });
   refs.status = h('p', { class: 'small' });
   refs.ack = h('button', { class: 'btn small', type: 'button', text: 'Acquitter', onclick: () => act(() => api(`/api/incidents/${incident.id}/ack`, { method: 'POST' })) });
   refs.cams = h('button', {
@@ -519,9 +544,11 @@ function buildCard(incident) {
   const el = h(
     'article',
     { class: 'incident' },
-    h('header', {}, refs.badge, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
+    h('header', {}, refs.badge, refs.chip, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
     h('p', { class: 'small inc-where' }),
     refs.status,
+    refs.conf,
+    refs.advice,
     h('div', { class: 'row wrap' }, refs.cams, refs.ack),
     refs.comment,
     h('div', { class: 'row wrap' }, refs.fire, refs.false),
@@ -533,8 +560,17 @@ function buildCard(incident) {
 function updateCard({ el, refs }, incident) {
   const detector = S.devices.get(incident.detectorId);
   const critical = incident.severity === 'critical';
-  el.className = `incident ${critical ? 'critical' : 'warning'} ${incident.status}${focusedIncident()?.id === incident.id ? ' focused' : ''}`;
+  const confirmed = incident.confirmedAt !== null;
+  el.className = `incident ${critical ? 'critical' : 'warning'} ${incident.status} ${confirmed ? 'confirmed' : 'unconfirmed'}${focusedIncident()?.id === incident.id ? ' focused' : ''}`;
   refs.badge.textContent = critical ? 'ALARME' : 'PRÉALARME';
+  refs.chip.textContent = confirmed ? 'CONFIRMÉE' : 'À CONFIRMER';
+  refs.chip.className = `chip ${confirmed ? 'confirmed' : 'unconfirmed'}`;
+  // Une alarme « à confirmer » reste une alarme à traiter : on le dit pour qu'elle ne soit jamais prise a la legere.
+  refs.conf.textContent = confirmed
+    ? `Confirmée : ${confirmationText(incident.confirmationReason)}.`
+    : "À confirmer : rien ne la corrobore pour l'instant. Elle reste à traiter.";
+  refs.advice.hidden = !incident.hint;
+  refs.advice.textContent = incident.hint ? `Probable fausse alarme : ${hintText(incident.hintDetails)} À vérifier : l'incident reste ouvert.` : '';
   el.querySelector('.inc-title').textContent = incident.detectorName;
   el.querySelector('.inc-where').textContent = whereText(incident);
   refs.status.textContent =
@@ -603,7 +639,11 @@ function describe(entry) {
     parts.push(
       entry.action === 'detector_silent'
         ? entry.details.replace(/etait : (\w+)/, (_, s) => `était : ${STATUS_LABEL[s] ?? s}`)
-        : entry.action === 'device_state'
+        : entry.action === 'incident_confirmed'
+          ? `par ${confirmationText(entry.details)}`
+          : entry.action === 'incident_hint'
+            ? hintText(entry.details)
+            : entry.action === 'device_state'
         ? entry.details.replace(/\w+/g, (w) => STATUS_LABEL[w] ?? w)
         : (QUALIF_LABEL[entry.details] ?? entry.details),
     );
@@ -669,7 +709,12 @@ function updateAlarmState() {
 setInterval(() => {
   if (!S.me) return;
   const unacked = activeIncidents().filter((i) => i.status === 'open');
-  if (unacked.length && !S.muted) beep(unacked.some((i) => i.severity === 'critical') ? 880 : 520, 0.3);
+  if (unacked.length && !S.muted) {
+    if (unacked.some((i) => i.severity === 'critical' && i.confirmedAt !== null)) {
+      beep(1175, 0.15); // alarme confirmee : double bip aigu
+      setTimeout(() => beep(1175, 0.15), 220);
+    } else beep(unacked.some((i) => i.severity === 'critical') ? 880 : 520, 0.3);
+  }
   for (const [id, card] of cards) {
     const incident = S.incidents.get(id);
     if (incident) card.el.querySelector('.inc-where').textContent = whereText(incident);

@@ -98,6 +98,21 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: 'confirmation-croisee',
+    title: 'Confirmation croisee : deux detecteurs voisins (couloir et bureaux)',
+    description:
+      'Le detecteur du couloir se declenche seul (« a confirmer »), puis celui des bureaux, qui partage sa camera, reagit aussi : les deux incidents deviennent « confirmes ».',
+    holdSeconds: 20,
+    steps: [
+      { at: 0, fire: { zone: 'Couloir', level: 1 }, note: 'De la fumee dans le couloir' },
+      { at: 2, detector: 'D-04', state: 'prealarm', note: 'Prealarme au couloir : seule, a confirmer' },
+      { at: 12, detector: 'D-02', state: 'prealarm', note: 'Le detecteur voisin des bureaux reagit aussi : les deux incidents sont confirmes' },
+      { at: 22, fire: { zone: 'Couloir', level: 0 }, note: 'La fumee se dissipe' },
+      { at: 26, detector: 'D-04', state: 'normal', note: 'Retour a la normale au couloir' },
+      { at: 28, detector: 'D-02', state: 'normal', note: 'Retour a la normale aux bureaux' },
+    ],
+  },
+  {
     id: 'detecteur-hors-ligne',
     title: 'Perte de contact : detecteur du stockage',
     description: 'Le detecteur du stockage annonce qu\'il est hors ligne, puis revient.',
@@ -110,11 +125,15 @@ export const SCENARIOS: Scenario[] = [
 ];
 
 /** Ordre du mode automatique (presentation en boucle). */
-export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'defaut-detecteur', 'detecteur-muet', 'surchauffe-serveurs', 'incendie-atelier'];
+export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'confirmation-croisee', 'defaut-detecteur', 'detecteur-muet', 'surchauffe-serveurs', 'incendie-atelier'];
 
 /** Delai de la demo avant de declarer un detecteur muet (s) ; le signal de vie part bien plus souvent. */
 export const DEMO_SILENT_TIMEOUT_S = 30;
 export const DEMO_HEARTBEAT_S = 8;
+/** Regles anti-fausses alarmes de la demo (les valeurs d'exploitation sont 60 / 120 / 30 s). */
+export const DEMO_CONFIRM_WINDOW_S = 60;
+export const DEMO_CONFIRM_PERSIST_S = 25;
+export const DEMO_FALSE_ALARM_HINT_S = 30;
 
 export function lastStepAt(scenario: Scenario): number {
   return Math.max(...scenario.steps.map((s) => s.at));

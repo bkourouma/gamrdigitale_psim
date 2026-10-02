@@ -4,6 +4,14 @@ const host = env.PSIM_HOST ?? '127.0.0.1';
 const simEnabled = env.PSIM_SIM_ENABLED !== '0';
 const loopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(host);
 
+/** Lit un delai en secondes ; valeur absente ou invalide = defaut ; 0 desactive la regle. */
+function seconds(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 export const config = {
   port: Number(env.PSIM_PORT ?? 3033),
   host,
@@ -26,6 +34,11 @@ export const config = {
   cookieSecure: env.PSIM_COOKIE_SECURE === '1',
   ffmpegPath: env.PSIM_FFMPEG ?? 'ffmpeg',
   secretKey: env.PSIM_SECRET_KEY,
+  // Regles anti-fausses alarmes : elles QUALIFIENT les incidents (a confirmer / confirme / probable
+  // fausse alarme) sans jamais retarder, masquer ni fermer une alarme. Actives par defaut. 0 = desactivee.
+  confirmWindowS: seconds('PSIM_CONFIRM_WINDOW_S', 60),
+  confirmPersistS: seconds('PSIM_CONFIRM_PERSIST_S', 120),
+  falseAlarmHintS: seconds('PSIM_FALSE_ALARM_HINT_S', 30),
   // Comptes cliquables sur la page de connexion (mots de passe visibles depuis le navigateur).
   // Actif par defaut uniquement en poste local avec les mots de passe de developpement ;
   // PSIM_DEMO_LOGIN=1 / 0 force le choix.
