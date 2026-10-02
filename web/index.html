@@ -35,6 +35,7 @@
         <span id="conn" class="conn offline"><i></i><span>Hors ligne</span></span>
         <span id="alarm-counter" class="counter" hidden></span>
         <span id="offline-counter" class="counter warn" hidden></span>
+        <button id="nav-risk" class="btn small" type="button" aria-pressed="false" title="Indice de risque par zone et priorités d'action">Risques</button>
         <button id="mute" class="btn small" type="button" title="Couper ou activer l'alerte sonore">Son activé</button>
         <span id="whoami" class="muted"></span>
         <button id="logout" class="btn small" type="button">Déconnexion</button>
@@ -124,6 +125,7 @@
         </section>
       </aside>
     </main>
+    <main id="risk-view" class="risk-layout" hidden></main>
   </div>
 
   <script type="module" src="app.js"></script>

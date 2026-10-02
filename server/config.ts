@@ -70,6 +70,9 @@ export const config = {
       webhook: [list('PSIM_NOTIFY_WEBHOOK_L1'), list('PSIM_NOTIFY_WEBHOOK_L2')],
     },
   },
+  // Gestion des risques : periode (jours) de l'historique d'incendies, et age (mois) apres lequel une evaluation est « a revoir ».
+  riskFireWindowDays: seconds('PSIM_RISK_FIRE_WINDOW_DAYS', 180),
+  riskStaleMonths: seconds('PSIM_RISK_STALE_MONTHS', 12),
   confirmWindowS: seconds('PSIM_CONFIRM_WINDOW_S', 60),
   confirmPersistS: seconds('PSIM_CONFIRM_PERSIST_S', 120),
   falseAlarmHintS: seconds('PSIM_FALSE_ALARM_HINT_S', 30),

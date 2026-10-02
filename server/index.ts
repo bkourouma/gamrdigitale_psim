@@ -11,6 +11,7 @@ import { startBroker } from './mqtt.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
 import type { PsimEvent } from './types.ts';
+import { createRiskService } from './risk.ts';
 import { createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
 import type { Notifier } from './notifications.ts';
 import { createSnapshotService } from './snapshots.ts';
@@ -74,6 +75,9 @@ notifier = createNotifier({
   readSnapshot: (id) => snapshots?.read(id) ?? null,
   secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret],
 });
+const risk = createRiskService(db, engine, { fireWindowDays: config.riskFireWindowDays, staleMonths: config.riskStaleMonths });
+risk.recordHistory(); // un point par jour pour les tendances (une seule ecriture par jour)
+const riskTimer = setInterval(() => risk.recordHistory(), 10 * 60 * 1000);
 const purged = snapshots.purge(config.snapshotDays);
 if (purged > 0) console.log(`[psim] ${purged} image(s) d'incident de plus de ${config.snapshotDays} jours supprimee(s)`);
 const purgeTimer = setInterval(() => snapshots?.purge(config.snapshotDays), 6 * 3600 * 1000);
@@ -91,6 +95,7 @@ const app = createApp({
   video,
   snapshots,
   notifier,
+  risk,
   dataDir,
   webDir: join(root, 'web'),
   cookieSecure: config.cookieSecure,
@@ -167,6 +172,7 @@ server.listen(config.port, config.host, () => {
 async function shutdown() {
   clearInterval(tickTimer);
   clearInterval(purgeTimer);
+  clearInterval(riskTimer);
   video.shutdown();
   wss.close();
   server.close();

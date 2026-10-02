@@ -40,6 +40,17 @@ export const DEMO_LINKS: Record<string, string[]> = {
   'D-07': ['C-05'],
 };
 
+/** Evaluations de risque du site de demonstration (valeurs plausibles, a remplacer par celles du site reel). */
+export const DEMO_RISK: Record<string, { p: number; defenses: string[]; image: number; economy: number; human: number; notes: string }> = {
+  Accueil: { p: 1, defenses: ['extincteurs', 'consignes', 'personnel'], image: 3, economy: 2, human: 4, notes: 'Zone ouverte au public.' },
+  Bureaux: { p: 1, defenses: ['extincteurs', 'consignes', 'personnel', 'compartimentage'], image: 2, economy: 3, human: 3, notes: '' },
+  'Salle serveurs': { p: 2, defenses: ['extincteurs', 'desenfumage'], image: 4, economy: 5, human: 2, notes: "Donnees et continuite d'activite." },
+  Couloir: { p: 1, defenses: ['consignes', 'compartimentage'], image: 1, economy: 1, human: 3, notes: "Voie d'evacuation." },
+  Entrepot: { p: 3, defenses: ['extincteurs', 'consignes', 'personnel'], image: 3, economy: 5, human: 3, notes: 'Marchandises combustibles.' },
+  Atelier: { p: 3, defenses: ['extincteurs', 'personnel'], image: 2, economy: 3, human: 4, notes: 'Travaux par points chauds (soudure).' },
+  Stockage: { p: 2, defenses: ['extincteurs', 'consignes', 'compartimentage', 'personnel'], image: 2, economy: 3, human: 2, notes: '' },
+};
+
 /** Ne fait rien si la base contient deja un site : ne jamais ecraser des donnees existantes. */
 export function seedDemo(db: DatabaseSync, dataDir: string, seedDir: string): boolean {
   const existing = db.prepare('SELECT COUNT(*) AS n FROM site').get() as { n: number };
@@ -61,6 +72,12 @@ export function seedDemo(db: DatabaseSync, dataDir: string, seedDir: string): bo
     const insertLink = db.prepare('INSERT INTO device_link (detector_id, camera_id) VALUES (?, ?)');
     for (const [detectorId, cameraIds] of Object.entries(DEMO_LINKS)) {
       for (const cameraId of cameraIds) insertLink.run(detectorId, cameraId);
+    }
+    const insertRisk = db.prepare(
+      'INSERT INTO risk_zone (zone, probability, defenses, impact_image, impact_economy, impact_human, notes, assessed_by, assessed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (const [zone, r] of Object.entries(DEMO_RISK)) {
+      insertRisk.run(zone, r.p, JSON.stringify(r.defenses), r.image, r.economy, r.human, r.notes, 'Demonstration', Date.now());
     }
     db.exec('COMMIT');
   } catch (err) {

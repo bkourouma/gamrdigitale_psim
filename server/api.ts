@@ -17,6 +17,7 @@ import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
+import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
@@ -52,6 +53,7 @@ export interface ApiDeps {
   video: VideoService;
   snapshots: SnapshotService;
   notifier: Notifier;
+  risk: RiskService;
   dataDir: string;
   webDir: string;
   cookieSecure: boolean;
@@ -159,6 +161,12 @@ export function createApp(deps: ApiDeps) {
   app.post('/api/notifications/test', adminOnly, async (req, res) => {
     engine.audit(actorOf(req), 'notification_test');
     res.json(await deps.notifier.test());
+  });
+
+  // Gestion des risques : lecture pour tout utilisateur connecte, evaluation reservee a l'administrateur.
+  app.get('/api/risk', anyUser, (_req, res) => res.json(deps.risk.overview()));
+  app.put('/api/risk/zones/:zone', adminOnly, json, (req, res) => {
+    res.json(deps.risk.assess(actorOf(req), String(req.params.zone), (req.body ?? {}) as Record<string, unknown>));
   });
 
   app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));

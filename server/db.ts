@@ -79,6 +79,28 @@ CREATE TABLE IF NOT EXISTS notification_log (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notification_by_incident ON notification_log(incident_id, created_at);
+-- Evaluation de risque par zone (saisie) ; les valeurs calculees ne sont pas stockees, sauf l'historique.
+CREATE TABLE IF NOT EXISTS risk_zone (
+  zone TEXT PRIMARY KEY,
+  probability INTEGER NOT NULL CHECK (probability BETWEEN 1 AND 3),
+  defenses TEXT NOT NULL DEFAULT '[]',
+  impact_image INTEGER NOT NULL CHECK (impact_image BETWEEN 1 AND 5),
+  impact_economy INTEGER NOT NULL CHECK (impact_economy BETWEEN 1 AND 5),
+  impact_human INTEGER NOT NULL CHECK (impact_human BETWEEN 1 AND 5),
+  notes TEXT NOT NULL DEFAULT '',
+  assessed_by TEXT NOT NULL,
+  assessed_at INTEGER NOT NULL
+);
+-- Un point par jour et par zone (zone vide = indice du site) pour les tendances.
+CREATE TABLE IF NOT EXISTS risk_history (
+  day TEXT NOT NULL,
+  zone TEXT NOT NULL,
+  probability INTEGER NOT NULL,
+  vulnerability INTEGER NOT NULL,
+  impact INTEGER NOT NULL,
+  idx INTEGER NOT NULL,
+  PRIMARY KEY (day, zone)
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,

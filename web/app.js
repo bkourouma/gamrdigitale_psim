@@ -1,5 +1,6 @@
 import { startSimCamera } from './camera.js';
 import { startLiveCamera } from './live.js';
+import { createRiskView } from './risk.js';
 
 // ---------------------------------------------------------------- outils
 
@@ -54,6 +55,7 @@ const ACTION_LABEL = {
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
+  risk_assessed: 'Risque évalué',
   snapshot_failed: 'Image non prise',
   notification_failed: 'Notification en échec',
   notification_escalated: 'Escalade (niveau 2 prévenu)',
@@ -78,6 +80,22 @@ async function api(path, { method = 'GET', body } = {}) {
   if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
   return data;
 }
+
+// ---------------------------------------------------------------- vues (supervision / risques)
+
+let riskView = null;
+
+function showView(name) {
+  const risk = name === 'risk';
+  riskView ??= createRiskView({ api, h, toast, getMe: () => S.me });
+  document.querySelector('.layout').hidden = risk;
+  $('nav-risk').setAttribute('aria-pressed', String(risk));
+  $('nav-risk').textContent = risk ? 'Supervision' : 'Risques';
+  if (risk) riskView.show();
+  else riskView.hide();
+}
+
+$('nav-risk').addEventListener('click', () => showView(riskView?.isOpen() ? 'supervision' : 'risk'));
 
 // ---------------------------------------------------------------- état
 
@@ -131,6 +149,8 @@ function applySnapshot(snap) {
 
 function onIncident(incident) {
   const previous = S.incidents.get(incident.id);
+  // Securite : une nouvelle alarme ramene l'operateur sur l'ecran de supervision, jamais cachee derriere une autre vue.
+  if (incident.status === 'open' && !previous) showView('supervision');
   S.incidents.set(incident.id, incident);
   // Nouvelle alarme (ou aggravation) : l'operateur voit tout de suite les cameras concernees.
   if (incident.status === 'open' && (!previous || previous.status !== 'open' || previous.severity !== incident.severity)) {

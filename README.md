@@ -75,6 +75,27 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Gestion des risques (indice par zone)
+
+Le bouton **Risques** (en haut de l'écran) ouvre une vue qui répond à : *où le risque est-il le plus élevé, pourquoi, et que faire en premier ?* Tout utilisateur connecté la consulte ; seul l'administrateur évalue les zones.
+
+**Indice de sécurité = Probabilité (1-3) × Vulnérabilité (1-4) × Répercussions (1-5), soit de 1 à 60**, calculé **par zone** (les zones sont celles des équipements du plan). Niveaux : Faible ≤ 8, Modéré ≤ 20, Élevé ≤ 36, Critique ≤ 60. L'indice du **site** est celui de sa **zone la plus exposée**.
+
+| Composante | Saisie par l'évaluateur | Corrigée automatiquement par le PSIM |
+|---|---|---|
+| **Probabilité** (1 improbable, 2 possible, 3 probable) | note de base (environnement, activité) | +1 si 1 à 2 incendies **confirmés** dans la zone sur 180 jours, +2 si 3 ou plus (plafond 3). Une fausse alarme ne compte pas. |
+| **Vulnérabilité** (1 bien défendu … 4 peu défendu) | 5 lignes de défense cochées : extincteurs, consignes, personnel formé, compartimentage, désenfumage (0-1 → 4, 2 → 3, 3-4 → 2, 5 → 1) | +1 par défaut constaté : aucun détecteur dans la zone, détecteur hors service ou en défaut, aucune caméra ne couvre la zone (plafond 4) |
+| **Répercussions** (1 négligeable … 5 catastrophique) | trois notes : image, économie, humaines | **la plus grave des trois** : un risque humain n'est jamais dilué par un faible impact économique |
+
+- **Chaque note se justifie** : « Voir le calcul » détaille les raisons (par exemple « +1 : détecteur hors service (D-07) »). L'indice réagit donc à l'état réel : un détecteur qui tombe en panne fait monter l'indice de sa zone, et il redescend à sa reprise.
+- **Pas de chiffre inventé** : une zone non évaluée (nouvel équipement dans une nouvelle zone) apparaît **« À évaluer »**, sans note, avec une priorité de court terme. Une évaluation de plus de 12 mois est marquée **« à revoir »**.
+- **Priorités d'action** en court, moyen et long terme (remettre en service un détecteur, couvrir une zone par une caméra, ajouter un détecteur voisin, lignes de défense manquantes, causes d'incendies répétés…). Chaque mesure chiffrable affiche son **gain** : la baisse d'indice attendue si elle est réalisée (`−12`).
+- **Tendances** : un point par jour et par zone est conservé ; les courbes apparaissent au bout de quelques jours.
+- Une **nouvelle alarme ramène automatiquement** l'opérateur sur l'écran de supervision : elle n'est jamais cachée derrière une autre vue.
+- Réglages : `PSIM_RISK_FIRE_WINDOW_DAYS` (180), `PSIM_RISK_STALE_MONTHS` (12).
+
+> **Cadre d'usage** : cette grille est un outil d'aide à la décision, **pas une méthode réglementaire** (elle ne remplace ni l'analyse de risque d'incendie du site, ni l'avis du préventionniste ou de l'assureur). Les évaluations du site de démonstration sont des valeurs plausibles, à remplacer par celles du site réel ; les seuils et la grille de vulnérabilité sont dans `server/risk.ts`.
+
 ## Notifications et escalade
 
 Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram** et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
@@ -168,9 +189,11 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/` | Interface : plan, mur vidéo, incidents, journal, simulateur, édition |
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
 | `server/video.ts` | Sources caméra chiffrées, ffmpeg RTSP → images JPEG, un seul flux partagé par caméra |
+| `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
+| `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |
 | `scripts/install-mediamtx.ts` | Installation vérifiée de MediaMTX |
