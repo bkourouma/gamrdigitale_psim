@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import type { Server } from 'node:net';
+import { createServer as createTlsServer } from 'node:tls';
 import { Aedes } from 'aedes';
 import type { Engine } from './engine.ts';
 
@@ -10,6 +12,8 @@ export interface Broker {
   server: Server;
   /** Publie un etat de detecteur comme le ferait un equipement reel (utilise par le simulateur). */
   publishDetectorState(detectorId: string, state: string): Promise<void>;
+  /** Nombre de clients MQTT connectes (passerelles de detecteurs). */
+  clients(): number;
   close(): Promise<void>;
 }
 
@@ -20,7 +24,7 @@ export interface Broker {
  */
 export async function startBroker(
   engine: Engine,
-  opts: { host: string; port: number; user: string; password: string },
+  opts: { host: string; port: number; user: string; password: string; tls?: { cert: string; key: string } | null },
 ): Promise<Broker> {
   const aedes = await Aedes.createBroker();
 
@@ -49,14 +53,18 @@ export async function startBroker(
     engine.handleDetectorMessage(match[1], parsed);
   });
 
-  const server = createServer(aedes.handle);
+  // TLS optionnel (mqtts) : indispensable des que le broker est ouvert au reseau.
+  const server = opts.tls
+    ? createTlsServer({ cert: readFileSync(opts.tls.cert), key: readFileSync(opts.tls.key), minVersion: 'TLSv1.2' }, aedes.handle)
+    : createServer(aedes.handle);
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(opts.port, opts.host, resolve);
   });
 
   return {
-    server,
+    server: server as Server,
+    clients: () => aedes.connectedClients,
     publishDetectorState(detectorId, state) {
       return new Promise((resolve, reject) => {
         aedes.publish(

@@ -61,6 +61,8 @@ const ACTION_LABEL = {
   notification_escalated: 'Escalade (niveau 2 prévenu)',
   notification_reminder: 'Rappel envoyé',
   notification_test: 'Test de notification',
+  backup_failed: 'Sauvegarde en échec',
+  backup_manual: 'Sauvegarde manuelle',
   camera_source_updated: 'Source vidéo modifiée',
 };
 const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
@@ -268,6 +270,7 @@ function showLogin() {
 function showApp() {
   $('login').hidden = true;
   $('app').hidden = false;
+  loadSystem(false);
   $('whoami').textContent = `${S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
   $('admin').hidden = S.me.role !== 'admin';
   $('sim-box').hidden = !S.me.simEnabled;
@@ -797,6 +800,57 @@ const SIM_STATES = [
   ['alarm', 'Alarme'],
   ['fault', 'Défaut'],
 ];
+
+const fmtBytes = (n) => (n == null ? '—' : n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} Go` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} Mo` : `${Math.max(1, Math.round(n / 1024))} Ko`);
+const fmtDuration = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} j ${Math.floor((s % 86400) / 3600)} h` : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : `${Math.floor(s / 60)} min`);
+
+/** Etat du PSIM lui-meme (administrateur) : alimente le panneau « Systeme » et le badge d'alerte du haut. */
+async function loadSystem(render = true) {
+  if (S.me?.role !== 'admin') return;
+  try {
+    const sys = await api('/api/system');
+    const badge = $('system-counter');
+    const critical = sys.warnings.filter((w) => w.level === 'critique').length;
+    badge.hidden = critical === 0;
+    badge.textContent = `Système : ${critical} alerte${critical > 1 ? 's' : ''}`;
+    badge.title = sys.warnings.filter((w) => w.level === 'critique').map((w) => w.message).join('\n');
+    if (!render) return;
+    const b = sys.backup;
+    $('sys-status').className = 'small';
+    $('sys-status').textContent =
+      `PSIM ${sys.version} (Node ${sys.node}) - en marche depuis ${fmtDuration(sys.uptimeS)} - santé : ${sys.health.ok ? 'bonne' : sys.health.reason}. ` +
+      `Base : ${fmtBytes(sys.database.bytes)} - images : ${fmtBytes(sys.snapshotsBytes)} - disque libre : ${fmtBytes(sys.disk?.freeBytes)} - ` +
+      `passerelles MQTT connectées : ${sys.brokerClients}. ` +
+      `Sauvegardes : ${b.everyH > 0 ? `automatiques toutes les ${b.everyH} h` : 'automatiques désactivées'}, ${b.count} conservée(s)` +
+      `${b.at ? `, dernière ${b.ok ? 'réussie' : 'EN ÉCHEC'} le ${new Date(b.at).toLocaleString('fr-FR')}` : ', aucune pour l\'instant'} (${b.dir}).`;
+    $('sys-warnings').replaceChildren(
+      ...(sys.warnings.length
+        ? sys.warnings.map((w) => h('li', { class: w.level === 'critique' ? 'bad' : 'warn', text: `${w.level === 'critique' ? 'CRITIQUE' : 'Attention'} : ${w.message}` }))
+        : [h('li', { class: 'good', text: 'Aucun avertissement.' })]),
+    );
+  } catch (err) {
+    if (render) $('sys-status').textContent = err.message;
+  }
+}
+
+$('sys-box').addEventListener('toggle', () => {
+  if ($('sys-box').open) loadSystem();
+});
+$('sys-backup').addEventListener('click', async () => {
+  $('sys-backup').disabled = true;
+  try {
+    const result = await api('/api/system/backup', { method: 'POST' });
+    toast(result.ok ? `Sauvegarde ${result.name} réussie` : `Sauvegarde en échec : ${result.error}`, result.ok ? 'ok' : 'error');
+    loadSystem();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    $('sys-backup').disabled = false;
+  }
+});
+setInterval(() => {
+  if (S.me?.role === 'admin') loadSystem($('sys-box').open);
+}, 60000);
 
 const KIND_LABEL = { opened: 'ouverture', escalated: 'aggravation', confirmed: 'confirmation', unacked: 'escalade', reminder: 'rappel', silent: 'détecteur muet', test: 'test' };
 

@@ -3,3 +3,5 @@ data/
 .env
 tools/
 data-demo/
+backups/
+*.pem

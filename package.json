@@ -14,7 +14,13 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "install:mediamtx": "node scripts/install-mediamtx.ts",
-    "demo": "node scripts/demo.ts"
+    "demo": "node scripts/demo.ts",
+    "backup": "node --env-file-if-exists=.env scripts/backup.ts",
+    "restore": "node --env-file-if-exists=.env scripts/restore.ts",
+    "set-password": "node --env-file-if-exists=.env scripts/set-password.ts",
+    "make-cert": "node --env-file-if-exists=.env scripts/make-cert.ts",
+    "check-config": "node --env-file-if-exists=.env scripts/check-config.ts",
+    "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",

@@ -1,7 +1,9 @@
 const env = process.env;
 
 const host = env.PSIM_HOST ?? '127.0.0.1';
-const simEnabled = env.PSIM_SIM_ENABLED !== '0';
+const production = env.PSIM_ENV === 'production';
+// En production le simulateur est desactive par defaut (il permet de declencher de fausses alarmes).
+const simEnabled = env.PSIM_SIM_ENABLED === undefined ? !production : env.PSIM_SIM_ENABLED !== '0';
 const loopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(host);
 
 /** Lit un delai en secondes ; valeur absente ou invalide = defaut ; 0 desactive la regle. */
@@ -21,9 +23,24 @@ function list(name: string): string[] {
 }
 
 export const config = {
+  production,
   port: Number(env.PSIM_PORT ?? 3033),
   host,
+  // Broker MQTT : par defaut sur la meme interface que le web ; a ouvrir au reseau pour des detecteurs distants.
+  mqttHost: env.PSIM_MQTT_HOST ?? host,
   mqttPort: Number(env.PSIM_MQTT_PORT ?? 1883),
+  mqttTls: { cert: env.PSIM_MQTT_TLS_CERT ?? '', key: env.PSIM_MQTT_TLS_KEY ?? '' },
+  // HTTPS integre (PEM). Sans certificat : HTTP. `httpRedirectPort` : port HTTP qui redirige vers HTTPS (0 = aucun).
+  tls: { cert: env.PSIM_TLS_CERT ?? '', key: env.PSIM_TLS_KEY ?? '' },
+  httpRedirectPort: Number(env.PSIM_HTTP_REDIRECT_PORT ?? 0),
+  // Derriere un proxy HTTPS (IIS, nginx, Caddy) : fait confiance a X-Forwarded-For pour l'adresse du client.
+  trustProxy: env.PSIM_TRUST_PROXY === '1',
+  backup: {
+    dir: env.PSIM_BACKUP_DIR ?? '',
+    everyH: Number(env.PSIM_BACKUP_EVERY_H ?? (production ? 24 : 0)),
+    keep: Number(env.PSIM_BACKUP_KEEP ?? 14),
+  },
+  logFile: env.PSIM_LOG_FILE === undefined ? production : env.PSIM_LOG_FILE === '1',
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',
   dataDir: env.PSIM_DATA_DIR ?? 'data',
@@ -82,7 +99,7 @@ export const config = {
   demoLogin:
     env.PSIM_DEMO_LOGIN !== undefined
       ? env.PSIM_DEMO_LOGIN === '1'
-      : loopbackOnly && !env.PSIM_ADMIN_PASSWORD && !env.PSIM_OPERATOR_PASSWORD,
+      : !production && loopbackOnly && !env.PSIM_ADMIN_PASSWORD && !env.PSIM_OPERATOR_PASSWORD,
 };
 
 export function usesDevDefaults(): boolean {

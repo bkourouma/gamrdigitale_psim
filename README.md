@@ -75,6 +75,50 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Mise en production
+
+Tout ce qui précède fonctionne en développement avec des valeurs de démonstration. **En production, le PSIM refuse de démarrer s'il est mal configuré.** Procédure complète :
+
+**1. Configurer** : copier `.env.example` en `.env` et y mettre au minimum
+
+```
+PSIM_ENV=production
+PSIM_ADMIN_PASSWORD=...            # 12 caractères minimum, ni identiques ni de démonstration
+PSIM_OPERATOR_PASSWORD=...
+PSIM_MQTT_PASSWORD=...
+PSIM_HOST=0.0.0.0                  # seulement si le PSIM doit être joint depuis le réseau (alors HTTPS obligatoire)
+PSIM_TLS_CERT=...  PSIM_TLS_KEY=...
+PSIM_PUBLIC_URL=https://psim.exemple.fr
+```
+
+Puis les notifications (voir plus haut) et, si des détecteurs distants publient sur le broker, `PSIM_MQTT_HOST=0.0.0.0` (avec `PSIM_MQTT_TLS_CERT/KEY`). **`npm run check-config`** donne le verdict sans démarrer le PSIM (avec `PSIM_ENV=production` dans le `.env`, le même que celui du démarrage).
+
+**2. Ce que le PSIM refuse en production** (erreurs bloquantes, code de sortie 1) : mots de passe de démonstration, trop courts (< 12 caractères) ou identiques ; simulateur actif (il permet de fabriquer de fausses alarmes : désactivé par défaut en production) ; comptes cliquables sur la page de connexion ; interface ouverte au réseau **sans HTTPS** (ni proxy HTTPS). Il **avertit** pour : MQTT sans TLS sur le réseau, aucun canal de notification, aucun destinataire de niveau 2, surveillance des détecteurs muets coupée, sauvegarde automatique coupée.
+
+**3. HTTPS** : fournir `PSIM_TLS_CERT` et `PSIM_TLS_KEY` (fichiers PEM, TLS 1.2 minimum). Le cookie de session devient `Secure` et l'en-tête HSTS est envoyé. `PSIM_HTTP_REDIRECT_PORT=80` ajoute un port HTTP qui redirige vers HTTPS. Pour un réseau interne sans certificat d'autorité, **`npm run make-cert -- psim.local 192.168.1.10`** génère un certificat auto-signé dans `data/tls/` (OpenSSL requis, livré avec Git for Windows) ; les navigateurs afficheront un avertissement tant que ce certificat n'est pas installé comme autorité de confiance sur les postes. Derrière un proxy HTTPS (IIS, nginx, Caddy), mettre `PSIM_TRUST_PROXY=1` et `PSIM_COOKIE_SECURE=1`.
+
+**4. Démarrage automatique et reprise après panne (Windows)** : dans un PowerShell **ouvert en administrateur**, depuis le dossier du projet :
+
+```powershell
+.\scripts\windows-service.ps1 -Action Install -WhatIf   # voir ce qui serait fait, sans rien modifier
+.\scripts\windows-service.ps1 -Action Install            # installe et démarre
+.\scripts\windows-service.ps1 -Action Status
+```
+
+Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`** démarre le PSIM au démarrage de la machine, sans session ouverte, et le **relance** automatiquement s'il s'arrête ; **`PSIM-healthcheck`** interroge `/healthz` chaque minute et, après 3 échecs consécutifs, arrête un PSIM *bloqué* (qui tourne mais ne fait plus rien) pour que la première tâche le relance. Pour un compte de service dédié : `-User DOMAINE\psim`. Linux : `deploy/psim.service` (systemd). Les journaux vont dans `data/logs/psim.log` (rotation 5 × 5 Mo).
+
+**5. Sauvegardes** : automatiques toutes les 24 h en production (`PSIM_BACKUP_EVERY_H`, 14 conservées, dossier `PSIM_BACKUP_DIR`), ou à la demande : `npm run backup`, ou **Système → Sauvegarder maintenant**. Une sauvegarde contient la base (copie cohérente faite à chaud), les plans et les images d'incident, avec l'empreinte SHA-256 de chaque fichier, vérifiée à la création et avant toute restauration.
+- **La clé de chiffrement des mots de passe de caméras (`data/secret.key`) n'est pas incluse** (la ranger avec la base annulerait l'intérêt de la chiffrer) : conservez-la dans un coffre. `--with-key` l'inclut si vous le décidez.
+- **Une sauvegarde sur le même disque ne protège pas d'une panne de disque** : copiez le dossier ailleurs (disque externe, réseau) ou pointez `PSIM_BACKUP_DIR` vers un autre volume.
+- **Restaurer** (PSIM arrêté) : `npm run restore -- backups/psim-AAAAMMJJ-HHMMSS` montre ce qui serait fait ; ajoutez `--yes` pour restaurer. L'ancien dossier de données est **mis de côté** (`data.before-restore-…`), jamais supprimé. **Essayez une restauration sur une machine de test avant d'en avoir besoin.**
+- Un **verrou d'instance unique** (`data/psim.lock`) empêche de lancer deux PSIM sur la même base, et la restauration de s'exécuter pendant qu'il tourne.
+
+**6. Mots de passe** : ceux de `.env` ne servent qu'à la création des comptes au premier démarrage. Ensuite : **`npm run set-password -- operateur`** (saisie masquée, 12 caractères minimum). Les sessions ouvertes expirent d'ici 12 h, ou au redémarrage du PSIM.
+
+**7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, **Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
+
+**Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les comptes ne se créent pas encore depuis l'interface ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
+
 ## Gestion des risques (indice par zone)
 
 Le bouton **Risques** (en haut de l'écran) ouvre une vue qui répond à : *où le risque est-il le plus élevé, pourquoi, et que faire en premier ?* Tout utilisateur connecté la consulte ; seul l'administrateur évalue les zones.
@@ -189,6 +233,9 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/` | Interface : plan, mur vidéo, incidents, journal, simulateur, édition |
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
 | `server/video.ts` | Sources caméra chiffrées, ffmpeg RTSP → images JPEG, un seul flux partagé par caméra |
+| `server/preflight.ts` | Contrôle de démarrage : refus en production si mal configuré |
+| `server/backup.ts`, `server/lock.ts` | Sauvegarde / restauration vérifiées ; verrou d'instance unique |
+| `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |

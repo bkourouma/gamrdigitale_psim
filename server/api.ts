@@ -54,6 +54,13 @@ export interface ApiDeps {
   snapshots: SnapshotService;
   notifier: Notifier;
   risk: RiskService;
+  /** HTTPS integre : active HSTS. */
+  tls: boolean;
+  trustProxy: boolean;
+  health: () => { ok: boolean; reason?: string };
+  system: () => unknown;
+  /** Lance une sauvegarde immediate (administrateur) et renvoie son resultat. */
+  backupNow: () => unknown;
   dataDir: string;
   webDir: string;
   cookieSecure: boolean;
@@ -73,16 +80,24 @@ export function createApp(deps: ApiDeps) {
   const { db, engine } = deps;
   const app = express();
   app.disable('x-powered-by');
+  if (deps.trustProxy) app.set('trust proxy', 1); // adresse reelle du client derriere un proxy (limitation des connexions)
 
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
+    if (deps.tls) res.setHeader('Strict-Transport-Security', 'max-age=31536000'); // le navigateur n'ira plus jamais en HTTP
     res.setHeader(
       'Content-Security-Policy',
       "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
     );
     next();
+  });
+
+  // Sante : sans authentification (pour un surveillant externe), volontairement minimale.
+  app.get('/healthz', (_req, res) => {
+    const h = deps.health();
+    res.status(h.ok ? 200 : 503).setHeader('Cache-Control', 'no-store').json(h.ok ? { status: 'ok' } : { status: 'degraded', reason: h.reason });
   });
 
   app.use(express.static(deps.webDir, { index: 'index.html' }));
@@ -167,6 +182,13 @@ export function createApp(deps: ApiDeps) {
   app.get('/api/risk', anyUser, (_req, res) => res.json(deps.risk.overview()));
   app.put('/api/risk/zones/:zone', adminOnly, json, (req, res) => {
     res.json(deps.risk.assess(actorOf(req), String(req.params.zone), (req.body ?? {}) as Record<string, unknown>));
+  });
+
+  // Etat du PSIM lui-meme (administrateur) : sante, disque, sauvegardes, avertissements.
+  app.get('/api/system', adminOnly, (_req, res) => res.json(deps.system()));
+  app.post('/api/system/backup', adminOnly, (req, res) => {
+    engine.audit(actorOf(req), 'backup_manual');
+    res.json(deps.backupNow());
   });
 
   app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));

@@ -35,6 +35,7 @@
         <span id="conn" class="conn offline"><i></i><span>Hors ligne</span></span>
         <span id="alarm-counter" class="counter" hidden></span>
         <span id="offline-counter" class="counter warn" hidden></span>
+        <span id="system-counter" class="counter" hidden></span>
         <button id="nav-risk" class="btn small" type="button" aria-pressed="false" title="Indice de risque par zone et priorités d'action">Risques</button>
         <button id="mute" class="btn small" type="button" title="Couper ou activer l'alerte sonore">Son activé</button>
         <span id="whoami" class="muted"></span>
@@ -69,6 +70,12 @@
             <summary>Simulateur de détecteurs</summary>
             <p class="muted small">Chaque bouton publie un message MQTT, comme un vrai détecteur.</p>
             <div id="sim-list" class="sim-list"></div>
+          </details>
+          <details id="sys-box">
+            <summary>Système (santé, sauvegardes)</summary>
+            <div id="sys-status" class="small muted">Chargement…</div>
+            <ul id="sys-warnings" class="notif-results"></ul>
+            <div class="row wrap"><button id="sys-backup" class="btn small" type="button">Sauvegarder maintenant</button></div>
           </details>
           <details id="notif-box">
             <summary>Notifications (e-mail, Telegram, webhook)</summary>

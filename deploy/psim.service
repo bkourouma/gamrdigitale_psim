@@ -1,0 +1,28 @@
+# Service systemd (Linux). Adapter User, WorkingDirectory et le chemin de node, puis :
+#   sudo cp deploy/psim.service /etc/systemd/system/psim.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now psim
+#   journalctl -u psim -f
+[Unit]
+Description=GAMRdigitale PSIM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=psim
+WorkingDirectory=/opt/gamrdigitale-psim
+ExecStart=/usr/bin/node --env-file-if-exists=.env server/index.ts
+# Relance apres toute fin anormale (le PSIM s'arrete volontairement sur une erreur fatale)
+Restart=always
+RestartSec=5
+# Durcissement : le PSIM n'a besoin d'ecrire que dans son dossier de donnees et de sauvegardes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/gamrdigitale-psim/data /opt/gamrdigitale-psim/backups
+# Controle de sante par le superviseur : arret + relance si /healthz ne repond plus (necessite curl)
+# (alternative : npm run healthcheck -- --restart 3 depuis un timer systemd)
+
+[Install]
+WantedBy=multi-user.target
