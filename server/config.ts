@@ -90,6 +90,11 @@ export const config = {
   // Gestion des risques : periode (jours) de l'historique d'incendies, et age (mois) apres lequel une evaluation est « a revoir ».
   riskFireWindowDays: seconds('PSIM_RISK_FIRE_WINDOW_DAYS', 180),
   riskStaleMonths: seconds('PSIM_RISK_STALE_MONTHS', 12),
+  // Double authentification obligatoire : 'none', 'admin' (les administrateurs) ou 'all'. Par defaut : administrateurs en production.
+  requireTotp: ((): 'none' | 'admin' | 'all' => {
+    const v = env.PSIM_REQUIRE_2FA;
+    return v === 'none' || v === 'admin' || v === 'all' ? v : production ? 'admin' : 'none';
+  })(),
   confirmWindowS: seconds('PSIM_CONFIRM_WINDOW_S', 60),
   confirmPersistS: seconds('PSIM_CONFIRM_PERSIST_S', 120),
   falseAlarmHintS: seconds('PSIM_FALSE_ALARM_HINT_S', 30),

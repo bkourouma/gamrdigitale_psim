@@ -31,6 +31,8 @@ export interface PreflightInput {
   escalationConfigured: boolean;
   detectorTimeoutS: number;
   backupEveryH: number;
+  /** Double authentification imposee : none, admin ou all. */
+  requireTotp: 'none' | 'admin' | 'all';
 }
 
 const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1'].includes(host);
@@ -68,6 +70,7 @@ export function preflight(c: PreflightInput): Finding[] {
   if (c.notificationChannels === 0) add('warn', "Aucun canal de notification : une alarme ne previent personne en dehors de l'ecran du PSIM.");
   else if (!c.escalationConfigured) add('warn', "Aucun destinataire de niveau 2 : si personne n'acquitte, l'alerte n'est escaladee a personne.");
   if (c.detectorTimeoutS <= 0) add(c.production ? 'warn' : 'warn', "Surveillance des detecteurs muets desactivee : un detecteur en panne resterait affiche « Normal » (PSIM_DETECTOR_TIMEOUT_S).");
+  if (c.production && c.requireTotp === 'none') add('warn', "La double authentification n'est imposee a personne (PSIM_REQUIRE_2FA) : un mot de passe vole suffirait pour acceder au PSIM, y compris en administrateur.");
   if (c.production && c.backupEveryH <= 0) add('warn', 'Sauvegarde automatique desactivee (PSIM_BACKUP_EVERY_H) : planifiez `npm run backup`.');
   return out;
 }

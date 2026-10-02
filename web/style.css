@@ -195,6 +195,26 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .tag.fire { background: #5b1f1c; }
 @keyframes glow { 50% { box-shadow: 0 0 14px rgba(240, 72, 62, .55); } }
 
+/* ------------------------------------------------ comptes, dialogues */
+.dialog { position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, .75); display: grid; place-items: center; padding: 16px; overflow: auto; }
+.dialog-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; width: min(560px, 100%); max-height: 92vh; overflow: auto; }
+.dialog-card h2 { margin-bottom: 10px; }
+.dialog-card h3 { margin: 14px 0 6px; font-size: 14px; }
+.dialog-form { display: grid; gap: 8px; }
+.dialog-form label { display: grid; gap: 4px; }
+.account section { border-top: 1px solid var(--line); padding-top: 4px; }
+.account > .warn { margin-bottom: 8px; }
+.qr { background: #fff; border-radius: 8px; padding: 6px; justify-self: start; }
+.secret { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; letter-spacing: .08em; user-select: all; }
+.recovery { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 14px/1.6 ui-monospace, Consolas, monospace; user-select: all; margin: 0; }
+.tag { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-left: 6px; color: var(--muted); }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+.user-row, .recipient-row { border-top: 1px solid var(--line); padding: 8px 0; display: grid; gap: 4px; }
+.recipient-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.user-row.inactive, .recipient-row.inactive { opacity: .6; }
+.users-list, .recipients { display: grid; margin-bottom: 8px; }
+#whoami { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ------------------------------------------------ gestion des risques */
 :root { --lvl-faible: #2fbf71; --lvl-modere: #f2c53b; --lvl-eleve: #f0803e; --lvl-critique: #f0483e; }
 .risk-layout { display: grid; gap: 14px; padding: 14px; max-width: 1100px; margin: 0 auto; }

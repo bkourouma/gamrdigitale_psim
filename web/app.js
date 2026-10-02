@@ -1,6 +1,8 @@
 import { startSimCamera } from './camera.js';
 import { startLiveCamera } from './live.js';
+import { createAccountUi, createDialogs } from './account.js';
 import { createRiskView } from './risk.js';
+import { createUsersAdmin } from './users.js';
 
 // ---------------------------------------------------------------- outils
 
@@ -61,6 +63,20 @@ const ACTION_LABEL = {
   notification_escalated: 'Escalade (niveau 2 prévenu)',
   notification_reminder: 'Rappel envoyé',
   notification_test: 'Test de notification',
+  login_failed: 'Connexion refusée',
+  user_created: 'Compte créé',
+  user_updated: 'Compte modifié',
+  user_deleted: 'Compte supprimé',
+  password_changed: 'Mot de passe changé',
+  password_reset: 'Mot de passe réinitialisé',
+  totp_enabled: '2FA activée',
+  totp_disabled: '2FA désactivée',
+  totp_reset: '2FA réinitialisée',
+  recovery_regenerated: 'Codes de secours régénérés',
+  recovery_code_used: 'Code de secours utilisé',
+  recipient_added: 'Destinataire ajouté',
+  recipient_updated: 'Destinataire modifié',
+  recipient_removed: 'Destinataire retiré',
   backup_failed: 'Sauvegarde en échec',
   backup_manual: 'Sauvegarde manuelle',
   camera_source_updated: 'Source vidéo modifiée',
@@ -74,12 +90,20 @@ async function api(path, { method = 'GET', body } = {}) {
     init.body = JSON.stringify(body);
   }
   const res = await fetch(path, init);
-  if (res.status === 401 && path !== '/api/login') {
+  if (res.status === 401 && path !== '/api/login' && path !== '/api/login/2fa') {
     showLogin();
     throw new Error('Session expirée, reconnectez-vous');
   }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
+  if (res.status === 403 && data?.restricted && S.me && !S.me.restricted) {
+    S.me.restricted = data.restricted;
+    account.openAccount(); // une etape est requise sur le compte (mot de passe, 2FA)
+  }
+  if (!res.ok) {
+    const error = new Error(data?.error ?? `Erreur ${res.status}`);
+    error.data = data; // le detail (ex. defi expire) reste disponible pour l'appelant
+    throw error;
+  }
   return data;
 }
 
@@ -261,17 +285,68 @@ function showLogin() {
   S.me = null;
   S.ws?.close();
   stopTiles();
+  dialogs.close();
   $('app').hidden = true;
   $('login').hidden = false;
   $('login-pass').value = '';
+  resetLoginStep();
   loadDemoAccounts();
 }
 
+// ---------------------------------------------------------------- comptes (mot de passe, 2FA, utilisateurs)
+
+const dialogs = createDialogs({ h });
+const logout = async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  showLogin();
+};
+const refreshMe = async () => {
+  S.me = await api('/api/me');
+};
+const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
+const admin = createUsersAdmin({ api, h, toast, dialogs, getMe: () => S.me, onRecipientsChanged: () => loadNotifStatus() });
+$('whoami').addEventListener('click', () => account.openAccount());
+$('users-box').addEventListener('toggle', () => $('users-box').open && admin.loadUsers());
+
+// ---------------------------------------------------------------- connexion en deux etapes
+
+let challenge = null;
+
+function resetLoginStep() {
+  challenge = null;
+  $('login-2fa').hidden = true;
+  $('login-back').hidden = true;
+  $('login-code').value = '';
+  for (const id of ['login-user', 'login-pass']) $(id).closest('label').hidden = false;
+  $('login-submit').textContent = 'Se connecter';
+  $('demo-accounts').style.display = '';
+}
+
+function showCodeStep(token) {
+  challenge = token;
+  for (const id of ['login-user', 'login-pass']) $(id).closest('label').hidden = true;
+  $('demo-accounts').style.display = 'none';
+  $('login-2fa').hidden = false;
+  $('login-back').hidden = false;
+  $('login-submit').textContent = 'Valider le code';
+  $('login-code').focus();
+}
+$('login-back').addEventListener('click', () => {
+  resetLoginStep();
+  $('login-error').textContent = '';
+});
+
 function showApp() {
   $('login').hidden = true;
+  if (S.me.restricted) {
+    // Une etape est requise (mot de passe a changer, 2FA a activer) : rien d'autre n'est accessible avant.
+    $('app').hidden = true;
+    account.openAccount();
+    return;
+  }
   $('app').hidden = false;
   loadSystem(false);
-  $('whoami').textContent = `${S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
+  $('whoami').textContent = `${S.me.displayName || S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
   $('admin').hidden = S.me.role !== 'admin';
   $('sim-box').hidden = !S.me.simEnabled;
   connect();
@@ -282,21 +357,21 @@ $('login-form').addEventListener('submit', async (e) => {
   $('login-error').textContent = '';
   ensureAudio();
   try {
-    await api('/api/login', {
-      method: 'POST',
-      body: { username: $('login-user').value, password: $('login-pass').value },
-    });
+    const reply = challenge
+      ? await api('/api/login/2fa', { method: 'POST', body: { challenge, code: $('login-code').value } })
+      : await api('/api/login', { method: 'POST', body: { username: $('login-user').value, password: $('login-pass').value } });
+    if (reply.twoFactor) return showCodeStep(reply.challenge); // mot de passe correct : il faut encore le code
+    resetLoginStep();
     S.me = await api('/api/me');
     showApp();
   } catch (err) {
     $('login-error').textContent = err.message;
+    if (challenge && err.data?.expired) resetLoginStep(); // defi expire ou epuise : repartir du mot de passe ; sinon on peut reessayer
+    else if (challenge) $('login-code').select();
   }
 });
 
-$('logout').addEventListener('click', async () => {
-  await api('/api/logout', { method: 'POST' }).catch(() => {});
-  showLogin();
-});
+$('logout').addEventListener('click', logout);
 
 // ---------------------------------------------------------------- plan
 
@@ -858,7 +933,8 @@ async function loadNotifStatus() {
   try {
     const st = await api('/api/notifications/status');
     const box = $('notif-status');
-    if (st.channels.length === 0) {
+    admin.loadRecipients();
+    if (st.activeChannels === 0) {
       box.textContent = "Aucun canal configuré : les alarmes ne préviennent personne hors de cet écran. Voir .env.example (PSIM_SMTP_*, PSIM_TELEGRAM_TOKEN, PSIM_NOTIFY_*).";
       box.className = 'small error';
       return;

@@ -12,6 +12,7 @@ import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
 import { startBroker } from './mqtt.ts';
 import { createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
+import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { formatFindings, preflight } from './preflight.ts';
 import { createRiskService } from './risk.ts';
@@ -23,6 +24,7 @@ import { createSystemStatus } from './system.ts';
 import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
 import type { PsimEvent } from './types.ts';
+import { createUsersService } from './users.ts';
 import { createVideoService } from './video.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -42,20 +44,38 @@ for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
   });
 }
 
-// ---------------------------------------------------------------- notifications (construites tot : le controle de demarrage les compte)
+// ---------------------------------------------------------------- reseau (HTTPS)
 
 const notify = config.notify;
-const channels = [
-  emailChannel({ ...notify.smtp }, notify.recipients.email),
-  telegramChannel({ token: notify.telegram.token, apiBase: notify.telegram.apiBase }, notify.recipients.telegram),
-  webhookChannel({ secret: notify.webhookSecret }, notify.recipients.webhook),
-].filter((c) => c !== null);
-
 const tlsFiles = config.tls.cert && config.tls.key ? { cert: config.tls.cert, key: config.tls.key } : null;
 const mqttTlsFiles = config.mqttTls.cert && config.mqttTls.key ? { cert: config.mqttTls.cert, key: config.mqttTls.key } : null;
 const cookieSecure = config.cookieSecure || tlsFiles !== null;
 
-// ---------------------------------------------------------------- controle de demarrage
+// ---------------------------------------------------------------- verrou, base, controle de demarrage
+
+let releaseLock: () => void;
+try {
+  releaseLock = acquireLock(dataDir);
+} catch (err) {
+  console.error(`[psim] ${(err as Error).message}`);
+  process.exit(1);
+}
+
+const db = openDb(join(dataDir, 'psim.db')); // migration seulement : AUCUN compte n'est cree avant le controle ci-dessous
+const secretKey = loadSecretKey(dataDir, config.secretKey);
+
+// Destinataires : .env (lecture seule) + base (modifiables dans l'interface) ; relus a chaque envoi.
+const recipients = createRecipientsService({
+  db,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  env: notify.recipients,
+  available: { email: Boolean(notify.smtp.host && notify.smtp.from), telegram: Boolean(notify.telegram.token), webhook: true },
+});
+const channels = [
+  emailChannel({ ...notify.smtp }, (level) => recipients.effective('email', level)),
+  telegramChannel({ token: notify.telegram.token, apiBase: notify.telegram.apiBase }, (level) => recipients.effective('telegram', level)),
+  webhookChannel({ secret: notify.webhookSecret }, (level) => recipients.effective('webhook', level)),
+].filter((c) => c !== null);
 
 const findings = preflight({
   production: config.production,
@@ -70,31 +90,24 @@ const findings = preflight({
   adminPassword: config.adminPassword,
   operatorPassword: config.operatorPassword,
   mqttPassword: config.mqttPassword,
-  notificationChannels: channels.length,
+  notificationChannels: channels.filter((c) => c.recipients(1).length + c.recipients(2).length > 0).length,
   escalationConfigured: channels.some((c) => c.recipients(2).length > 0),
   detectorTimeoutS: config.detectorTimeoutS,
   backupEveryH: config.backup.everyH,
+  requireTotp: config.requireTotp,
 });
 if (findings.length > 0) {
   const fatal = config.production && findings.some((f) => f.level === 'error');
   console[fatal ? 'error' : 'warn'](`[psim] controle de demarrage${config.production ? ' (production)' : ''} :\n${formatFindings(findings)}`);
   if (fatal) {
     console.error('[psim] Demarrage refuse : corrigez les erreurs ci-dessus (voir .env.example et README, « Mise en production »).');
+    releaseLock();
     process.exit(1);
   }
 }
 
-let releaseLock: () => void;
-try {
-  releaseLock = acquireLock(dataDir);
-} catch (err) {
-  console.error(`[psim] ${(err as Error).message}`);
-  process.exit(1);
-}
-
 // ---------------------------------------------------------------- donnees et services
 
-const db = openDb(join(dataDir, 'psim.db'));
 if (seedDemo(db, dataDir, join(root, 'seed'))) console.log('[seed] site de demonstration cree');
 seedUsers(db, config.adminPassword, config.operatorPassword);
 
@@ -118,7 +131,7 @@ let notifier: Notifier | undefined;
 const video = createVideoService({
   db,
   engine,
-  key: loadSecretKey(dataDir, config.secretKey),
+  key: secretKey,
   publish,
   ffmpegPath: config.ffmpegPath,
 });
@@ -140,6 +153,12 @@ notifier = createNotifier({
   publicUrl: notify.publicUrl,
   readSnapshot: (id) => snapshots?.read(id) ?? null,
   secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret],
+});
+const users = createUsersService({
+  db,
+  key: secretKey,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  requireTotp: config.requireTotp,
 });
 const risk = createRiskService(db, engine, { fireWindowDays: config.riskFireWindowDays, staleMonths: config.riskStaleMonths });
 risk.recordHistory(); // un point par jour pour les tendances (une seule ecriture par jour)
@@ -205,7 +224,7 @@ const system = createSystemStatus({
   snapshotsBytes: () => snapshots?.sizeOnDisk() ?? 0,
   notificationChannels: () => {
     const s = notifier!.status();
-    return { channels: s.channels.length, failedLast24h: s.failedLast24h, sentLast24h: s.sentLast24h };
+    return { channels: s.activeChannels, failedLast24h: s.failedLast24h, sentLast24h: s.sentLast24h };
   },
   backup: { everyH: config.backup.everyH, dir: backupDir, last: () => lastBackup, count: () => listBackups(backupDir).length },
 });
@@ -217,6 +236,8 @@ const app = createApp({
   snapshots,
   notifier,
   risk,
+  users,
+  recipients,
   tls: tlsFiles !== null,
   trustProxy: config.trustProxy,
   health: () => system.health(),
@@ -247,7 +268,9 @@ server.on('upgrade', (req, socket, head) => {
   // Cookie de session obligatoire + meme origine (empeche le detournement depuis un autre site).
   const origin = req.headers.origin;
   const sameOrigin = !origin || new URL(origin).host === req.headers.host;
-  if (url.pathname !== '/ws' || !sameOrigin || !sessionFromRequest(req)) {
+  const session = sessionFromRequest(req);
+  // Une session restreinte (mot de passe a changer, 2FA a activer) n'a pas acces au temps reel.
+  if (url.pathname !== '/ws' || !sameOrigin || !session || session.restricted) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return void socket.destroy();
   }
@@ -290,9 +313,9 @@ server.listen(config.port, config.host, () => {
   );
   {
     const status = notifier!.status();
-    const channelsText = status.channels.map((c) => `${c.label} (${c.level1} niveau 1, ${c.level2} niveau 2)`).join(', ');
+    const channelsText = status.channels.filter((c) => c.level1 + c.level2 > 0).map((c) => `${c.label} (${c.level1} niveau 1, ${c.level2} niveau 2)`).join(', ');
     console.log(
-      status.channels.length > 0
+      status.activeChannels > 0
         ? `[psim] notifications : ${channelsText} ; escalade ${config.notify.escalateAfterS > 0 ? `apres ${config.notify.escalateAfterS} s sans acquittement` : 'desactivee'}`
         : '[psim] notifications : aucun canal configure (voir .env.example) : les alarmes ne previennent personne hors de cet ecran',
     );

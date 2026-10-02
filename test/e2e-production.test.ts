@@ -115,6 +115,8 @@ describe('mode production (processus reel)', { skip: OPENSSL ? false : 'openssl 
       PSIM_OPERATOR_PASSWORD: OPERATOR_PASSWORD,
       PSIM_MQTT_PASSWORD: MQTT_PASSWORD,
       PSIM_BACKUP_DIR: backupDir,
+      // Ces tests portent sur HTTPS, les sauvegardes, etc. : la 2FA (imposee aux administrateurs par defaut en production) a ses propres tests.
+      PSIM_REQUIRE_2FA: 'none',
     });
     server = spawn(NODE, ['server/index.ts'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
     server.stdout!.on('data', (d) => (output += d));

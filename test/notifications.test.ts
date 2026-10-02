@@ -436,7 +436,9 @@ describe('canal webhook (faux serveur)', () => {
   });
 
   it('refuse les adresses qui ne sont pas http(s), et signale un statut d\'erreur', async () => {
-    assert.equal(webhookChannel({ secret: '' }, [['ftp://x', 'javascript:alert(1)', 'pas une url'], []]), null);
+    const none = webhookChannel({ secret: '' }, [['ftp://x', 'javascript:alert(1)', 'pas une url', 'file:///etc/passwd'], []]);
+    assert.deepEqual(none.recipients(1), [], "aucune adresse invalide n'est retenue");
+    assert.deepEqual(webhookChannel({ secret: '' }, [['ftp://x', 'https://ok.test/h'], []]).recipients(1), ['https://ok.test/h']);
     const api = await fakeHttp((_r, _b, status) => void (status.code = 500));
     const channel = webhookChannel({ secret: '' }, [[`${api.base}/h`], []])!;
     await assert.rejects(channel.send(message, `${api.base}/h`), /Webhook HTTP 500/);

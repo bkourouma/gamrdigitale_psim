@@ -235,12 +235,12 @@ export function createRiskView({ api, h, toast, getMe }) {
       'Indice = Probabilité (1-3) × Vulnérabilité (1-4) × Répercussions (1-5), de 1 à 60. Niveaux : ',
       ...data.bands.map((b, i) => h('span', { class: `risk-chip lvl-${b.level}`, text: `${b.label} ≤ ${b.max}`, title: `${i === 0 ? 1 : data.bands[i - 1].max + 1} à ${b.max}` })),
     );
-    root.replaceChildren(
+    root.replaceChildren(...[
       siteCard(),
       h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Risque par zone' })), legend, ...data.zones.map(zoneRow)),
       priorities(),
-      editForm(),
-    );
+      editForm(), // peut valoir null (aucune zone en cours d'edition)
+    ].filter(Boolean)); // replaceChildren(null) insererait le texte « null »
   }
 
   return {

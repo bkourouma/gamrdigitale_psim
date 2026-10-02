@@ -114,7 +114,38 @@ CREATE TABLE IF NOT EXISTS app_user (
   username TEXT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('operator', 'admin')),
   salt TEXT NOT NULL,
-  hash TEXT NOT NULL
+  hash TEXT NOT NULL,
+  display_name TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER,
+  last_login_at INTEGER,
+  password_changed_at INTEGER,
+  -- Incremente a chaque changement de mot de passe, de role ou de statut : toute session ouverte avant est invalide.
+  session_epoch INTEGER NOT NULL DEFAULT 0,
+  -- Double authentification (TOTP) : secret CHIFFRE ; derniere fenetre acceptee (anti-rejeu).
+  totp_secret TEXT,
+  totp_enabled_at INTEGER,
+  totp_last_step INTEGER
+);
+-- Codes de secours de la double authentification : seule l'empreinte est stockee, usage unique.
+CREATE TABLE IF NOT EXISTS recovery_code (
+  username TEXT NOT NULL REFERENCES app_user(username) ON DELETE CASCADE,
+  hash TEXT NOT NULL,
+  used_at INTEGER,
+  PRIMARY KEY (username, hash)
+);
+-- Destinataires de notification saisis dans l'interface (ceux du .env restent en plus, en lecture seule).
+CREATE TABLE IF NOT EXISTS notification_recipient (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'webhook')),
+  address TEXT NOT NULL,
+  level INTEGER NOT NULL CHECK (level IN (1, 2)),
+  label TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL,
+  UNIQUE (channel, address, level)
 );
 `;
 
@@ -125,6 +156,16 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
   { table: 'incident', column: 'hint', definition: 'TEXT' },
   { table: 'incident', column: 'hint_details', definition: 'TEXT' },
+  { table: 'app_user', column: 'display_name', definition: 'TEXT' },
+  { table: 'app_user', column: 'active', definition: 'INTEGER NOT NULL DEFAULT 1' },
+  { table: 'app_user', column: 'must_change_password', definition: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'app_user', column: 'created_at', definition: 'INTEGER' },
+  { table: 'app_user', column: 'last_login_at', definition: 'INTEGER' },
+  { table: 'app_user', column: 'password_changed_at', definition: 'INTEGER' },
+  { table: 'app_user', column: 'session_epoch', definition: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'app_user', column: 'totp_secret', definition: 'TEXT' },
+  { table: 'app_user', column: 'totp_enabled_at', definition: 'INTEGER' },
+  { table: 'app_user', column: 'totp_last_step', definition: 'INTEGER' },
 ];
 
 function migrate(db: DatabaseSync): void {

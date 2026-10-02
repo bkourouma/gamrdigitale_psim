@@ -42,6 +42,10 @@ export interface Channel {
 
 const TIMEOUT_MS = 15_000;
 
+/** Destinataires : liste fixe par niveau, ou fonction relue a chaque envoi (destinataires modifiables a chaud). */
+export type Recipients = string[][] | ((level: Level) => string[]);
+const resolveRecipients = (r: Recipients) => (level: Level): string[] => (typeof r === 'function' ? r(level) : (r[level - 1] ?? []));
+
 // ---------------------------------------------------------------- canaux
 
 export interface EmailConfig {
@@ -55,7 +59,8 @@ export interface EmailConfig {
   starttls?: boolean;
 }
 
-export function emailChannel(cfg: EmailConfig, recipients: string[][]): Channel | null {
+export function emailChannel(cfg: EmailConfig, recipientsSource: Recipients): Channel | null {
+  const recipients = resolveRecipients(recipientsSource);
   if (!cfg.host || !cfg.from) return null;
   const transporter = nodemailer.createTransport({
     host: cfg.host,
@@ -71,7 +76,7 @@ export function emailChannel(cfg: EmailConfig, recipients: string[][]): Channel 
   return {
     id: 'email',
     label: 'E-mail',
-    recipients: (level) => recipients[level - 1] ?? [],
+    recipients,
     mask: (to) => to.replace(/^(.).*(@.*)$/, '$1***$2'),
     async send(message, to) {
       await transporter.sendMail({ from: cfg.from, to, subject: message.subject, text: message.text });
@@ -88,7 +93,8 @@ export function emailChannel(cfg: EmailConfig, recipients: string[][]): Channel 
   };
 }
 
-export function telegramChannel(cfg: { token: string; apiBase: string }, recipients: string[][]): Channel | null {
+export function telegramChannel(cfg: { token: string; apiBase: string }, recipientsSource: Recipients): Channel | null {
+  const recipients = resolveRecipients(recipientsSource);
   if (!cfg.token) return null;
   const call = async (method: string, body: FormData | string): Promise<void> => {
     let res: Response;
@@ -111,7 +117,7 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
   return {
     id: 'telegram',
     label: 'Telegram',
-    recipients: (level) => recipients[level - 1] ?? [],
+    recipients,
     mask: (chat) => chat,
     send: (message, chat) => call('sendMessage', JSON.stringify({ chat_id: chat, text: `${message.subject}\n\n${message.text}`.slice(0, 4000) })),
     async sendImages(_message, chat, images) {
@@ -126,7 +132,9 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
   };
 }
 
-export function webhookChannel(cfg: { secret: string }, recipients: string[][]): Channel | null {
+/** Le canal webhook n'a pas de configuration propre : il existe toujours, ses destinataires peuvent etre ajoutes a chaud. */
+export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipients): Channel {
+  const source = resolveRecipients(recipientsSource);
   const valid = (urls: string[]) =>
     urls.filter((u) => {
       try {
@@ -135,12 +143,10 @@ export function webhookChannel(cfg: { secret: string }, recipients: string[][]):
         return false;
       }
     });
-  const lists = recipients.map(valid);
-  if (lists.every((l) => l.length === 0)) return null;
   return {
     id: 'webhook',
     label: 'Webhook',
-    recipients: (level) => lists[level - 1] ?? [],
+    recipients: (level) => valid(source(level)),
     // L'adresse complete peut contenir un secret (jeton dans le chemin) : on n'affiche que l'hote.
     mask: (url) => {
       try {
@@ -406,6 +412,8 @@ export function createNotifier(deps: NotifierDeps) {
       reminderS: Math.round(deps.reminderMs / 1000),
       maxReminders: deps.maxReminders,
       channels: channels.map((c) => ({ id: c.id, label: c.label, level1: c.recipients(1).length, level2: c.recipients(2).length })),
+      /** Canaux qui ont au moins un destinataire (ceux qui previennent reellement quelqu'un). */
+      activeChannels: channels.filter((c) => c.recipients(1).length + c.recipients(2).length > 0).length,
       sentLast24h: (db.prepare("SELECT COUNT(*) AS n FROM notification_log WHERE channel <> 'round' AND status = 'sent' AND created_at >= ?").get(since) as { n: number }).n,
       failedLast24h: (db.prepare("SELECT COUNT(*) AS n FROM notification_log WHERE channel <> 'round' AND status = 'failed' AND created_at >= ?").get(since) as { n: number }).n,
       recent: (

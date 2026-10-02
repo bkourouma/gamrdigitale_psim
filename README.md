@@ -75,6 +75,27 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Comptes, accès et double authentification
+
+**Qui peut faire quoi.** Deux rôles : **opérateur** (supervise, acquitte, qualifie les incidents, consulte les risques) et **administrateur** (tout, plus la configuration). Un administrateur gère les comptes dans **Utilisateurs et accès** (panneau d'administration) : créer, changer le rôle, désactiver, réinitialiser un mot de passe ou la 2FA, supprimer.
+
+**Garde-fous**
+- On ne peut **jamais retirer le dernier administrateur actif** (suppression, désactivation, rétrogradation), ni se désactiver ou se supprimer soi-même. Les modifications demandées ensemble sont appliquées en bloc ou pas du tout.
+- **Tout changement coupe les sessions immédiatement** : mot de passe, rôle, désactivation, suppression. Le PSIM vérifie le compte à chaque requête ; le rôle vient de la base, jamais du jeton. Cela vaut aussi pour `npm run set-password`.
+- Un compte **créé** ou dont le mot de passe est **réinitialisé** par un administrateur doit changer son mot de passe à la première connexion : sa session est « restreinte » (rien d'autre n'est accessible, ni le temps réel, ni l'API).
+- Mots de passe : 12 caractères minimum, ni de démonstration, ni contenant l'identifiant. Stockés avec scrypt.
+- Limitation des essais **par adresse et par compte** (5 échecs par minute), connexions refusées journalisées (jamais le mot de passe).
+
+**Double authentification (TOTP, RFC 6238)** : compatible Google Authenticator, Microsoft Authenticator, Aegis, FreeOTP, 1Password… Chaque utilisateur l'active dans **Mon compte** (clic sur son nom en haut) : QR code, saisie d'un premier code de vérification, puis **8 codes de secours à usage unique** à conserver.
+- La connexion se fait **en deux étapes** : le mot de passe seul ne donne **aucune session**. Le code est valable 30 s (tolérance d'une fenêtre), **jamais rejouable** ; 5 essais maximum par connexion.
+- Le secret est **chiffré en base** ; les codes de secours ne sont stockés que sous forme d'empreinte.
+- **Téléphone perdu** : un code de secours, ou un administrateur qui **réinitialise la 2FA** du compte (ses sessions sont fermées).
+- **`PSIM_REQUIRE_2FA`** : `none`, `admin` ou `all`. **Par défaut : `admin` en production** (un administrateur doit l'activer avant de pouvoir faire quoi que ce soit), `none` ailleurs. Un compte soumis à cette règle ne peut pas la désactiver.
+
+**Destinataires de notification** : en administrateur, **Notifications** permet d'ajouter, de désactiver, de changer de niveau et de retirer des destinataires (e-mail, Telegram, webhook) **sans redémarrer** ; ils s'ajoutent à ceux du `.env`, affichés en lecture seule. Les adresses sont validées (injection d'en-tête e-mail refusée), l'adresse complète d'un webhook n'est jamais renvoyée à l'écran (elle peut contenir un jeton), et un canal dont le secret n'est pas dans le `.env` (SMTP, jeton Telegram) ne peut pas recevoir de destinataire.
+
+**Limites** : pas d'envoi de lien d'invitation ni de réinitialisation par e-mail (l'administrateur communique le mot de passe temporaire par un canal sûr) ; pas de SSO ni d'annuaire (LDAP, Active Directory) ; deux rôles seulement ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde).
+
 ## Mise en production
 
 Tout ce qui précède fonctionne en développement avec des valeurs de démonstration. **En production, le PSIM refuse de démarrer s'il est mal configuré.** Procédure complète :
@@ -113,11 +134,11 @@ Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`**
 - **Restaurer** (PSIM arrêté) : `npm run restore -- backups/psim-AAAAMMJJ-HHMMSS` montre ce qui serait fait ; ajoutez `--yes` pour restaurer. L'ancien dossier de données est **mis de côté** (`data.before-restore-…`), jamais supprimé. **Essayez une restauration sur une machine de test avant d'en avoir besoin.**
 - Un **verrou d'instance unique** (`data/psim.lock`) empêche de lancer deux PSIM sur la même base, et la restauration de s'exécuter pendant qu'il tourne.
 
-**6. Mots de passe** : ceux de `.env` ne servent qu'à la création des comptes au premier démarrage. Ensuite : **`npm run set-password -- operateur`** (saisie masquée, 12 caractères minimum). Les sessions ouvertes expirent d'ici 12 h, ou au redémarrage du PSIM.
+**6. Comptes** : les mots de passe de `.env` ne servent qu'à créer les deux comptes initiaux au premier démarrage (et seulement si le contrôle de démarrage est passé). Ensuite, tout se fait dans l'interface (voir « Comptes, accès et double authentification »), ou en ligne de commande : **`npm run set-password -- operateur`** (saisie masquée, 12 caractères minimum ; ses sessions ouvertes sont fermées immédiatement). **En production, la 2FA est imposée aux administrateurs par défaut** : prévoyez une application d'authentification avant la première connexion.
 
 **7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, **Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
 
-**Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les comptes ne se créent pas encore depuis l'interface ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
+**Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
 
 ## Gestion des risques (indice par zone)
 
@@ -234,12 +255,15 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
 | `server/video.ts` | Sources caméra chiffrées, ffmpeg RTSP → images JPEG, un seul flux partagé par caméra |
 | `server/preflight.ts` | Contrôle de démarrage : refus en production si mal configuré |
+| `server/users.ts`, `server/totp.ts` | Comptes, rôles, sessions, double authentification TOTP et codes de secours |
+| `server/recipients.ts` | Destinataires de notification modifiables à chaud |
 | `server/backup.ts`, `server/lock.ts` | Sauvegarde / restauration vérifiées ; verrou d'instance unique |
 | `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
+| `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |

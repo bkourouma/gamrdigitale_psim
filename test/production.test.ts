@@ -37,6 +37,7 @@ const GOOD: PreflightInput = {
   escalationConfigured: true,
   detectorTimeoutS: 180,
   backupEveryH: 24,
+  requireTotp: 'admin',
 };
 const errors = (c: PreflightInput) => preflight(c).filter((f) => f.level === 'error').map((f) => f.message);
 
@@ -73,6 +74,7 @@ describe('controle de demarrage (preflight)', () => {
     assert.match(w({ ...GOOD, escalationConfigured: false }), /niveau 2/);
     assert.match(w({ ...GOOD, detectorTimeoutS: 0 }), /detecteurs muets desactivee/);
     assert.match(w({ ...GOOD, backupEveryH: 0 }), /Sauvegarde automatique desactivee/);
+    assert.match(w({ ...GOOD, requireTotp: 'none' }), /double authentification n'est imposee a personne/);
   });
 
   it("hors production, les memes constats ne sont que des avertissements : le developpement reste possible", () => {

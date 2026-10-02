@@ -11,12 +11,15 @@ import {
   isRateLimited,
   parseCookies,
   recordFailure,
+  setSessionValidator,
 } from './auth.ts';
 import type { Session } from './auth.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
+import type { RecipientsService } from './recipients.ts';
+import type { UsersService } from './users.ts';
 import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { VideoService } from './video.ts';
@@ -54,6 +57,8 @@ export interface ApiDeps {
   snapshots: SnapshotService;
   notifier: Notifier;
   risk: RiskService;
+  users: UsersService;
+  recipients: RecipientsService;
   /** HTTPS integre : active HSTS. */
   tls: boolean;
   trustProxy: boolean;
@@ -77,7 +82,9 @@ export function sessionFromRequest(req: Pick<Request, 'headers'>): Session | nul
 }
 
 export function createApp(deps: ApiDeps) {
-  const { db, engine } = deps;
+  const { db, engine, users } = deps;
+  // Controle a CHAQUE requete : compte supprime / desactive / identifiants changes = plus de session ; le role vient de la base.
+  setSessionValidator(users.validateSession);
   const app = express();
   app.disable('x-powered-by');
   if (deps.trustProxy) app.set('trust proxy', 1); // adresse reelle du client derriere un proxy (limitation des connexions)
@@ -114,23 +121,52 @@ export function createApp(deps: ApiDeps) {
     res.json(deps.demoAccounts);
   });
 
+  const sessionCookie = (token: string) =>
+    `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${deps.cookieSecure ? '; Secure' : ''}`;
+
+  /** Ouvre la session (restreinte si une etape est requise : changer son mot de passe, activer la 2FA). */
+  function finishLogin(res: Response, username: string): void {
+    const opened = users.openSession(username);
+    res.setHeader('Set-Cookie', sessionCookie(createSession(username, opened.role, opened.epoch, opened.restricted)));
+    engine.audit(username, 'login');
+    res.json({ username, role: opened.role, restricted: opened.restricted });
+  }
+
   app.post('/api/login', json, (req, res) => {
-    const key = req.ip ?? 'unknown';
-    if (isRateLimited(key)) return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
     const { username, password } = (req.body ?? {}) as { username?: unknown; password?: unknown };
-    const role =
-      typeof username === 'string' && typeof password === 'string' ? checkCredentials(db, username, password) : null;
-    if (!role || typeof username !== 'string') {
-      recordFailure(key);
+    const name = typeof username === 'string' ? username.trim().toLowerCase().slice(0, 64) : '';
+    // Deux limites : par adresse (un attaquant essaie plusieurs comptes) et par compte (plusieurs adresses visent un compte).
+    const ipKey = `ip:${req.ip ?? 'unknown'}`;
+    const userKey = `user:${name}`;
+    if (isRateLimited(ipKey) || isRateLimited(userKey)) return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
+    const role = name && typeof password === 'string' ? checkCredentials(db, name, password) : null;
+    if (!role) {
+      recordFailure(ipKey);
+      recordFailure(userKey);
+      engine.audit(name || '?', 'login_failed');
       return void res.status(401).json({ error: 'Identifiants incorrects' });
     }
-    const token = createSession(username, role);
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${deps.cookieSecure ? '; Secure' : ''}`,
-    );
-    engine.audit(username, 'login');
-    res.json({ username, role });
+    if (users.totpEnabled(name)) {
+      // Mot de passe correct mais pas de session : il faut encore le code de l'application d'authentification.
+      return void res.json({ twoFactor: true, challenge: users.createChallenge(name) });
+    }
+    finishLogin(res, name);
+  });
+
+  app.post('/api/login/2fa', json, (req, res) => {
+    const { challenge, code } = (req.body ?? {}) as { challenge?: unknown; code?: unknown };
+    const ipKey = `ip2fa:${req.ip ?? 'unknown'}`;
+    if (isRateLimited(ipKey)) return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
+    const answer = typeof challenge === 'string' ? users.answerChallengeDetailed(challenge, code) : ({ error: 'expired', attemptsLeft: 0 } as const);
+    if (!('username' in answer)) {
+      recordFailure(ipKey);
+      return void res.status(401).json(
+        answer.error === 'wrong'
+          ? { error: `Code incorrect (${answer.attemptsLeft} essai${answer.attemptsLeft > 1 ? 's' : ''} restant${answer.attemptsLeft > 1 ? 's' : ''})`, expired: false }
+          : { error: 'Délai dépassé ou trop d\'essais : recommencez la connexion', expired: true },
+      );
+    }
+    finishLogin(res, answer.username);
   });
 
   app.post('/api/logout', (req, res) => {
@@ -139,10 +175,16 @@ export function createApp(deps: ApiDeps) {
     res.json({ ok: true });
   });
 
+  // Une session « restreinte » (mot de passe a changer, 2FA a activer) ne peut faire QUE cela.
+  const ALLOWED_WHEN_RESTRICTED = new Set(['GET /api/me', 'POST /api/me/password', 'POST /api/me/2fa/setup', 'POST /api/me/2fa/enable']);
+
   function requireRole(...roles: Role[]) {
     return (req: Request, res: Response, next: NextFunction) => {
       const session = sessionFromRequest(req);
       if (!session) return void res.status(401).json({ error: 'Non authentifie' });
+      if (session.restricted && !ALLOWED_WHEN_RESTRICTED.has(`${req.method} ${req.path}`)) {
+        return void res.status(403).json({ error: 'Une etape est requise sur votre compte avant de continuer', restricted: session.restricted });
+      }
       if (roles.length > 0 && !roles.includes(session.role)) return void res.status(403).json({ error: 'Droits insuffisants' });
       (req as AuthedRequest).session = session;
       next();
@@ -153,8 +195,100 @@ export function createApp(deps: ApiDeps) {
   const actorOf = (req: Request) => (req as AuthedRequest).session.username;
 
   app.get('/api/me', anyUser, (req, res) => {
-    const { username, role } = (req as AuthedRequest).session;
-    res.json({ username, role, simEnabled: deps.simEnabled });
+    const { username, role, restricted } = (req as AuthedRequest).session;
+    const me = users.get(username);
+    res.json({
+      username,
+      role,
+      simEnabled: deps.simEnabled,
+      restricted,
+      displayName: me.displayName,
+      totpEnabled: me.totpEnabled,
+      recoveryLeft: me.totpEnabled ? users.recoveryLeft(username) : 0,
+    });
+  });
+
+  // ---- Mon compte : mot de passe et double authentification ------------------------------------
+
+  app.post('/api/me/password', anyUser, json, (req, res) => {
+    const { current, next: nextPassword } = (req.body ?? {}) as { current?: unknown; next?: unknown };
+    const username = actorOf(req);
+    const key = `pw:${username}`;
+    if (isRateLimited(key)) throw new PsimError(429, 'Trop de tentatives, reessayer dans une minute');
+    try {
+      users.changeOwnPassword(username, current, nextPassword);
+    } catch (err) {
+      if (err instanceof PsimError && err.status === 403) recordFailure(key);
+      throw err;
+    }
+    // Les autres sessions du compte sont fermees ; celle-ci est renouvelee.
+    const opened = users.openSession(username);
+    res.setHeader('Set-Cookie', sessionCookie(createSession(username, opened.role, opened.epoch, opened.restricted)));
+    res.json({ ok: true, restricted: opened.restricted });
+  });
+
+  app.post('/api/me/2fa/setup', anyUser, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await users.beginTotp(actorOf(req)));
+  });
+  app.post('/api/me/2fa/enable', anyUser, json, (req, res) => {
+    const username = actorOf(req);
+    const key = `2fa-enable:${username}`;
+    if (isRateLimited(key)) throw new PsimError(429, 'Trop de tentatives, reessayer dans une minute');
+    try {
+      const recoveryCodes = users.enableTotp(username, (req.body as { code?: unknown } | undefined)?.code);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ recoveryCodes });
+    } catch (err) {
+      recordFailure(key);
+      throw err;
+    }
+  });
+  app.post('/api/me/2fa/disable', anyUser, json, (req, res) => {
+    users.disableTotp(actorOf(req), (req.body as { password?: unknown } | undefined)?.password);
+    res.json({ ok: true });
+  });
+  app.post('/api/me/2fa/recovery', anyUser, json, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ recoveryCodes: users.regenerateRecovery(actorOf(req), (req.body as { password?: unknown } | undefined)?.password) });
+  });
+
+  // ---- Comptes (administrateur) --------------------------------------------------------------------
+
+  app.get('/api/users', adminOnly, (_req, res) => {
+    res.json(users.list().map((u) => ({ ...u, recoveryLeft: u.totpEnabled ? users.recoveryLeft(u.username) : 0 })));
+  });
+  app.post('/api/users', adminOnly, json, (req, res) => {
+    res.status(201).json(users.create(actorOf(req), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.patch('/api/users/:username', adminOnly, json, (req, res) => {
+    res.json(users.update(actorOf(req), String(req.params.username), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.post('/api/users/:username/reset-password', adminOnly, json, (req, res) => {
+    res.json(users.resetPassword(actorOf(req), String(req.params.username), (req.body as { password?: unknown } | undefined)?.password));
+  });
+  app.post('/api/users/:username/reset-2fa', adminOnly, (req, res) => {
+    res.json(users.adminResetTotp(actorOf(req), String(req.params.username)));
+  });
+  app.delete('/api/users/:username', adminOnly, (req, res) => {
+    users.remove(actorOf(req), String(req.params.username));
+    res.status(204).end();
+  });
+
+  // ---- Destinataires de notification (administrateur) --------------------------------------------
+
+  app.get('/api/notifications/recipients', adminOnly, (_req, res) => {
+    res.json({ recipients: deps.recipients.list(), available: deps.recipients.available });
+  });
+  app.post('/api/notifications/recipients', adminOnly, json, (req, res) => {
+    res.status(201).json(deps.recipients.add(actorOf(req), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.patch('/api/notifications/recipients/:id', adminOnly, json, (req, res) => {
+    res.json(deps.recipients.update(actorOf(req), Number(req.params.id), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.delete('/api/notifications/recipients/:id', adminOnly, (req, res) => {
+    deps.recipients.remove(actorOf(req), Number(req.params.id));
+    res.status(204).end();
   });
 
   // ---- Lecture --------------------------------------------------------------------------

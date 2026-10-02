@@ -8,6 +8,9 @@
 </head>
 <body>
   <div id="toasts" aria-live="polite"></div>
+  <div id="dialog" class="dialog" hidden role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="dialog-card"><h2 id="dialog-title"></h2><div id="dialog-body"></div></div>
+  </div>
   <div id="lightbox" class="lightbox" hidden role="dialog" aria-label="Image agrandie"><img id="lightbox-img" alt=""><p id="lightbox-caption"></p></div>
 
   <section id="login" class="login" hidden>
@@ -20,8 +23,13 @@
       </div>
       <label>Identifiant <input id="login-user" name="username" autocomplete="username" required></label>
       <label>Mot de passe <input id="login-pass" name="password" type="password" autocomplete="current-password" required></label>
+      <div id="login-2fa" hidden>
+        <p class="small muted">Saisissez le code à 6 chiffres de votre application d'authentification, ou un code de secours.</p>
+        <label>Code <input id="login-code" autocomplete="one-time-code" maxlength="12" inputmode="text"></label>
+      </div>
       <p id="login-error" class="error" role="alert"></p>
-      <button class="btn primary" type="submit">Se connecter</button>
+      <button id="login-submit" class="btn primary" type="submit">Se connecter</button>
+      <button id="login-back" class="btn small" type="button" hidden>Retour</button>
     </form>
   </section>
 
@@ -38,7 +46,7 @@
         <span id="system-counter" class="counter" hidden></span>
         <button id="nav-risk" class="btn small" type="button" aria-pressed="false" title="Indice de risque par zone et priorités d'action">Risques</button>
         <button id="mute" class="btn small" type="button" title="Couper ou activer l'alerte sonore">Son activé</button>
-        <span id="whoami" class="muted"></span>
+        <button id="whoami" class="btn small" type="button" title="Mon compte : mot de passe, double authentification"></button>
         <button id="logout" class="btn small" type="button">Déconnexion</button>
       </div>
     </header>
@@ -77,9 +85,15 @@
             <ul id="sys-warnings" class="notif-results"></ul>
             <div class="row wrap"><button id="sys-backup" class="btn small" type="button">Sauvegarder maintenant</button></div>
           </details>
+          <details id="users-box">
+            <summary>Utilisateurs et accès</summary>
+            <div id="users-list" class="users-list"></div>
+            <div id="users-create"></div>
+          </details>
           <details id="notif-box">
             <summary>Notifications (e-mail, Telegram, webhook)</summary>
             <div id="notif-status" class="small muted">Chargement…</div>
+            <div id="recipients-box" class="recipients"></div>
             <div class="row wrap"><button id="notif-test" class="btn small" type="button">Envoyer un message de test</button></div>
             <ul id="notif-results" class="notif-results"></ul>
           </details>

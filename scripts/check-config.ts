@@ -6,16 +6,33 @@
  *
  * Code de sortie 1 s'il y a une erreur bloquante (en production, le PSIM refuserait de demarrer).
  */
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { config } from '../server/config.ts';
-import { emailChannel, telegramChannel, webhookChannel } from '../server/notifications.ts';
 import { formatFindings, preflight } from '../server/preflight.ts';
 
 const n = config.notify;
-const channels = [
-  emailChannel({ ...n.smtp }, n.recipients.email),
-  telegramChannel({ token: n.telegram.token, apiBase: n.telegram.apiBase }, n.recipients.telegram),
-  webhookChannel({ secret: n.webhookSecret }, n.recipients.webhook),
-].filter((c) => c !== null);
+// Destinataires saisis dans l'interface (base) : lus s'ils existent, en lecture seule, sans rien creer ni migrer.
+const dbRecipients = new Map<string, number>();
+const dbFile = join(resolve(import.meta.dirname, '..', config.dataDir), 'psim.db');
+if (existsSync(dbFile)) {
+  try {
+    const db = new DatabaseSync(dbFile, { readOnly: true });
+    for (const r of db.prepare('SELECT channel, level, COUNT(*) AS n FROM notification_recipient WHERE active = 1 GROUP BY channel, level').all() as { channel: string; level: number; n: number }[]) {
+      dbRecipients.set(`${r.channel}:${r.level}`, r.n);
+    }
+    db.close();
+  } catch {
+    // base absente, ancienne ou verrouillee : on s'en tient au .env
+  }
+}
+const count = (channel: 'email' | 'telegram' | 'webhook', level: 1 | 2) => (n.recipients[channel][level - 1]?.length ?? 0) + (dbRecipients.get(`${channel}:${level}`) ?? 0);
+const channels = ([
+  ['email', Boolean(n.smtp.host && n.smtp.from)],
+  ['telegram', Boolean(n.telegram.token)],
+  ['webhook', true],
+] as const).filter(([channel, configured]) => configured && count(channel, 1) + count(channel, 2) > 0);
 const tlsEnabled = Boolean(config.tls.cert && config.tls.key);
 
 const findings = preflight({
@@ -32,9 +49,10 @@ const findings = preflight({
   operatorPassword: config.operatorPassword,
   mqttPassword: config.mqttPassword,
   notificationChannels: channels.length,
-  escalationConfigured: channels.some((c) => c.recipients(2).length > 0),
+  escalationConfigured: channels.some(([channel]) => count(channel, 2) > 0),
   detectorTimeoutS: config.detectorTimeoutS,
   backupEveryH: config.backup.everyH,
+  requireTotp: config.requireTotp,
 });
 
 console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_ENV=production pour le verdict de production)`);
