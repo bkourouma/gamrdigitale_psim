@@ -75,6 +75,35 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Notifications et escalade
+
+Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram** et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
+
+**Qui est prévenu, et quand**
+
+| Événement | Niveau 1 | Niveau 2 |
+|---|---|---|
+| Ouverture, aggravation, confirmation d'un incident | ✔ immédiatement | |
+| Images prises par les caméras liées | ✔ en complément, dès qu'elles sont prêtes | |
+| Détecteur muet (zone peut-être non surveillée) | ✔ | |
+| Incident **toujours non acquitté** après `PSIM_ESCALATE_AFTER_S` (180 s) | | ✔ **escalade** |
+| Rappels ensuite, toutes les `PSIM_REMINDER_S` (300 s), `PSIM_MAX_REMINDERS` fois (3) | ✔ | ✔ |
+
+L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre un incident acquitté relance le décompte.
+
+**Garanties**
+
+- **Une alarme notifie toujours**, même « à confirmer » : les règles anti-fausses alarmes qualifient, elles ne font jamais taire.
+- **Jamais bloquant** : les envois partent en tâche de fond, avec 3 tentatives (0, 2 puis 10 s). Un canal en panne n'empêche pas les autres, et ne retarde pas l'alarme. Un échec définitif est inscrit au journal (« Notification en échec ») et compté dans l'état des canaux.
+- **Aucun secret dans les journaux** : jeton Telegram et mot de passe SMTP sont masqués dans les erreurs ; un webhook n'est affiché que par son hôte (son adresse complète peut contenir un jeton) ; les adresses e-mail sont abrégées (`a***@domaine`).
+- Webhook : corps JSON, signé en HMAC SHA-256 dans l'en-tête `X-PSIM-Signature` si `PSIM_WEBHOOK_SECRET` est défini (vérifiez-le côté récepteur).
+
+**Configuration** (voir `.env.example`) : serveur SMTP (`PSIM_SMTP_*`), jeton Telegram (`PSIM_TELEGRAM_TOKEN`), destinataires par niveau (`PSIM_NOTIFY_EMAIL_L1/L2`, `PSIM_NOTIFY_TELEGRAM_L1/L2` = identifiants de conversation, `PSIM_NOTIFY_WEBHOOK_L1/L2`), `PSIM_PUBLIC_URL` (lien ajouté aux messages). En administrateur, **Notifications → Envoyer un message de test** vérifie chaque destinataire des deux niveaux et affiche le résultat par destinataire.
+
+**Limites** : pas de limitation de débit (un incendie qui se propage peut produire beaucoup de messages : c'est voulu, on ne perd pas d'alarme) ; pas de file persistante : si le PSIM s'arrête pendant un envoi, les tentatives en cours sont perdues (l'escalade, elle, repart de la base). Les destinataires ne sont pas encore modifiables depuis l'interface.
+
+**Démonstration** : la démo lance un faux serveur SMTP et un faux Telegram locaux et **affiche dans le terminal** chaque message (`[courrier]`, `[telegram]`), avec une escalade à 25 s : rien ne quitte la machine.
+
 ## Images jointes aux incidents
 
 À chaque étape d'un incident (**ouverture**, **aggravation**, **confirmation**), le PSIM prend une image de chaque caméra liée au détecteur et la joint à l'incident : l'opérateur (et la personne qui relit l'incident le lendemain) voit ce que les caméras montraient *à ce moment-là*, même si la vidéo en direct a changé depuis. Les miniatures apparaissent sous l'incident (clic = agrandir, Échap = fermer) et restent visibles dans les incidents clôturés.
@@ -139,6 +168,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/` | Interface : plan, mur vidéo, incidents, journal, simulateur, édition |
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
 | `server/video.ts` | Sources caméra chiffrées, ffmpeg RTSP → images JPEG, un seul flux partagé par caméra |
+| `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |

@@ -11,6 +11,8 @@ import { startBroker } from './mqtt.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
 import type { PsimEvent } from './types.ts';
+import { createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
+import type { Notifier } from './notifications.ts';
 import { createSnapshotService } from './snapshots.ts';
 import type { SnapshotService } from './snapshots.ts';
 import { createVideoService } from './video.ts';
@@ -31,9 +33,16 @@ const engine = createEngine(db, publish, Date.now, {
   persistMs: config.confirmPersistS * 1000,
   hintMs: config.falseAlarmHintS * 1000,
   // Image des cameras liees a chaque etape d'un incident, en tache de fond : l'alarme est deja publiee.
-  onIncidentEvent: (incident, kind) => void snapshots?.capture(incident, kind),
+  // Sur chaque etape d'un incident : le texte part tout de suite, les images en complement des qu'elles
+  // sont prises. Tout en tache de fond : rien ne retarde ni ne fait echouer l'alarme.
+  onIncidentEvent: (incident, kind) => {
+    void notifier?.notifyIncident(incident, kind);
+    void snapshots?.capture(incident, kind).then((saved) => (saved > 0 ? notifier?.sendImages(incident.id, kind) : undefined));
+  },
+  onDetectorSilent: (device) => void notifier?.notifySilent(device),
 });
 let snapshots: SnapshotService | undefined;
+let notifier: Notifier | undefined;
 const video = createVideoService({
   db,
   engine,
@@ -48,6 +57,22 @@ snapshots = createSnapshotService({
   dataDir,
   grab: (cameraId) => video.snapshot(cameraId),
   publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
+});
+const notify = config.notify;
+notifier = createNotifier({
+  db,
+  engine,
+  channels: [
+    emailChannel({ ...notify.smtp }, notify.recipients.email),
+    telegramChannel({ token: notify.telegram.token, apiBase: notify.telegram.apiBase }, notify.recipients.telegram),
+    webhookChannel({ secret: notify.webhookSecret }, notify.recipients.webhook),
+  ].filter((c) => c !== null),
+  escalateAfterMs: notify.escalateAfterS * 1000,
+  reminderMs: notify.reminderS * 1000,
+  maxReminders: notify.maxReminders,
+  publicUrl: notify.publicUrl,
+  readSnapshot: (id) => snapshots?.read(id) ?? null,
+  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret],
 });
 const purged = snapshots.purge(config.snapshotDays);
 if (purged > 0) console.log(`[psim] ${purged} image(s) d'incident de plus de ${config.snapshotDays} jours supprimee(s)`);
@@ -65,6 +90,7 @@ const app = createApp({
   engine,
   video,
   snapshots,
+  notifier,
   dataDir,
   webDir: join(root, 'web'),
   cookieSecure: config.cookieSecure,
@@ -103,7 +129,10 @@ bus.on('event', (event: PsimEvent) => {
 });
 
 // Controle periodique : detecteurs muets et confirmation des incidents par persistance.
-const tickTimer = setInterval(() => engine.tick(), 1000);
+const tickTimer = setInterval(() => {
+  engine.tick();
+  notifier?.tick(); // escalade des incidents non acquittes
+}, 1000);
 
 server.listen(config.port, config.host, () => {
   console.log(`[psim] interface  : http://${config.host}:${config.port}`);
@@ -113,6 +142,15 @@ server.listen(config.port, config.host, () => {
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
       : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
   );
+  {
+    const status = notifier!.status();
+    const channelsText = status.channels.map((c) => `${c.label} (${c.level1} niveau 1, ${c.level2} niveau 2)`).join(', ');
+    console.log(
+      status.channels.length > 0
+        ? `[psim] notifications : ${channelsText} ; escalade ${config.notify.escalateAfterS > 0 ? `apres ${config.notify.escalateAfterS} s sans acquittement` : 'desactivee'}`
+        : '[psim] notifications : aucun canal configure (voir .env.example) : les alarmes ne previennent personne hors de cet ecran',
+    );
+  }
   console.log(
     `[psim] regles anti-fausses alarmes : confirmation par voisin ${config.confirmWindowS > 0 ? `${config.confirmWindowS} s` : 'off'}, ` +
       `par persistance ${config.confirmPersistS > 0 ? `${config.confirmPersistS} s` : 'off'}, ` +

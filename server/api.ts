@@ -16,6 +16,7 @@ import type { Session } from './auth.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { discoverOnvif } from './onvif.ts';
+import type { Notifier } from './notifications.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
@@ -50,6 +51,7 @@ export interface ApiDeps {
   engine: Engine;
   video: VideoService;
   snapshots: SnapshotService;
+  notifier: Notifier;
   dataDir: string;
   webDir: string;
   cookieSecure: boolean;
@@ -150,6 +152,13 @@ export function createApp(deps: ApiDeps) {
     res.setHeader('Content-Type', 'image/jpeg');
     res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
     res.end(image);
+  });
+
+  // Notifications (administrateur) : etat des canaux + message de test pour verifier la configuration.
+  app.get('/api/notifications/status', adminOnly, (_req, res) => res.json(deps.notifier.status()));
+  app.post('/api/notifications/test', adminOnly, async (req, res) => {
+    engine.audit(actorOf(req), 'notification_test');
+    res.json(await deps.notifier.test());
   });
 
   app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));

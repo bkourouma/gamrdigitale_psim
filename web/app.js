@@ -55,6 +55,10 @@ const ACTION_LABEL = {
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
   snapshot_failed: 'Image non prise',
+  notification_failed: 'Notification en échec',
+  notification_escalated: 'Escalade (niveau 2 prévenu)',
+  notification_reminder: 'Rappel envoyé',
+  notification_test: 'Test de notification',
   camera_source_updated: 'Source vidéo modifiée',
 };
 const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
@@ -773,6 +777,47 @@ const SIM_STATES = [
   ['alarm', 'Alarme'],
   ['fault', 'Défaut'],
 ];
+
+const KIND_LABEL = { opened: 'ouverture', escalated: 'aggravation', confirmed: 'confirmation', unacked: 'escalade', reminder: 'rappel', silent: 'détecteur muet', test: 'test' };
+
+async function loadNotifStatus() {
+  try {
+    const st = await api('/api/notifications/status');
+    const box = $('notif-status');
+    if (st.channels.length === 0) {
+      box.textContent = "Aucun canal configuré : les alarmes ne préviennent personne hors de cet écran. Voir .env.example (PSIM_SMTP_*, PSIM_TELEGRAM_TOKEN, PSIM_NOTIFY_*).";
+      box.className = 'small error';
+      return;
+    }
+    box.className = 'small muted';
+    box.textContent =
+      `${st.channels.map((c) => `${c.label} : ${c.level1} destinataire(s) niveau 1, ${c.level2} niveau 2`).join(' - ')}. ` +
+      `Escalade ${st.escalateAfterS > 0 ? `après ${st.escalateAfterS} s sans acquittement, puis rappel toutes les ${st.reminderS} s (${st.maxReminders} max)` : 'désactivée'}. ` +
+      `24 h : ${st.sentLast24h} envoyé(s), ${st.failedLast24h} en échec.`;
+  } catch (err) {
+    $('notif-status').textContent = err.message;
+  }
+}
+
+$('notif-box').addEventListener('toggle', () => {
+  if ($('notif-box').open) loadNotifStatus();
+});
+
+$('notif-test').addEventListener('click', async () => {
+  const list = $('notif-results');
+  list.replaceChildren(h('li', { class: 'muted', text: 'Envoi en cours…' }));
+  try {
+    const results = await api('/api/notifications/test', { method: 'POST' });
+    list.replaceChildren(
+      ...(results.length
+        ? results.map((r) => h('li', { class: r.ok ? 'good' : 'bad', text: `${r.ok ? 'OK ' : 'ÉCHEC'} ${r.channel} niveau ${r.level} - ${r.recipient}${r.error ? ` : ${r.error}` : ''}` }))
+        : [h('li', { class: 'bad', text: 'Aucun destinataire configuré.' })]),
+    );
+    loadNotifStatus();
+  } catch (err) {
+    list.replaceChildren(h('li', { class: 'bad', text: err.message }));
+  }
+});
 
 function renderAdmin(force = false) {
   if (S.me?.role !== 'admin') return;

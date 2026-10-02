@@ -69,6 +69,12 @@
             <p class="muted small">Chaque bouton publie un message MQTT, comme un vrai détecteur.</p>
             <div id="sim-list" class="sim-list"></div>
           </details>
+          <details id="notif-box">
+            <summary>Notifications (e-mail, Telegram, webhook)</summary>
+            <div id="notif-status" class="small muted">Chargement…</div>
+            <div class="row wrap"><button id="notif-test" class="btn small" type="button">Envoyer un message de test</button></div>
+            <ul id="notif-results" class="notif-results"></ul>
+          </details>
           <details id="edit-box">
             <summary>Édition du plan et de l'inventaire</summary>
             <label class="check"><input id="edit-mode" type="checkbox"> Mode édition (glisser les pastilles pour les placer)</label>

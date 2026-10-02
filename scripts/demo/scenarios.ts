@@ -132,6 +132,10 @@ export const DEMO_SILENT_TIMEOUT_S = 30;
 export const DEMO_HEARTBEAT_S = 8;
 /** Regles anti-fausses alarmes de la demo (les valeurs d'exploitation sont 60 / 120 / 30 s). */
 export const DEMO_CONFIRM_WINDOW_S = 60;
+/** Escalade des notifications de la demo (valeurs d'exploitation : 180 / 300 s). */
+export const DEMO_ESCALATE_AFTER_S = 25;
+export const DEMO_REMINDER_S = 25;
+export const DEMO_MAX_REMINDERS = 2;
 export const DEMO_CONFIRM_PERSIST_S = 25;
 export const DEMO_FALSE_ALARM_HINT_S = 30;
 

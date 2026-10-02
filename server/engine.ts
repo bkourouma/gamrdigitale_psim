@@ -80,6 +80,8 @@ export interface EngineOptions {
    * ni faire echouer l'alarme : une exception est journalisee et ignoree.
    */
   onIncidentEvent?: (incident: Incident, kind: 'opened' | 'escalated' | 'confirmed') => void;
+  /** Appele quand un detecteur est declare muet (zone potentiellement non surveillee). Jamais bloquant. */
+  onDetectorSilent?: (device: Device) => void;
 }
 
 function describeDuration(ms: number): string {
@@ -352,6 +354,12 @@ export function createEngine(
       });
       publishDevice(id);
       silent.push(id);
+      try {
+        const device = getDevice(id);
+        if (device) options.onDetectorSilent?.(device);
+      } catch (err) {
+        console.error('[engine] onDetectorSilent :', err);
+      }
     }
     return silent;
   }

@@ -65,6 +65,20 @@ CREATE TABLE IF NOT EXISTS incident_snapshot (
   file TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS snapshot_by_incident ON incident_snapshot(incident_id);
+-- Journal des notifications envoyees (e-mail, Telegram, webhook) et de leur escalade.
+CREATE TABLE IF NOT EXISTS notification_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  incident_id INTEGER,
+  kind TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notification_by_incident ON notification_log(incident_id, created_at);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,

@@ -176,6 +176,9 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .conf-line { color: var(--muted); }
 .incident.confirmed .conf-line { color: var(--text); }
 .advice { color: #7cc4ff; }
+.notif-results { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 4px; font-size: 12px; }
+.notif-results .bad { color: var(--alarm); }
+.notif-results .good { color: var(--ok); }
 .shots { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 .shot { padding: 0; border: 1px solid var(--line); border-radius: 4px; background: #000; cursor: zoom-in; overflow: hidden; }
 .shot img { display: block; width: 96px; height: 54px; object-fit: cover; }

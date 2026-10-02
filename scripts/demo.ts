@@ -21,13 +21,17 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import mqtt from 'mqtt';
 import { MEDIAMTX_BIN, installMediamtx } from './install-mediamtx.ts';
+import { startInbox } from './demo/inbox.ts';
 import { startDiscoveryResponder, startOnvifDevice } from './demo/onvif-device.ts';
 import { createRunner, findScenario } from './demo/runner.ts';
 import {
   DEMO_CAMERAS,
   DEMO_CONFIRM_PERSIST_S,
   DEMO_CONFIRM_WINDOW_S,
+  DEMO_ESCALATE_AFTER_S,
   DEMO_FALSE_ALARM_HINT_S,
+  DEMO_MAX_REMINDERS,
+  DEMO_REMINDER_S,
   DEMO_HEARTBEAT_S,
   DEMO_SILENT_TIMEOUT_S,
   SCENARIOS,
@@ -45,7 +49,7 @@ const FPS = 8;
 const FFMPEG = process.env.PSIM_FFMPEG ?? 'ffmpeg';
 
 // La demo utilise toujours les identifiants de developpement, jamais ceux de votre .env.
-for (const name of ['PSIM_CONFIRM_WINDOW_S', 'PSIM_CONFIRM_PERSIST_S', 'PSIM_FALSE_ALARM_HINT_S', 'PSIM_DETECTOR_TIMEOUT_S', 'PSIM_ADMIN_PASSWORD', 'PSIM_OPERATOR_PASSWORD', 'PSIM_MQTT_PASSWORD', 'PSIM_SECRET_KEY', 'PSIM_DEMO_LOGIN']) {
+for (const name of [...Object.keys(process.env).filter((k) => /^PSIM_(NOTIFY_|SMTP_|TELEGRAM_|WEBHOOK_|ESCALATE_|REMINDER_|MAX_REMINDERS|PUBLIC_URL)/.test(k)), 'PSIM_CONFIRM_WINDOW_S', 'PSIM_CONFIRM_PERSIST_S', 'PSIM_FALSE_ALARM_HINT_S', 'PSIM_DETECTOR_TIMEOUT_S', 'PSIM_ADMIN_PASSWORD', 'PSIM_OPERATOR_PASSWORD', 'PSIM_MQTT_PASSWORD', 'PSIM_SECRET_KEY', 'PSIM_DEMO_LOGIN']) {
   delete process.env[name];
 }
 const { config } = await import('../server/config.ts');
@@ -209,6 +213,14 @@ if (useOnvif) {
   }
 }
 
+// ---------------------------------------------------------------- 2c. boite de reception (notifications)
+
+// Faux SMTP + faux Telegram locaux : rien ne quitte la machine, tout s'affiche ici.
+const inbox = await startInbox((line) => console.log(line), 2525, 2526).catch((err) =>
+  fail(`boite de reception de la demo (ports 2525 et 2526) : ${err.message}`),
+);
+const telegramToken = randomBytes(12).toString('hex');
+
 // ---------------------------------------------------------------- 3. PSIM
 
 const server = spawn(process.execPath, [join(root, 'server', 'index.ts')], {
@@ -219,6 +231,20 @@ const server = spawn(process.execPath, [join(root, 'server', 'index.ts')], {
     PSIM_MQTT_PORT: String(MQTT_PORT),
     PSIM_DATA_DIR: 'data-demo',
     PSIM_DEMO_LOGIN: '1',
+    // Notifications vers la boite de reception locale ; escalade a l'echelle de temps de la demo.
+    PSIM_SMTP_HOST: '127.0.0.1',
+    PSIM_SMTP_PORT: String(inbox.smtpPort),
+    PSIM_SMTP_STARTTLS: '0',
+    PSIM_SMTP_FROM: 'psim@demo.test',
+    PSIM_NOTIFY_EMAIL_L1: 'operateur@demo.test',
+    PSIM_NOTIFY_EMAIL_L2: 'responsable@demo.test',
+    PSIM_TELEGRAM_TOKEN: telegramToken,
+    PSIM_TELEGRAM_API: inbox.telegramBase,
+    PSIM_NOTIFY_TELEGRAM_L1: '111',
+    PSIM_NOTIFY_TELEGRAM_L2: '222',
+    PSIM_ESCALATE_AFTER_S: String(Math.max(2, Math.round(DEMO_ESCALATE_AFTER_S / speed))),
+    PSIM_REMINDER_S: String(Math.max(2, Math.round(DEMO_REMINDER_S / speed))),
+    PSIM_MAX_REMINDERS: String(DEMO_MAX_REMINDERS),
     // La demo envoie des signaux de vie : la surveillance des detecteurs muets est donc active.
     PSIM_DETECTOR_TIMEOUT_S: String(Math.max(2, Math.round(DEMO_SILENT_TIMEOUT_S / speed))),
     // Regles anti-fausses alarmes, a l'echelle de temps de la demo.
@@ -350,6 +376,8 @@ console.log(`
                    (cliquer sur "Administrateur" ou "Operateur" pour remplir la connexion)
  Cameras RTSP    : rtsp://127.0.0.1:${RTSP_PORT}/C-01 ... C-05
 ${useOnvif ? ` Faux ONVIF      : 127.0.0.1 ports ${ONVIF_BASE_PORT} a ${ONVIF_BASE_PORT + ONVIF_CAMERAS - 1} (C-01 a C-0${ONVIF_CAMERAS}) ; C-05 en RTSP direct\n` : ''} Identifiants    : ${viewerUser} / ${viewerPass}  (ONVIF et RTSP)
+ Notifications   : faux courrier (port 2525) et faux Telegram (2526) : les messages s'affichent ici
+                   niveau 1 : operateur@demo.test / chat 111 ; niveau 2 (escalade) : responsable@demo.test / chat 222
  Base de demo    : data-demo/ (recreee a chaque lancement)
 ============================================================`);
 
