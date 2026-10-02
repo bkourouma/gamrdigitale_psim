@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS incident (
 -- Un seul incident non cloture par detecteur : garanti par la base, pas seulement par le code.
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_incident_per_detector
   ON incident(detector_id) WHERE status <> 'closed';
+-- Images des cameras liees, prises a l'ouverture / l'aggravation / la confirmation d'un incident.
+CREATE TABLE IF NOT EXISTS incident_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  incident_id INTEGER NOT NULL REFERENCES incident(id),
+  camera_id TEXT NOT NULL,
+  taken_at INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS snapshot_by_incident ON incident_snapshot(incident_id);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,

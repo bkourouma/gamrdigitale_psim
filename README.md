@@ -75,6 +75,16 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Images jointes aux incidents
+
+À chaque étape d'un incident (**ouverture**, **aggravation**, **confirmation**), le PSIM prend une image de chaque caméra liée au détecteur et la joint à l'incident : l'opérateur (et la personne qui relit l'incident le lendemain) voit ce que les caméras montraient *à ce moment-là*, même si la vidéo en direct a changé depuis. Les miniatures apparaissent sous l'incident (clic = agrandir, Échap = fermer) et restent visibles dans les incidents clôturés.
+
+- La capture se fait **après** la publication de l'alarme, en tâche de fond : une caméra lente ou en panne ne retarde jamais l'alarme. Un échec est inscrit au journal (« Image non prise »).
+- Seules les caméras à **source réelle** (ONVIF ou RTSP) sont capturées : une caméra simulée dans le navigateur n'a pas d'image côté serveur.
+- Si la caméra est déjà affichée, la dernière image du flux est reprise (instantané) ; sinon le PSIM se connecte à la caméra pour en lire une.
+- Plafond de 12 images par incident. Conservation **30 jours** par défaut (`PSIM_SNAPSHOT_DAYS`, `0` = illimité) ; nettoyage au démarrage puis toutes les 6 heures.
+- Les images sont dans `data/snapshots/` et ne sont servies qu'aux utilisateurs connectés. Elles font partie des données à sauvegarder avec la base.
+
 ## Règles anti-fausses alarmes
 
 > **Principe : une règle anti-fausse alarme ne cache, ne retarde et ne ferme jamais une alarme.** Elle ne fait que **qualifier** l'incident pour aider l'opérateur à prioriser. Une alarme s'ouvre toujours immédiatement, à sa vraie gravité, reste visible et sonne ; seul un opérateur peut la clôturer, avec sa qualification (« feu confirmé » ou « fausse alarme »).
@@ -129,6 +139,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/` | Interface : plan, mur vidéo, incidents, journal, simulateur, édition |
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
 | `server/video.ts` | Sources caméra chiffrées, ffmpeg RTSP → images JPEG, un seul flux partagé par caméra |
+| `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |

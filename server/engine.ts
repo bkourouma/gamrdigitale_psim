@@ -75,6 +75,11 @@ export interface EngineOptions {
   persistMs?: number;
   /** Indice : un detecteur isole revenu a la normale en moins de `hintMs` -> « probable fausse alarme ». */
   hintMs?: number;
+  /**
+   * Appele APRES publication d'un incident (ouverture, aggravation, confirmation). Ne peut ni retarder
+   * ni faire echouer l'alarme : une exception est journalisee et ignoree.
+   */
+  onIncidentEvent?: (incident: Incident, kind: 'opened' | 'escalated' | 'confirmed') => void;
 }
 
 function describeDuration(ms: number): string {
@@ -137,6 +142,11 @@ export function createEngine(
       confirmationReason: (r.confirmation_reason as string | null) ?? null,
       hint: (r.hint as Incident['hint']) ?? null,
       hintDetails: (r.hint_details as string | null) ?? null,
+      snapshots: (
+        db
+          .prepare('SELECT id, camera_id, taken_at, reason FROM incident_snapshot WHERE incident_id = ? ORDER BY id')
+          .all(id) as Row[]
+      ).map((s) => ({ id: s.id as number, cameraId: s.camera_id as string, takenAt: s.taken_at as number, reason: s.reason as string })),
     };
   }
 
@@ -162,6 +172,15 @@ export function createEngine(
 
   function publishIncident(id: number): void {
     publish({ type: 'incident', incident: incidentView(id) });
+  }
+
+  function emitHook(id: number, kind: 'opened' | 'escalated' | 'confirmed'): void {
+    if (!options.onIncidentEvent) return;
+    try {
+      options.onIncidentEvent(incidentView(id), kind);
+    } catch (err) {
+      console.error('[engine] onIncidentEvent :', err);
+    }
   }
 
   // ---- Regles anti-fausses alarmes (qualification uniquement, jamais de suppression) -------------
@@ -216,6 +235,7 @@ export function createEngine(
     if (res.changes === 0) return;
     audit('systeme', 'incident_confirmed', { incidentId, deviceId: detectorId, details: reason });
     publishIncident(incidentId);
+    emitHook(incidentId, 'confirmed');
   }
 
   function evaluateConfirmations(): void {
@@ -277,6 +297,7 @@ export function createEngine(
         const id = Number(res.lastInsertRowid);
         audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
         publishIncident(id);
+        emitHook(id, 'opened');
       } else if (open.severity === 'warning' && severity === 'critical') {
         // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
         db.prepare(
@@ -284,6 +305,7 @@ export function createEngine(
         ).run(open.id);
         audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
         publishIncident(open.id);
+        emitHook(open.id, 'escalated');
       }
       if (open?.hint) {
         // Le detecteur se redeclenche : la suggestion « fausse alarme » ne tient plus.
@@ -509,6 +531,7 @@ export function createEngine(
 
   return {
     handleDetectorMessage,
+    incidentView,
     checkSilentDetectors,
     tick,
     acknowledge,

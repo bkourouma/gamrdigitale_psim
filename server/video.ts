@@ -391,7 +391,19 @@ export function createVideoService(opts: VideoOptions) {
     for (const feed of [...feeds.values()]) dispose(feed, null);
   }
 
-  return { view, setSource, test, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };
+  /**
+   * Une image JPEG de la camera. Si un flux est deja actif, on reprend sa derniere image (instantane) ;
+   * sinon on se connecte a la camera pour en lire une seule.
+   */
+  async function snapshot(cameraId: string): Promise<Buffer> {
+    requireCamera(cameraId);
+    const live = feeds.get(cameraId)?.last;
+    if (live) return Buffer.from(live);
+    const { url } = await resolve(cameraId);
+    return grabFrame(url);
+  }
+
+  return { view, setSource, test, snapshot, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };
 }
 
 export type VideoService = ReturnType<typeof createVideoService>;

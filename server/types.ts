@@ -42,6 +42,8 @@ export interface Incident {
   /** Suggestion pour l'operateur ; ne ferme jamais l'incident. */
   hint: 'false_alarm_likely' | null;
   hintDetails: string | null;
+  /** Images des cameras liees prises au moment de l'incident (ordre chronologique). */
+  snapshots: { id: number; cameraId: string; takenAt: number; reason: string }[];
 }
 
 export interface AuditEntry {

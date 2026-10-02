@@ -36,6 +36,8 @@ export const config = {
   secretKey: env.PSIM_SECRET_KEY,
   // Regles anti-fausses alarmes : elles QUALIFIENT les incidents (a confirmer / confirme / probable
   // fausse alarme) sans jamais retarder, masquer ni fermer une alarme. Actives par defaut. 0 = desactivee.
+  // Conservation des images d'incident (jours ; 0 = indefiniment).
+  snapshotDays: seconds('PSIM_SNAPSHOT_DAYS', 30),
   confirmWindowS: seconds('PSIM_CONFIRM_WINDOW_S', 60),
   confirmPersistS: seconds('PSIM_CONFIRM_PERSIST_S', 120),
   falseAlarmHintS: seconds('PSIM_FALSE_ALARM_HINT_S', 30),

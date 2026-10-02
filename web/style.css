@@ -176,6 +176,14 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .conf-line { color: var(--muted); }
 .incident.confirmed .conf-line { color: var(--text); }
 .advice { color: #7cc4ff; }
+.shots { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.shot { padding: 0; border: 1px solid var(--line); border-radius: 4px; background: #000; cursor: zoom-in; overflow: hidden; }
+.shot img { display: block; width: 96px; height: 54px; object-fit: cover; }
+.shot:hover, .shot:focus-visible { border-color: var(--accent); }
+.shots.mini .shot img { width: 56px; height: 32px; }
+.lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .85); display: grid; place-content: center; justify-items: center; gap: 8px; padding: 16px; cursor: zoom-out; }
+.lightbox img { max-width: min(92vw, 960px); max-height: 80vh; border: 1px solid var(--line); }
+.lightbox p { color: #fff; font-size: 13px; }
 .incident.confirmed { box-shadow: inset 0 0 0 1px var(--alarm); }
 .hint { color: var(--warn); }
 .closed-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }

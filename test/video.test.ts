@@ -200,6 +200,13 @@ describe('diffusion partagee (ffmpeg reel, mire de test)', () => {
     assert.throws(() => ctx.video.attachViewer('D-01', fake), isPsimError(404));
   });
 
+  it('snapshot : lit une vraie image JPEG de la camera, et refuse une camera simulee', async () => {
+    const image = await ctx.video.snapshot('C-01');
+    assert.ok(image[0] === 0xff && image[1] === 0xd8 && image[image.length - 2] === 0xff && image[image.length - 1] === 0xd9, 'JPEG complet');
+    await assert.rejects(ctx.video.snapshot('C-02'), isPsimError(404));
+    await assert.rejects(ctx.video.snapshot('D-01'), isPsimError(404));
+  });
+
   it('le test de connexion renvoie une image et decrit la source', async () => {
     const result = await ctx.video.test('C-01');
     assert.equal(result.ok, true);

@@ -16,6 +16,7 @@ import type { Session } from './auth.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { discoverOnvif } from './onvif.ts';
+import type { SnapshotService } from './snapshots.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
 
@@ -48,6 +49,7 @@ export interface ApiDeps {
   db: DatabaseSync;
   engine: Engine;
   video: VideoService;
+  snapshots: SnapshotService;
   dataDir: string;
   webDir: string;
   cookieSecure: boolean;
@@ -139,6 +141,17 @@ export function createApp(deps: ApiDeps) {
   // ---- Lecture --------------------------------------------------------------------------
 
   app.get('/api/state', anyUser, (_req, res) => res.json(engine.getSnapshot()));
+  // Image de camera prise au moment d'un incident. Authentification obligatoire ; jamais de chemin
+  // fourni par le client (seul l'identifiant numerique est lu).
+  app.get('/api/snapshots/:id', anyUser, (req, res) => {
+    const id = Number(req.params.id);
+    const image = Number.isInteger(id) && id > 0 ? deps.snapshots.read(id) : null;
+    if (!image) throw new PsimError(404, 'Image introuvable');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+    res.end(image);
+  });
+
   app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));
 
   // ---- Traitement des incidents ----------------------------------------------------------

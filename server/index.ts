@@ -11,6 +11,8 @@ import { startBroker } from './mqtt.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
 import type { PsimEvent } from './types.ts';
+import { createSnapshotService } from './snapshots.ts';
+import type { SnapshotService } from './snapshots.ts';
 import { createVideoService } from './video.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -28,7 +30,10 @@ const engine = createEngine(db, publish, Date.now, {
   confirmWindowMs: config.confirmWindowS * 1000,
   persistMs: config.confirmPersistS * 1000,
   hintMs: config.falseAlarmHintS * 1000,
+  // Image des cameras liees a chaque etape d'un incident, en tache de fond : l'alarme est deja publiee.
+  onIncidentEvent: (incident, kind) => void snapshots?.capture(incident, kind),
 });
+let snapshots: SnapshotService | undefined;
 const video = createVideoService({
   db,
   engine,
@@ -36,6 +41,17 @@ const video = createVideoService({
   publish,
   ffmpegPath: config.ffmpegPath,
 });
+
+snapshots = createSnapshotService({
+  db,
+  engine,
+  dataDir,
+  grab: (cameraId) => video.snapshot(cameraId),
+  publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
+});
+const purged = snapshots.purge(config.snapshotDays);
+if (purged > 0) console.log(`[psim] ${purged} image(s) d'incident de plus de ${config.snapshotDays} jours supprimee(s)`);
+const purgeTimer = setInterval(() => snapshots?.purge(config.snapshotDays), 6 * 3600 * 1000);
 
 const broker = await startBroker(engine, {
   host: config.host,
@@ -48,6 +64,7 @@ const app = createApp({
   db,
   engine,
   video,
+  snapshots,
   dataDir,
   webDir: join(root, 'web'),
   cookieSecure: config.cookieSecure,
@@ -111,6 +128,7 @@ server.listen(config.port, config.host, () => {
 
 async function shutdown() {
   clearInterval(tickTimer);
+  clearInterval(purgeTimer);
   video.shutdown();
   wss.close();
   server.close();

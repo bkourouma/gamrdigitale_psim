@@ -54,6 +54,7 @@ const ACTION_LABEL = {
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
+  snapshot_failed: 'Image non prise',
   camera_source_updated: 'Source vidéo modifiée',
 };
 const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
@@ -496,6 +497,38 @@ $('wall-auto').addEventListener('click', () => {
 
 const cards = new Map(); // idIncident -> { el, refs }
 
+const SHOT_REASON = { opened: "à l'ouverture", escalated: "à l'aggravation", confirmed: 'à la confirmation' };
+
+function shotCaption(shot) {
+  const camera = S.devices.get(shot.cameraId);
+  return `${camera?.name ?? shot.cameraId} - ${SHOT_REASON[shot.reason] ?? shot.reason} - ${time(shot.takenAt)}`;
+}
+
+/** Miniatures des images prises au moment de l'incident (reconstruites seulement si la liste change). */
+function renderShots(container, incident, mini = false) {
+  const key = incident.snapshots.map((s) => s.id).join(',');
+  if (container.dataset.key === key) return;
+  container.dataset.key = key;
+  container.classList.toggle('mini', mini);
+  container.hidden = incident.snapshots.length === 0;
+  container.replaceChildren(
+    ...incident.snapshots.map((shot) => {
+      const img = h('img', { src: `/api/snapshots/${shot.id}`, alt: shotCaption(shot), draggable: 'false' });
+      return h('button', { type: 'button', class: 'shot', title: shotCaption(shot), onclick: () => openLightbox(shot) }, img);
+    }),
+  );
+}
+
+function openLightbox(shot) {
+  $('lightbox-img').src = `/api/snapshots/${shot.id}`;
+  $('lightbox-caption').textContent = shotCaption(shot);
+  $('lightbox').hidden = false;
+}
+$('lightbox').addEventListener('click', () => ($('lightbox').hidden = true));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') $('lightbox').hidden = true;
+});
+
 function confirmationText(reason) {
   if (reason?.startsWith('neighbor:')) {
     const id = reason.slice('neighbor:'.length);
@@ -521,6 +554,7 @@ function buildCard(incident) {
   refs.chip = h('span', { class: 'chip' });
   refs.conf = h('p', { class: 'small conf-line' });
   refs.advice = h('p', { class: 'small advice' });
+  refs.shots = h('div', { class: 'shots' });
   refs.status = h('p', { class: 'small' });
   refs.ack = h('button', { class: 'btn small', type: 'button', text: 'Acquitter', onclick: () => act(() => api(`/api/incidents/${incident.id}/ack`, { method: 'POST' })) });
   refs.cams = h('button', {
@@ -549,6 +583,7 @@ function buildCard(incident) {
     refs.status,
     refs.conf,
     refs.advice,
+    refs.shots,
     h('div', { class: 'row wrap' }, refs.cams, refs.ack),
     refs.comment,
     h('div', { class: 'row wrap' }, refs.fire, refs.false),
@@ -569,6 +604,7 @@ function updateCard({ el, refs }, incident) {
   refs.conf.textContent = confirmed
     ? `Confirmée : ${confirmationText(incident.confirmationReason)}.`
     : "À confirmer : rien ne la corrobore pour l'instant. Elle reste à traiter.";
+  renderShots(refs.shots, incident);
   refs.advice.hidden = !incident.hint;
   refs.advice.textContent = incident.hint ? `Probable fausse alarme : ${hintText(incident.hintDetails)} À vérifier : l'incident reste ouvert.` : '';
   el.querySelector('.inc-title').textContent = incident.detectorName;
@@ -624,6 +660,7 @@ function renderIncidents() {
         h('strong', { text: `n°${i.id} ${i.detectorName}` }),
         h('span', { class: `tag ${i.qualification}`, text: QUALIF_LABEL[i.qualification] ?? '' }),
         h('span', { class: 'muted small', text: `clôturé à ${time(i.closedAt)} par ${i.closedBy}${i.comment ? ` - ${i.comment}` : ''}` }),
+        i.snapshots.length ? (() => { const box = h('div', { class: 'shots mini' }); renderShots(box, i, true); return box; })() : null,
       ),
     ),
   );
