@@ -23,7 +23,7 @@ seedUsers(db, config.adminPassword, config.operatorPassword);
 
 const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
-const engine = createEngine(db, publish);
+const engine = createEngine(db, publish, Date.now, { silentTimeoutMs: config.detectorTimeoutS * 1000 });
 const video = createVideoService({
   db,
   engine,
@@ -80,9 +80,20 @@ bus.on('event', (event: PsimEvent) => {
   }
 });
 
+// Surveillance des detecteurs muets : controle regulier, plusieurs fois par delai.
+const silentTimer =
+  config.detectorTimeoutS > 0
+    ? setInterval(() => engine.checkSilentDetectors(), Math.min(5000, Math.max(500, (config.detectorTimeoutS * 1000) / 4)))
+    : null;
+
 server.listen(config.port, config.host, () => {
   console.log(`[psim] interface  : http://${config.host}:${config.port}`);
   console.log(`[psim] broker MQTT: mqtt://${config.host}:${config.mqttPort}  (topic psim/detectors/<id>/state)`);
+  console.log(
+    config.detectorTimeoutS > 0
+      ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
+      : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
+  );
   if (config.demoLogin) {
     console.warn('[psim] Mode demo : les comptes sont cliquables sur la page de connexion (poste local uniquement).');
   }
@@ -92,6 +103,7 @@ server.listen(config.port, config.host, () => {
 });
 
 async function shutdown() {
+  if (silentTimer) clearInterval(silentTimer);
   video.shutdown();
   wss.close();
   server.close();

@@ -31,7 +31,7 @@ Cette commande lance tout l'environnement de test, sans aucun équipement :
 - **5 caméras RTSP simulées** (C-01 à C-05) qui publient une vraie vidéo H.264, avec fumée et flammes pilotées en direct ;
 - **4 faux appareils ONVIF** (ports 8801 à 8804, pour C-01 à C-04) : la 5e caméra reste en RTSP direct, pour montrer les deux chemins ;
 - **le PSIM**, sur une base vierge `data-demo/` (recréée à chaque lancement : votre `data/` n'est jamais touché), configuré pour lire ces caméras comme de vraies caméras, avec identifiants ;
-- **les détecteurs**, qui publient sur MQTT comme de vrais équipements.
+- **les détecteurs**, qui publient sur MQTT comme de vrais équipements, avec un signal de vie toutes les 8 secondes (la surveillance des détecteurs muets est active, à 30 s).
 
 Le PSIM de démonstration est sur http://127.0.0.1:3034 (broker MQTT sur 1884, RTSP sur 8554) : il peut tourner en même temps que votre installation habituelle. Sur la page de connexion, cliquer sur « Administrateur » ou « Opérateur » remplit les champs. Les identifiants de lecture des caméras (générés au hasard à chaque lancement) sont affichés dans le terminal : vous pouvez les saisir à la main dans *Source vidéo* pour essayer le formulaire.
 
@@ -43,7 +43,8 @@ Scénarios (menu dans le terminal : taper le numéro, `r` pour tout remettre au 
 | 2 | `incendie-atelier` | Préalarme, alarme, flammes à l'atelier, puis propagation à l'entrepôt : deux incidents critiques |
 | 3 | `surchauffe-serveurs` | Alarme immédiate en salle serveurs, sans préalarme |
 | 4 | `defaut-detecteur` | Défaut technique : le statut change, aucun incident n'est créé |
-| 5 | `detecteur-hors-ligne` | Perte de contact d'un détecteur |
+| 5 | `detecteur-muet` | Un détecteur cesse d'émettre sans rien annoncer : le PSIM le déclare hors ligne de lui-même, compteur « hors service » en haut de l'écran |
+| 6 | `detecteur-hors-ligne` | Un détecteur annonce lui-même qu'il est hors ligne |
 
 Options : `npm run demo -- --no-onvif` (toutes les caméras en RTSP direct), `--auto` (enchaîne les scénarios en boucle, pour une présentation), `--scenario=incendie-atelier` (lance un scénario au démarrage), `--speed=2` (deux fois plus vite), `--duration=120` (s'arrête seul après 120 s). `Ctrl+C` arrête tout proprement.
 
@@ -72,6 +73,18 @@ npm run sim -- D-04 normal
 ```
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
+
+## Surveillance des détecteurs muets
+
+Un détecteur qui tombe en panne ou perd son réseau ne prévient pas : sans surveillance, il resterait affiché « Normal » et sa zone ne serait plus protégée à l'insu de l'opérateur. Les détecteurs réels émettent un **signal de vie** périodique ; le PSIM considère donc le silence comme un défaut.
+
+- Un détecteur « normal » ou « défaut » qui n'a rien émis depuis `PSIM_DETECTOR_TIMEOUT_S` secondes passe **« hors ligne »**. L'événement est inscrit au journal (`Détecteur muet — aucun message depuis 3 min`), la pastille devient grise et un compteur orange **« N détecteurs hors service »** s'affiche en haut de l'écran (il compte aussi les détecteurs en défaut). L'infobulle de chaque détecteur donne l'heure de son dernier message.
+- Dès qu'il émet à nouveau, il reprend son état réel. S'il reprend avec une alarme, l'incident s'ouvre normalement.
+- **Un détecteur en préalarme ou en alarme n'est jamais déclassé par le silence** : il garde son état, comme une centrale, tant qu'il n'est pas revenu à la normale. Sinon un silence pourrait masquer un feu en cours.
+- Un détecteur jamais entendu depuis le démarrage du PSIM dispose du même délai, compté depuis le démarrage.
+- Les caméras ne sont pas concernées (leur flux affiche déjà sa propre panne).
+
+Réglage : **`PSIM_DETECTOR_TIMEOUT_S`**. Comptez 3 à 4 fois la période d'émission de vos détecteurs (période de 60 s : 180-240 s). `0` désactive. Valeur par défaut : **180 en exploitation** (`PSIM_SIM_ENABLED=0`), **désactivé en mode simulateur** : le simulateur et `npm run sim` n'envoient qu'un message ponctuel, sans signal de vie, et les détecteurs simulés passeraient sinon hors ligne au bout de 3 minutes. Le démarrage du PSIM affiche l'état de cette surveillance.
 
 ## Architecture
 

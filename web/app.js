@@ -51,6 +51,7 @@ const ACTION_LABEL = {
   device_deleted: 'Équipement supprimé',
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
+  detector_silent: 'Détecteur muet',
   camera_source_updated: 'Source vidéo modifiée',
 };
 const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
@@ -144,6 +145,7 @@ function onMessage(msg) {
       renderWall();
       renderIncidents();
       renderAdmin();
+      updateAlarmState();
       break;
     case 'incident':
       onIncident(msg.incident);
@@ -286,7 +288,11 @@ function renderPlan() {
         {
           type: 'button',
           class: pinClass(d),
-          title: `${d.name} - ${d.zone || 'sans zone'}${d.kind === 'detector' ? ` - ${STATUS_LABEL[d.status] ?? d.status}` : ''}`,
+          title: `${d.name} - ${d.zone || 'sans zone'}${
+            d.kind === 'detector'
+              ? ` - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage'}`
+              : ''
+          }`,
           dataset: { id: d.id },
         },
         h('span', { class: 'pin-glyph', text: d.kind === 'detector' ? 'D' : 'C' }),
@@ -595,7 +601,9 @@ function describe(entry) {
   if (entry.incidentId) parts.push(`incident n°${entry.incidentId}`);
   if (entry.details) {
     parts.push(
-      entry.action === 'device_state'
+      entry.action === 'detector_silent'
+        ? entry.details.replace(/etait : (\w+)/, (_, s) => `était : ${STATUS_LABEL[s] ?? s}`)
+        : entry.action === 'device_state'
         ? entry.details.replace(/\w+/g, (w) => STATUS_LABEL[w] ?? w)
         : (QUALIF_LABEL[entry.details] ?? entry.details),
     );
@@ -648,6 +656,14 @@ function updateAlarmState() {
   counter.hidden = unacked.length === 0;
   counter.textContent = `${unacked.length} à acquitter`;
   document.title = unacked.length ? `(${unacked.length}) ALARME - PSIM` : 'GAMRdigitale PSIM';
+
+  // Detecteurs hors service (muets, hors ligne ou en defaut) : jamais silencieux pour l'operateur,
+  // un detecteur qui ne surveille plus laisse sa zone sans protection.
+  const down = devicesOf('detector').filter((d) => d.status === 'offline' || d.status === 'fault');
+  const badge = $('offline-counter');
+  badge.hidden = down.length === 0;
+  badge.textContent = `${down.length} détecteur${down.length > 1 ? 's' : ''} hors service`;
+  badge.title = down.map((d) => `${d.id} ${d.name} : ${STATUS_LABEL[d.status]}`).join('\n');
 }
 
 setInterval(() => {

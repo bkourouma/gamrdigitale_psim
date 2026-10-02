@@ -13,6 +13,8 @@ export interface Step {
   detector?: string;
   state?: DetectorState;
   fire?: { zone: string; level: 0 | 1 | 2 };
+  /** Avec `detector` : true = le detecteur cesse d'emettre son signal de vie, false = il reprend. */
+  mute?: boolean;
   note?: string;
 }
 
@@ -85,6 +87,17 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: 'detecteur-muet',
+    title: 'Detecteur muet : le detecteur des bureaux ne repond plus',
+    description:
+      'Le detecteur des bureaux cesse d\'emettre sans rien annoncer (coupure reseau, panne). Le PSIM doit le declarer hors ligne de lui-meme ; il reprend ensuite.',
+    holdSeconds: 5,
+    steps: [
+      { at: 0, detector: 'D-02', mute: true, note: 'Coupure : le detecteur des bureaux n\'emet plus rien' },
+      { at: 50, detector: 'D-02', mute: false, note: 'Le reseau revient : le detecteur recommence a emettre' },
+    ],
+  },
+  {
     id: 'detecteur-hors-ligne',
     title: 'Perte de contact : detecteur du stockage',
     description: 'Le detecteur du stockage annonce qu\'il est hors ligne, puis revient.',
@@ -97,7 +110,11 @@ export const SCENARIOS: Scenario[] = [
 ];
 
 /** Ordre du mode automatique (presentation en boucle). */
-export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'defaut-detecteur', 'surchauffe-serveurs', 'incendie-atelier'];
+export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'defaut-detecteur', 'detecteur-muet', 'surchauffe-serveurs', 'incendie-atelier'];
+
+/** Delai de la demo avant de declarer un detecteur muet (s) ; le signal de vie part bien plus souvent. */
+export const DEMO_SILENT_TIMEOUT_S = 30;
+export const DEMO_HEARTBEAT_S = 8;
 
 export function lastStepAt(scenario: Scenario): number {
   return Math.max(...scenario.steps.map((s) => s.at));

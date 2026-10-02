@@ -56,7 +56,31 @@ function rowToAudit(r: Row): AuditEntry {
 
 export type Publish = (event: PsimEvent) => void;
 
-export function createEngine(db: DatabaseSync, publish: Publish, now: () => number = Date.now) {
+export interface EngineOptions {
+  /**
+   * Delai (ms) sans message au-dela duquel un detecteur est declare « hors ligne ». 0 = surveillance
+   * desactivee. Les detecteurs reels emettent un signal de vie periodique : le silence est un defaut.
+   */
+  silentTimeoutMs?: number;
+}
+
+function describeDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 90) return `${s} s`;
+  const m = Math.round(s / 60);
+  return m < 90 ? `${m} min` : `${Math.round(m / 60)} h`;
+}
+
+export function createEngine(
+  db: DatabaseSync,
+  publish: Publish,
+  now: () => number = Date.now,
+  options: EngineOptions = {},
+) {
+  const silentTimeoutMs = options.silentTimeoutMs ?? 0;
+  // Un detecteur jamais entendu depuis le demarrage dispose du meme delai de grace, compte
+  // a partir du demarrage : on ne le declare pas muet avant d'avoir pu l'entendre.
+  const startedAt = now();
   function getDevice(id: string): Device | null {
     const r = db.prepare('SELECT * FROM device WHERE id = ?').get(id) as Row | undefined;
     return r ? rowToDevice(r) : null;
@@ -158,6 +182,38 @@ export function createEngine(db: DatabaseSync, publish: Publish, now: () => numb
       audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
       publishIncident(open.id);
     }
+  }
+
+  /**
+   * Declare « hors ligne » les detecteurs qui ne donnent plus signe de vie. A appeler regulierement.
+   * Seuls les detecteurs « normal » ou « defaut » sont concernes : un detecteur en prealarme ou en
+   * alarme garde son etat tant qu'il n'est pas revenu a la normale (comme une centrale), sinon un
+   * silence pourrait masquer un feu en cours. Renvoie les identifiants nouvellement declares muets.
+   */
+  function checkSilentDetectors(): string[] {
+    if (silentTimeoutMs <= 0) return [];
+    const t = now();
+    const rows = db
+      .prepare("SELECT id, status, last_seen FROM device WHERE kind = 'detector' AND status IN ('normal', 'fault')")
+      .all() as Row[];
+    const silent: string[] = [];
+    for (const row of rows) {
+      const reference = Math.max((row.last_seen as number | null) ?? 0, startedAt);
+      const silence = t - reference;
+      if (silence < silentTimeoutMs) continue;
+      const id = row.id as string;
+      const res = db
+        .prepare("UPDATE device SET status = 'offline' WHERE id = ? AND status IN ('normal', 'fault')")
+        .run(id);
+      if (res.changes === 0) continue;
+      audit('systeme', 'detector_silent', {
+        deviceId: id,
+        details: `aucun message depuis ${describeDuration(silence)} (etait : ${row.status})`,
+      });
+      publishDevice(id);
+      silent.push(id);
+    }
+    return silent;
   }
 
   function acknowledge(incidentId: number, actor: string): Incident {
@@ -335,6 +391,7 @@ export function createEngine(db: DatabaseSync, publish: Publish, now: () => numb
 
   return {
     handleDetectorMessage,
+    checkSilentDetectors,
     acknowledge,
     close,
     createDevice,

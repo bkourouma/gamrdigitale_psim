@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createRunner, findScenario } from '../scripts/demo/runner.ts';
 import { HEIGHT, Scene, WIDTH } from '../scripts/demo/scene.ts';
-import { AUTO_SEQUENCE, DEMO_CAMERAS, DEMO_DETECTORS, SCENARIOS, lastStepAt } from '../scripts/demo/scenarios.ts';
+import { AUTO_SEQUENCE, DEMO_CAMERAS, DEMO_DETECTORS, DEMO_HEARTBEAT_S, DEMO_SILENT_TIMEOUT_S, SCENARIOS, lastStepAt } from '../scripts/demo/scenarios.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
 import { DEMO_DEVICES } from '../server/seed.ts';
@@ -156,5 +156,93 @@ describe('rendu des images de camera', () => {
     assert.ok(scene.displayedFire > 0 && scene.displayedFire < 0.5, 'monte doucement');
     for (let i = 0; i < 100; i++) scene.render(250 + i * 125);
     assert.ok(scene.displayedFire > 1.95);
+  });
+});
+
+describe('signal de vie et detecteur muet (demo)', () => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('le signal de vie rejoue periodiquement l\'etat courant de chaque detecteur', async () => {
+    const seen: string[] = [];
+    const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), setFire: () => {}, log: () => {}, speed: 200 });
+    runner.startHeartbeat(8); // 40 ms reelles
+    await wait(150);
+    runner.stopHeartbeat();
+    for (const id of DEMO_DETECTORS) assert.ok(seen.filter((x) => x === `${id}:normal`).length >= 2, `${id} emet regulierement`);
+  });
+
+  it('un detecteur muet n\'emet plus rien, et reprend en le signalant tout de suite', async () => {
+    const seen: string[] = [];
+    const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), setFire: () => {}, log: () => {}, speed: 200 });
+    runner.startHeartbeat(8);
+    runner.run(findScenario('detecteur-muet')!); // silence de 0 a 50 s = 250 ms reelles
+    await wait(150);
+    assert.ok(runner.isMuted('D-02'));
+    assert.equal(seen.filter((x) => x.startsWith('D-02')).length, 0, 'rien de D-02 pendant le silence');
+    assert.ok(seen.filter((x) => x.startsWith('D-01')).length >= 2, 'les autres continuent');
+    await wait(250);
+    runner.stopHeartbeat();
+    assert.ok(!runner.isMuted('D-02'));
+    assert.ok(seen.includes('D-02:normal'), 'D-02 reprend');
+  });
+
+  it('changer de scenario ou faire un reset leve tout silence en cours', () => {
+    // 500x : le silence de 50 s dure 100 ms reelles, assez pour le constater avant sa fin.
+    const runner = createRunner({ publish: () => {}, setFire: () => {}, log: () => {}, speed: 500 });
+    runner.run(findScenario('detecteur-muet')!);
+    return wait(30).then(() => {
+      assert.ok(runner.isMuted('D-02'));
+      runner.run(findScenario('defaut-detecteur')!);
+      assert.ok(!runner.isMuted('D-02'), 'le nouveau scenario repart d\'un etat sain');
+      runner.run(findScenario('detecteur-muet')!);
+      return wait(30).then(() => {
+        assert.ok(runner.isMuted('D-02'));
+        runner.reset(true);
+        assert.ok(!runner.isMuted('D-02'));
+      });
+    });
+  });
+
+  it('le silence du scenario depasse le delai de la demo, avec de la marge', () => {
+    const scenario = findScenario('detecteur-muet')!;
+    const mute = scenario.steps.find((st) => st.mute === true)!;
+    const resume = scenario.steps.find((st) => st.mute === false)!;
+    assert.equal(mute.detector, resume.detector);
+    assert.ok(resume.at - mute.at >= DEMO_SILENT_TIMEOUT_S + 10, 'le PSIM a le temps de le declarer muet avant qu\'il ne reprenne');
+    assert.ok(DEMO_HEARTBEAT_S * 3 < DEMO_SILENT_TIMEOUT_S, 'plusieurs signaux de vie manques avant de conclure');
+  });
+
+  it("de bout en bout : le moteur declare le detecteur hors ligne pendant le silence, puis il revient", async () => {
+    const SPEED = 50;
+    const start = Date.now();
+    const virtualNow = () => 1_000_000_000_000 + (Date.now() - start) * SPEED; // temps acceleré
+    const db = openDb(':memory:');
+    const { seedDemo } = await import('../server/seed.ts');
+    seedDemo(db, mkdtempSync(join(tmpdir(), 'psim-')), join(import.meta.dirname, '..', 'seed'));
+    const engine = createEngine(db, () => {}, virtualNow, { silentTimeoutMs: DEMO_SILENT_TIMEOUT_S * 1000 });
+    const runner = createRunner({
+      publish: (d, st) => engine.handleDetectorMessage(d, { state: st }),
+      setFire: () => {},
+      log: () => {},
+      speed: SPEED,
+    });
+    runner.reset(true);
+    runner.startHeartbeat(DEMO_HEARTBEAT_S);
+    const watcher = setInterval(() => engine.checkSilentDetectors(), 20);
+
+    runner.run(findScenario('detecteur-muet')!); // 50 s virtuelles = 1 s reelle
+    await wait(750); // ~37 s virtuelles : au-dela des 30 s de delai
+    const during = Object.fromEntries(DEMO_DETECTORS.map((id) => [id, engine.getDevice(id)?.status]));
+    await wait(550); // ~65 s virtuelles : le detecteur a repris
+    const after = engine.getDevice('D-02')?.status;
+    clearInterval(watcher);
+    runner.stopHeartbeat();
+    runner.cancel();
+
+    assert.equal(during['D-02'], 'offline', 'le detecteur muet est declare hors ligne');
+    for (const id of DEMO_DETECTORS.filter((d) => d !== 'D-02')) assert.equal(during[id], 'normal', `${id} continue d'emettre`);
+    assert.equal(after, 'normal', 'il redevient normal en reprenant');
+    const actions = engine.listAudit(100).filter((a) => a.deviceId === 'D-02').map((a) => a.action);
+    assert.ok(actions.includes('detector_silent'));
   });
 });

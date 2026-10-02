@@ -90,6 +90,7 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .conn i { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
 .conn.online i { background: var(--ok); }
 .conn.offline i { background: var(--alarm); }
+.counter.warn { background: var(--warn); color: #1b1300; animation: none; }
 .counter { background: var(--alarm); color: #fff; border-radius: 999px; padding: 2px 10px; font-weight: 700; animation: blink 1s steps(2) infinite; }
 
 /* ------------------------------------------------ disposition */

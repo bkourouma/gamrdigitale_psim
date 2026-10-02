@@ -23,7 +23,7 @@ import mqtt from 'mqtt';
 import { MEDIAMTX_BIN, installMediamtx } from './install-mediamtx.ts';
 import { startDiscoveryResponder, startOnvifDevice } from './demo/onvif-device.ts';
 import { createRunner, findScenario } from './demo/runner.ts';
-import { DEMO_CAMERAS, SCENARIOS } from './demo/scenarios.ts';
+import { DEMO_CAMERAS, DEMO_HEARTBEAT_S, DEMO_SILENT_TIMEOUT_S, SCENARIOS } from './demo/scenarios.ts';
 import { HEIGHT, Scene, WIDTH } from './demo/scene.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -37,7 +37,7 @@ const FPS = 8;
 const FFMPEG = process.env.PSIM_FFMPEG ?? 'ffmpeg';
 
 // La demo utilise toujours les identifiants de developpement, jamais ceux de votre .env.
-for (const name of ['PSIM_ADMIN_PASSWORD', 'PSIM_OPERATOR_PASSWORD', 'PSIM_MQTT_PASSWORD', 'PSIM_SECRET_KEY', 'PSIM_DEMO_LOGIN']) {
+for (const name of ['PSIM_DETECTOR_TIMEOUT_S', 'PSIM_ADMIN_PASSWORD', 'PSIM_OPERATOR_PASSWORD', 'PSIM_MQTT_PASSWORD', 'PSIM_SECRET_KEY', 'PSIM_DEMO_LOGIN']) {
   delete process.env[name];
 }
 const { config } = await import('../server/config.ts');
@@ -211,6 +211,8 @@ const server = spawn(process.execPath, [join(root, 'server', 'index.ts')], {
     PSIM_MQTT_PORT: String(MQTT_PORT),
     PSIM_DATA_DIR: 'data-demo',
     PSIM_DEMO_LOGIN: '1',
+    // La demo envoie des signaux de vie : la surveillance des detecteurs muets est donc active.
+    PSIM_DETECTOR_TIMEOUT_S: String(Math.max(2, Math.round(DEMO_SILENT_TIMEOUT_S / speed))),
     PSIM_FFMPEG: FFMPEG,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -326,6 +328,7 @@ const runner = createRunner({
   speed,
 });
 runner.reset(true);
+runner.startHeartbeat(DEMO_HEARTBEAT_S);
 
 console.log(`
 ============================================================

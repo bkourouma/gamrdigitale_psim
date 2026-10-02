@@ -22,6 +22,10 @@ export function createRunner(deps: RunnerDeps) {
   let timers: NodeJS.Timeout[] = [];
   let running: string | null = null;
   let autoStop = false;
+  // Un detecteur reel emet un signal de vie periodique : on rejoue donc l'etat courant de chacun.
+  const states = new Map<string, DetectorState>(DEMO_DETECTORS.map((id) => [id, 'normal']));
+  const muted = new Set<string>();
+  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   function cancel(): void {
     for (const t of timers) clearTimeout(t);
@@ -34,18 +38,28 @@ export function createRunner(deps: RunnerDeps) {
   }
 
   function publish(detectorId: string, state: DetectorState): void {
+    states.set(detectorId, state);
+    if (muted.has(detectorId)) return; // un detecteur muet n'emet rien du tout
     Promise.resolve(deps.publish(detectorId, state)).catch((err) => deps.log(`  ! publication ${detectorId} : ${err.message}`));
   }
 
   /** Lance un scenario ; `onDone` est appele apres son dernier evenement. */
   function run(scenario: Scenario, onDone?: () => void): void {
     cancel();
+    muted.clear(); // un silence laisse par un scenario interrompu ne doit pas survivre
     running = scenario.id;
     deps.log(`\n> Scenario : ${scenario.title}`);
     deps.log(`  ${scenario.description}`);
     for (const step of scenario.steps) {
       later(step.at, () => {
         if (step.fire) deps.setFire(step.fire.zone, step.fire.level);
+        if (step.detector && step.mute !== undefined) {
+          if (step.mute) muted.add(step.detector);
+          else {
+            muted.delete(step.detector);
+            publish(step.detector, states.get(step.detector) ?? 'normal'); // reprend et le dit tout de suite
+          }
+        }
         if (step.detector && step.state) publish(step.detector, step.state);
         if (step.note) deps.log(`  [${step.at.toString().padStart(3)} s] ${step.note}`);
       });
@@ -59,6 +73,7 @@ export function createRunner(deps: RunnerDeps) {
   /** Tout revient au calme : plus de feu, tous les detecteurs a la normale. */
   function reset(quiet = false): void {
     cancel();
+    muted.clear();
     for (const camera of DEMO_CAMERAS) deps.setFire(camera.zone, 0);
     for (const id of DEMO_DETECTORS) publish(id, 'normal');
     if (!quiet) deps.log('\n> Retour au calme : feu eteint, detecteurs a la normale');
@@ -89,9 +104,25 @@ export function createRunner(deps: RunnerDeps) {
     });
   }
 
+  /** Signal de vie : toutes les `periodSeconds`, chaque detecteur non muet repete son etat courant. */
+  function startHeartbeat(periodSeconds: number): void {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      for (const [id, state] of states) if (!muted.has(id)) publish(id, state);
+    }, (periodSeconds * 1000) / speed);
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+
   return {
     run,
     reset,
+    startHeartbeat,
+    stopHeartbeat,
+    isMuted: (id: string) => muted.has(id),
     auto,
     cancel,
     stopAuto: () => {
