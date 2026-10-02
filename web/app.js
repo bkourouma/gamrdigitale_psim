@@ -1,0 +1,960 @@
+import { startSimCamera } from './camera.js';
+import { startLiveCamera } from './live.js';
+
+// ---------------------------------------------------------------- outils
+
+const $ = (id) => document.getElementById(id);
+
+/** Cree un element DOM. Tout le texte passe par textContent : jamais d'HTML injecte. */
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === 'class') el.className = value;
+    else if (key === 'text') el.textContent = value;
+    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+    else if (key === 'dataset') Object.assign(el.dataset, value);
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  for (const child of children.flat()) if (child) el.append(child);
+  return el;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const time = (ts) => new Date(ts).toLocaleTimeString('fr-FR');
+const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+
+function elapsed(ts) {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return s >= 3600 ? `${Math.floor(s / 3600)} h ${mm} min` : `${mm}:${ss}`;
+}
+
+function toast(message, kind = 'error') {
+  const el = h('div', { class: `toast ${kind}`, role: 'status', text: message });
+  $('toasts').append(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
+const STATUS_LABEL = { normal: 'Normal', prealarm: 'Préalarme', alarm: 'ALARME', fault: 'Défaut', offline: 'Hors ligne' };
+const ACTION_LABEL = {
+  device_state: 'Changement d\'état',
+  incident_opened: 'Incident ouvert',
+  incident_escalated: 'Incident aggravé',
+  incident_acked: 'Incident acquitté',
+  incident_closed: 'Incident clôturé',
+  login: 'Connexion',
+  plan_updated: 'Plan remplacé',
+  device_created: 'Équipement ajouté',
+  device_updated: 'Équipement modifié',
+  device_deleted: 'Équipement supprimé',
+  links_updated: 'Caméras associées modifiées',
+  sim_trigger: 'Simulation',
+  camera_source_updated: 'Source vidéo modifiée',
+};
+const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
+
+async function api(path, { method = 'GET', body } = {}) {
+  const init = { method, credentials: 'same-origin', headers: {} };
+  if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, init);
+  if (res.status === 401 && path !== '/api/login') {
+    showLogin();
+    throw new Error('Session expirée, reconnectez-vous');
+  }
+  const data = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
+  return data;
+}
+
+// ---------------------------------------------------------------- état
+
+const S = {
+  me: null,
+  site: { name: '', hasPlan: false, planVersion: 0 },
+  devices: new Map(),
+  links: {},
+  incidents: new Map(),
+  audit: [],
+  selectedId: null,
+  focusIncidentId: null,
+  manualCams: [],
+  editMode: false,
+  dragging: false,
+  muted: false,
+  ws: null,
+  wsDelay: 1000,
+};
+
+const devicesOf = (kind) => [...S.devices.values()].filter((d) => d.kind === kind);
+const isActive = (i) => i.status !== 'closed';
+const isFiring = (d) => d && (d.status === 'alarm' || d.status === 'prealarm');
+
+function activeIncidents() {
+  return [...S.incidents.values()]
+    .filter(isActive)
+    .sort((a, b) => (b.severity === 'critical') - (a.severity === 'critical') || b.openedAt - a.openedAt);
+}
+
+function focusedIncident() {
+  const chosen = S.incidents.get(S.focusIncidentId);
+  return chosen && isActive(chosen) ? chosen : (activeIncidents()[0] ?? null);
+}
+
+function applySnapshot(snap) {
+  S.site = snap.site;
+  S.devices = new Map(snap.devices.map((d) => [d.id, d]));
+  S.links = snap.links;
+  S.incidents = new Map(snap.incidents.map((i) => [i.id, i]));
+  S.audit = snap.audit;
+  if (S.selectedId && !S.devices.has(S.selectedId)) S.selectedId = null;
+  S.manualCams = S.manualCams.filter((id) => S.devices.has(id));
+  renderAll(true);
+}
+
+function onIncident(incident) {
+  const previous = S.incidents.get(incident.id);
+  S.incidents.set(incident.id, incident);
+  // Nouvelle alarme (ou aggravation) : l'operateur voit tout de suite les cameras concernees.
+  if (incident.status === 'open' && (!previous || previous.status !== 'open' || previous.severity !== incident.severity)) {
+    S.focusIncidentId = incident.id;
+    S.manualCams = [];
+  }
+  renderPlan();
+  renderWall();
+  renderIncidents();
+  updateAlarmState();
+}
+
+function onMessage(msg) {
+  switch (msg.type) {
+    case 'snapshot':
+      applySnapshot(msg);
+      break;
+    case 'config':
+      api('/api/state').then(applySnapshot).catch((e) => toast(e.message));
+      break;
+    case 'device':
+      S.devices.set(msg.device.id, msg.device);
+      renderPlan();
+      renderWall();
+      renderIncidents();
+      renderAdmin();
+      break;
+    case 'incident':
+      onIncident(msg.incident);
+      break;
+    case 'audit':
+      S.audit.unshift(msg.entry);
+      S.audit.length = Math.min(S.audit.length, 100);
+      renderJournal();
+      break;
+  }
+}
+
+// ---------------------------------------------------------------- connexion
+
+function connect() {
+  clearTimeout(connect.timer);
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  S.ws = ws;
+  ws.onopen = () => {
+    S.wsDelay = 1000;
+    setConn(true);
+  };
+  ws.onmessage = (e) => {
+    try {
+      onMessage(JSON.parse(e.data));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+  ws.onclose = async () => {
+    setConn(false);
+    if (!S.me) return;
+    try {
+      await api('/api/me');
+    } catch {
+      return; // session perdue : l'ecran de connexion est deja affiche
+    }
+    connect.timer = setTimeout(connect, S.wsDelay);
+    S.wsDelay = Math.min(S.wsDelay * 2, 10000);
+  };
+}
+
+function setConn(online) {
+  const el = $('conn');
+  el.className = `conn ${online ? 'online' : 'offline'}`;
+  el.querySelector('span').textContent = online ? 'Temps réel connecté' : 'Connexion perdue…';
+}
+
+// ---------------------------------------------------------------- connexion utilisateur
+
+async function loadDemoAccounts() {
+  try {
+    const res = await fetch('/api/demo-accounts', { credentials: 'same-origin' });
+    if (!res.ok) return; // mode demo desactive : la page reste inchangee
+    const accounts = await res.json();
+    $('demo-buttons').replaceChildren(
+      ...accounts.map((a) =>
+        h('button', {
+          class: 'btn small',
+          type: 'button',
+          text: `${a.label} (${a.username})`,
+          onclick: () => {
+            $('login-user').value = a.username;
+            $('login-pass').value = a.password;
+            $('login-error').textContent = '';
+            $('login-form').querySelector('button[type="submit"]').focus();
+          },
+        }),
+      ),
+    );
+    $('demo-accounts').hidden = accounts.length === 0;
+  } catch {
+    // indisponible : on ignore
+  }
+}
+
+function showLogin() {
+  S.me = null;
+  S.ws?.close();
+  stopTiles();
+  $('app').hidden = true;
+  $('login').hidden = false;
+  $('login-pass').value = '';
+  loadDemoAccounts();
+}
+
+function showApp() {
+  $('login').hidden = true;
+  $('app').hidden = false;
+  $('whoami').textContent = `${S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
+  $('admin').hidden = S.me.role !== 'admin';
+  $('sim-box').hidden = !S.me.simEnabled;
+  connect();
+}
+
+$('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('login-error').textContent = '';
+  ensureAudio();
+  try {
+    await api('/api/login', {
+      method: 'POST',
+      body: { username: $('login-user').value, password: $('login-pass').value },
+    });
+    S.me = await api('/api/me');
+    showApp();
+  } catch (err) {
+    $('login-error').textContent = err.message;
+  }
+});
+
+$('logout').addEventListener('click', async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  showLogin();
+});
+
+// ---------------------------------------------------------------- plan
+
+function pinClass(d) {
+  return `pin ${d.kind} ${d.kind === 'detector' ? d.status : ''}${S.selectedId === d.id ? ' selected' : ''}${
+    S.editMode ? ' editable' : ''
+  }${wallCameraIds().includes(d.id) ? ' on-wall' : ''}`;
+}
+
+function renderPlan() {
+  if (S.dragging) return;
+  const img = $('plan-img');
+  $('plan-empty').hidden = S.site.hasPlan;
+  $('plan-stage').hidden = !S.site.hasPlan;
+  $('site-name').textContent = S.site.name;
+  const src = `/api/plan?v=${S.site.planVersion}`;
+  if (S.site.hasPlan && !img.src.endsWith(src)) img.src = src;
+
+  const pins = $('plan-pins');
+  pins.replaceChildren(
+    ...[...S.devices.values()].map((d) => {
+      const pin = h(
+        'button',
+        {
+          type: 'button',
+          class: pinClass(d),
+          title: `${d.name} - ${d.zone || 'sans zone'}${d.kind === 'detector' ? ` - ${STATUS_LABEL[d.status] ?? d.status}` : ''}`,
+          dataset: { id: d.id },
+        },
+        h('span', { class: 'pin-glyph', text: d.kind === 'detector' ? 'D' : 'C' }),
+        h('span', { class: 'pin-label', text: d.id }),
+      );
+      pin.style.left = `${d.x}%`;
+      pin.style.top = `${d.y}%`;
+      pin.addEventListener('pointerdown', (ev) => onPinDown(ev, d.id, pin));
+      return pin;
+    }),
+  );
+
+  // Traits detecteur -> cameras associees (detecteur selectionne ou en incident).
+  const svg = $('plan-links');
+  svg.replaceChildren();
+  const shown = new Set(activeIncidents().map((i) => i.detectorId));
+  if (S.selectedId) shown.add(S.selectedId);
+  for (const detectorId of shown) {
+    const det = S.devices.get(detectorId);
+    if (det?.kind !== 'detector') continue;
+    for (const camId of S.links[detectorId] ?? []) {
+      const cam = S.devices.get(camId);
+      if (!cam) continue;
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', det.x);
+      line.setAttribute('y1', det.y);
+      line.setAttribute('x2', cam.x);
+      line.setAttribute('y2', cam.y);
+      line.setAttribute('class', `link ${isFiring(det) ? 'firing' : ''}`);
+      svg.append(line);
+    }
+  }
+}
+
+function onPinDown(ev, id, pin) {
+  ev.preventDefault();
+  const stage = $('plan-stage');
+  const startX = ev.clientX;
+  const startY = ev.clientY;
+  let moved = false;
+  pin.setPointerCapture(ev.pointerId);
+
+  const move = (e) => {
+    if (!S.editMode) return;
+    if (!moved && Math.hypot(e.clientX - startX, e.clientY - startY) < 4) return;
+    moved = true;
+    S.dragging = true;
+    const rect = stage.getBoundingClientRect();
+    pin.style.left = `${clamp(((e.clientX - rect.left) / rect.width) * 100, 0, 100)}%`;
+    pin.style.top = `${clamp(((e.clientY - rect.top) / rect.height) * 100, 0, 100)}%`;
+  };
+  const up = async () => {
+    pin.removeEventListener('pointermove', move);
+    pin.removeEventListener('pointerup', up);
+    pin.removeEventListener('pointercancel', up);
+    if (moved) {
+      const x = Math.round(parseFloat(pin.style.left) * 10) / 10;
+      const y = Math.round(parseFloat(pin.style.top) * 10) / 10;
+      S.dragging = false;
+      try {
+        await api(`/api/devices/${encodeURIComponent(id)}`, { method: 'PATCH', body: { x, y } });
+      } catch (err) {
+        toast(err.message);
+        renderPlan();
+      }
+    } else {
+      S.dragging = false;
+      onPinClick(id);
+    }
+  };
+  pin.addEventListener('pointermove', move);
+  pin.addEventListener('pointerup', up);
+  pin.addEventListener('pointercancel', up);
+}
+
+function onPinClick(id) {
+  const d = S.devices.get(id);
+  if (!d) return;
+  S.selectedId = S.selectedId === id && !S.editMode ? null : id;
+  if (d.kind === 'camera') {
+    // Ajoute la camera au mur video (4 max, la plus ancienne sort).
+    S.manualCams = S.manualCams.includes(id) ? S.manualCams.filter((c) => c !== id) : [...S.manualCams, id].slice(-4);
+  } else {
+    const incident = activeIncidents().find((i) => i.detectorId === id);
+    if (incident) {
+      S.focusIncidentId = incident.id;
+      S.manualCams = [];
+    }
+  }
+  renderPlan();
+  renderWall();
+  renderAdmin();
+}
+
+// ---------------------------------------------------------------- mur video
+
+const tiles = new Map(); // idCamera -> { el, stop }
+
+function fireLevelFor(camera) {
+  let level = 0;
+  for (const d of devicesOf('detector')) {
+    if (!camera.zone || d.zone !== camera.zone) continue;
+    if (d.status === 'alarm') return 2;
+    if (d.status === 'prealarm') level = 1;
+  }
+  return level;
+}
+
+function wallCameraIds() {
+  if (S.manualCams.length) return S.manualCams;
+  const incident = focusedIncident();
+  const ids = incident ? incident.cameraIds : devicesOf('camera').map((c) => c.id);
+  return ids.filter((id) => S.devices.has(id)).slice(0, 4);
+}
+
+function makeTile(camera) {
+  const canvas = h('canvas', { class: 'tile-canvas' });
+  const caption = h('div', { class: 'tile-caption' });
+  const status = h('div', { class: 'tile-status', role: 'status' });
+  status.hidden = true;
+  const el = h('div', { class: 'tile' }, canvas, status, caption);
+  const live = camera.streamKind === 'onvif' || camera.streamKind === 'rtsp';
+  canvas.setAttribute('aria-label', `${live ? 'Flux vidéo' : 'Flux simulé'} ${camera.name}`);
+  const stop = live
+    ? startLiveCamera(canvas, {
+        cameraId: camera.id,
+        onStatus: (message) => {
+          status.hidden = !message;
+          status.textContent = message ?? '';
+        },
+      })
+    : startSimCamera(canvas, {
+        label: camera.id,
+        zone: camera.zone,
+        getFire: () => fireLevelFor(S.devices.get(camera.id) ?? camera),
+      });
+  return { el, stop, caption, kind: camera.streamKind };
+}
+
+function stopTiles() {
+  for (const t of tiles.values()) t.stop();
+  tiles.clear();
+  $('wall').replaceChildren();
+}
+
+function renderWall() {
+  const wall = $('wall');
+  const ids = wallCameraIds();
+  const incident = S.manualCams.length ? null : focusedIncident();
+
+  $('wall-mode').textContent = S.manualCams.length
+    ? 'Sélection manuelle'
+    : incident
+      ? `Incident n°${incident.id} - ${incident.detectorName}`
+      : 'Vue générale';
+  $('wall-auto').hidden = S.manualCams.length === 0;
+
+  for (const [id, tile] of tiles) {
+    if (!ids.includes(id)) {
+      tile.stop();
+      tile.el.remove();
+      tiles.delete(id);
+    }
+  }
+  ids.forEach((id, index) => {
+    const camera = S.devices.get(id);
+    let tile = tiles.get(id);
+    if (tile && tile.kind !== camera.streamKind) {
+      // La source de la camera a change (simulee <-> reelle) : on reconstruit la vignette.
+      tile.stop();
+      tile.el.remove();
+      tiles.delete(id);
+      tile = undefined;
+    }
+    if (!tile) {
+      tile = makeTile(camera);
+      tiles.set(id, tile);
+    }
+    tile.caption.textContent = `${camera.name}${camera.zone ? ` - ${camera.zone}` : ''}`;
+    tile.el.classList.toggle('alert', fireLevelFor(camera) > 0);
+    if (wall.children[index] !== tile.el) wall.insertBefore(tile.el, wall.children[index] ?? null);
+  });
+  wall.className = `wall n${Math.max(ids.length, 1)}`;
+  if (ids.length === 0) wall.replaceChildren(h('p', { class: 'empty', text: 'Aucune caméra configurée.' }));
+}
+
+$('wall-auto').addEventListener('click', () => {
+  S.manualCams = [];
+  renderPlan();
+  renderWall();
+});
+
+// ---------------------------------------------------------------- incidents
+
+const cards = new Map(); // idIncident -> { el, refs }
+
+function whereText(incident) {
+  return `${incident.zone || 'Zone non renseignée'} - ouvert à ${time(incident.openedAt)} - depuis ${elapsed(incident.openedAt)}`;
+}
+
+function buildCard(incident) {
+  const refs = {};
+  refs.badge = h('span', { class: 'badge' });
+  refs.status = h('p', { class: 'small' });
+  refs.ack = h('button', { class: 'btn small', type: 'button', text: 'Acquitter', onclick: () => act(() => api(`/api/incidents/${incident.id}/ack`, { method: 'POST' })) });
+  refs.cams = h('button', {
+    class: 'btn small',
+    type: 'button',
+    text: 'Voir les caméras',
+    onclick: () => {
+      S.focusIncidentId = incident.id;
+      S.manualCams = [];
+      renderPlan();
+      renderWall();
+    },
+  });
+  refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: 'Commentaire (facultatif)', 'aria-label': 'Commentaire' });
+  const close = (qualification) => () =>
+    act(() => api(`/api/incidents/${incident.id}/close`, { method: 'POST', body: { qualification, comment: refs.comment.value } }));
+  refs.fire = h('button', { class: 'btn small danger', type: 'button', text: 'Feu confirmé', onclick: close('fire') });
+  refs.false = h('button', { class: 'btn small', type: 'button', text: 'Fausse alarme', onclick: close('false_alarm') });
+  refs.hint = h('p', { class: 'small hint', text: 'Clôture possible quand le détecteur est revenu à la normale.' });
+
+  const el = h(
+    'article',
+    { class: 'incident' },
+    h('header', {}, refs.badge, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
+    h('p', { class: 'small inc-where' }),
+    refs.status,
+    h('div', { class: 'row wrap' }, refs.cams, refs.ack),
+    refs.comment,
+    h('div', { class: 'row wrap' }, refs.fire, refs.false),
+    refs.hint,
+  );
+  return { el, refs };
+}
+
+function updateCard({ el, refs }, incident) {
+  const detector = S.devices.get(incident.detectorId);
+  const critical = incident.severity === 'critical';
+  el.className = `incident ${critical ? 'critical' : 'warning'} ${incident.status}${focusedIncident()?.id === incident.id ? ' focused' : ''}`;
+  refs.badge.textContent = critical ? 'ALARME' : 'PRÉALARME';
+  el.querySelector('.inc-title').textContent = incident.detectorName;
+  el.querySelector('.inc-where').textContent = whereText(incident);
+  refs.status.textContent =
+    incident.status === 'open'
+      ? 'Non acquitté'
+      : `Acquitté par ${incident.ackedBy} à ${time(incident.ackedAt)}`;
+  refs.status.classList.toggle('unacked', incident.status === 'open');
+  refs.ack.hidden = incident.status !== 'open';
+  const blocked = isFiring(detector);
+  refs.fire.disabled = blocked;
+  refs.false.disabled = blocked;
+  refs.hint.hidden = !blocked;
+}
+
+async function act(fn) {
+  try {
+    const result = await fn();
+    if (result?.id) onIncident(result);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function renderIncidents() {
+  const list = activeIncidents();
+  $('no-incident').hidden = list.length > 0;
+  const container = $('incidents');
+
+  for (const [id, card] of cards) {
+    if (!list.some((i) => i.id === id)) {
+      card.el.remove();
+      cards.delete(id);
+    }
+  }
+  list.forEach((incident, index) => {
+    let card = cards.get(incident.id);
+    if (!card) {
+      card = buildCard(incident);
+      cards.set(incident.id, card);
+    }
+    updateCard(card, incident);
+    if (container.children[index] !== card.el) container.insertBefore(card.el, container.children[index] ?? null);
+  });
+
+  const closed = [...S.incidents.values()].filter((i) => !isActive(i)).sort((a, b) => b.closedAt - a.closedAt).slice(0, 10);
+  $('closed-list').replaceChildren(
+    ...closed.map((i) =>
+      h(
+        'li',
+        {},
+        h('strong', { text: `n°${i.id} ${i.detectorName}` }),
+        h('span', { class: `tag ${i.qualification}`, text: QUALIF_LABEL[i.qualification] ?? '' }),
+        h('span', { class: 'muted small', text: `clôturé à ${time(i.closedAt)} par ${i.closedBy}${i.comment ? ` - ${i.comment}` : ''}` }),
+      ),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------- journal
+
+function describe(entry) {
+  const parts = [];
+  if (entry.deviceId) parts.push(S.devices.get(entry.deviceId)?.name ?? entry.deviceId);
+  if (entry.incidentId) parts.push(`incident n°${entry.incidentId}`);
+  if (entry.details) {
+    parts.push(
+      entry.action === 'device_state'
+        ? entry.details.replace(/\w+/g, (w) => STATUS_LABEL[w] ?? w)
+        : (QUALIF_LABEL[entry.details] ?? entry.details),
+    );
+  }
+  return parts.join(' - ');
+}
+
+function renderJournal() {
+  $('journal').replaceChildren(
+    ...S.audit.slice(0, 60).map((e) =>
+      h(
+        'li',
+        {},
+        h('time', { text: time(e.ts) }),
+        h('span', { class: 'j-action', text: ACTION_LABEL[e.action] ?? e.action }),
+        h('span', { class: 'muted', text: describe(e) }),
+        h('span', { class: 'muted small j-actor', text: e.actor }),
+      ),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------- alerte sonore et compteur
+
+let audio = null;
+function ensureAudio() {
+  try {
+    audio ??= new AudioContext();
+    if (audio.state === 'suspended') audio.resume();
+  } catch {
+    audio = null;
+  }
+}
+
+function beep(freq, duration) {
+  if (!audio || audio.state !== 'running') return;
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.frequency.value = freq;
+  osc.type = 'square';
+  gain.gain.value = 0.05;
+  osc.connect(gain).connect(audio.destination);
+  osc.start();
+  osc.stop(audio.currentTime + duration);
+}
+
+function updateAlarmState() {
+  const unacked = activeIncidents().filter((i) => i.status === 'open');
+  const counter = $('alarm-counter');
+  counter.hidden = unacked.length === 0;
+  counter.textContent = `${unacked.length} à acquitter`;
+  document.title = unacked.length ? `(${unacked.length}) ALARME - PSIM` : 'GAMRdigitale PSIM';
+}
+
+setInterval(() => {
+  if (!S.me) return;
+  const unacked = activeIncidents().filter((i) => i.status === 'open');
+  if (unacked.length && !S.muted) beep(unacked.some((i) => i.severity === 'critical') ? 880 : 520, 0.3);
+  for (const [id, card] of cards) {
+    const incident = S.incidents.get(id);
+    if (incident) card.el.querySelector('.inc-where').textContent = whereText(incident);
+  }
+}, 1000);
+
+$('mute').addEventListener('click', () => {
+  S.muted = !S.muted;
+  $('mute').textContent = S.muted ? 'Son coupé' : 'Son activé';
+  ensureAudio();
+});
+document.addEventListener('click', ensureAudio);
+
+// ---------------------------------------------------------------- administration
+
+const SIM_STATES = [
+  ['normal', 'Normal'],
+  ['prealarm', 'Préalarme'],
+  ['alarm', 'Alarme'],
+  ['fault', 'Défaut'],
+];
+
+function renderAdmin(force = false) {
+  if (S.me?.role !== 'admin') return;
+  if (S.me.simEnabled) {
+    $('sim-list').replaceChildren(
+      ...devicesOf('detector').map((d) =>
+        h(
+          'div',
+          { class: 'sim-row' },
+          h('span', { class: `dot ${d.status}` }),
+          h('span', { class: 'sim-name', text: `${d.id} ${d.name}` }),
+          ...SIM_STATES.map(([state, label]) =>
+            h('button', {
+              class: `btn tiny${d.status === state ? ' active' : ''}`,
+              type: 'button',
+              text: label,
+              onclick: () => api(`/api/sim/detectors/${encodeURIComponent(d.id)}`, { method: 'POST', body: { state } }).catch((e) => toast(e.message)),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+  $('edit-tools').hidden = !S.editMode;
+  renderDeviceEditor(force);
+}
+
+function renderDeviceEditor(force = false) {
+  const box = $('device-editor');
+  const d = S.selectedId ? S.devices.get(S.selectedId) : null;
+  box.hidden = !d || !S.editMode;
+  if (!d || !S.editMode) return;
+  // Meme equipement : on ne reconstruit que sur demande, et jamais pendant une saisie.
+  if (box.dataset.for === d.id && (!force || box.contains(document.activeElement))) return;
+
+  const name = h('input', { value: d.name, maxlength: '80', 'aria-label': 'Nom' });
+  const zone = h('input', { value: d.zone, maxlength: '80', 'aria-label': 'Zone' });
+  const children = [
+    h('strong', { text: `${d.id} (${d.kind === 'detector' ? 'détecteur' : 'caméra'})` }),
+    h(
+      'div',
+      { class: 'row wrap' },
+      name,
+      zone,
+      h('button', {
+        class: 'btn small',
+        type: 'button',
+        text: 'Enregistrer',
+        onclick: () =>
+          api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { name: name.value, zone: zone.value } })
+            .then(() => toast('Enregistré', 'ok'))
+            .catch((e) => toast(e.message)),
+      }),
+      h('button', {
+        class: 'btn small danger',
+        type: 'button',
+        text: 'Supprimer',
+        onclick: () => {
+          if (!confirm(`Supprimer ${d.id} - ${d.name} ?`)) return;
+          S.selectedId = null;
+          api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' }).catch((e) => toast(e.message));
+        },
+      }),
+    ),
+  ];
+  if (d.kind === 'camera') children.push(buildSourceForm(d));
+  if (d.kind === 'detector') {
+    const linked = new Set(S.links[d.id] ?? []);
+    children.push(
+      h('p', { class: 'small muted', text: 'Caméras affichées quand ce détecteur déclenche :' }),
+      h(
+        'div',
+        { class: 'row wrap' },
+        ...devicesOf('camera').map((c) =>
+          h(
+            'label',
+            { class: 'check' },
+            h('input', {
+              type: 'checkbox',
+              checked: linked.has(c.id),
+              onchange: (e) => {
+                e.target.checked ? linked.add(c.id) : linked.delete(c.id);
+                api(`/api/devices/${encodeURIComponent(d.id)}/links`, { method: 'PUT', body: { cameraIds: [...linked] } }).catch((err) => toast(err.message));
+              },
+            }),
+            ` ${c.id} ${c.name}`,
+          ),
+        ),
+      ),
+    );
+  }
+  box.dataset.for = d.id;
+  box.replaceChildren(...children);
+}
+
+// ---- Source video d'une camera (ONVIF / RTSP) ----
+
+S.sourceMsg = {};
+
+function setSourceMsg(cameraId, text, kind = '') {
+  S.sourceMsg[cameraId] = { text, kind };
+  const el = document.getElementById('source-msg');
+  if (el && el.dataset.for === cameraId) {
+    el.textContent = text;
+    el.className = `small ${kind}`;
+  }
+}
+
+function buildSourceForm(d) {
+  const wrap = h('div', { class: 'source-form' }, h('p', { class: 'small muted', text: 'Chargement de la source vidéo…' }));
+  const url = `/api/cameras/${encodeURIComponent(d.id)}`;
+  api(`${url}/source`)
+    .then((src) => wrap.replaceChildren(...sourceFields(d, src, url)))
+    .catch((err) => wrap.replaceChildren(h('p', { class: 'error', text: err.message })));
+  return wrap;
+}
+
+function sourceFields(d, src, url) {
+  const kind = h(
+    'select',
+    { 'aria-label': 'Type de source vidéo' },
+    h('option', { value: 'simulated', text: 'Simulée (démonstration)' }),
+    h('option', { value: 'onvif', text: 'Caméra ONVIF' }),
+    h('option', { value: 'rtsp', text: 'Flux RTSP direct' }),
+  );
+  kind.value = src.kind;
+  const host = h('input', { value: src.host ?? '', placeholder: 'Adresse IP (ex. 192.168.1.64)', maxlength: '253', 'aria-label': 'Adresse de la caméra' });
+  const port = h('input', { value: src.port ?? '', type: 'number', min: '1', max: '65535', 'aria-label': 'Port', class: 'narrow' });
+  const path = h('input', { value: src.rtspPath ?? '', placeholder: 'Chemin RTSP (ex. /Streaming/Channels/102)', maxlength: '200', 'aria-label': 'Chemin RTSP' });
+  const user = h('input', { value: src.username ?? '', placeholder: 'Utilisateur', maxlength: '64', autocomplete: 'off', 'aria-label': 'Utilisateur de la caméra' });
+  const pass = h('input', {
+    type: 'password',
+    placeholder: src.hasPassword ? 'Mot de passe (vide = inchangé)' : 'Mot de passe',
+    maxlength: '128',
+    autocomplete: 'new-password',
+    'aria-label': 'Mot de passe de la caméra',
+  });
+  const found = h('div', { class: 'found' });
+  const previous = S.sourceMsg[d.id];
+  const msg = h('p', { id: 'source-msg', class: `small ${previous?.kind ?? ''}`, role: 'status', dataset: { for: d.id }, text: previous?.text ?? '' });
+
+  const netFields = [host, port, user, pass];
+  const sync = () => {
+    const k = kind.value;
+    for (const el of netFields) el.hidden = k === 'simulated';
+    path.hidden = k !== 'rtsp';
+    discover.hidden = k !== 'onvif';
+    testBtn.hidden = k === 'simulated';
+    port.placeholder = k === 'rtsp' ? 'Port (554)' : 'Port (80)';
+    found.replaceChildren();
+  };
+
+  const save = async (thenTest) => {
+    setSourceMsg(d.id, 'Enregistrement…');
+    try {
+      await api(`${url}/source`, {
+        method: 'PUT',
+        body: {
+          kind: kind.value,
+          host: host.value.trim(),
+          port: port.value === '' ? undefined : Number(port.value),
+          rtspPath: path.value.trim(),
+          username: user.value,
+          password: pass.value,
+        },
+      });
+      pass.value = '';
+      if (thenTest && kind.value !== 'simulated') {
+        setSourceMsg(d.id, "Test en cours (jusqu'à 15 secondes)…");
+        const result = await api(`${url}/test`, { method: 'POST' });
+        setSourceMsg(d.id, `Connexion réussie : ${result.message}`, 'ok');
+      } else {
+        setSourceMsg(d.id, 'Source enregistrée', 'ok');
+      }
+    } catch (err) {
+      setSourceMsg(d.id, err.message, 'error');
+    }
+  };
+
+  const discover = h('button', {
+    class: 'btn small',
+    type: 'button',
+    text: 'Rechercher sur le réseau',
+    onclick: async () => {
+      found.replaceChildren(h('span', { class: 'small muted', text: 'Recherche en cours (4 secondes)…' }));
+      try {
+        const cameras = await api('/api/onvif/discover');
+        found.replaceChildren(
+          ...(cameras.length
+            ? cameras.map((c) =>
+                h('button', {
+                  class: 'btn small',
+                  type: 'button',
+                  text: `${c.host}:${c.port}${c.name ? ` - ${c.name}` : ''}${c.hardware ? ` (${c.hardware})` : ''}`,
+                  onclick: () => {
+                    host.value = c.host;
+                    port.value = c.port;
+                    found.replaceChildren();
+                  },
+                }),
+              )
+            : [h('span', { class: 'small muted', text: 'Aucune caméra trouvée (pare-feu, ou caméra sur un autre réseau ?). Saisissez son adresse à la main.' })]),
+        );
+      } catch (err) {
+        found.replaceChildren(h('span', { class: 'small error', text: err.message }));
+      }
+    },
+  });
+  const testBtn = h('button', { class: 'btn small primary', type: 'button', text: 'Enregistrer et tester', onclick: () => save(true) });
+  const saveBtn = h('button', { class: 'btn small', type: 'button', text: 'Enregistrer', onclick: () => save(false) });
+
+  kind.addEventListener('change', sync);
+  sync();
+  return [
+    h('p', { class: 'small muted', text: 'Source vidéo de cette caméra :' }),
+    h('div', { class: 'row wrap' }, kind, discover),
+    found,
+    h('div', { class: 'row wrap' }, host, port),
+    path,
+    h('div', { class: 'row wrap' }, user, pass),
+    h('div', { class: 'row wrap' }, testBtn, saveBtn),
+    msg,
+  ];
+}
+
+$('edit-mode').addEventListener('change', (e) => {
+  S.editMode = e.target.checked;
+  $('device-editor').dataset.for = '';
+  renderPlan();
+  renderAdmin();
+});
+
+$('plan-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const res = await fetch('/api/plan', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': file.type }, body: file });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
+    toast('Plan remplacé', 'ok');
+    const snap = await api('/api/state');
+    applySnapshot(snap);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const created = await api('/api/devices', {
+      method: 'POST',
+      body: { kind: $('add-kind').value, id: $('add-id').value.trim(), name: $('add-name').value, zone: $('add-zone').value },
+    });
+    S.selectedId = created.id;
+    $('add-id').value = '';
+    $('add-name').value = '';
+    toast(`${created.id} ajouté au centre du plan : glissez-le à sa place`, 'ok');
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+// ---------------------------------------------------------------- rendu global et demarrage
+
+function renderAll(force = false) {
+  renderPlan();
+  renderWall();
+  renderIncidents();
+  renderJournal();
+  renderAdmin(force);
+  updateAlarmState();
+}
+
+(async () => {
+  try {
+    S.me = await api('/api/me');
+    showApp();
+  } catch {
+    showLogin();
+  }
+})();

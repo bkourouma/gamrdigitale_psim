@@ -1,0 +1,32 @@
+{
+  "name": "gamrdigitale-psim",
+  "version": "0.1.0",
+  "description": "MVP PSIM : détecteurs incendie intelligents + vidéosurveillance",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.ts",
+    "dev": "node --watch --env-file-if-exists=.env server/index.ts",
+    "sim": "node --env-file-if-exists=.env scripts/sim.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "install:mediamtx": "node scripts/install-mediamtx.ts",
+    "demo": "node scripts/demo.ts"
+  },
+  "dependencies": {
+    "aedes": "^1.2.0",
+    "express": "^5.2.1",
+    "mqtt": "^5.16.0",
+    "onvif": "^0.8.3",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.3",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}

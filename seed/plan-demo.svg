@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600" viewBox="0 0 1000 600" font-family="Arial, Helvetica, sans-serif">
+  <rect width="1000" height="600" fill="#f4f1ea"/>
+  <!-- Murs exterieurs -->
+  <rect x="40" y="40" width="920" height="520" fill="#ffffff" stroke="#2b2f36" stroke-width="8"/>
+  <!-- Cloisons -->
+  <g stroke="#2b2f36" stroke-width="5" fill="none">
+    <line x1="300" y1="40" x2="300" y2="260"/>
+    <line x1="620" y1="40" x2="620" y2="260"/>
+    <line x1="40" y1="260" x2="130" y2="260"/>
+    <line x1="190" y1="260" x2="300" y2="260"/>
+    <line x1="360" y1="260" x2="560" y2="260"/>
+    <line x1="620" y1="260" x2="800" y2="260"/>
+    <line x1="860" y1="260" x2="960" y2="260"/>
+    <line x1="40" y1="340" x2="200" y2="340"/>
+    <line x1="260" y1="340" x2="500" y2="340"/>
+    <line x1="560" y1="340" x2="700" y2="340"/>
+    <line x1="760" y1="340" x2="960" y2="340"/>
+    <line x1="500" y1="340" x2="500" y2="560"/>
+    <line x1="780" y1="340" x2="780" y2="560"/>
+  </g>
+  <!-- Couloir -->
+  <rect x="44" y="264" width="912" height="72" fill="#ece8de"/>
+  <!-- Libelles -->
+  <g fill="#5a6270" font-size="20" font-weight="bold" text-anchor="middle">
+    <text x="170" y="240">Accueil</text>
+    <text x="460" y="240">Bureaux</text>
+    <text x="790" y="240">Salle serveurs</text>
+    <text x="500" y="305" font-size="16" font-weight="normal">Couloir</text>
+    <text x="270" y="535">Entrepot</text>
+    <text x="640" y="535">Atelier</text>
+    <text x="870" y="535">Stockage</text>
+  </g>
+  <text x="960" y="585" text-anchor="end" font-size="13" fill="#8a919e">Plan de demonstration - remplacer par le plan reel du site</text>
+</svg>

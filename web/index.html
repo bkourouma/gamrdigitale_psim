@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GAMRdigitale PSIM</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="toasts" aria-live="polite"></div>
+
+  <section id="login" class="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>GAMRdigitale PSIM</h1>
+      <p class="muted">Supervision incendie et vidéosurveillance</p>
+      <div id="demo-accounts" class="demo-accounts" hidden>
+        <span class="small muted">Mode démonstration : cliquer pour remplir</span>
+        <div id="demo-buttons" class="row wrap"></div>
+      </div>
+      <label>Identifiant <input id="login-user" name="username" autocomplete="username" required></label>
+      <label>Mot de passe <input id="login-pass" name="password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button class="btn primary" type="submit">Se connecter</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <strong>GAMRdigitale PSIM</strong>
+        <span id="site-name" class="muted"></span>
+      </div>
+      <div class="topbar-right">
+        <span id="conn" class="conn offline"><i></i><span>Hors ligne</span></span>
+        <span id="alarm-counter" class="counter" hidden></span>
+        <button id="mute" class="btn small" type="button" title="Couper ou activer l'alerte sonore">Son activé</button>
+        <span id="whoami" class="muted"></span>
+        <button id="logout" class="btn small" type="button">Déconnexion</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <div class="col-left">
+        <section class="card c-plan">
+          <div class="card-head">
+            <h2>Plan du site</h2>
+            <div class="legend">
+              <span class="lg detector normal"></span>Normal
+              <span class="lg detector prealarm"></span>Préalarme
+              <span class="lg detector alarm"></span>Alarme
+              <span class="lg detector fault"></span>Défaut
+              <span class="lg detector offline"></span>Hors ligne
+              <span class="lg camera"></span>Caméra
+            </div>
+          </div>
+          <div id="plan-empty" class="empty" hidden>Aucun plan. Un administrateur peut en téléverser un.</div>
+          <div id="plan-stage" class="plan-stage">
+            <img id="plan-img" alt="Plan du site" draggable="false">
+            <svg id="plan-links" class="plan-links" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+            <div id="plan-pins"></div>
+          </div>
+        </section>
+
+        <section id="admin" class="card c-admin" hidden>
+          <details id="sim-box">
+            <summary>Simulateur de détecteurs</summary>
+            <p class="muted small">Chaque bouton publie un message MQTT, comme un vrai détecteur.</p>
+            <div id="sim-list" class="sim-list"></div>
+          </details>
+          <details id="edit-box">
+            <summary>Édition du plan et de l'inventaire</summary>
+            <label class="check"><input id="edit-mode" type="checkbox"> Mode édition (glisser les pastilles pour les placer)</label>
+            <div id="edit-tools" hidden>
+              <div class="row">
+                <label class="btn small file">Remplacer le plan
+                  <input id="plan-file" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
+                </label>
+                <span class="muted small">PNG, JPEG, WEBP ou SVG, 10 Mo max</span>
+              </div>
+              <form id="add-form" class="row wrap">
+                <select id="add-kind" aria-label="Type"><option value="detector">Détecteur</option><option value="camera">Caméra</option></select>
+                <input id="add-id" placeholder="Identifiant (ex. D-08)" maxlength="32" required>
+                <input id="add-name" placeholder="Nom" maxlength="80" required>
+                <input id="add-zone" placeholder="Zone" maxlength="80">
+                <button class="btn small" type="submit">Ajouter au centre du plan</button>
+              </form>
+              <div id="device-editor" class="device-editor" hidden></div>
+            </div>
+          </details>
+        </section>
+      </div>
+
+      <aside class="col-right">
+        <section class="card c-video">
+          <div class="card-head">
+            <h2>Vidéo</h2>
+            <span id="wall-mode" class="muted small"></span>
+            <button id="wall-auto" class="btn small" type="button" hidden>Retour automatique</button>
+          </div>
+          <div id="wall" class="wall"></div>
+        </section>
+
+        <section class="card c-incidents">
+          <div class="card-head"><h2>Incidents</h2></div>
+          <p id="no-incident" class="empty">Aucun incident en cours.</p>
+          <div id="incidents"></div>
+          <details id="closed-box">
+            <summary>Derniers incidents clôturés</summary>
+            <ul id="closed-list" class="closed-list"></ul>
+          </details>
+        </section>
+
+        <section class="card c-journal">
+          <div class="card-head"><h2>Journal</h2></div>
+          <ul id="journal" class="journal"></ul>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
