@@ -379,6 +379,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
 | `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
+| `scripts/commission.ts`, `scripts/commission/` | Mise en service : contrôles d'installation, recette des détecteurs (watch), fiche de recette imprimable |
 | `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
 | `server/auditchain.ts`, `server/journal.ts` | Journal infalsifiable : chaîne d'empreintes, vérification, ancres, alerte d'altération |
 | `scripts/verify-journal.ts` | Vérification du journal hors PSIM (base, sauvegarde, ancre externe) |
@@ -399,9 +400,19 @@ caméras (simulées) ◄── mur vidéo             │
 
 Message MQTT attendu sur `psim/detectors/<id>/state` : `{"state": "normal" | "prealarm" | "alarm" | "fault" | "offline"}`, ou `{"event": …}` / `{"value": …}` pour les autres sources (voir plus haut).
 
+## Mise en service sur site
+
+Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équipement réel n'a été testé**. Pour que la première rencontre avec le matériel réel soit méthodique, le PSIM livre un **guide** ([docs/MISE-EN-SERVICE.md](docs/MISE-EN-SERVICE.md) : de la machine vide à la recette signée) et trois outils, en lecture seule, qui n'envoient aucune alerte :
+
+- **`npm run commission`** contrôle l'installation réelle, point par point, avec la marche à suivre pour chaque problème : configuration, **heure** (écart mesuré si une référence externe est réglée), **certificat HTTPS** (expiration, correspondance avec la clé), **ffmpeg**, **SMTP** (connexion et authentification sans rien envoyer), **Telegram** (jeton valide), **webhooks** (joignables, sans requête), **supervision externe** (signal réel), **disque**, **sauvegardes** (intégrité de la dernière), **caméras** (une image reçue de chacune), **inventaire** (détecteurs jamais entendus, sans zone, sans caméra liée, administrateurs sans 2FA) et **intégrité du journal**. Messages de test sur demande uniquement : `--send-mail <adresse>`, `--telegram-chat <id>`. Code de sortie 1 s'il y a un échec. Une base d'une version antérieure est reconnue (le PSIM doit d'abord la migrer en démarrant).
+- **`npm run commission -- watch`** est la **recette des détecteurs** : écoute le broker et dit, message par message, ce que le PSIM comprend (`OK … -> ALARME`, `INCONNU` : identifiant absent de l'inventaire, `ILLISIBLE` : JSON, état, événement ou valeur invalides, message de plus de 1 Ko). Au bilan : détecteurs entendus, **silencieux**, inconnus, illisibles. Options : `--minutes`, `--until-all`, `--allow-missing`. Les messages reçus sont traités par le PSIM comme de vraies alarmes : prévenir les destinataires avant.
+- **`npm run commission -- sheet --out recette.html`** produit la **fiche de recette** imprimable : une ligne par équipement de l'inventaire (message reçu, alarme testée, image visible, retour à la normale), les essais de bout en bout (alarme, escalade, pannes, sécurité) et les signatures.
+
+**Limites** : ces outils vérifient ce qu'ils peuvent mesurer depuis le serveur ; ils ne remplacent pas la constatation sur place (le détecteur déclenche-t-il vraiment, la sirène retentit-elle, le destinataire a-t-il reçu l'alerte). Les équipements qui ne parlent pas MQTT/JSON demandent une **passerelle** de traduction, hors périmètre du PSIM.
+
 ## Passer aux équipements réels
 
-- **Détecteurs** : publier sur le topic ci-dessus (directement ou via une passerelle vers MQTT). Rien d'autre à changer.
+- **Détecteurs** : publier sur le topic ci-dessus (directement ou via une passerelle vers MQTT). Rien d'autre à changer. Voir « Mise en service sur site » pour la recette, détecteur par détecteur.
 - **Plan** : en administrateur, *Édition du plan* → *Remplacer le plan* (PNG, JPEG, WEBP ou SVG), puis glisser les pastilles à leur emplacement réel.
 - **Caméras** : voir la section suivante.
 

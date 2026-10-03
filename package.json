@@ -22,7 +22,8 @@
     "check-config": "node --env-file-if-exists=.env scripts/check-config.ts",
     "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts",
     "supervise": "node --env-file-if-exists=.env scripts/supervise.ts",
-    "verify-journal": "node --env-file-if-exists=.env scripts/verify-journal.ts"
+    "verify-journal": "node --env-file-if-exists=.env scripts/verify-journal.ts",
+    "commission": "node --env-file-if-exists=.env scripts/commission.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",
