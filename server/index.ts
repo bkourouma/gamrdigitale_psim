@@ -4,7 +4,8 @@ import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { SESSION_COOKIE, createApp, sessionFromRequest } from './api.ts';
-import { getSession, parseCookies, purgeExpired } from './auth.ts';
+import { maskAudit, maskSnapshot } from './visibility.ts';
+import { accountsWithDevPassword, getSession, parseCookies, purgeExpired } from './auth.ts';
 import { createBackup, listBackups, pruneBackups } from './backup.ts';
 import { config } from './config.ts';
 import { headOf } from './auditchain.ts';
@@ -110,6 +111,9 @@ const findings = preflight({
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
   heartbeatUrl: config.heartbeatUrl,
+  mqttAllowPlaintext: config.mqttAllowPlaintext,
+  smtpHost: config.notify.smtp.host,
+  smtpStarttls: config.notify.smtp.starttls,
 });
 if (findings.length > 0) {
   // En production, toute erreur est bloquante ; hors production, seules celles marquees « toujours » (ex. mots de passe de demonstration sur un reseau).
@@ -119,6 +123,21 @@ if (findings.length > 0) {
     console.error('[psim] Demarrage refuse : corrigez les erreurs ci-dessus (voir .env.example et README, « Mise en production »).');
     releaseLock();
     process.exit(1);
+  }
+}
+
+// Mots de passe de demonstration deja STOCKES en base (base de developpement reutilisee, ou restauree) : le controle ci-dessus ne voit
+// que l'environnement. En production, ou si le PSIM est ouvert au reseau, c'est bloquant.
+{
+  const weak = accountsWithDevPassword(db);
+  if (weak.length > 0) {
+    const message = `Compte(s) ${weak.join(', ')} : le mot de passe enregistre est une valeur de demonstration PUBLIQUE (la base vient d'un essai ou d'une demonstration). Changez-le : npm run set-password -- <compte>, ou utilisez un dossier de donnees neuf.`;
+    if (config.production || !['127.0.0.1', 'localhost', '::1'].includes(config.host)) {
+      console.error(`[psim] ${message}\n[psim] Demarrage refuse.`);
+      releaseLock();
+      process.exit(1);
+    }
+    console.warn(`[psim] attention : ${message}`);
   }
 }
 
@@ -188,6 +207,13 @@ const users = createUsersService({
   },
   requireTotp: config.requireTotp,
 });
+{
+  const unreadable = users.unreadableSecrets();
+  if (unreadable.length > 0) {
+    console.error(`[psim] ATTENTION : la cle de chiffrement ne correspond pas aux secrets 2FA de ${unreadable.join(', ')} (cle perdue ou restauration sur une autre machine). Ils ne peuvent se connecter qu'avec un code de secours ; recours : npm run reset-2fa -- <compte>.`);
+    engine.audit('systeme', 'secret_key_mismatch', { details: `secrets 2FA illisibles : ${unreadable.join(', ')}` });
+  }
+}
 const risk = createRiskService(db, engine, { fireWindowDays: config.riskFireWindowDays, staleMonths: config.riskStaleMonths });
 risk.recordHistory(); // un point par jour pour les tendances (une seule ecriture par jour)
 const riskTimer = setInterval(() => risk.recordHistory(), 10 * 60 * 1000);
@@ -236,6 +262,7 @@ const broker = await startBroker(engine, {
   user: config.mqttUser,
   password: config.mqttPassword,
   tls: mqttTlsFiles,
+  gateways: config.mqttGateways,
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
   releaseLock();
@@ -257,6 +284,7 @@ const system = createSystemStatus({
   backup: { everyH: config.backup.everyH, dir: backupDir, last: () => lastBackup, count: () => listBackups(backupDir).length },
   lastGap: () => continuity.lastGap(),
   journal: () => journalGuard.last() ?? journalGuard.lastKnown(),
+  unreadableSecrets: () => users.unreadableSecrets(),
   reportMail: () => {
     const s = reportMail.get();
     return { enabled: s.frequency !== 'off', lastError: s.lastError, lastSentAt: s.lastSentAt };
@@ -364,7 +392,13 @@ const app = createApp({
 });
 
 const server: Server = createWebServer(app, tlsFiles);
-const redirect = tlsFiles && config.httpRedirectPort > 0 ? createHttpRedirect(config.port, config.host) : null;
+const redirect = tlsFiles && config.httpRedirectPort > 0 ? createHttpRedirect(config.port, config.host, (() => {
+      try {
+        return config.notify.publicUrl ? new URL(config.notify.publicUrl).hostname : null;
+      } catch {
+        return null;
+      }
+    })()) : null;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 
 // Chaque connexion garde le jeton de la session qui l'a ouverte : on la revalide a chaque envoi et par balayage.
@@ -396,7 +430,7 @@ server.on('upgrade', (req, socket, head) => {
     ws.on('error', () => ws.terminate());
     ws.on('message', () => {}); // le temps reel est a sens unique
     wsToken.set(ws, token);
-    ws.send(JSON.stringify({ type: 'snapshot', ...engine.getSnapshot() }));
+    ws.send(JSON.stringify({ type: 'snapshot', ...maskSnapshot(engine.getSnapshot(), session.role) }));
   });
 });
 
@@ -416,7 +450,7 @@ bus.on('event', (event: PsimEvent) => {
     const t = wsToken.get(client);
     const s = t ? getSession(t) : null;
     if (!s || s.restricted) client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
-    else client.send(message);
+    else client.send(event.type === 'audit' && s.role !== 'admin' ? JSON.stringify({ type: 'audit', entry: maskAudit(event.entry, s.role) }) : message);
   }
 });
 
@@ -432,6 +466,7 @@ const tickTimer = setInterval(() => {
       lastBeatAt = lastTickAt;
       sweepSockets();
       purgeExpired();
+      users.purge();
       continuity.beat(); // signe de vie : sert a mesurer la periode aveugle d'un prochain arret
     }
   } catch (err) {
@@ -451,6 +486,8 @@ server.listen(config.port, config.host, () => {
   console.log(`[psim] interface  : ${scheme}://${config.host}:${config.port}`);
   console.log(`[psim] broker MQTT: ${mqttTlsFiles ? 'mqtts' : 'mqtt'}://${config.mqttHost}:${config.mqttPort}  (topic psim/detectors/<id>/state)`);
   console.log(`[psim] sante      : ${scheme}://${config.host}:${config.port}/healthz`);
+  // Port occupe ou interdit (80 !) : on le dit, mais le PSIM de securite ne s'arrete pas pour une simple redirection.
+  redirect?.on('error', (err: NodeJS.ErrnoException) => console.error(`[psim] redirection HTTP -> HTTPS impossible sur le port ${config.httpRedirectPort} (${err.code ?? err.message}) : l'interface HTTPS fonctionne quand meme`));
   if (redirect) redirect.listen(config.httpRedirectPort, config.host, () => console.log(`[psim] redirection HTTP -> HTTPS sur le port ${config.httpRedirectPort}`));
   console.log(
     heartbeat.status().configured

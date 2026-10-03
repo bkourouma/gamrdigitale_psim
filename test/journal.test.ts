@@ -87,7 +87,9 @@ describe('detection des alterations', () => {
   it("supprimer une entree au milieu rompt le chainage a l'entree suivante", () => {
     const { db } = setup();
     db.prepare('DELETE FROM audit_log WHERE id = 3').run();
-    assert.deepEqual(reasons(db), ['4:chainage rompu : une entree precedente a ete supprimee ou modifiee']);
+    const r = reasons(db);
+    assert.ok(r.includes('4:chainage rompu : une entree precedente a ete supprimee ou modifiee'), r.join(' | '));
+    assert.ok(r.some((x) => /^4:1 entree\(s\) manquante\(s\) avant celle-ci/.test(x)), 'et le trou dans les numeros');
   });
 
   it("supprimer la premiere entree est detecte (debut de chaine)", () => {
@@ -136,6 +138,23 @@ describe('detection des alterations', () => {
   });
 });
 
+describe('continuite des numeros', () => {
+  it("supprimer des entrees de fin puis continuer a ecrire laisse un trou : detecte meme si les empreintes sont recalculees", () => {
+    const { db } = setup(10);
+    db.prepare('DELETE FROM audit_log WHERE id >= 8').run();
+    // le compteur AUTOINCREMENT de SQLite etant remis a la derniere ligne, on simule le pire cas : un attaquant le corrige aussi
+    db.prepare("UPDATE sqlite_sequence SET seq = 7 WHERE name = 'audit_log'").run();
+    appendSealed(db, { ts: 99, actor: 'x', action: 'apres', incident_id: null, device_id: null, details: null });
+    assert.equal(verify(db).ok, true, 'sans trou visible, la chaine reecrite par un attaquant averti reste coherente (limite documentee : il faut une ancre)');
+    const { db: db2 } = setup(10);
+    db2.prepare('DELETE FROM audit_log WHERE id IN (8, 9, 10)').run();
+    appendSealed(db2, { ts: 99, actor: 'x', action: 'apres', incident_id: null, device_id: null, details: null });
+    const v = verify(db2);
+    assert.equal(v.ok, false, 'avec le compteur intact : un trou 7 -> 11');
+    assert.match(v.problems.map((p) => p.reason).join(' '), /3 entree\(s\) manquante\(s\)/);
+  });
+});
+
 describe('ancres : empreintes conservees hors de la base', () => {
   it("une chaine ENTIEREMENT recalculee passe seule la verification mais pas la comparaison a l'ancre", () => {
     const { db } = setup(6);
@@ -158,7 +177,9 @@ describe('ancres : empreintes conservees hors de la base', () => {
     const { db } = setup(6);
     const anchor = headOf(db)!;
     db.prepare('DELETE FROM audit_log WHERE id > 4').run();
-    assert.equal(verify(db).ok, true, 'la chaine restante est coherente');
+    const alone = verify(db);
+    assert.equal(alone.ok, false, 'detectee SANS ancre : le compteur de SQLite est plus avance que la derniere entree');
+    assert.match(alone.problems[0].reason, /la fin du journal a ete supprimee \(derniere entree n°4, compteur a 6\)/);
     const v = verify(db, [anchor]);
     assert.equal(v.ok, false);
     assert.match(v.problems.map((p) => p.reason).join(' '), /introuvable|posterieure/);

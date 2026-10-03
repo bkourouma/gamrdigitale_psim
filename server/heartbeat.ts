@@ -34,6 +34,13 @@ export interface HeartbeatOptions {
   onChange?: (state: 'failing' | 'recovered', status: HeartbeatStatus) => void;
 }
 
+/** `<chemin>/fail` AVANT la query string : avec `...?status=up&msg=OK`, un suffixe colle a la fin signalerait « up ». */
+export function failUrl(url: string): string {
+  const u = new URL(url);
+  u.pathname = `${u.pathname.replace(/\/+$/, '')}/fail`;
+  return u.toString();
+}
+
 export function validateHeartbeatUrl(url: string): string | null {
   try {
     const u = new URL(url);
@@ -71,7 +78,7 @@ export function createHeartbeat(options: HeartbeatOptions) {
         return false;
       }
     })();
-    const target = healthy ? options.url : `${options.url.replace(/\/+$/, '')}/fail`;
+    const target = healthy ? options.url : failUrl(options.url);
     try {
       // `redirect: 'error'` : on ne suit jamais une redirection (l'adresse porte un jeton).
       const res = await doFetch(target, { method: 'GET', signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });

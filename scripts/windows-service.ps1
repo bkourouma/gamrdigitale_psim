@@ -33,7 +33,14 @@ param(
     [string]$User = 'SYSTEM',
 
     # Delai (secondes) du controle de sante, et nombre d'echecs avant redemarrage.
-    [int]$HealthFailures = 3
+    [int]$HealthFailures = 3,
+
+    # Fichier d'environnement (dans le dossier du PSIM). `npm run init-production` ecrit .env.production.
+    # Lecture STRICTE : un fichier absent ou illisible arrete le PSIM au lieu de le laisser demarrer avec les valeurs de demonstration.
+    [string]$EnvFile = '.env',
+
+    # Installer malgre un dossier modifiable par des utilisateurs ordinaires (deconseille : voir l'avertissement).
+    [switch]$AllowWritableTree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +51,24 @@ $HealthTask = 'PSIM-healthcheck'
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Un PSIM lance en SYSTEM depuis un dossier que n'importe quel utilisateur local peut modifier = execution de code en SYSTEM pour
+# tout compte local (il suffit de changer server\*.ts ou node_modules). On refuse tant que ce n'est pas corrige.
+function Get-WritableByOrdinaryUsers {
+    param([string[]]$Paths)
+    $risky = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')   # Tout le monde, Utilisateurs authentifies, Utilisateurs
+    $write = [Security.AccessControl.FileSystemRights]'WriteData, CreateFiles, AppendData, Write, Modify, FullControl'
+    $found = @()
+    foreach ($p in $Paths) {
+        if (-not (Test-Path $p)) { continue }
+        foreach ($rule in (Get-Acl $p).Access) {
+            if ($rule.AccessControlType -ne 'Allow') { continue }
+            try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { continue }
+            if (($risky -contains $sid) -and (($rule.FileSystemRights -band $write) -ne 0)) { $found += "$p : $($rule.IdentityReference)"; break }
+        }
+    }
+    return $found
 }
 
 function Get-NodePath {
@@ -59,8 +84,12 @@ if ($Action -in 'Install', 'Uninstall', 'Start', 'Stop' -and -not $WhatIfPrefere
 switch ($Action) {
     'Install' {
         $node = Get-NodePath
-        if (-not (Test-Path (Join-Path $Root '.env'))) {
-            Write-Warning "Pas de fichier .env : le PSIM demarrera avec les valeurs par defaut (mots de passe de demonstration). Voir .env.example."
+        if (-not (Test-Path (Join-Path $Root $EnvFile))) {
+            throw "Fichier d'environnement introuvable : $(Join-Path $Root $EnvFile). Creez-le (npm run init-production, ou copiez .env.example) : sans lui le PSIM demarrerait avec les mots de passe de demonstration."
+        }
+        $writable = Get-WritableByOrdinaryUsers -Paths @($Root, (Join-Path $Root 'server'), (Join-Path $Root 'scripts'), (Join-Path $Root 'node_modules'))
+        if ($writable.Count -gt 0 -and -not $AllowWritableTree) {
+            throw ("Le dossier du PSIM est MODIFIABLE par des utilisateurs ordinaires :`n  " + ($writable -join "`n  ") + "`nUn PSIM lance par une tache planifiee executerait leur code avec les droits du compte de service. Corrigez les droits, par exemple (PowerShell administrateur ; ATTENTION : cela retire l'ecriture aux utilisateurs ordinaires, vous compris si vous n'etes pas administrateur) :`n  icacls `"$Root`" /inheritance:r /grant:r `"*S-1-5-18:(OI)(CI)F`" `"*S-1-5-32-544:(OI)(CI)F`" `"*S-1-5-32-545:(OI)(CI)RX`"`npuis donnez au compte de service le droit d'ECRIRE dans le seul dossier de donnees. (-AllowWritableTree pour passer outre, deconseille.)")
         }
         $principal = if ($User -eq 'SYSTEM') {
             New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -70,7 +99,7 @@ switch ($Action) {
         }
 
         # --- Tache principale : demarrage au boot, relance automatique -------------------------------------------
-        $run = New-ScheduledTaskAction -Execute $node -Argument '--env-file-if-exists=.env server/index.ts' -WorkingDirectory $Root
+        $run = New-ScheduledTaskAction -Execute $node -Argument "--env-file=$EnvFile server/index.ts" -WorkingDirectory $Root
         $boot = New-ScheduledTaskTrigger -AtStartup
         $settings = New-ScheduledTaskSettingsSet `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -79,7 +108,7 @@ switch ($Action) {
             -MultipleInstances IgnoreNew
 
         # --- Controle de sante : toutes les minutes, redemarre un PSIM bloque -------------------------------------
-        $checkAction = New-ScheduledTaskAction -Execute $node -Argument "--env-file-if-exists=.env scripts/healthcheck.ts --restart $HealthFailures" -WorkingDirectory $Root
+        $checkAction = New-ScheduledTaskAction -Execute $node -Argument "--env-file=$EnvFile scripts/healthcheck.ts --restart $HealthFailures" -WorkingDirectory $Root
         $everyMinute = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 1)
         $checkSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew
 

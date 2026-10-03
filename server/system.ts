@@ -37,6 +37,8 @@ export interface SystemDeps {
   journal?: () => { ok: boolean; at: number; checked: number; unprotected?: number } | null;
   /** Rapport periodique par e-mail. */
   reportMail?: () => { enabled: boolean; lastError: string | null; lastSentAt: number | null };
+  /** Comptes dont le secret 2FA est illisible (cle de chiffrement differente). */
+  unreadableSecrets?: () => string[];
 }
 
 const GB = 1024 ** 3;
@@ -97,6 +99,8 @@ export function createSystemStatus(deps: SystemDeps) {
     if (notif.failedLast24h > 0) warnings.push({ level: 'attention', message: `${notif.failedLast24h} notification(s) en echec sur 24 h.` });
     const journal = deps.journal?.() ?? null;
     if (journal && !journal.ok) warnings.push({ level: 'critique', message: "Le journal a ete ALTERE (verification d'integrite en echec) : traiter comme un incident de securite, voir `npm run verify-journal`." });
+    const unreadable = deps.unreadableSecrets?.() ?? [];
+    if (unreadable.length > 0) warnings.push({ level: 'critique', message: `La cle de chiffrement (data/secret.key ou PSIM_SECRET_KEY) ne correspond pas a celle qui a scelle les secrets 2FA de : ${unreadable.join(', ')}. Ces comptes ne peuvent se connecter qu'avec un code de secours, ou apres \`npm run reset-2fa -- <compte>\`. Les mots de passe des cameras sont aussi illisibles : les ressaisir.` });
     const rm = deps.reportMail?.() ?? null;
     if (rm?.enabled && rm.lastError) warnings.push({ level: 'attention', message: `Le dernier rapport periodique par e-mail n'a pas pu partir : ${rm.lastError}.` });
     const gap = deps.lastGap?.() ?? null;

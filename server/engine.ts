@@ -334,6 +334,26 @@ export function createEngine(
     }
   }
 
+  // Un equipement qui oscille (panne, ou client MQTT compromis) ne doit pas remplir le disque : le journal est chaine, donc non purgeable.
+  // Au-dela de FLAP_LIMIT changements en FLAP_WINDOW_MS, les changements d'etat ne sont plus journalises un par un (l'etat, lui,
+  // reste a jour, et les incidents ne sont jamais concernes) ; une seule ligne signale l'oscillation.
+  const FLAP_LIMIT = 30;
+  const FLAP_WINDOW_MS = 10 * 60_000;
+  const recentChanges = new Map<string, number[]>();
+  const flapReported = new Map<string, number>();
+
+  function noteStateChange(deviceId: string, details: string): void {
+    const t = now();
+    const recent = (recentChanges.get(deviceId) ?? []).filter((x) => t - x < FLAP_WINDOW_MS);
+    recent.push(t);
+    recentChanges.set(deviceId, recent);
+    if (recent.length <= FLAP_LIMIT) return void audit('detecteur', 'device_state', { deviceId, details });
+    if (t - (flapReported.get(deviceId) ?? -Infinity) >= FLAP_WINDOW_MS) {
+      flapReported.set(deviceId, t);
+      audit('systeme', 'device_flapping', { deviceId, details: `plus de ${FLAP_LIMIT} changements d'etat en ${FLAP_WINDOW_MS / 60_000} min : journalisation limitee pour cet equipement (verifier le detecteur ou le client qui l'alimente)` });
+    }
+  }
+
   function applyState(device: Device, state: DetectorState): void {
     const deviceId = device.id;
     const previous = device.status;
@@ -341,7 +361,7 @@ export function createEngine(
     db.prepare('UPDATE device SET status = ? WHERE id = ?').run(state, deviceId);
     if (previous !== state) db.prepare('UPDATE device SET state_since = ? WHERE id = ?').run(t, deviceId);
     if (previous !== state) {
-      audit('detecteur', 'device_state', { deviceId, details: `${previous} -> ${state}` });
+      noteStateChange(deviceId, `${previous} -> ${state}`);
     }
     publishDevice(deviceId);
 
@@ -475,6 +495,8 @@ export function createEngine(
     if (typeof value !== 'string' || value.length > MAX_LABEL) {
       throw new PsimError(400, `${field} invalide (max ${MAX_LABEL} caracteres)`);
     }
+    // Pas de retour a la ligne ni de sequence d'echappement dans un nom : ils finiraient dans des e-mails, des messages Telegram, des journaux et des terminaux.
+    if (/[\u0000-\u001f\u007f]/.test(value)) throw new PsimError(400, `${field} invalide (caracteres de controle interdits)`);
     return value.trim();
   }
 

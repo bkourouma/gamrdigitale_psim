@@ -20,6 +20,9 @@ const NAME_PATTERN = /^psim-\d{8}-\d{6}(-\d+)?$/;
 const PLAN_PATTERN = /^plan-\d+\.(png|jpg|webp|svg)$/;
 const SNAPSHOT_PATTERN = /^\d+\.jpg$/;
 
+/** Contenu legitime d'une sauvegarde : la base, la cle (si demandee), les plans et les images d'incident. */
+const ALLOWED_BACKUP_FILE = /^(psim\.db|secret\.key|plan-\d+\.(png|jpg|webp|svg)|snapshots\/\d+\.jpg)$/;
+
 export interface ManifestFile {
   path: string;
   size: number;
@@ -137,10 +140,15 @@ export function verifyBackup(dir: string): Verification {
   }
   const root = resolve(dir);
   for (const f of manifest.files) {
-    const full = resolve(dir, f.path);
+    const full = resolve(dir, String(f.path));
     // Un manifeste alteré ne doit jamais faire lire ou copier hors du dossier de sauvegarde.
     if (!full.startsWith(root + sep)) {
       problems.push(`chemin suspect dans le manifeste : ${f.path}`);
+      continue;
+    }
+    // ... ni designer autre chose que ce qu'une sauvegarde contient reellement (un manifeste forge, empreintes comprises, ne peut pas faire ecrire ailleurs).
+    if (typeof f.path !== 'string' || !ALLOWED_BACKUP_FILE.test(f.path)) {
+      problems.push(`fichier non prevu dans le manifeste : ${String(f.path).slice(0, 80)}`);
       continue;
     }
     if (!existsSync(full)) problems.push(`fichier manquant : ${f.path}`);
@@ -175,7 +183,8 @@ export function listBackups(backupDir: string): { name: string; createdAt: numbe
 
 /** Ne garde que les `keep` sauvegardes les plus recentes ; ne supprime que des dossiers au nom attendu. */
 export function pruneBackups(backupDir: string, keep: number): string[] {
-  if (keep <= 0) return [];
+  // Valeur invalide (NaN, negative, nulle) : on ne supprime RIEN. `slice(NaN)` vaut `slice(0)` et effacerait toutes les sauvegardes.
+  if (!Number.isFinite(keep) || keep < 1) return [];
   const removed: string[] = [];
   for (const b of listBackups(backupDir).slice(keep)) {
     const target = resolve(backupDir, b.name);

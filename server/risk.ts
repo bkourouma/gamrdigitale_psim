@@ -359,6 +359,7 @@ export function createRiskService(db: DatabaseSync, engine: Engine, options: Ris
     const defenses = [...new Set(input.defenses as string[])];
     const notes = typeof input.notes === 'string' ? input.notes.trim() : '';
     if (notes.length > 500) throw new PsimError(400, 'Notes trop longues (500 caractères max)');
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(notes)) throw new PsimError(400, 'Notes invalides (caractères de contrôle interdits)');
 
     db.prepare(
       `INSERT INTO risk_zone (zone, probability, defenses, impact_image, impact_economy, impact_human, notes, assessed_by, assessed_at)

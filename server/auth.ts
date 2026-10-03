@@ -83,6 +83,26 @@ export function checkCredentials(db: DatabaseSync, username: string, password: s
 }
 
 /** `limit` echecs dans `windowMs` : par defaut 5 par minute. */
+/**
+ * Comptes dont le mot de passe STOCKE est encore une valeur de demonstration publique. Le controle de demarrage ne voit que
+ * l'environnement ; or une base creee en developpement (ou restauree) garde ses comptes, quels que soient les .env d'apres :
+ * `admin / admin-dev-only` resterait valable en production.
+ */
+export function accountsWithDevPassword(db: DatabaseSync): string[] {
+  const out: string[] = [];
+  for (const u of db.prepare('SELECT username, salt, hash FROM app_user').all() as { username: string; salt: string; hash: string }[]) {
+    const stored = Buffer.from(u.hash, 'hex');
+    for (const dev of DEV_PASSWORDS) {
+      const candidate = hash(dev, u.salt);
+      if (candidate.length === stored.length && timingSafeEqual(candidate, stored)) {
+        out.push(u.username);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function isRateLimited(key: string, now = Date.now(), limit = MAX_FAILURES, windowMs = FAILURE_WINDOW_MS): boolean {
   const recent = (failures.get(key) ?? []).filter((t) => now - t < windowMs);
   failures.set(key, recent);

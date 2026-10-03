@@ -230,7 +230,15 @@ export function createUsersService(deps: UsersDeps) {
   function verifySecondFactor(username: string, code: string): boolean {
     const r = row(username);
     if (!r.totp_secret) return false;
-    const step = verifyTotp(base32Decode(unseal(key, r.totp_secret as string)), code, now());
+    // Cle de chiffrement changee ou perdue (restauration sur une autre machine) : le secret TOTP est illisible. On ne plante pas (500) :
+    // le code TOTP est refuse, mais les codes de secours (hachés, independants de la cle) continuent de fonctionner.
+    let secret: Buffer | null = null;
+    try {
+      secret = base32Decode(unseal(key, r.totp_secret as string));
+    } catch {
+      secret = null;
+    }
+    const step = secret ? verifyTotp(secret, code, now()) : null;
     if (step !== null) {
       // Rejeu : une fenetre deja utilisee (ou plus ancienne) est refusee.
       const used = db.prepare('UPDATE app_user SET totp_last_step = ? WHERE username = ? AND (totp_last_step IS NULL OR totp_last_step < ?)').run(step, username, step);
@@ -354,6 +362,24 @@ export function createUsersService(deps: UsersDeps) {
     openSession,
     totpEnabled,
     validateSession,
+    /** Libere la memoire : defis et enrolements expires. */
+    purge(): void {
+      const t = now();
+      for (const [k, c] of challenges) if (c.expires < t) challenges.delete(k);
+      for (const [k, p] of pending) if (p.expires < t) pending.delete(k);
+    },
+    /** Comptes dont le secret 2FA ne peut plus etre dechiffre (cle de chiffrement differente de celle qui l'a scelle). */
+    unreadableSecrets(): string[] {
+      const out: string[] = [];
+      for (const u of db.prepare('SELECT username, totp_secret FROM app_user WHERE totp_secret IS NOT NULL').all() as { username: string; totp_secret: string }[]) {
+        try {
+          unseal(key, u.totp_secret);
+        } catch {
+          out.push(u.username);
+        }
+      }
+      return out;
+    },
     createChallenge,
     challengeOwner,
     answerChallenge,

@@ -116,7 +116,7 @@ PSIM_TLS_CERT=...  PSIM_TLS_KEY=...
 PSIM_PUBLIC_URL=https://psim.exemple.fr
 ```
 
-Puis les notifications (voir plus haut) et, si des détecteurs distants publient sur le broker, `PSIM_MQTT_HOST=0.0.0.0` (avec `PSIM_MQTT_TLS_CERT/KEY`). **`npm run check-config`** donne le verdict sans démarrer le PSIM (avec `PSIM_ENV=production` dans le `.env`, le même que celui du démarrage).
+Puis les notifications (voir plus haut) et, si des détecteurs distants publient sur le broker, `PSIM_MQTT_HOST=0.0.0.0` **avec** `PSIM_MQTT_TLS_CERT/KEY` (le broker reste **local par défaut**, même si l'interface web est ouverte au réseau ; en production, un broker ouvert sans TLS est **refusé**, sauf `PSIM_MQTT_ALLOW_PLAINTEXT=1` sur un réseau dédié aux détecteurs). **`npm run check-config`** donne le verdict sans démarrer le PSIM (avec `PSIM_ENV=production` dans le `.env`, le même que celui du démarrage).
 
 **2. Ce que le PSIM refuse en production** (erreurs bloquantes, code de sortie 1) : mots de passe de démonstration, trop courts (< 12 caractères) ou identiques ; simulateur actif (il permet de fabriquer de fausses alarmes : désactivé par défaut en production) ; comptes cliquables sur la page de connexion ; interface ouverte au réseau **sans HTTPS** (ni proxy HTTPS). Il **avertit** pour : MQTT sans TLS sur le réseau, aucun canal de notification, aucun destinataire de niveau 2, surveillance des détecteurs muets coupée, sauvegarde automatique coupée.
 
@@ -145,6 +145,31 @@ Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`**
 **7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, **Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
 
 **Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
+
+## Sécurité : ce qui a été relu, corrigé, et ce qui reste
+
+Le PSIM a fait l'objet d'une **relecture de sécurité indépendante** (trois relectures : authentification et sessions ; entrées, injections et réseau ; configuration, secrets et déploiement), chaque constat étant reproduit avant correction et couvert par un test sur un vrai serveur. Les points importants :
+
+- **Arrêt à distance** (corrigé) : un en-tête `Origin: null`, un chemin invalide ou une trame WebSocket de plus de 1 Ko arrêtait tout le PSIM, sans authentification pour les deux premiers. Tout ce qui vient du réseau est désormais analysé sous `try/catch`, et les erreurs de prise ne sont plus fatales.
+- **Sessions** : la connexion temps réel est revalidée à chaque événement et coupée dès que la session est révoquée (désactivation, mot de passe changé, déconnexion).
+- **Connexion** : verrou par adresse **et** par compte (l'administrateur reste connectable depuis son adresse habituelle), limite **par compte** sur la 2FA (10 échecs / 10 min), verrouillages et échecs 2FA journalisés, mots de passe courants refusés, jamais de texte saisi dans le champ identifiant au journal.
+- **Requêtes inter-sites** : toute requête qui modifie est refusée si son `Origin` diffère de l'hôte, ou si `Sec-Fetch-Site` est `cross-site` / `same-site`.
+- **Broker MQTT** : plus aucun abonnement possible (hors compte principal sur le topic des détecteurs), messages `retained` supprimés, 1 Ko maximum, essais d'authentification limités par adresse, comparaisons en temps constant, **un compte par passerelle limité à ses détecteurs** (`PSIM_MQTT_GATEWAYS`, JSON : `[{"user":"gw1","password":"…12 car. min…","detectors":["D-*","A-01"]}]`). Sans cela, **n'importe quel équipement qui connaît le mot de passe partagé peut forger ou masquer l'alarme d'un autre** : à utiliser dès que plusieurs passerelles ou plusieurs fournisseurs publient.
+- **Journal** : un équipement qui oscille ne remplit plus le disque (au-delà de 30 changements en 10 min, une seule ligne d'alerte) ; les numéros d'entrées doivent être consécutifs et la fin du journal ne peut plus être supprimée sans que ce soit vu, même sans ancre.
+- **Démarrage** : `PSIM_ENV` inconnu (« Production », « prod ») et nombres invalides (`PSIM_BACKUP_KEEP=14d` supprimait **toutes** les sauvegardes) sont des erreurs de démarrage ; des **mots de passe de démonstration déjà stockés en base** (base de développement réutilisée) bloquent la production ; des mots de passe de démonstration sur un PSIM ouvert au réseau bloquent le démarrage même sans `PSIM_ENV=production` ; le PSIM crée un **site vide** en production.
+- **Installation Windows** : `windows-service.ps1` **refuse** d'installer si le dossier du PSIM est modifiable par des utilisateurs ordinaires (un service SYSTEM exécuterait leur code : **c'est le cas de beaucoup de dossiers créés hors de `Program Files`, vérifiez le vôtre**), lit son fichier d'environnement en mode strict (`-EnvFile`, `.env.production`), et `deploy/psim.service` est durci. Un verrou laissé par une coupure de courant n'empêche plus le redémarrage.
+- **E-mail** : STARTTLS est **obligatoire** (sauf relais interne explicitement en clair, `PSIM_SMTP_STARTTLS=0`) : sinon un intermédiaire pouvait obtenir le mot de passe SMTP.
+- **Divers** : webhooks sans redirection et sans adresses de métadonnées, noms sans caractères de contrôle, opérateur ne lisant pas les détails de gestion (adresses de caméras, comptes, erreurs système), manifeste de sauvegarde limité aux fichiers attendus, 2FA toujours utilisable par code de secours si la clé de chiffrement est perdue, `npm run reset-2fa` et actions de sécurité notifiées, anti-CSRF, `Cache-Control: no-store` sur l'API.
+
+**Limites connues, à connaître avant d'exposer le PSIM** :
+- **Mots de passe de caméras dans la ligne de commande de ffmpeg** (`rtsp://user:mot-de-passe@…`) : lisibles par tout processus local (`ps`, WMI). Machine dédiée, comptes locaux de confiance ; sous Linux `ProtectProc=invisible` (déjà dans l'unité fournie).
+- **Un seul jeton** pour l'entrée HTTP des équipements (`PSIM_INGEST_TOKEN`) et, sans `PSIM_MQTT_GATEWAYS`, un seul mot de passe MQTT : l'équipement compromis peut parler au nom des autres. Pas de limitation de débit à l'entrée (l'oscillation est seulement contenue dans le journal).
+- **Administrateur de confiance** : un administrateur peut viser des adresses internes (webhooks, caméras) ; un **opérateur peut désarmer une zone d'intrusion jusqu'à 24 h** (décision d'exploitation à valider avec le client).
+- **Premier mot de passe** : pour un compte qui doit enrôler sa 2FA, le mot de passe seul suffit à l'enrôler ; l'action est notifiée, et `npm run reset-2fa` est le recours depuis la machine.
+- **Données au repos** : sauvegardes, journaux et images ne sont pas chiffrés ; seule la clé est protégée par ACL. Codes de secours : 40 bits, hachés sans sel (la limitation d'essais en ligne les protège, pas une copie volée de la base).
+- **Pas de step-up** : créer un administrateur ou réinitialiser une 2FA n'exige pas de ressaisir un mot de passe ; un cookie d'administrateur volé suffit.
+- **HSTS d'un an** avec un certificat auto-signé de 825 jours : à l'expiration, les navigateurs interdisent de passer outre l'erreur. Prévoir le renouvellement.
+- **Pas de test d'intrusion externe** : cette relecture est faite sur le code et sur des instances jetables, pas par un tiers sur une installation réelle.
 
 ## Gestion des risques (indice par zone)
 

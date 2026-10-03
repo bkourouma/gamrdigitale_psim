@@ -69,8 +69,15 @@ describe('controle de demarrage (preflight)', () => {
 
   it('avertit pour un MQTT sans TLS sur le reseau, des notifications absentes, une surveillance coupee', () => {
     const w = (c: PreflightInput) => preflight(c).filter((f) => f.level === 'warn').map((f) => f.message).join(' | ');
-    assert.match(w({ ...GOOD, mqttHost: '0.0.0.0' }), /MQTT ecoute sur 0\.0\.0\.0 sans TLS/);
+    // MQTT ouvert au reseau sans TLS : refuse en production (sauf accord explicite : reseau dedie), simple avertissement ailleurs
+    const mqttErrors = (c: PreflightInput) => preflight(c).filter((f) => f.level === 'error').map((f) => f.message).join(' | ');
+    assert.match(mqttErrors({ ...GOOD, mqttHost: '0.0.0.0' }), /MQTT ecoute sur 0\.0\.0\.0 sans TLS.*PSIM_MQTT_ALLOW_PLAINTEXT=1/);
+    assert.match(w({ ...GOOD, production: false, mqttHost: '0.0.0.0' }), /MQTT ecoute sur 0\.0\.0\.0 sans TLS/);
+    assert.match(w({ ...GOOD, mqttHost: '0.0.0.0', mqttAllowPlaintext: true }), /MQTT ecoute sur 0\.0\.0\.0 sans TLS/, 'avec accord explicite : avertissement');
+    assert.equal(mqttErrors({ ...GOOD, mqttHost: '0.0.0.0', mqttAllowPlaintext: true }), '');
     assert.equal(w({ ...GOOD, mqttHost: '0.0.0.0', mqttTlsEnabled: true }), '');
+    assert.match(w({ ...GOOD, smtpHost: 'smtp.exemple.com', smtpStarttls: false }), /STARTTLS=0 avec un serveur SMTP qui n'est pas sur le reseau local/);
+    assert.equal(w({ ...GOOD, smtpHost: '192.168.1.5', smtpStarttls: false }), '', 'relais interne en clair : toleré');
     assert.match(w({ ...GOOD, notificationChannels: 0 }), /Aucun canal de notification/);
     assert.match(w({ ...GOOD, escalationConfigured: false }), /niveau 2/);
     assert.match(w({ ...GOOD, detectorTimeoutS: 0 }), /detecteurs muets desactivee/);

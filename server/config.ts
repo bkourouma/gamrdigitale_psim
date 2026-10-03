@@ -1,18 +1,28 @@
 const env = process.env;
 
 const host = env.PSIM_HOST ?? '127.0.0.1';
-const production = env.PSIM_ENV === 'production';
+// Une faute de frappe (« Production », « prod ») ne doit JAMAIS desactiver en silence toute la protection de production.
+const envName = (env.PSIM_ENV ?? '').trim().toLowerCase();
+if (!['', 'production', 'development', 'dev', 'test'].includes(envName)) {
+  throw new Error(`PSIM_ENV="${env.PSIM_ENV}" est invalide : production, development, ou absent. (Une valeur inconnue desactiverait la protection de production.)`);
+}
+const production = envName === 'production';
 // En production le simulateur est desactive par defaut (il permet de declencher de fausses alarmes).
 const simEnabled = env.PSIM_SIM_ENABLED === undefined ? !production : env.PSIM_SIM_ENABLED !== '0';
 const loopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(host);
 
-/** Lit un delai en secondes ; valeur absente ou invalide = defaut ; 0 desactive la regle. */
-function seconds(name: string, fallback: number): number {
+/**
+ * Lit un nombre : absent ou vide = defaut ; INVALIDE = erreur de demarrage (jamais un repli silencieux : « 14d » ou
+ * « 24h » valaient NaN, ce qui coupait les sauvegardes sans un mot, voire les supprimait toutes). 0 desactive la regle.
+ */
+function num(name: string, fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${name}="${raw}" est invalide : un nombre entre ${min} et ${max} est attendu.`);
+  return n;
 }
+const seconds = (name: string, fallback: number): number => num(name, fallback);
 
 /** Liste separee par des virgules ou des espaces ; absente = liste vide. */
 function list(name: string): string[] {
@@ -24,28 +34,55 @@ function list(name: string): string[] {
 
 export const config = {
   production,
-  port: Number(env.PSIM_PORT ?? 3033),
+  port: num('PSIM_PORT', 3033, 0, 65535),
   host,
-  // Broker MQTT : par defaut sur la meme interface que le web ; a ouvrir au reseau pour des detecteurs distants.
-  mqttHost: env.PSIM_MQTT_HOST ?? host,
-  mqttPort: Number(env.PSIM_MQTT_PORT ?? 1883),
+  // Broker MQTT : LOCAL par defaut, meme si l'interface web est ouverte au reseau. A ouvrir pour des detecteurs distants,
+  // de preference en TLS (PSIM_MQTT_TLS_CERT / KEY) : sinon le mot de passe partage circule en clair.
+  mqttHost: env.PSIM_MQTT_HOST ?? '127.0.0.1',
+  mqttPort: num('PSIM_MQTT_PORT', 1883, 0, 65535),
+  // Accord explicite pour un broker ouvert au reseau SANS TLS (reseau dedie aux detecteurs) : sans lui, la production refuse.
+  mqttAllowPlaintext: env.PSIM_MQTT_ALLOW_PLAINTEXT === '1',
   mqttTls: { cert: env.PSIM_MQTT_TLS_CERT ?? '', key: env.PSIM_MQTT_TLS_KEY ?? '' },
   // HTTPS integre (PEM). Sans certificat : HTTP. `httpRedirectPort` : port HTTP qui redirige vers HTTPS (0 = aucun).
   tls: { cert: env.PSIM_TLS_CERT ?? '', key: env.PSIM_TLS_KEY ?? '' },
-  httpRedirectPort: Number(env.PSIM_HTTP_REDIRECT_PORT ?? 0),
+  httpRedirectPort: num('PSIM_HTTP_REDIRECT_PORT', 0, 0, 65535),
   // Derriere un proxy HTTPS (IIS, nginx, Caddy) : fait confiance a X-Forwarded-For pour l'adresse du client.
   trustProxy: env.PSIM_TRUST_PROXY === '1',
   backup: {
     dir: env.PSIM_BACKUP_DIR ?? '',
-    everyH: Number(env.PSIM_BACKUP_EVERY_H ?? (production ? 24 : 0)),
-    keep: Number(env.PSIM_BACKUP_KEEP ?? 14),
+    everyH: num('PSIM_BACKUP_EVERY_H', production ? 24 : 0),
+    keep: num('PSIM_BACKUP_KEEP', 14, 1),
   },
   // Supervision externe : signal HTTP regulier vers un service qui s'inquiete s'il ne le recoit plus (healthchecks.io, Uptime Kuma...).
   heartbeatUrl: env.PSIM_HEARTBEAT_URL ?? '',
-  heartbeatEveryS: Number(env.PSIM_HEARTBEAT_EVERY_S ?? 60),
+  heartbeatEveryS: num('PSIM_HEARTBEAT_EVERY_S', 60),
   // Periode aveugle (PSIM arrete) a partir de laquelle on previent par notification, en secondes.
-  gapNotifyS: Number(env.PSIM_GAP_NOTIFY_S ?? 60),
+  gapNotifyS: num('PSIM_GAP_NOTIFY_S', 60),
   logFile: env.PSIM_LOG_FILE === undefined ? production : env.PSIM_LOG_FILE === '1',
+  // Passerelles : un compte MQTT PAR passerelle, limite a ses detecteurs (JSON : [{"user":"gw1","password":"...","detectors":["D-*","A-01"]}]).
+  // Un identifiant partage par tous les equipements permettrait a n'importe lequel de forger ou de masquer l'alarme d'un autre.
+  mqttGateways: ((): { user: string; password: string; detectors: string[] }[] => {
+    const raw = env.PSIM_MQTT_GATEWAYS;
+    if (!raw || raw.trim() === '') return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('PSIM_MQTT_GATEWAYS : JSON invalide (attendu : [{"user":"gw1","password":"...","detectors":["D-*"]}])');
+    }
+    if (!Array.isArray(parsed) || parsed.length > 50) throw new Error('PSIM_MQTT_GATEWAYS : une liste de 50 passerelles au plus est attendue');
+    const principal = env.PSIM_MQTT_USER ?? 'psim';
+    return parsed.map((g, i) => {
+      const gw = g as { user?: unknown; password?: unknown; detectors?: unknown };
+      const n = i + 1;
+      if (typeof gw.user !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(gw.user) || gw.user === principal) throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : identifiant invalide (ou identique au compte principal)`);
+      if (typeof gw.password !== 'string' || gw.password.length < 12) throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : mot de passe de 12 caracteres minimum`);
+      if (!Array.isArray(gw.detectors) || gw.detectors.length === 0 || gw.detectors.some((d) => typeof d !== 'string' || !/^[A-Za-z0-9_-]{1,32}\*?$/.test(d))) {
+        throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : detectors doit lister des identifiants (« D-01 ») ou des prefixes (« D-* »)`);
+      }
+      return { user: gw.user, password: gw.password, detectors: gw.detectors as string[] };
+    });
+  })(),
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',
   dataDir: env.PSIM_DATA_DIR ?? 'data',
@@ -58,8 +95,7 @@ export const config = {
   detectorTimeoutS: (() => {
     const raw = env.PSIM_DETECTOR_TIMEOUT_S;
     if (raw === undefined || raw.trim() === '') return simEnabled ? 0 : 180;
-    const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : simEnabled ? 0 : 180;
+    return num('PSIM_DETECTOR_TIMEOUT_S', simEnabled ? 0 : 180);
   })(),
   cookieSecure: env.PSIM_COOKIE_SECURE === '1',
   ffmpegPath: env.PSIM_FFMPEG ?? 'ffmpeg',

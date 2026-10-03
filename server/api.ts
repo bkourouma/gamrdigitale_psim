@@ -17,6 +17,7 @@ import {
 } from './auth.ts';
 import type { Session } from './auth.ts';
 import type { Arming } from './arming.ts';
+import { maskAudit, maskSnapshot } from './visibility.ts';
 import type { JournalGuard } from './journal.ts';
 import type { ReportMail } from './reportmail.ts';
 import { parseRange } from './reports.ts';
@@ -110,8 +111,10 @@ export function createApp(deps: ApiDeps) {
     if (deps.tls) res.setHeader('Strict-Transport-Security', 'max-age=31536000'); // le navigateur n'ira plus jamais en HTTP
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+      "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
+    // Les reponses d'API (etat, journal, exports) ne doivent jamais rester dans un cache partage ou du navigateur.
+    if (_req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     next();
   });
 
@@ -166,12 +169,13 @@ export function createApp(deps: ApiDeps) {
   const TWOFA_WINDOW_MS = 10 * 60_000;
   // Un verrouillage n'est inscrit au journal qu'une fois par minute et par cle : l'attaquant ne remplit pas le journal.
   const lastLockAudit = new Map<string, number>();
+  const accountKnown = (name: string): boolean => Boolean(name) && Boolean(db.prepare('SELECT 1 AS x FROM app_user WHERE username = ?').get(name));
   function auditLockout(key: string, who: string, ip: string): void {
     const t = Date.now();
     if (t - (lastLockAudit.get(key) ?? 0) < 60_000) return;
     lastLockAudit.set(key, t);
     if (lastLockAudit.size > 1000) lastLockAudit.clear();
-    engine.audit('systeme', 'login_locked', { details: `compte ${who}, adresse ${ip}` });
+    engine.audit('systeme', 'login_locked', { details: `compte ${accountKnown(who) ? who : '?'}, adresse ${ip.slice(0, 64)}` });
   }
 
   function finishLogin(res: Response, username: string, ip?: string): void {
@@ -200,7 +204,8 @@ export function createApp(deps: ApiDeps) {
     if (!role) {
       recordFailure(ipKey);
       recordFailure(userKey);
-      engine.audit(name || '?', 'login_failed');
+      // Seul un compte EXISTANT est nomme au journal : un visiteur qui tape son mot de passe dans le champ identifiant ne l'y inscrit pas.
+      engine.audit(accountKnown(name) ? name : '?', 'login_failed');
       return void res.status(401).json({ error: 'Identifiants incorrects' });
     }
     if (users.totpEnabled(name)) {
@@ -362,7 +367,7 @@ export function createApp(deps: ApiDeps) {
 
   // ---- Lecture --------------------------------------------------------------------------
 
-  app.get('/api/state', anyUser, (_req, res) => res.json(engine.getSnapshot()));
+  app.get('/api/state', anyUser, (req, res) => res.json(maskSnapshot(engine.getSnapshot(), (req as AuthedRequest).session.role)));
   // Image de camera prise au moment d'un incident. Authentification obligatoire ; jamais de chemin
   // fourni par le client (seul l'identifiant numerique est lu).
   app.get('/api/snapshots/:id', anyUser, (req, res) => {
@@ -400,7 +405,7 @@ export function createApp(deps: ApiDeps) {
     engine.audit(actorOf(req), 'journal_verified', { details: result.ok ? `integre (${result.checked} entrees)` : `ALTERE (${result.problems.length} probleme(s))` });
     res.json(result);
   });
-  app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));
+  app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100)).map((e) => maskAudit(e, (req as AuthedRequest).session.role))));
 
   // ---- Traitement des incidents ----------------------------------------------------------
 
@@ -431,7 +436,10 @@ export function createApp(deps: ApiDeps) {
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
     // Un SVG televerse ne doit jamais pouvoir executer de script s'il est ouvert directement.
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-    createReadStream(path).pipe(res);
+    const stream = createReadStream(path);
+    // Plan supprime entre la verification et l'ouverture (remplacement en cours) : jamais d'exception non geree.
+    stream.on('error', () => (res.headersSent ? res.destroy() : res.status(404).json({ error: 'Aucun plan' })));
+    stream.pipe(res);
   });
 
   app.put(

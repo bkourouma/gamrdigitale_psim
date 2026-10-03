@@ -67,7 +67,7 @@ Un message JSON sur le topic `psim/detectors/<identifiant>/state`, avec **l'un**
 {"value": 41.5}               // mesure, comparée aux seuils réglés dans le PSIM
 ```
 
-Connexion : broker MQTT du PSIM, identifiant `PSIM_MQTT_USER`, mot de passe `PSIM_MQTT_PASSWORD`, TLS conseillé hors machine locale. Autres sources (contrôle d'accès, IoT) : `POST /api/ingest/<id>` avec `Authorization: Bearer <PSIM_INGEST_TOKEN>`.
+Connexion : broker MQTT du PSIM (local par défaut ; `PSIM_MQTT_HOST=0.0.0.0` **avec TLS** pour des détecteurs distants), identifiant `PSIM_MQTT_USER`, mot de passe `PSIM_MQTT_PASSWORD`. **Dès que plusieurs passerelles ou fournisseurs publient, donnez un compte à chacune** (`PSIM_MQTT_GATEWAYS`, limité à ses détecteurs) : avec un mot de passe partagé, n'importe quel équipement peut forger ou masquer l'alarme d'un autre. Les messages `retained` sont ignorés, 1 Ko maximum. Autres sources (contrôle d'accès, IoT) : `POST /api/ingest/<id>` avec `Authorization: Bearer <PSIM_INGEST_TOKEN>`.
 
 **Les équipements réels ne parlent pas toujours ce langage.** Une centrale incendie, un contrôleur d'accès ou un capteur LoRa publient leurs propres formats. Il faut alors une **passerelle** (Node-RED, un script, le pont MQTT de l'équipementier) qui traduit leur message en l'un des trois ci-dessus et l'envoie avec le bon identifiant. Le PSIM ne parle ni BACnet, ni Modbus, ni OPC UA, ni Wiegand directement.
 
@@ -108,7 +108,7 @@ La recherche ONVIF utilise la multidiffusion UDP : elle peut être bloquée par 
 ## 7. Reprise après panne et supervision externe
 
 - [ ] **Supervision externe** : créer un moniteur de type « dead man's switch » (healthchecks.io, Uptime Kuma), renseigner `PSIM_HEARTBEAT_URL`, et choisir une alerte qui part vers **quelqu'un en dehors du réseau du PSIM**. `npm run commission` envoie un signal et vous demande de **constater** qu'il apparaît.
-- [ ] **Relance automatique** au démarrage de la machine, au choix : Windows, `scripts/windows-service.ps1 -Action Install` (tâche planifiée qui relance le PSIM et contrôle sa santé chaque minute ; essayez d'abord avec `-WhatIf`, ce script n'a été validé qu'en simulation) ; Linux, `deploy/psim.service` (systemd) ; partout, une tâche de démarrage qui exécute `npm run supervise` (relance avec pause croissante, détection des blocages, arrêt propre).
+- [ ] **Relance automatique** au démarrage de la machine, au choix : Windows, `scripts/windows-service.ps1 -Action Install -EnvFile .env.production` (**refuse** d'installer si le dossier du PSIM est modifiable par des utilisateurs ordinaires : corrigez d'abord les droits ; le fichier d'environnement est lu en mode strict) (tâche planifiée qui relance le PSIM et contrôle sa santé chaque minute ; essayez d'abord avec `-WhatIf`, ce script n'a été validé qu'en simulation) ; Linux, `deploy/psim.service` (systemd) ; partout, une tâche de démarrage qui exécute `npm run supervise` (relance avec pause croissante, détection des blocages, arrêt propre).
 - [ ] **Essai de panne** : tuer brutalement le processus du PSIM ; il doit être relancé, la **période sans surveillance** doit apparaître au journal et une notification doit partir.
 - [ ] **Essai de coupure réseau** : débrancher le PSIM quelques minutes ; la supervision externe doit alerter.
 - [ ] **Détecteur muet** : débrancher un détecteur supervisé ; il doit passer « hors ligne » après le délai, avec notification.

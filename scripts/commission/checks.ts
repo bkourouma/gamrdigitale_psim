@@ -12,6 +12,7 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import nodemailer from 'nodemailer';
+import { accountsWithDevPassword } from '../../server/auth.ts';
 import { verify as verifyJournal } from '../../server/auditchain.ts';
 import { listBackups, verifyBackup } from '../../server/backup.ts';
 
@@ -131,7 +132,7 @@ function explainSmtp(err: unknown): string {
 export async function checkSmtp(cfg: SmtpOptions, sendTo?: string): Promise<Check> {
   if (!cfg.host || !cfg.from) return check('smtp', 'E-mail (SMTP)', 'skip', 'non configure (PSIM_SMTP_HOST, PSIM_SMTP_FROM) : pas d\'alerte ni de rapport par e-mail');
   const transporter = nodemailer.createTransport({
-    host: cfg.host, port: cfg.port, secure: cfg.secure, ignoreTLS: cfg.starttls === false,
+    host: cfg.host, port: cfg.port, secure: cfg.secure, ignoreTLS: cfg.starttls === false, requireTLS: !cfg.secure && cfg.starttls !== false,
     auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 10_000,
   });
   try {
@@ -290,6 +291,8 @@ export function checkInventory(db: DatabaseSync): Check[] {
       ? check('inventory', 'Inventaire', 'fail', 'aucun detecteur declare', 'Ajouter les detecteurs (Edition du plan et de l\'inventaire).')
       : check('inventory', 'Inventaire', 'ok', `${detectors.length} detecteur(s), ${cameras.length} camera(s)`),
   );
+  const weak = accountsWithDevPassword(db);
+  if (weak.length) out.push(check('devpw', 'Mots de passe des comptes', 'fail', `compte(s) ${weak.join(', ')} : mot de passe de demonstration PUBLIC`, 'npm run set-password -- <compte> (ou un dossier de donnees neuf).'));
   const unplaced = detectors.filter((d) => !d.zone);
   if (unplaced.length) out.push(check('zones', 'Zones', 'warn', `${unplaced.length} detecteur(s) sans zone : ${unplaced.map((d) => d.id).join(', ')}`, "Sans zone, pas de confirmation par un voisin, ni de risque par zone."));
   const unlinked = detectors.filter((d) => !(db.prepare('SELECT 1 AS x FROM device_link WHERE detector_id = ? LIMIT 1').get(d.id as string)));

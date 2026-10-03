@@ -9,6 +9,7 @@
  * compte sont fermees immediatement (le PSIM verifie les identifiants a chaque requete).
  */
 import { join, resolve } from 'node:path';
+import { appendSealed } from '../server/auditchain.ts';
 import { createUser, validatePassword } from '../server/auth.ts';
 import { config } from '../server/config.ts';
 import { openDb } from '../server/db.ts';
@@ -72,5 +73,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
     process.exit(1);
   }
   createUser(db, user.username, user.role, first);
+  // Trace dans le journal scelle (auteur « console ») : un changement de mot de passe hors interface ne doit pas passer inapercu.
+  appendSealed(db, { ts: Date.now(), actor: 'console', action: 'password_reset', incident_id: null, device_id: null, details: `${user.username} (npm run set-password)` });
   console.log(`Mot de passe de ${user.username} modifie. Ses sessions ouvertes sont fermees immediatement.`);
 }

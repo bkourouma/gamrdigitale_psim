@@ -66,6 +66,9 @@ function smtpTransport(cfg: EmailConfig) {
     port: cfg.port,
     secure: cfg.secure,
     ignoreTLS: cfg.starttls === false,
+    // STARTTLS OBLIGATOIRE (sauf relais interne explicitement en clair) : sinon un intermediaire qui retire l'annonce STARTTLS
+    // obtient l'identifiant et le mot de passe SMTP en clair.
+    requireTLS: !cfg.secure && cfg.starttls !== false,
     auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined,
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
@@ -189,7 +192,8 @@ export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipi
       if (cfg.secret) headers['X-PSIM-Signature'] = `sha256=${createHmac('sha256', cfg.secret).update(body).digest('hex')}`;
       let res: Response;
       try {
-        res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        // redirect: 'error' : jamais de suite vers une autre adresse (le corps contient des donnees d'incident, la signature un secret)
+        res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'error' });
       } catch {
         throw new Error('Webhook injoignable');
       }

@@ -11,16 +11,27 @@ Wants=network-online.target
 Type=simple
 User=psim
 WorkingDirectory=/opt/gamrdigitale-psim
-ExecStart=/usr/bin/node --env-file-if-exists=.env server/index.ts
+# Lecture STRICTE du fichier d'environnement (--env-file, pas --env-file-if-exists) : un fichier absent arrete le PSIM au lieu de
+# le laisser demarrer avec les mots de passe de demonstration. Production : .env.production (npm run init-production).
+ExecStart=/usr/bin/node --env-file=.env server/index.ts
 # Relance apres toute fin anormale (le PSIM s'arrete volontairement sur une erreur fatale)
 Restart=always
 RestartSec=5
 # Durcissement : le PSIM n'a besoin d'ecrire que dans son dossier de donnees et de sauvegardes
 NoNewPrivileges=yes
+UMask=0077
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/opt/gamrdigitale-psim/data /opt/gamrdigitale-psim/backups
+# Le « - » ignore un dossier absent (sinon l'unite echoue). Sauvegardes sur un autre disque : ajouter son chemin ici.
+ReadWritePaths=-/opt/gamrdigitale-psim/data -/opt/gamrdigitale-psim/data-prod -/opt/gamrdigitale-psim/backups -/opt/gamrdigitale-psim/backups-prod
 # Controle de sante par le superviseur : arret + relance si /healthz ne repond plus (necessite curl)
 # (alternative : npm run healthcheck -- --restart 3 depuis un timer systemd)
 

@@ -120,7 +120,12 @@ export function summarize(records: IncidentRecord[]): Summary {
   const closes = records.filter((r) => r.closedAt !== null).map((r) => Math.round((r.closedAt! - r.openedAt) / 1000));
   const group = <K extends string>(key: (r: IncidentRecord) => K) => {
     const map = new Map<K, IncidentRecord[]>();
-    for (const r of records) map.set(key(r), [...(map.get(key(r)) ?? []), r]);
+    for (const r of records) {
+      const k = key(r);
+      const list = map.get(k);
+      if (list) list.push(r);
+      else map.set(k, [r]);
+    }
     return map;
   };
   return {
@@ -169,7 +174,10 @@ export function qualificationText(category: DeviceCategory, q: string | null): s
   return { fire: 'Feu confirmé', intrusion: 'Intrusion avérée', access: 'Accès anormal avéré', environment: 'Incident avéré' }[category];
 }
 
-export const fmtDateTime = (ts: number | null): string => (ts === null ? '' : new Date(ts).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'medium' }));
+// Un seul formateur : `toLocaleString('fr-FR', ...)` en recree un a chaque appel (~0,15 ms), soit des secondes pour 50 000 lignes,
+// pendant lesquelles la boucle de controle du PSIM est bloquee.
+const DATE_TIME = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'medium' });
+export const fmtDateTime = (ts: number | null): string => (ts === null ? '' : DATE_TIME.format(ts));
 
 export function fmtDuration(seconds: number | null): string {
   if (seconds === null) return '—';

@@ -86,6 +86,7 @@ export function verify(db: DatabaseSync, anchors: Anchor[] = [], now = Date.now(
     if (problems.length < MAX_PROBLEMS) problems.push({ id, reason });
   };
   let prev: string | null = null;
+  let prevId = 0;
   let checked = 0;
   let unprotected = 0;
   let head: Verification['head'] = null;
@@ -101,6 +102,10 @@ export function verify(db: DatabaseSync, anchors: Anchor[] = [], now = Date.now(
       continue;
     }
     const row: AuditRow = { id, ts: r.ts as number, actor: r.actor as string, action: r.action as string, incident_id: (r.incident_id as number | null) ?? null, device_id: (r.device_id as string | null) ?? null, details: (r.details as string | null) ?? null };
+    // Numeros CONSECUTIFS : une entree supprimee laisse un trou, meme si quelqu'un a recalcule les empreintes qui suivent.
+    // (Une transaction annulee annule aussi son numero, voir appendSealed : aucun trou legitime.)
+    if (prev !== null && id !== prevId + 1) add(id, `${id - prevId - 1 > 0 ? id - prevId - 1 : 'des'} entree(s) manquante(s) avant celle-ci : supprimee(s) apres coup`);
+    prevId = id;
     const expectedPrev = prev ?? GENESIS;
     if ((r.prev_hash as string | null) !== expectedPrev) add(id, prev === null ? 'debut de chaine invalide' : 'chainage rompu : une entree precedente a ete supprimee ou modifiee');
     if (computeHash((r.prev_hash as string | null) ?? '', row) !== hash) add(id, 'contenu modifie apres coup');
@@ -108,6 +113,12 @@ export function verify(db: DatabaseSync, anchors: Anchor[] = [], now = Date.now(
     checked++;
     head = { id, hash };
     if (wanted.has(id)) byId.set(id, hash);
+  }
+
+  // Fin de journal supprimee : le compteur d'identifiants de SQLite est plus avance que la derniere entree.
+  if (head) {
+    const seq = (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'").get() as { seq: number } | undefined)?.seq ?? head.id;
+    if (seq > head.id) add(head.id, `la fin du journal a ete supprimee (derniere entree n°${head.id}, compteur a ${seq})`);
   }
 
   for (const a of anchors) {

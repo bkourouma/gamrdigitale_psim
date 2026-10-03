@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { uptime } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -23,6 +24,13 @@ function alive(pid: number): boolean {
 export function lockHolder(dataDir: string): number | null {
   const file = lockPath(dataDir);
   if (!existsSync(file)) return null;
+  // Verrou ecrit AVANT le dernier demarrage de la machine : le PSIM qui l'a pose est mort avec elle, et son numero a pu etre
+  // reattribue a un autre processus (coupure de courant : sans cela, le PSIM ne redemarrerait jamais seul).
+  try {
+    if (statSync(file).mtimeMs < Date.now() - uptime() * 1000 - 5000) return null;
+  } catch {
+    return null;
+  }
   const pid = Number(readFileSync(file, 'utf8').trim());
   return alive(pid) ? pid : null;
 }
@@ -31,7 +39,7 @@ export function lockHolder(dataDir: string): number | null {
 export function acquireLock(dataDir: string, pid = process.pid): () => void {
   const holder = lockHolder(dataDir);
   if (holder !== null && holder !== pid) {
-    throw new Error(`Un autre PSIM utilise deja ce dossier de donnees (PID ${holder}). Deux instances corrompraient la base.`);
+    throw new Error(`Un autre PSIM utilise deja ce dossier de donnees (PID ${holder}). Deux instances corrompraient la base. Si aucun PSIM ne tourne, supprimez ${lockPath(dataDir)}.`);
   }
   writeFileSync(lockPath(dataDir), String(pid));
   let released = false;

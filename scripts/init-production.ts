@@ -89,7 +89,8 @@ export function restrictToCurrentUser(path: string): boolean {
   if (process.platform === 'win32') {
     const user = process.env.USERNAME;
     if (!user) return false;
-    const r = spawnSync('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' });
+    // + SYSTEM (S-1-5-18) : un PSIM installe en service (SYSTEM) doit pouvoir lire son fichier d'environnement et sa cle TLS.
+    const r = spawnSync('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`, '*S-1-5-18:F'], { stdio: 'ignore' });
     return r.status === 0;
   }
   chmodSync(path, 0o600);

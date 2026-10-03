@@ -55,6 +55,9 @@ const findings = preflight({
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
   heartbeatUrl: config.heartbeatUrl,
+  mqttAllowPlaintext: config.mqttAllowPlaintext,
+  smtpHost: config.notify.smtp.host,
+  smtpStarttls: config.notify.smtp.starttls,
 });
 
 console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_ENV=production pour le verdict de production)`);

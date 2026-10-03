@@ -42,6 +42,11 @@ export interface PreflightInput {
   ingestToken?: string;
   /** Adresse du signal de supervision externe (vide = non configure). */
   heartbeatUrl?: string;
+  /** Accord explicite pour un broker MQTT ouvert au reseau sans TLS. */
+  mqttAllowPlaintext?: boolean;
+  /** Serveur SMTP : hote et STARTTLS (pour avertir d'un relais externe en clair). */
+  smtpHost?: string;
+  smtpStarttls?: boolean;
 }
 
 const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1'].includes(host);
@@ -91,9 +96,15 @@ export function preflight(c: PreflightInput): Finding[] {
     add('warn', 'Derriere un proxy HTTPS, definissez PSIM_COOKIE_SECURE=1 pour que le cookie de session ne circule qu\'en HTTPS.');
   }
   if (!isLoopback(c.mqttHost) && !c.mqttTlsEnabled) {
-    add('warn', `Le broker MQTT ecoute sur ${c.mqttHost} sans TLS : le mot de passe MQTT circule en clair sur le reseau. Preferer PSIM_MQTT_TLS_CERT/KEY, ou un reseau dedie aux detecteurs.`);
+    const message = `Le broker MQTT ecoute sur ${c.mqttHost} sans TLS : le mot de passe MQTT (partage par tous les detecteurs) circule en clair sur le reseau. Utiliser PSIM_MQTT_TLS_CERT/KEY${c.production ? ', ou, sur un reseau dedie aux detecteurs, PSIM_MQTT_ALLOW_PLAINTEXT=1' : ', ou un reseau dedie aux detecteurs'}.`;
+    // En production : refuse, sauf accord explicite (reseau dedie).
+    if (c.production && !c.mqttAllowPlaintext) add('error', message);
+    else add('warn', message);
   }
 
+  if (c.smtpHost && c.smtpStarttls === false && !isLoopback(c.smtpHost) && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(c.smtpHost)) {
+    add('warn', `PSIM_SMTP_STARTTLS=0 avec un serveur SMTP qui n'est pas sur le reseau local (${c.smtpHost}) : identifiant, mot de passe et alertes circuleraient en clair.`);
+  }
   if (c.notificationChannels === 0) add('warn', "Aucun canal de notification : une alarme ne previent personne en dehors de l'ecran du PSIM.");
   else if (!c.escalationConfigured) add('warn', "Aucun destinataire de niveau 2 : si personne n'acquitte, l'alerte n'est escaladee a personne.");
   if (c.detectorTimeoutS <= 0) add(c.production ? 'warn' : 'warn', "Surveillance des detecteurs muets desactivee : un detecteur en panne resterait affiche « Normal » (PSIM_DETECTOR_TIMEOUT_S).");

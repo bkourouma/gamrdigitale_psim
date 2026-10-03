@@ -69,6 +69,10 @@ export function validateAddress(channel: ChannelId, raw: unknown): string {
       throw new PsimError(400, 'Adresse de webhook invalide');
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new PsimError(400, 'Le webhook doit etre en http ou https');
+    // Adresses de metadonnees d'infrastructure (nuage) et adresses « lien-local » : aucune raison legitime d'y envoyer des alertes.
+    if (/^169\.254\./.test(url.hostname) || /^\[?fe80:/i.test(url.hostname) || ['metadata.google.internal', 'metadata'].includes(url.hostname.toLowerCase()) || url.hostname === '0.0.0.0') {
+      throw new PsimError(400, 'Adresse de webhook refusee (adresse reservee : lien-local ou metadonnees)');
+    }
   }
   return address;
 }

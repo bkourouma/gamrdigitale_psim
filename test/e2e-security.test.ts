@@ -256,6 +256,44 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
     });
   });
 
+  describe('journal, en-tetes et visibilite', () => {
+    it("les reponses d'API ne sont jamais mises en cache ; la politique de securite interdit <base> et les formulaires externes", async () => {
+      const res = await new Promise<{ headers: Record<string, string | string[] | undefined> }>((resolveRes, reject) => {
+        const r = request({ host: '127.0.0.1', port: srv.port, path: '/api/state', headers: { Cookie: admin } }, (x) => (x.resume(), resolveRes({ headers: x.headers })));
+        r.on('error', reject);
+        r.end();
+      });
+      assert.equal(res.headers['cache-control'], 'no-store');
+      assert.match(String(res.headers['content-security-policy']), /base-uri 'none'; form-action 'self'/);
+    });
+
+    it("un OPERATEUR ne lit pas les details de gestion (adresse d'une camera), l'administrateur si", async () => {
+      const set = await http(srv.port, 'PUT', '/api/cameras/C-01/source', { cookie: admin, body: { kind: 'rtsp', host: '10.20.30.40', port: 554, rtspPath: '/flux', username: 'u', password: 'p' } });
+      assert.equal(set.status, 200);
+      const forAdmin = (await http(srv.port, 'GET', '/api/audit?limit=50', { cookie: admin })).body as { action: string; details: string | null }[];
+      assert.match(forAdmin.find((e) => e.action === 'camera_source_updated')!.details ?? '', /10\.20\.30\.40/);
+      const forOperator = await http(srv.port, 'GET', '/api/audit?limit=50', { cookie: operator });
+      assert.equal(forOperator.status, 200);
+      const entry = (forOperator.body as { action: string; details: string | null }[]).find((e) => e.action === 'camera_source_updated');
+      assert.ok(entry, "l'operateur voit QU'une action a eu lieu");
+      assert.equal(entry!.details, null);
+      assert.ok(!JSON.stringify(forOperator.body).includes('10.20.30.40'));
+      const state = await http(srv.port, 'GET', '/api/state', { cookie: operator });
+      assert.ok(!JSON.stringify(state.body.audit).includes('10.20.30.40'), 'ni dans /api/state');
+    });
+
+    it("un mot de passe tape dans le champ identifiant n'est jamais inscrit au journal (seuls les comptes existants sont nommes)", async () => {
+      const typed = 'Mon-MotDePasse-Perso-42';
+      assert.equal((await login(typed, 'x', '10.5.0.1')).status, 401);
+      assert.equal((await login('admin', 'mauvais', '10.0.0.1')).status, 401);
+      const text = JSON.stringify((await http(srv.port, 'GET', '/api/audit?limit=300', { cookie: operator })).body).toLowerCase();
+      assert.ok(!text.includes(typed.toLowerCase()), 'le texte saisi ne figure nulle part');
+      const failed = (await audit()).filter((e) => e.action === 'login_failed');
+      assert.ok(failed.some((e) => e.actor === '?'), 'inconnu : « ? »');
+      assert.ok(failed.some((e) => e.actor === 'admin'), 'un compte existant reste nomme');
+    });
+  });
+
   describe('mots de passe', () => {
     it("refuse les mots de passe courants, repetes ou uniquement numeriques a la creation d'un compte", async () => {
       for (const password of ['passwordpassword', '123456789012', 'azertyazertyazerty', 'aaaaaaaaaaaa']) {

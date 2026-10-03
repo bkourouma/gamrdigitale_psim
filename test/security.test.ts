@@ -125,6 +125,24 @@ describe('defi 2FA', () => {
   });
 });
 
+describe('cle de chiffrement perdue ou changee', () => {
+  it("le code TOTP est refuse proprement (pas d'erreur 500), les codes de secours fonctionnent, et le probleme est signale", async () => {
+    const t = setup();
+    const begin = await t.users.beginTotp('paul');
+    const secret = base32Decode(begin.secret);
+    const recovery = t.users.enableTotp('paul', totp(secret, t.clock.t));
+    // restauration sur une autre machine : meme base, AUTRE cle
+    const other = createUsersService({ db: t.db, key: Buffer.alloc(32, 77), now: () => t.clock.t, requireTotp: 'none', audit: () => {} });
+    assert.deepEqual(other.unreadableSecrets(), ['paul']);
+    assert.deepEqual(t.users.unreadableSecrets(), [], 'avec la bonne cle : rien a signaler');
+    t.clock.t += 60_000;
+    const c1 = other.createChallenge('paul');
+    assert.deepEqual(other.answerChallengeDetailed(c1, totp(secret, t.clock.t)), { error: 'wrong', attemptsLeft: 4 }, 'refuse, sans exception');
+    const c2 = other.createChallenge('paul');
+    assert.deepEqual(other.answerChallengeDetailed(c2, recovery[0]), { username: 'paul' }, 'le code de secours ouvre la connexion');
+  });
+});
+
 describe('npm run reset-2fa (recours depuis la machine)', () => {
   it("retire la 2FA et les codes de secours, ferme les sessions, et journalise « console » dans la chaine scellee", async () => {
     const t = setup();

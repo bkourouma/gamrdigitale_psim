@@ -18,7 +18,8 @@ export function restrictFile(file: string): boolean {
   if (process.platform !== 'win32') return true;
   const user = process.env.USERNAME;
   if (!user) return false;
-  return spawnSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' }).status === 0;
+  // + SYSTEM (S-1-5-18) : un service lance en SYSTEM doit pouvoir lire sa propre cle.
+  return spawnSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`, '*S-1-5-18:F'], { stdio: 'ignore' }).status === 0;
 }
 
 export function loadSecretKey(dataDir: string, fromEnv: string | undefined): Buffer {

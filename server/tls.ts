@@ -29,10 +29,11 @@ const HOST_PATTERN = /^[A-Za-z0-9.-]{1,253}$/;
  * L'hote vient de l'en-tete Host mais n'est repris que s'il ressemble a un nom de machine : jamais de
  * redirection ouverte vers une adresse arbitraire.
  */
-export function createHttpRedirect(httpsPort: number, fallbackHost: string): Server {
+export function createHttpRedirect(httpsPort: number, fallbackHost: string, publicHost: string | null = null): Server {
   return createHttpServer((req, res) => {
     const raw = String(req.headers.host ?? '').replace(/:\d+$/, '');
-    const host = HOST_PATTERN.test(raw) ? raw : fallbackHost;
+    // Hote public connu (PSIM_PUBLIC_URL) : on n'en sort jamais, quel que soit l'en-tete Host recu (cache, proxy intermediaire).
+    const host = publicHost ?? (HOST_PATTERN.test(raw) ? raw : fallbackHost);
     const port = httpsPort === 443 ? '' : `:${httpsPort}`;
     res.writeHead(308, { Location: `https://${host}${port}${req.url?.startsWith('/') ? req.url : '/'}` }).end();
   });
