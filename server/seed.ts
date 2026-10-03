@@ -67,6 +67,18 @@ export const DEMO_RISK: Record<string, { p: number; defenses: string[]; image: n
   Stockage: { p: 2, defenses: ['extincteurs', 'consignes', 'compartimentage', 'personnel'], image: 2, economy: 3, human: 2, notes: '' },
 };
 
+/**
+ * Production : un site VIDE, sans le moindre equipement de demonstration. Des detecteurs fictifs passeraient « hors
+ * ligne » et enverraient de vraies alertes ; une evaluation de risque fictive fausserait l'indice du site.
+ * Ne fait rien si la base contient deja un site.
+ */
+export function seedEmptySite(db: DatabaseSync, name = 'Site'): boolean {
+  const existing = db.prepare('SELECT COUNT(*) AS n FROM site').get() as { n: number };
+  if (existing.n > 0) return false;
+  db.prepare('INSERT INTO site (id, name, plan_file, plan_version) VALUES (1, ?, NULL, 0)').run(name);
+  return true;
+}
+
 /** Ne fait rien si la base contient deja un site : ne jamais ecraser des donnees existantes. */
 export function seedDemo(db: DatabaseSync, dataDir: string, seedDir: string): boolean {
   const existing = db.prepare('SELECT COUNT(*) AS n FROM site').get() as { n: number };

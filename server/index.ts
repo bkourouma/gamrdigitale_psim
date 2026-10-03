@@ -25,7 +25,7 @@ import { createReports } from './reports.ts';
 import { createReportMail } from './reportmail.ts';
 import { createRiskService } from './risk.ts';
 import { loadSecretKey } from './secrets.ts';
-import { seedDemo, seedUsers } from './seed.ts';
+import { seedDemo, seedEmptySite, seedUsers } from './seed.ts';
 import { createSnapshotService } from './snapshots.ts';
 import type { SnapshotService } from './snapshots.ts';
 import { createSystemStatus } from './system.ts';
@@ -122,7 +122,10 @@ if (findings.length > 0) {
 
 // ---------------------------------------------------------------- donnees et services
 
-if (seedDemo(db, dataDir, join(root, 'seed'))) console.log('[seed] site de demonstration cree');
+// Jamais d'equipement de demonstration en production : un site vide, a remplir depuis l'interface.
+if (config.production) {
+  if (seedEmptySite(db)) console.log('[seed] site vide cree : importer le plan et declarer les equipements depuis l\'interface');
+} else if (seedDemo(db, dataDir, join(root, 'seed'))) console.log('[seed] site de demonstration cree');
 seedUsers(db, config.adminPassword, config.operatorPassword);
 
 const bus = new EventEmitter();

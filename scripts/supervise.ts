@@ -182,7 +182,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
 
   const supervisor = createSupervisor({
     command: process.execPath,
-    args: ['--env-file-if-exists=.env', 'server/index.ts'],
+    // Meme fichier d'environnement que le superviseur (PSIM_ENV_FILE, defini par `init-production`), sinon .env.
+    args: [`--env-file-if-exists=${process.env.PSIM_ENV_FILE ?? '.env'}`, 'server/index.ts'],
     cwd: root,
     env: process.env,
     probe: () => probe(url, ca),

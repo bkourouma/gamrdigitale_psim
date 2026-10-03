@@ -23,7 +23,12 @@
     "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts",
     "supervise": "node --env-file-if-exists=.env scripts/supervise.ts",
     "verify-journal": "node --env-file-if-exists=.env scripts/verify-journal.ts",
-    "commission": "node --env-file-if-exists=.env scripts/commission.ts"
+    "commission": "node --env-file-if-exists=.env scripts/commission.ts",
+    "init-production": "node scripts/init-production.ts",
+    "start:prod": "node --env-file=.env.production server/index.ts",
+    "supervise:prod": "node --env-file=.env.production scripts/supervise.ts",
+    "check-config:prod": "node --env-file=.env.production scripts/check-config.ts",
+    "commission:prod": "node --env-file=.env.production scripts/commission.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",

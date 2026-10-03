@@ -1,7 +1,12 @@
 node_modules/
 data/
 .env
+.env.*
+!.env.example
 tools/
 data-demo/
+data-prod/
+backups-prod/
+.tmp-*/
 backups/
 *.pem

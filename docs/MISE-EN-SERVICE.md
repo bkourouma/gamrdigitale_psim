@@ -24,9 +24,13 @@ Les contrôles de `npm run commission` sont en lecture seule et n'envoient **auc
 
 ## 1. Installation et configuration
 
+**Le plus simple** : `npm run init-production -- --host <nom-du-serveur> --host <adresse-IP>` (ajouter `--listen 0.0.0.0` pour ouvrir l'interface au réseau). Il écrit `.env.production` avec des **mots de passe aléatoires** (administrateur, opérateur, MQTT : jamais affichés, le fichier est réservé à votre compte), génère un **certificat HTTPS** auto-signé pour ces noms, choisit un dossier de données **séparé** de celui du développement (`data-prod`) et vérifie le résultat. Il **refuse d'écraser** un fichier existant, n'installe aucune tâche planifiée et ne démarre rien. Ensuite : `npm run start:prod` (ou `npm run supervise:prod`), `npm run check-config:prod`, `npm run commission:prod`.
+
+À la main, c'est équivalent :
+
 1. `npm install`, puis copier `.env.example` en `.env`.
 2. Choisir **tous les mots de passe** (administrateur, opérateur, MQTT) : 12 caractères minimum, jamais ceux de démonstration.
-3. Pour une exploitation réelle, mettre `PSIM_ENV=production` : le PSIM **refuse de démarrer** si la configuration est dangereuse. Vérifier d'abord : `npm run check-config`.
+3. Pour une exploitation réelle, mettre `PSIM_ENV=production` : le PSIM **refuse de démarrer** si la configuration est dangereuse. Vérifier d'abord : `npm run check-config`. En production, le PSIM crée un **site vide** (jamais de détecteurs de démonstration).
 4. `PSIM_SIM_ENABLED=0` et `PSIM_DEMO_LOGIN=0` (le simulateur et les comptes cliquables n'ont rien à faire en exploitation).
 5. HTTPS : `npm run make-cert -- <nom-du-serveur> <adresse-IP>` puis `PSIM_TLS_CERT` / `PSIM_TLS_KEY`, ou un proxy HTTPS (`PSIM_TRUST_PROXY=1`). Un certificat auto-signé chiffre bien, mais chaque poste affichera un avertissement tant qu'il ne l'a pas installé comme autorité de confiance.
 6. Démarrer une première fois (`npm start`, ou `npm run supervise`) pour créer la base, puis lancer : `npm run commission`.
