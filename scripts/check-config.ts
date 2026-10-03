@@ -61,5 +61,5 @@ console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_
 if (findings.length === 0) console.log('Aucun probleme releve.');
 else console.log(formatFindings(findings));
 const blocking = findings.filter((f) => f.level === 'error').length;
-if (blocking > 0) console.log(`\n${blocking} erreur(s) bloquante(s)${config.production ? " : le PSIM refuserait de demarrer." : "."}`);
+if (blocking > 0) console.log(`\n${blocking} erreur(s) bloquante(s)${config.production || findings.some((f) => f.always) ? " : le PSIM refuserait de demarrer." : "."}`);
 process.exit(blocking > 0 ? 1 : 0);

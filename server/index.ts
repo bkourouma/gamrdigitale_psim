@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { createApp, sessionFromRequest } from './api.ts';
+import { SESSION_COOKIE, createApp, sessionFromRequest } from './api.ts';
+import { getSession, parseCookies, purgeExpired } from './auth.ts';
 import { createBackup, listBackups, pruneBackups } from './backup.ts';
 import { config } from './config.ts';
 import { headOf } from './auditchain.ts';
@@ -111,7 +112,8 @@ const findings = preflight({
   heartbeatUrl: config.heartbeatUrl,
 });
 if (findings.length > 0) {
-  const fatal = config.production && findings.some((f) => f.level === 'error');
+  // En production, toute erreur est bloquante ; hors production, seules celles marquees « toujours » (ex. mots de passe de demonstration sur un reseau).
+  const fatal = findings.some((f) => f.level === 'error' && (config.production || f.always));
   console[fatal ? 'error' : 'warn'](`[psim] controle de demarrage${config.production ? ' (production)' : ''} :\n${formatFindings(findings)}`);
   if (fatal) {
     console.error('[psim] Demarrage refuse : corrigez les erreurs ci-dessus (voir .env.example et README, « Mise en production »).');
@@ -175,10 +177,15 @@ notifier = createNotifier({
   readSnapshot: (id) => snapshots?.read(id) ?? null,
   secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret],
 });
+// Actions de securite sur les comptes : inscrites au journal ET notifiees (un pirate qui enrole sa propre 2FA ne passe pas inapercu).
+const SECURITY_ACTIONS = new Set(['totp_enabled', 'totp_disabled', 'totp_reset', 'recovery_code_used', 'user_created', 'user_updated', 'user_deleted', 'password_reset']);
 const users = createUsersService({
   db,
   key: secretKey,
-  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  audit: (actor, action, ref) => {
+    engine.audit(actor, action, ref);
+    if (SECURITY_ACTIONS.has(action)) void notifier?.notifySecurity(actor, action, ref?.details ?? '');
+  },
   requireTotp: config.requireTotp,
 });
 const risk = createRiskService(db, engine, { fireWindowDays: config.riskFireWindowDays, staleMonths: config.riskStaleMonths });
@@ -360,26 +367,56 @@ const server: Server = createWebServer(app, tlsFiles);
 const redirect = tlsFiles && config.httpRedirectPort > 0 ? createHttpRedirect(config.port, config.host) : null;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 
+// Chaque connexion garde le jeton de la session qui l'a ouverte : on la revalide a chaque envoi et par balayage.
+const wsToken = new WeakMap<object, string>();
+
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url ?? '/', 'http://localhost');
-  // Cookie de session obligatoire + meme origine (empeche le detournement depuis un autre site).
-  const origin = req.headers.origin;
-  const sameOrigin = !origin || new URL(origin).host === req.headers.host;
+  // Une erreur sur la prise (client qui coupe, trame invalide) ne doit JAMAIS arreter le PSIM.
+  socket.on('error', () => {});
+  // Tout ce qui vient du client est analyse sous try/catch : une valeur d'en-tete invalide (« Origin: null ») est un refus, pas un plantage.
+  let pathname = '';
+  let sameOrigin = false;
+  try {
+    pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const origin = req.headers.origin;
+    // Cookie de session obligatoire + meme origine (empeche le detournement depuis un autre site).
+    sameOrigin = !origin || new URL(origin).host === req.headers.host;
+  } catch {
+    // refuse ci-dessous
+  }
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   const session = sessionFromRequest(req);
   // Une session restreinte (mot de passe a changer, 2FA a activer) n'a pas acces au temps reel.
-  if (url.pathname !== '/ws' || !sameOrigin || !session || session.restricted) {
+  if (pathname !== '/ws' || !sameOrigin || !session || session.restricted || !token) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return void socket.destroy();
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
+    // Trame trop grosse (plus de 1 Ko) ou invalide : on ferme cette connexion, rien d'autre.
+    ws.on('error', () => ws.terminate());
+    ws.on('message', () => {}); // le temps reel est a sens unique
+    wsToken.set(ws, token);
     ws.send(JSON.stringify({ type: 'snapshot', ...engine.getSnapshot() }));
   });
 });
 
+/** Ferme les connexions dont la session n'est plus valable (deconnexion, compte desactive ou supprime, mot de passe change, expiree). */
+function sweepSockets(): void {
+  for (const client of wss.clients) {
+    const t = wsToken.get(client);
+    const s = t ? getSession(t) : null;
+    if (!s || s.restricted) client.close(4401, 'session terminee');
+  }
+}
+
 bus.on('event', (event: PsimEvent) => {
   const message = JSON.stringify(event);
   for (const client of wss.clients) {
-    if (client.readyState === client.OPEN) client.send(message);
+    if (client.readyState !== client.OPEN) continue;
+    const t = wsToken.get(client);
+    const s = t ? getSession(t) : null;
+    if (!s || s.restricted) client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
+    else client.send(message);
   }
 });
 
@@ -393,6 +430,8 @@ const tickTimer = setInterval(() => {
     arming?.tick(); // armements et desarmements dus au planning
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
+      sweepSockets();
+      purgeExpired();
       continuity.beat(); // signe de vie : sert a mesurer la periode aveugle d'un prochain arret
     }
   } catch (err) {

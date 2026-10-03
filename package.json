@@ -23,6 +23,7 @@
     "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts",
     "supervise": "node --env-file-if-exists=.env scripts/supervise.ts",
     "verify-journal": "node --env-file-if-exists=.env scripts/verify-journal.ts",
+    "reset-2fa": "node --env-file-if-exists=.env scripts/reset-2fa.ts",
     "commission": "node --env-file-if-exists=.env scripts/commission.ts",
     "init-production": "node scripts/init-production.ts",
     "start:prod": "node --env-file=.env.production server/index.ts",

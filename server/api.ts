@@ -8,8 +8,10 @@ import {
   createSession,
   destroySession,
   getSession,
+  isKnownLoginIp,
   isRateLimited,
   parseCookies,
+  rememberLoginIp,
   recordFailure,
   setSessionValidator,
 } from './auth.ts';
@@ -119,6 +121,28 @@ export function createApp(deps: ApiDeps) {
     res.status(h.ok ? 200 : 503).setHeader('Cache-Control', 'no-store').json(h.ok ? { status: 'ok' } : { status: 'degraded', reason: h.reason });
   });
 
+  // Anti-CSRF : SameSite=Strict protege du cross-SITE, pas d'un site « frere » ni d'une autre appli de la meme machine.
+  // Toute requete qui modifie quelque chose doit venir de CETTE origine (navigateur) ou ne pas en annoncer (outil, script).
+  app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    if (req.path.startsWith('/api/ingest/')) return next(); // equipements : jeton, jamais un navigateur
+    const site = req.headers['sec-fetch-site'];
+    if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return void res.status(403).json({ error: 'Requete inter-sites refusee' });
+    const origin = req.headers.origin;
+    if (typeof origin === 'string') {
+      const allowed = new Set([String(req.headers.host ?? '')]);
+      if (deps.trustProxy && typeof req.headers['x-forwarded-host'] === 'string') allowed.add(req.headers['x-forwarded-host'].split(',')[0].trim());
+      let originHost = '';
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        // « null » (iframe isolee, page data:) : refuse
+      }
+      if (!originHost || !allowed.has(originHost)) return void res.status(403).json({ error: 'Origine refusee' });
+    }
+    next();
+  });
+
   app.use(express.static(deps.webDir, { index: 'index.html' }));
   const json = express.json({ limit: '10kb' });
 
@@ -128,7 +152,9 @@ export function createApp(deps: ApiDeps) {
   app.get('/api/demo-accounts', (req, res) => {
     const remote = req.socket.remoteAddress ?? '';
     const local = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-    if (!deps.demoAccounts || !local) return void res.status(404).json({ error: 'Non disponible' });
+    // Pas derriere un proxy (tout le monde y arriverait de 127.0.0.1), et seulement sous un nom de machine local (DNS rebinding).
+    const direct = !deps.trustProxy && !req.headers['x-forwarded-for'] && !req.headers['x-forwarded-host'] && /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(String(req.headers.host ?? ''));
+    if (!deps.demoAccounts || !local || !direct) return void res.status(404).json({ error: 'Non disponible' });
     res.setHeader('Cache-Control', 'no-store');
     res.json(deps.demoAccounts);
   });
@@ -137,7 +163,19 @@ export function createApp(deps: ApiDeps) {
     `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${deps.cookieSecure ? '; Secure' : ''}`;
 
   /** Ouvre la session (restreinte si une etape est requise : changer son mot de passe, activer la 2FA). */
-  function finishLogin(res: Response, username: string): void {
+  const TWOFA_WINDOW_MS = 10 * 60_000;
+  // Un verrouillage n'est inscrit au journal qu'une fois par minute et par cle : l'attaquant ne remplit pas le journal.
+  const lastLockAudit = new Map<string, number>();
+  function auditLockout(key: string, who: string, ip: string): void {
+    const t = Date.now();
+    if (t - (lastLockAudit.get(key) ?? 0) < 60_000) return;
+    lastLockAudit.set(key, t);
+    if (lastLockAudit.size > 1000) lastLockAudit.clear();
+    engine.audit('systeme', 'login_locked', { details: `compte ${who}, adresse ${ip}` });
+  }
+
+  function finishLogin(res: Response, username: string, ip?: string): void {
+    if (ip) rememberLoginIp(username, ip);
     const opened = users.openSession(username);
     res.setHeader('Set-Cookie', sessionCookie(createSession(username, opened.role, opened.epoch, opened.restricted)));
     engine.audit(username, 'login');
@@ -148,9 +186,16 @@ export function createApp(deps: ApiDeps) {
     const { username, password } = (req.body ?? {}) as { username?: unknown; password?: unknown };
     const name = typeof username === 'string' ? username.trim().toLowerCase().slice(0, 64) : '';
     // Deux limites : par adresse (un attaquant essaie plusieurs comptes) et par compte (plusieurs adresses visent un compte).
-    const ipKey = `ip:${req.ip ?? 'unknown'}`;
+    const ip = req.ip ?? 'unknown';
+    const ipKey = `ip:${ip}`;
     const userKey = `user:${name}`;
-    if (isRateLimited(ipKey) || isRateLimited(userKey)) return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
+    // Le verrou PAR COMPTE ne s'applique pas a une adresse qui s'est deja connectee avec succes : sinon n'importe qui
+    // interdirait l'acces de l'administrateur avec cinq mauvais mots de passe par minute.
+    const accountLocked = isRateLimited(userKey) && !isKnownLoginIp(name, ip);
+    if (isRateLimited(ipKey) || accountLocked) {
+      auditLockout(accountLocked ? userKey : ipKey, name || '?', ip);
+      return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
+    }
     const role = name && typeof password === 'string' ? checkCredentials(db, name, password) : null;
     if (!role) {
       recordFailure(ipKey);
@@ -162,27 +207,39 @@ export function createApp(deps: ApiDeps) {
       // Mot de passe correct mais pas de session : il faut encore le code de l'application d'authentification.
       return void res.json({ twoFactor: true, challenge: users.createChallenge(name) });
     }
-    finishLogin(res, name);
+    finishLogin(res, name, ip);
   });
 
   app.post('/api/login/2fa', json, (req, res) => {
     const { challenge, code } = (req.body ?? {}) as { challenge?: unknown; code?: unknown };
     const ipKey = `ip2fa:${req.ip ?? 'unknown'}`;
-    if (isRateLimited(ipKey)) return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
+    // Limite PAR COMPTE (10 echecs en 10 minutes), en plus de celle par adresse : un attaquant qui possede le mot de
+    // passe et change d'adresse (IPv6, plusieurs machines) ne peut pas deviner le code a la chaine.
+    const owner = typeof challenge === 'string' ? users.challengeOwner(challenge) : null;
+    const acctKey = owner ? `acct2fa:${owner}` : null;
+    if (isRateLimited(ipKey) || (acctKey && isRateLimited(acctKey, Date.now(), 10, TWOFA_WINDOW_MS))) {
+      auditLockout(acctKey ?? ipKey, owner ?? '?', req.ip ?? 'unknown');
+      return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans quelques minutes' });
+    }
     const answer = typeof challenge === 'string' ? users.answerChallengeDetailed(challenge, code) : ({ error: 'expired', attemptsLeft: 0 } as const);
     if (!('username' in answer)) {
       recordFailure(ipKey);
+      if (acctKey) recordFailure(acctKey, Date.now(), TWOFA_WINDOW_MS);
+      if (owner) engine.audit(owner, 'login_2fa_failed', { details: `adresse ${req.ip ?? '?'}` });
       return void res.status(401).json(
         answer.error === 'wrong'
           ? { error: `Code incorrect (${answer.attemptsLeft} essai${answer.attemptsLeft > 1 ? 's' : ''} restant${answer.attemptsLeft > 1 ? 's' : ''})`, expired: false }
           : { error: 'Délai dépassé ou trop d\'essais : recommencez la connexion', expired: true },
       );
     }
-    finishLogin(res, answer.username);
+    finishLogin(res, answer.username, req.ip);
   });
 
   app.post('/api/logout', (req, res) => {
+    const who = sessionFromRequest(req)?.username;
     destroySession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+    // Journalise (et, par ricochet, ferme la connexion temps reel de cette session : elle est revalidee a chaque evenement).
+    if (who) engine.audit(who, 'logout');
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
     res.json({ ok: true });
   });

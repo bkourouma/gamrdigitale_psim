@@ -80,9 +80,25 @@ describe('controle de demarrage (preflight)', () => {
   });
 
   it("hors production, les memes constats ne sont que des avertissements : le developpement reste possible", () => {
-    const dev = preflight({ ...GOOD, production: false, adminPassword: 'admin-dev-only', simEnabled: true, host: '0.0.0.0' });
-    assert.equal(dev.filter((f) => f.level === 'error').length, 0);
-    assert.ok(dev.filter((f) => f.level === 'warn').length >= 3);
+    const dev = preflight({ ...GOOD, production: false, adminPassword: 'admin-dev-only', simEnabled: true });
+    assert.equal(dev.filter((f) => f.level === 'error').length, 0, 'poste local : jamais bloquant hors production');
+    assert.ok(dev.filter((f) => f.level === 'warn').length >= 2);
+  });
+
+  it("MAIS des mots de passe de demonstration sur un PSIM ouvert au reseau sont bloquants meme hors production (PSIM_ENV oublie)", () => {
+    const open = preflight({ ...GOOD, production: false, adminPassword: 'admin-dev-only', host: '0.0.0.0' });
+    const fatal = open.filter((f) => f.level === 'error' && f.always);
+    assert.equal(fatal.length, 1);
+    assert.match(fatal[0].message, /PUBLICS.*interface 0\.0\.0\.0.*demarrage refuse/);
+    const mqttOpen = preflight({ ...GOOD, production: false, mqttPassword: 'psim-dev-only', mqttHost: '0.0.0.0' });
+    assert.ok(mqttOpen.some((f) => f.always && /MQTT 0\.0\.0\.0/.test(f.message)));
+    assert.equal(preflight({ ...GOOD, production: false, host: '0.0.0.0' }).filter((f) => f.always).length, 0, 'de vrais mots de passe : rien de bloquant');
+    assert.equal(preflight({ ...GOOD, production: true }).filter((f) => f.always).length, 0, 'en production : erreurs ordinaires, deja bloquantes');
+  });
+
+  it("avertit quand PSIM_TRUST_PROXY est actif alors que le PSIM est joignable directement", () => {
+    assert.ok(preflight({ ...GOOD, trustProxy: true, host: '0.0.0.0', tlsEnabled: true }).some((f) => /falsifier X-Forwarded-For/.test(f.message)));
+    assert.ok(!preflight({ ...GOOD, trustProxy: true, host: '127.0.0.1' }).some((f) => /falsifier X-Forwarded-For/.test(f.message)));
   });
 });
 

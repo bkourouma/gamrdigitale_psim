@@ -14,6 +14,8 @@ export const MIN_INGEST_TOKEN_LENGTH = 24;
 export interface Finding {
   level: 'error' | 'warn';
   message: string;
+  /** Bloquant meme hors production (une erreur ordinaire ne l'est qu'en production). */
+  always?: boolean;
 }
 
 export interface PreflightInput {
@@ -46,7 +48,7 @@ const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1'].includes(
 
 export function preflight(c: PreflightInput): Finding[] {
   const out: Finding[] = [];
-  const add = (level: Finding['level'], message: string) => out.push({ level, message });
+  const add = (level: Finding['level'], message: string, always = false) => out.push(always ? { level, message, always } : { level, message });
   // Ce qui est une erreur en production n'est qu'un avertissement ailleurs.
   const strict: Finding['level'] = c.production ? 'error' : 'warn';
 
@@ -57,6 +59,14 @@ export function preflight(c: PreflightInput): Finding[] {
   ] as const) {
     if (DEV_PASSWORDS.includes(value)) add(strict, `Mot de passe ${name} : valeur de demonstration publique (changez-la dans .env).`);
     else if (value.length < MIN_PASSWORD_LENGTH) add(strict, `Mot de passe ${name} trop court (${MIN_PASSWORD_LENGTH} caracteres minimum).`);
+  }
+  // Mots de passe de demonstration PUBLICS + ecoute sur le reseau = acces ouvert a n'importe qui, meme si on a oublie PSIM_ENV=production.
+  const usesDevPassword = [c.adminPassword, c.operatorPassword, c.mqttPassword].some((p) => DEV_PASSWORDS.includes(p));
+  if (!c.production && usesDevPassword && (!isLoopback(c.host) || !isLoopback(c.mqttHost))) {
+    add('error', `Mots de passe de demonstration PUBLICS alors que le PSIM ecoute sur le reseau (${!isLoopback(c.host) ? `interface ${c.host}` : `MQTT ${c.mqttHost}`}) : demarrage refuse. Definissez de vrais mots de passe dans .env (ou PSIM_HOST=127.0.0.1).`, true);
+  }
+  if (c.trustProxy && !isLoopback(c.host)) {
+    add('warn', "PSIM_TRUST_PROXY=1 alors que le PSIM ecoute sur le reseau : un client qui l'atteint DIRECTEMENT peut falsifier X-Forwarded-For et echapper aux limites de tentatives. Le proxy doit ECRASER cet en-tete, et seul le proxy doit pouvoir joindre le PSIM (PSIM_HOST=127.0.0.1 ou pare-feu).");
   }
   if (c.adminPassword === c.operatorPassword) add(strict, "Les mots de passe administrateur et operateur sont identiques.");
 

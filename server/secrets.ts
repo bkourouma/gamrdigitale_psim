@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,6 +10,17 @@ const VERSION = 'v1';
  * Ordre : variable PSIM_SECRET_KEY (64 caracteres hexadecimaux), sinon fichier data/secret.key
  * (cree au premier demarrage). Perdre la cle oblige a ressaisir les mots de passe des cameras.
  */
+/**
+ * Restreint un fichier sensible a l'utilisateur courant. Sous Windows, `mode: 0o600` est sans effet : il faut des
+ * ACL. Au mieux : un echec n'empeche pas de demarrer (le fichier reste dans le dossier de donnees).
+ */
+export function restrictFile(file: string): boolean {
+  if (process.platform !== 'win32') return true;
+  const user = process.env.USERNAME;
+  if (!user) return false;
+  return spawnSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' }).status === 0;
+}
+
 export function loadSecretKey(dataDir: string, fromEnv: string | undefined): Buffer {
   if (fromEnv) {
     if (!/^[0-9a-fA-F]{64}$/.test(fromEnv)) throw new Error('PSIM_SECRET_KEY doit contenir 64 caracteres hexadecimaux');
@@ -23,6 +35,7 @@ export function loadSecretKey(dataDir: string, fromEnv: string | undefined): Buf
   mkdirSync(dataDir, { recursive: true });
   const key = randomBytes(32);
   writeFileSync(file, key.toString('hex'), { mode: 0o600 });
+  restrictFile(file);
   return key;
 }
 
@@ -37,7 +50,10 @@ export function seal(key: Buffer, plain: string): string {
 export function unseal(key: Buffer, sealed: string): string {
   const [version, iv, tag, data] = sealed.split(':');
   if (version !== VERSION || !iv || !tag || data === undefined) throw new Error('Format de secret inconnu');
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(tag, 'base64'));
+  // Etiquette d'authentification de 16 octets EXACTEMENT : sans cela, GCM accepterait une etiquette tronquee (4 octets), donc falsifiable.
+  const authTag = Buffer.from(tag, 'base64');
+  if (authTag.length !== 16) throw new Error('Secret altere (etiquette invalide)');
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'), { authTagLength: 16 });
+  decipher.setAuthTag(authTag);
   return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
 }

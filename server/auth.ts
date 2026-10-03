@@ -35,6 +35,12 @@ function hash(password: string, salt: string): Buffer {
   return scryptSync(password, salt, 64);
 }
 
+// Mots de passe les plus courants (en clair ou repetes) : refuses meme s'ils atteignent la longueur minimale.
+const WEAK = ['password', 'motdepasse', 'azertyuiop', 'qwertyuiop', 'azerty', 'qwerty', 'admin', 'administrateur', 'bienvenue', 'welcome', 'letmein', 'changeme', 'iloveyou', '123456789', '1234567890', '1234', 'abcdefgh'];
+
+// Les mots longs d'abord : « administrateur » ne doit pas etre decoupe en « admin » + un reste.
+const WEAK_BY_LENGTH = [...WEAK].sort((a, b) => b.length - a.length);
+
 /** Regles de mot de passe (partagees par l'interface, le CLI et l'API). Renvoie le probleme, ou null. */
 export function validatePassword(password: string, username: string): string | null {
   if (password.length < MIN_PASSWORD_LENGTH) return `trop court (${MIN_PASSWORD_LENGTH} caracteres minimum)`;
@@ -42,6 +48,10 @@ export function validatePassword(password: string, username: string): string | n
   if (DEV_PASSWORDS.includes(password)) return 'valeur de demonstration publique';
   if (password.toLowerCase().includes(username.toLowerCase())) return "ne doit pas contenir le nom d'utilisateur";
   if (/^(.)\1+$/.test(password)) return 'un seul caractere repete';
+  if (/^\d+$/.test(password)) return 'uniquement des chiffres';
+  const flat = password.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // Une fois retires tous les mots courants, il ne reste presque rien : « passwordpassword », « azertyqwerty », « admin1234 ».
+  if (WEAK_BY_LENGTH.reduce((rest, w) => rest.split(w).join(''), flat).length < 4) return 'mot de passe trop courant';
   return null;
 }
 
@@ -72,16 +82,45 @@ export function checkCredentials(db: DatabaseSync, username: string, password: s
   return ok && row.active === 1 ? row.role : null;
 }
 
-export function isRateLimited(key: string, now = Date.now()): boolean {
-  const recent = (failures.get(key) ?? []).filter((t) => now - t < FAILURE_WINDOW_MS);
+/** `limit` echecs dans `windowMs` : par defaut 5 par minute. */
+export function isRateLimited(key: string, now = Date.now(), limit = MAX_FAILURES, windowMs = FAILURE_WINDOW_MS): boolean {
+  const recent = (failures.get(key) ?? []).filter((t) => now - t < windowMs);
   failures.set(key, recent);
-  return recent.length >= MAX_FAILURES;
+  return recent.length >= limit;
 }
 
-export function recordFailure(key: string, now = Date.now()): void {
-  const recent = (failures.get(key) ?? []).filter((t) => now - t < FAILURE_WINDOW_MS);
+export function recordFailure(key: string, now = Date.now(), windowMs = FAILURE_WINDOW_MS): void {
+  const recent = (failures.get(key) ?? []).filter((t) => now - t < windowMs);
   recent.push(now);
   failures.set(key, recent);
+}
+
+/**
+ * Adresses depuis lesquelles un compte s'est deja connecte avec succes. Quand le compte est verrouille par trop
+ * d'echecs (venus d'ailleurs), son titulaire peut quand meme se connecter depuis SON adresse habituelle : sans cela,
+ * cinq mauvais mots de passe par minute suffiraient a interdire durablement l'acces de l'administrateur.
+ * En memoire : perdu au redemarrage, ce qui ne ferme que cette tolerance.
+ */
+const knownIps = new Map<string, Set<string>>();
+const MAX_KNOWN_IPS = 20;
+
+export function rememberLoginIp(username: string, ip: string): void {
+  const set = knownIps.get(username) ?? new Set<string>();
+  if (set.size >= MAX_KNOWN_IPS && !set.has(ip)) set.delete(set.values().next().value as string);
+  set.add(ip);
+  knownIps.set(username, set);
+}
+
+export const isKnownLoginIp = (username: string, ip: string): boolean => knownIps.get(username)?.has(ip) ?? false;
+
+/** Libere la memoire : sessions expirees et echecs anciens (les cles de verrouillage viennent du client). */
+export function purgeExpired(now = Date.now()): void {
+  for (const [token, s] of sessions) if (s.expires < now) sessions.delete(token);
+  for (const [key, list] of failures) {
+    const recent = list.filter((t) => now - t < 10 * 60_000);
+    if (recent.length === 0) failures.delete(key);
+    else failures.set(key, recent);
+  }
 }
 
 export function createSession(username: string, role: Role, epoch: number, restricted: Restriction = null, now = Date.now()): string {

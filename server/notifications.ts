@@ -15,7 +15,7 @@ import type { Engine } from './engine.ts';
 import { CATEGORY_LABEL_PLAIN } from './sources.ts';
 import type { Device, Incident } from './types.ts';
 
-export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'integrity' | 'test';
+export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'integrity' | 'security' | 'test';
 export type Level = 1 | 2;
 
 export interface Message {
@@ -226,6 +226,7 @@ const KIND_TITLE: Record<Kind, string> = {
   silent: 'DETECTEUR HORS LIGNE',
   restart: 'SURVEILLANCE INTERROMPUE',
   integrity: 'JOURNAL ALTERE',
+  security: 'ACTION DE SECURITE',
   test: 'MESSAGE DE TEST',
 };
 
@@ -376,6 +377,25 @@ export function createNotifier(deps: NotifierDeps) {
     return dispatch({ kind: 'restart', incidentId: null, subject: `[PSIM] ${KIND_TITLE.restart} - ${minutes(gap.durationMs)}`, text, data: { from: gap.from, to: gap.to, durationS: Math.round(gap.durationMs / 1000), clean: gap.clean, openIncidents } }, [1]);
   }
 
+  /**
+   * Action de securite sur un compte (double authentification activee ou retiree, compte cree, mot de passe reinitialise...).
+   * Personne ne doit pouvoir prendre un compte en main sans que quelqu'un d'autre le sache. Niveau 1.
+   */
+  function notifySecurity(actor: string, action: string, details: string): Promise<void> {
+    const label: Record<string, string> = {
+      totp_enabled: 'double authentification ACTIVEE',
+      totp_disabled: 'double authentification DESACTIVEE',
+      totp_reset: 'double authentification REINITIALISEE par un administrateur',
+      recovery_code_used: 'code de secours UTILISE pour se connecter',
+      user_created: 'compte CREE',
+      user_updated: 'compte MODIFIE (role, statut)',
+      user_deleted: 'compte SUPPRIME',
+      password_reset: 'mot de passe REINITIALISE par un administrateur',
+    };
+    const text = [`${label[action] ?? action} - par ${actor}`, details ? `Detail : ${details}` : '', "Si ce n'est pas attendu, traiter comme un incident de securite : verifier le journal et les comptes.", deps.publicUrl ? `Ouvrir le PSIM : ${deps.publicUrl}` : ''].filter(Boolean).join('\n');
+    return dispatch({ kind: 'security', incidentId: null, subject: `[PSIM] ${KIND_TITLE.security} - ${label[action] ?? action}`, text, data: { action, actor } }, [1]);
+  }
+
   /** Le journal ne passe plus la verification d'integrite : quelqu'un a modifie ou supprime des entrees. Niveaux 1 et 2. */
   function notifyIntegrity(problems: { id: number; reason: string }[]): Promise<void> {
     const text = [
@@ -488,7 +508,7 @@ export function createNotifier(deps: NotifierDeps) {
     };
   }
 
-  return { notifyIncident, notifySilent, notifyRestart, notifyIntegrity, sendImages, tick, test, status };
+  return { notifyIncident, notifySilent, notifyRestart, notifyIntegrity, notifySecurity, sendImages, tick, test, status };
 }
 
 export type Notifier = ReturnType<typeof createNotifier>;

@@ -52,7 +52,7 @@ export function createUsersService(deps: UsersDeps) {
   const requireTotp = deps.requireTotp ?? 'none';
   const issuer = deps.issuer ?? 'GAMRdigitale PSIM';
 
-  const challenges = new Map<string, { username: string; expires: number; attempts: number }>();
+  const challenges = new Map<string, { username: string; expires: number; attempts: number; epoch: number }>();
   const pending = new Map<string, { secret: Buffer; expires: number }>(); // activation 2FA en cours
 
   const view = (r: Row): UserView => ({
@@ -216,8 +216,14 @@ export function createUsersService(deps: UsersDeps) {
   /** Defi a repondre avec un code a six chiffres : valable 5 minutes, 5 essais, ne donne PAS de session. */
   function createChallenge(username: string): string {
     const token = randomBytes(24).toString('hex');
-    challenges.set(token, { username, expires: now() + CHALLENGE_TTL_MS, attempts: 0 });
+    challenges.set(token, { username, expires: now() + CHALLENGE_TTL_MS, attempts: 0, epoch: Number(row(username).session_epoch ?? 0) });
     return token;
+  }
+
+  /** Compte vise par un defi encore valable (pour limiter les essais PAR COMPTE, pas seulement par adresse). */
+  function challengeOwner(token: string): string | null {
+    const c = challenges.get(token);
+    return c && c.expires >= now() ? c.username : null;
   }
 
   /** Verifie un code TOTP ou un code de secours pour ce compte. Renvoie vrai si accepte (et le consomme). */
@@ -251,6 +257,9 @@ export function createUsersService(deps: UsersDeps) {
     c.attempts++;
     if (typeof code === 'string' && verifySecondFactor(c.username, code)) {
       challenges.delete(token);
+      // Le mot de passe a pu changer, le compte etre desactive ou supprime pendant que le defi attendait.
+      const current = db.prepare('SELECT active, session_epoch FROM app_user WHERE username = ?').get(c.username) as Row | undefined;
+      if (!current || current.active !== 1 || Number(current.session_epoch) !== c.epoch) return { error: 'expired', attemptsLeft: 0 };
       return { username: c.username };
     }
     if (c.attempts >= MAX_CHALLENGE_ATTEMPTS) {
@@ -346,6 +355,7 @@ export function createUsersService(deps: UsersDeps) {
     totpEnabled,
     validateSession,
     createChallenge,
+    challengeOwner,
     answerChallenge,
     answerChallengeDetailed,
     beginTotp,
