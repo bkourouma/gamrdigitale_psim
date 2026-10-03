@@ -6,9 +6,11 @@ import { WebSocketServer } from 'ws';
 import { createApp, sessionFromRequest } from './api.ts';
 import { createBackup, listBackups, pruneBackups } from './backup.ts';
 import { config } from './config.ts';
+import { headOf } from './auditchain.ts';
 import { createContinuity } from './continuity.ts';
 import { openDb } from './db.ts';
 import { createHeartbeat } from './heartbeat.ts';
+import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
@@ -243,8 +245,31 @@ const system = createSystemStatus({
   },
   backup: { everyH: config.backup.everyH, dir: backupDir, last: () => lastBackup, count: () => listBackups(backupDir).length },
   lastGap: () => continuity.lastGap(),
+  journal: () => journalGuard.last() ?? journalGuard.lastKnown(),
   heartbeat: () => heartbeat.status(),
 });
+
+// Journal infalsifiable : verification de la chaine d'empreintes au demarrage puis toutes les 6 h, ancre quotidienne.
+const journalGuard = createJournalGuard({
+  db,
+  onBroken: (result) => {
+    const detail = result.problems.slice(0, 3).map((p) => `n°${p.id} : ${p.reason}`).join(' ; ');
+    console.error(`[psim] JOURNAL ALTERE : ${detail}`);
+    engine.audit('systeme', 'journal_integrity_failed', { details: detail.slice(0, 300) });
+    void notifier.notifyIntegrity(result.problems);
+  },
+  onRecovered: () => engine.audit('systeme', 'journal_integrity_recovered', { details: 'la chaine est de nouveau coherente' }),
+});
+const verifyJournal = () => {
+  try {
+    journalGuard.check();
+    journalGuard.anchorNow();
+  } catch (err) {
+    console.error('[psim] verification du journal :', err);
+  }
+};
+verifyJournal();
+const journalTimer = setInterval(verifyJournal, 6 * 3600 * 1000);
 
 // Supervision externe : un signal regulier vers un service qui s'inquiete s'il ne le recoit plus.
 const heartbeat = createHeartbeat({
@@ -281,7 +306,8 @@ const app = createApp({
   users,
   recipients,
   arming,
-  reports: createReports(db, () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site'),
+  reports: createReports(db, () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site', () => headOf(db)),
+  journal: journalGuard,
   tls: tlsFiles !== null,
   trustProxy: config.trustProxy,
   health: () => system.health(),
@@ -403,6 +429,7 @@ async function shutdown() {
   clearInterval(tickTimer);
   clearInterval(purgeTimer);
   clearInterval(riskTimer);
+  clearInterval(journalTimer);
   if (backupTimer) clearInterval(backupTimer);
   heartbeat.stop();
   video.shutdown();

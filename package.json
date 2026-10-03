@@ -21,7 +21,8 @@
     "make-cert": "node --env-file-if-exists=.env scripts/make-cert.ts",
     "check-config": "node --env-file-if-exists=.env scripts/check-config.ts",
     "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts",
-    "supervise": "node --env-file-if-exists=.env scripts/supervise.ts"
+    "supervise": "node --env-file-if-exists=.env scripts/supervise.ts",
+    "verify-journal": "node --env-file-if-exists=.env scripts/verify-journal.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",

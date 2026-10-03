@@ -15,7 +15,7 @@ import type { Engine } from './engine.ts';
 import { CATEGORY_LABEL_PLAIN } from './sources.ts';
 import type { Device, Incident } from './types.ts';
 
-export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'test';
+export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'integrity' | 'test';
 export type Level = 1 | 2;
 
 export interface Message {
@@ -198,6 +198,7 @@ const KIND_TITLE: Record<Kind, string> = {
   reminder: 'RAPPEL - TOUJOURS NON ACQUITTEE',
   silent: 'DETECTEUR HORS LIGNE',
   restart: 'SURVEILLANCE INTERROMPUE',
+  integrity: 'JOURNAL ALTERE',
   test: 'MESSAGE DE TEST',
 };
 
@@ -348,6 +349,18 @@ export function createNotifier(deps: NotifierDeps) {
     return dispatch({ kind: 'restart', incidentId: null, subject: `[PSIM] ${KIND_TITLE.restart} - ${minutes(gap.durationMs)}`, text, data: { from: gap.from, to: gap.to, durationS: Math.round(gap.durationMs / 1000), clean: gap.clean, openIncidents } }, [1]);
   }
 
+  /** Le journal ne passe plus la verification d'integrite : quelqu'un a modifie ou supprime des entrees. Niveaux 1 et 2. */
+  function notifyIntegrity(problems: { id: number; reason: string }[]): Promise<void> {
+    const text = [
+      "La verification d'integrite du journal a detecte une alteration : des entrees ont ete modifiees, supprimees ou inserees en dehors du PSIM.",
+      ...problems.slice(0, 5).map((p) => `- entree n°${p.id} : ${p.reason}`),
+      problems.length > 5 ? `(et ${problems.length - 5} autre(s))` : '',
+      "A traiter comme un incident de securite : ne rien modifier, conserver une copie de la base, comparer avec les ancres des rapports et des sauvegardes (npm run verify-journal).",
+      deps.publicUrl ? `Ouvrir le PSIM : ${deps.publicUrl}` : '',
+    ].filter(Boolean).join('\n');
+    return dispatch({ kind: 'integrity', incidentId: null, subject: `[PSIM] ${KIND_TITLE.integrity}`, text, data: { problems: problems.slice(0, 10) } }, [1, 2]);
+  }
+
   /** Images prises a l'etape `kind`, envoyees en complement (apres le texte, qui part sans attendre). */
   async function sendImages(incidentId: number, kind: 'opened' | 'escalated' | 'confirmed'): Promise<void> {
     if (!deps.readSnapshot) return;
@@ -448,7 +461,7 @@ export function createNotifier(deps: NotifierDeps) {
     };
   }
 
-  return { notifyIncident, notifySilent, notifyRestart, sendImages, tick, test, status };
+  return { notifyIncident, notifySilent, notifyRestart, notifyIntegrity, sendImages, tick, test, status };
 }
 
 export type Notifier = ReturnType<typeof createNotifier>;

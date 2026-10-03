@@ -325,6 +325,20 @@ Un PSIM arrêté ne surveille rien, et ne peut pas le dire. Trois protections co
 
 Sous Windows, le lancer à l'ouverture de la machine (tâche planifiée, voir `scripts/windows-service.ps1`) ; sous Linux, `deploy/psim.service` (systemd, `Restart=always`) relance déjà, et `npm run supervise` ou `npm run healthcheck -- --restart 3` y ajoute la détection des blocages. **Limite** : le superviseur et le PSIM tournent sur la même machine : une machine éteinte ou coupée du réseau n'est détectée que par la supervision externe (point 2), pas par le superviseur. Pas de bascule vers une seconde machine : une seule instance (verrou de données), pas de haute disponibilité.
 
+## Journal infalsifiable
+
+Chaque entrée du journal contient l'**empreinte SHA-256 de la précédente** (chaîne, comme une blockchain sans réseau) : modifier, supprimer ou insérer une ligne après coup rompt la chaîne **à cet endroit**, et la vérification désigne l'entrée en cause.
+
+- **Vérification automatique** au démarrage puis toutes les 6 h, et à la demande (*Système → Vérifier le journal*). Une altération est inscrite au journal, affichée en **alerte critique**, et **notifiée** aux niveaux 1 et 2 (`JOURNAL ALTERE`). Une seule alerte par altération, et un message quand la chaîne redevient cohérente.
+- **Hors PSIM** : `npm run verify-journal` (lecture seule, sans démarrer le PSIM ; `--db <fichier>` pour une copie ou une sauvegarde). Code de sortie 0 (intègre), 1 (altéré), 2 (erreur d'usage).
+- **Ancres** : l'empreinte de la dernière entrée (`1234:ab12…`) est mémorisée chaque jour, **imprimée en pied des rapports et fiches d'incident**, et **enregistrée dans le manifeste de chaque sauvegarde**. Comparer à une ancre conservée ailleurs : `npm run verify-journal -- --anchor 1234:ab12…` ou `-- --manifest backups/<sauvegarde>/manifest.json`.
+
+**Ce que cela protège, et ce que cela ne protège pas** (à dire tel quel à un assureur ou un auditeur) :
+- Protège contre une modification ou une suppression **maladroite ou partielle** : quelqu'un qui change une ligne, en efface une ou en ajoute une dans la base.
+- Ne protège **pas, seule**, contre quelqu'un qui a un accès complet à la base **et** connaît ce mécanisme : il peut recalculer toute la chaîne depuis la ligne modifiée. C'est le rôle des **ancres conservées hors de la machine** : une chaîne réécrite ne correspond plus à l'ancre d'un rapport envoyé par e-mail ou d'une sauvegarde copiée ailleurs, et la vérification le montre. Sans ancre externe, ce cas n'est pas détecté. De même, la suppression de la **fin** du journal n'est détectée qu'avec une ancre plus récente.
+- Ne couvre que le **journal** (`audit_log`) : pas les incidents, les comptes, ni l'historique des notifications. Les entrées **antérieures** à l'activation (mise à jour) ne sont pas protégées ; elles sont comptées à part.
+- Ce n'est pas un horodatage certifié : l'heure reste celle du serveur.
+
 ## Architecture
 
 ```
@@ -356,6 +370,8 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
 | `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
 | `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
+| `server/auditchain.ts`, `server/journal.ts` | Journal infalsifiable : chaîne d'empreintes, vérification, ancres, alerte d'altération |
+| `scripts/verify-journal.ts` | Vérification du journal hors PSIM (base, sauvegarde, ancre externe) |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |

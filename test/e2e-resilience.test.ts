@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
 import { mkdtempSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -157,5 +159,45 @@ describe('reprise apres panne (processus reel)', { timeout: 180_000 }, () => {
     assert.equal(entries.length, before, 'un redemarrage propre et court ne cree pas de periode aveugle');
     assert.ok(!hits.some((h) => h.url === '/hook'), 'aucune notification pour un arret volontaire court');
     assert.ok(!/REDEMARRAGE APRES ARRET INATTENDU/.test(output));
+  });
+
+  it("un journal falsifie hors du PSIM est detecte au demarrage : journal, avertissement critique, notification, outil", async () => {
+    const exited = new Promise<number | null>((r) => proc!.once('exit', (code) => r(code)));
+    proc!.send('shutdown');
+    assert.equal(await exited, 0);
+    // Quelqu'un ouvre la base et « corrige » l'historique.
+    const db = new DatabaseSync(join(dataDir, 'psim.db'));
+    const target = db.prepare("SELECT id FROM audit_log WHERE action = 'supervision_gap' ORDER BY id LIMIT 1").get() as { id: number };
+    db.prepare("UPDATE audit_log SET details = 'rien a signaler' WHERE id = ?").run(target.id);
+    db.close();
+    hits.length = 0;
+    await startPsim();
+    const cookie = await adminCookie();
+    const entries = await audit(cookie);
+    const failed = entries.find((a) => a.action === 'journal_integrity_failed');
+    assert.ok(failed, "l'alteration est inscrite au journal");
+    assert.match(failed!.details ?? '', new RegExp(`n°${target.id} : contenu modifie`));
+    assert.match(output, /JOURNAL ALTERE/);
+
+    const system = (await (await fetch(`${base}/api/system`, { headers: { Cookie: cookie } })).json()) as { warnings: { level: string; message: string }[] };
+    assert.ok(system.warnings.some((w) => w.level === 'critique' && /ALTERE/.test(w.message)));
+
+    await until(() => hits.some((h) => h.url === '/hook' && JSON.parse(h.body).event === 'integrity'));
+    const alert = hits.map((h) => (h.url === '/hook' ? JSON.parse(h.body) : null)).find((p) => p?.event === 'integrity');
+    assert.ok(alert, "la notification d'alteration est partie");
+    assert.match(alert.subject, /JOURNAL ALTERE/);
+
+    const verify = await fetch(`${base}/api/system/journal/verify`, { method: 'POST', headers: { Cookie: cookie } });
+    const result = (await verify.json()) as { ok: boolean; problems: { id: number }[] };
+    assert.equal(result.ok, false);
+    assert.equal(result.problems[0].id, target.id);
+
+    // Une seule alerte meme apres plusieurs verifications.
+    await fetch(`${base}/api/system/journal/verify`, { method: 'POST', headers: { Cookie: cookie } });
+    assert.equal((await audit(cookie)).filter((a) => a.action === 'journal_integrity_failed').length, 1);
+
+    const cli = spawnSync(process.execPath, ['scripts/verify-journal.ts', '--db', join(dataDir, 'psim.db')], { cwd: ROOT, encoding: 'utf8', env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stdout, new RegExp(`entree n°${target.id} : contenu modifie`));
   });
 });

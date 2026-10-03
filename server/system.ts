@@ -33,6 +33,8 @@ export interface SystemDeps {
   /** Derniere periode aveugle (PSIM arrete), et etat du signal de supervision externe. */
   lastGap?: () => Gap | null;
   heartbeat?: () => HeartbeatStatus;
+  /** Derniere verification du journal (chaine d'empreintes). */
+  journal?: () => { ok: boolean; at: number; checked: number; unprotected?: number } | null;
 }
 
 const GB = 1024 ** 3;
@@ -91,6 +93,8 @@ export function createSystemStatus(deps: SystemDeps) {
     if (offline > 0) warnings.push({ level: 'attention', message: `${offline} detecteur(s) hors service : leurs zones ne sont pas surveillees.` });
     if (notif.channels === 0) warnings.push({ level: 'attention', message: "Aucun canal de notification configure : une alarme ne previent personne hors de l'ecran." });
     if (notif.failedLast24h > 0) warnings.push({ level: 'attention', message: `${notif.failedLast24h} notification(s) en echec sur 24 h.` });
+    const journal = deps.journal?.() ?? null;
+    if (journal && !journal.ok) warnings.push({ level: 'critique', message: "Le journal a ete ALTERE (verification d'integrite en echec) : traiter comme un incident de securite, voir `npm run verify-journal`." });
     const gap = deps.lastGap?.() ?? null;
     if (gap && !gap.clean && t - gap.to < 24 * 3_600_000) {
       warnings.push({ level: 'attention', message: `Redemarrage apres un arret inattendu : le PSIM n'a rien surveille pendant ${Math.round(gap.durationMs / 60_000) || 1} min (${new Date(gap.from).toLocaleString('fr-FR')}). Verifier ce qui s'est passe.` });
@@ -123,6 +127,7 @@ export function createSystemStatus(deps: SystemDeps) {
       notifications: notif,
       backup: { ...backup, everyH: deps.backup.everyH, count: deps.backup.count(), dir: deps.backup.dir },
       continuity: { lastGap: gap },
+      journal,
       heartbeat: beat,
       warnings,
     };

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { appendSealed } from './auditchain.ts';
 import { ALWAYS_ACTIVE_EVENTS, CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
 import type {
   AuditEntry,
@@ -180,12 +181,9 @@ export function createEngine(
     ref: { incidentId?: number; deviceId?: string; details?: string } = {},
   ): void {
     const ts = now();
-    const res = db
-      .prepare('INSERT INTO audit_log (ts, actor, action, incident_id, device_id, details) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(ts, actor, action, ref.incidentId ?? null, ref.deviceId ?? null, ref.details ?? null);
-    const entry = rowToAudit(
-      db.prepare('SELECT * FROM audit_log WHERE id = ?').get(Number(res.lastInsertRowid)) as Row,
-    );
+    // Entree scellee : elle porte l'empreinte de la precedente (voir auditchain.ts).
+    const id = appendSealed(db, { ts, actor, action, incident_id: ref.incidentId ?? null, device_id: ref.deviceId ?? null, details: ref.details ?? null });
+    const entry = rowToAudit(db.prepare('SELECT * FROM audit_log WHERE id = ?').get(id) as Row);
     publish({ type: 'audit', entry });
   }
 

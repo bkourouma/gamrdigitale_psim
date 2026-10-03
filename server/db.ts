@@ -168,6 +168,9 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'device', column: 'direction', definition: "TEXT NOT NULL DEFAULT 'above'" },
   { table: 'device', column: 'last_value', definition: 'REAL' },
   { table: 'device', column: 'heartbeat_s', definition: 'INTEGER' },
+  // Journal infalsifiable : chaine d'empreintes (voir auditchain.ts). NULL = entree anterieure au mecanisme.
+  { table: 'audit_log', column: 'prev_hash', definition: 'TEXT' },
+  { table: 'audit_log', column: 'hash', definition: 'TEXT' },
   { table: 'incident', column: 'confirmed_at', definition: 'INTEGER' },
   { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
   { table: 'incident', column: 'hint', definition: 'TEXT' },

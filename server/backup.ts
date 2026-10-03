@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
+import { headOf } from './auditchain.ts';
 import { lockHolder } from './lock.ts';
 
 const NAME_PATTERN = /^psim-\d{8}-\d{6}(-\d+)?$/;
@@ -30,6 +31,8 @@ export interface Manifest {
   app: 'gamrdigitale-psim';
   createdAt: number;
   includesKey: boolean;
+  /** Empreinte de fin de journal au moment de la sauvegarde : une ancre conservee avec la sauvegarde (voir auditchain.ts). */
+  auditHead?: { id: number; hash: string } | null;
   files: ManifestFile[];
 }
 
@@ -106,7 +109,7 @@ export function createBackup(opts: BackupOptions): BackupResult {
       add('secret.key');
     }
 
-    const manifest: Manifest = { version: 1, app: 'gamrdigitale-psim', createdAt: t, includesKey, files };
+    const manifest: Manifest = { version: 1, app: 'gamrdigitale-psim', createdAt: t, includesKey, auditHead: headOf(opts.db), files };
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     return { dir, name, bytes: files.reduce((s, f) => s + f.size, 0), files: files.length, includesKey };
   } catch (err) {

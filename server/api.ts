@@ -15,6 +15,7 @@ import {
 } from './auth.ts';
 import type { Session } from './auth.ts';
 import type { Arming } from './arming.ts';
+import type { JournalGuard } from './journal.ts';
 import { parseRange } from './reports.ts';
 import type { Reports } from './reports.ts';
 import type { Engine } from './engine.ts';
@@ -65,6 +66,7 @@ export interface ApiDeps {
   recipients: RecipientsService;
   arming: Arming;
   reports: Reports;
+  journal: JournalGuard;
   /** HTTPS integre : active HSTS. */
   tls: boolean;
   trustProxy: boolean;
@@ -333,6 +335,12 @@ export function createApp(deps: ApiDeps) {
     res.json(deps.backupNow());
   });
 
+  // Integrite du journal : verification complete a la demande (chaine d'empreintes et ancres memorisees).
+  app.post('/api/system/journal/verify', adminOnly, (req, res) => {
+    const result = deps.journal.check();
+    engine.audit(actorOf(req), 'journal_verified', { details: result.ok ? `integre (${result.checked} entrees)` : `ALTERE (${result.problems.length} probleme(s))` });
+    res.json(result);
+  });
   app.get('/api/audit', anyUser, (req, res) => res.json(engine.listAudit(Number(req.query.limit ?? 100))));
 
   // ---- Traitement des incidents ----------------------------------------------------------

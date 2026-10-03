@@ -251,7 +251,7 @@ export function incidentsCsv(records: IncidentRecord[]): string {
 
 // ---------------------------------------------------------------- service
 
-export function createReports(db: DatabaseSync, siteName: () => string = () => 'Site') {
+export function createReports(db: DatabaseSync, siteName: () => string = () => 'Site', journalHead: () => { id: number; hash: string } | null = () => null) {
   function query(range: Range, limit = MAX_CSV_ROWS): IncidentRecord[] {
     const rows = db
       .prepare(
@@ -321,6 +321,12 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
     };
   }
 
+  /** Empreinte de fin de journal : permet de verifier plus tard que le journal n'a pas ete reecrit (npm run verify-journal -- --anchor). */
+  function anchorLine(): string {
+    const head = journalHead();
+    return head ? `<p class="foot anchor">Empreinte du journal à l'établissement de ce document : <code>${head.id}:${head.hash}</code> (à conserver pour en vérifier l'intégrité, voir <code>npm run verify-journal</code>).</p>` : '';
+  }
+
   const percent = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)} %`);
 
   const PAGE_HEAD = (title: string) =>
@@ -369,6 +375,7 @@ ${table(
   ]),
 )}`}
 <p class="foot">Document généré par le PSIM à partir de son journal. Les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur.</p>
+${anchorLine()}
 ${PAGE_FOOT}`;
   }
 
@@ -394,6 +401,7 @@ ${d.notifications.length === 0 ? '<p class="empty">Aucune alerte envoyée pour c
 <h2>Images des caméras</h2>
 ${d.snapshotIds.length === 0 ? '<p class="empty">Aucune image enregistrée.</p>' : `<div class="shots">${d.snapshotIds.map((s) => `<figure><img src="/api/snapshots/${s.id}?t=${s.takenAt}" alt="Caméra ${esc(s.cameraId)}"><figcaption>${esc(s.cameraId)} — ${esc(fmtDateTime(s.takenAt))} (${esc(s.reason)})</figcaption></figure>`).join('')}</div>`}
 <p class="foot">Document généré par le PSIM à partir de son journal.</p>
+${anchorLine()}
 ${PAGE_FOOT}`;
   }
 

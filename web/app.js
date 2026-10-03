@@ -61,6 +61,9 @@ const ACTION_LABEL = {
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
   supervision_gap: 'Période sans surveillance',
+  journal_integrity_failed: 'JOURNAL ALTÉRÉ',
+  journal_integrity_recovered: 'Journal de nouveau cohérent',
+  journal_verified: 'Journal vérifié',
   heartbeat_failing: 'Supervision externe en échec',
   heartbeat_recovered: 'Supervision externe rétablie',
   zone_armed: 'Zone armée',
@@ -899,6 +902,13 @@ const fmtDuration = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} j ${Math.floo
 
 /** Etat du PSIM lui-meme (administrateur) : alimente le panneau « Systeme » et le badge d'alerte du haut. */
 // Continuité : dernière période sans surveillance, et état du signal de supervision externe.
+function journalText(sys) {
+  const j = sys.journal;
+  if (!j) return 'Journal : pas encore vérifié.';
+  const when = new Date(j.at).toLocaleString('fr-FR');
+  return j.ok ? `Journal : intégrité vérifiée le ${when} (${j.checked} entrées protégées).` : `JOURNAL ALTÉRÉ (vérifié le ${when}) : voir « Vérifier le journal » et npm run verify-journal.`;
+}
+
 function continuityText(sys) {
   const gap = sys.continuity?.lastGap;
   const hb = sys.heartbeat;
@@ -934,7 +944,8 @@ async function loadSystem(render = true) {
       `passerelles MQTT connectées : ${sys.brokerClients}. ` +
       `Sauvegardes : ${b.everyH > 0 ? `automatiques toutes les ${b.everyH} h` : 'automatiques désactivées'}, ${b.count} conservée(s)` +
       `${b.at ? `, dernière ${b.ok ? 'réussie' : 'EN ÉCHEC'} le ${new Date(b.at).toLocaleString('fr-FR')}` : ', aucune pour l\'instant'} (${b.dir}). ` +
-      continuityText(sys);
+      continuityText(sys) +
+      ` ${journalText(sys)}`;
     $('sys-warnings').replaceChildren(
       ...(sys.warnings.length
         ? sys.warnings.map((w) => h('li', { class: w.level === 'critique' ? 'bad' : 'warn', text: `${w.level === 'critique' ? 'CRITIQUE' : 'Attention'} : ${w.message}` }))
@@ -947,6 +958,18 @@ async function loadSystem(render = true) {
 
 $('sys-box').addEventListener('toggle', () => {
   if ($('sys-box').open) loadSystem();
+});
+$('sys-journal').addEventListener('click', async () => {
+  $('sys-journal').disabled = true;
+  try {
+    const r = await api('/api/system/journal/verify', { method: 'POST' });
+    toast(r.ok ? `Journal intègre (${r.checked} entrées vérifiées)` : `JOURNAL ALTÉRÉ : ${r.problems.length} problème(s), première entrée n°${r.problems[0].id} (${r.problems[0].reason})`, r.ok ? 'ok' : 'error');
+    loadSystem();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    $('sys-journal').disabled = false;
+  }
 });
 $('sys-backup').addEventListener('click', async () => {
   $('sys-backup').disabled = true;
