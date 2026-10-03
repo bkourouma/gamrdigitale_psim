@@ -16,6 +16,7 @@ import {
 import type { Session } from './auth.ts';
 import type { Arming } from './arming.ts';
 import type { JournalGuard } from './journal.ts';
+import type { ReportMail } from './reportmail.ts';
 import { parseRange } from './reports.ts';
 import type { Reports } from './reports.ts';
 import type { Engine } from './engine.ts';
@@ -67,6 +68,7 @@ export interface ApiDeps {
   arming: Arming;
   reports: Reports;
   journal: JournalGuard;
+  reportMail: ReportMail;
   /** HTTPS integre : active HSTS. */
   tls: boolean;
   trustProxy: boolean;
@@ -511,6 +513,16 @@ export function createApp(deps: ApiDeps) {
     const range = parseRange(req.query);
     engine.audit(actorOf(req), 'report_exported', { details: `export CSV des incidents ${range.fromDay} au ${range.toDay}${range.category ? ` (${range.category})` : ''}` });
     sendCsv(res, `incidents_${range.fromDay}_${range.toDay}.csv`, deps.reports.incidentsCsv(range));
+  });
+  // Rapport periodique par e-mail : reglage et envoi immediat (administrateur).
+  app.get('/api/reports/schedule', adminOnly, (_req, res) => res.json(deps.reportMail.view()));
+  app.put('/api/reports/schedule', adminOnly, json, (req, res) => {
+    deps.reportMail.update(actorOf(req), (req.body ?? {}) as Record<string, unknown>);
+    res.json(deps.reportMail.view());
+  });
+  app.post('/api/reports/schedule/send-now', adminOnly, async (req, res) => {
+    const sent = await deps.reportMail.sendNow(actorOf(req));
+    res.json({ ok: true, from: sent.range.fromDay, to: sent.range.toDay, recipients: sent.to.length });
   });
   // Le journal complet contient les actions de tous les utilisateurs : administrateur.
   app.get('/api/reports/audit.csv', adminOnly, (req, res) => {

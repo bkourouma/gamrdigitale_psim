@@ -306,7 +306,17 @@ Panneau **Rapports et exports** (tout utilisateur connecté) : choisir une péri
 
 **Sûretés** : lecture seule, rien n'est modifié. Les textes saisis (noms, commentaires) sont **échappés** dans les pages et **neutralisés** dans les CSV (une cellule commençant par `=`, `+`, `-` ou `@` est préfixée, pour qu'Excel ne l'exécute pas comme une formule). Les pages n'embarquent aucun script en ligne. Chaque rapport ou export est **inscrit au journal** avec son auteur. Le rapport HTML liste au plus 2 000 incidents (il le dit), les exports CSV 50 000.
 
-**Limites** : pas d'envoi automatique par e-mail ni de rapport périodique planifié ; les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur (pas le temps d'intervention sur le terrain) ; les dates suivent le fuseau horaire du serveur.
+### Rapport automatique par e-mail
+
+Pour que la direction reçoive le rapport sans rien demander : *Rapports et exports → Rapport automatique par e-mail* (administrateur).
+
+- **Rythme** : chaque semaine (jour et heure au choix) ou chaque mois (jour 1 à 28). Hebdomadaire : les **7 jours entiers précédents** ; mensuel : le **mois civil précédent**. Heure du serveur.
+- **Contenu** : le corps du message donne la synthèse (incidents, réels, fausses alarmes et leur taux, délai d'acquittement, alertes en échec, répartition par catégorie) et **dit si le PSIM a été aveugle** pendant la période, s'il y a des détecteurs hors service, ou si le journal a été signalé altéré. En pièces jointes : le **rapport complet autonome** (HTML sans script, à ouvrir dans un navigateur ou à imprimer en PDF) et l'**export CSV**. L'**empreinte du journal** y figure, ce qui l'ancre hors de la machine (voir « Journal infalsifiable »). Une semaine calme est envoyée aussi : c'est une preuve de bon fonctionnement.
+- **Prérequis** : le serveur SMTP des alertes (`PSIM_SMTP_HOST`, `PSIM_SMTP_FROM`, etc.). Sans lui, l'activation est refusée. Jusqu'à 20 destinataires.
+- **Garde-fous** : l'activation **n'envoie rien d'arrière** (seul le prochain envoi prévu part) ; un envoi manqué parce que le PSIM était arrêté est **rattrapé pendant 3 jours**, pas au-delà (un rapport périmé n'est pas envoyé, et le journal le dit) ; en cas d'échec, **3 essais espacés de 10 minutes**, puis abandon journalisé et avertissement dans *Système* ; jamais deux envois pour la même période.
+- **Envoyer le dernier rapport maintenant** : envoi immédiat de la dernière période complète, pour vérifier le rendu ; il ne modifie pas le calendrier.
+
+**Limites** : les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur (pas le temps d'intervention sur le terrain) ; les dates suivent le fuseau horaire du serveur ; le message n'est ni signé ni chiffré (le rapport ne contient pas d'identifiants, mais des noms d'équipements et de zones : choisir les destinataires en conséquence) ; si le PSIM est coupé du réseau ou éteint à l'heure prévue, le rapport n'est pas envoyé, et seule la supervision externe le signale.
 
 ## Reprise après panne et supervision externe
 
@@ -372,6 +382,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
 | `server/auditchain.ts`, `server/journal.ts` | Journal infalsifiable : chaîne d'empreintes, vérification, ancres, alerte d'altération |
 | `scripts/verify-journal.ts` | Vérification du journal hors PSIM (base, sauvegarde, ancre externe) |
+| `server/reportmail.ts` | Rapport périodique par e-mail : calendrier, rattrapage borné, reprises, contenu |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |

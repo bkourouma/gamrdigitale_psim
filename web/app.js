@@ -68,6 +68,9 @@ const ACTION_LABEL = {
   heartbeat_recovered: 'Supervision externe rétablie',
   zone_armed: 'Zone armée',
   report_exported: 'Export / rapport',
+  report_schedule_updated: 'Rapport automatique réglé',
+  report_email_sent: 'Rapport envoyé par e-mail',
+  report_email_failed: "Échec d'envoi du rapport",
   zone_disarmed: 'Zone désarmée',
   arming_schedule: "Planning d'armement",
   intrusion_ignored: 'Intrusion ignorée (zone désarmée)',
@@ -319,7 +322,7 @@ const logout = async () => {
 const refreshMe = async () => {
   S.me = await api('/api/me');
 };
-const reportsView = createReportsView({ h, getMe: () => S.me });
+const reportsView = createReportsView({ h, getMe: () => S.me, api, toast });
 const armingView = createArmingView({ api, h, toast, getMe: () => S.me });
 const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
 const admin = createUsersAdmin({ api, h, toast, dialogs, getMe: () => S.me, onRecipientsChanged: () => loadNotifStatus() });

@@ -150,6 +150,8 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .tag.disarmed { color: var(--warn); border-color: var(--warn); }
 .schedule-editor { display: grid; gap: 6px; margin-top: 4px; }
 .window { align-items: center; }
+.schedule-mail { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+.schedule-mail textarea { width: 100%; }
 .reports { display: grid; gap: 8px; margin-top: 6px; }
 a.btn { text-decoration: none; display: inline-block; }
 .chip.type { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }

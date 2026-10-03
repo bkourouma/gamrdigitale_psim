@@ -329,9 +329,20 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
 
   const percent = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)} %`);
 
+  // Pages servies par le PSIM : feuille de style et script externes (politique de securite). Piece jointe : tout est integre.
+  let standaloneCss: string | null = null;
   const PAGE_HEAD = (title: string) =>
-    `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><link rel="stylesheet" href="/report.css"></head><body>`;
-  const PAGE_FOOT = '<script src="/report.js"></script></body></html>';
+    `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>${standaloneCss === null ? '<link rel="stylesheet" href="/report.css">' : `<style>${standaloneCss}</style>`}</head><body>`;
+  const PAGE_FOOT = () => (standaloneCss === null ? '<script src="/report.js"></script></body></html>' : '</body></html>');
+  /** Rapport autonome : CSS integre, sans bouton ni script, lisible hors ligne (piece jointe d'un e-mail). */
+  function standaloneReportHtml(range: Range, records: IncidentRecord[], now: number, css: string): string {
+    standaloneCss = css.replace(/<\/style/gi, '');
+    try {
+      return reportHtml(range, records, now).replace(/<button id="print"[^>]*>[^<]*<\/button>/, '').replace(/<a href="\/api\/reports\/incidents\/(\d+)">/g, '<a>');
+    } finally {
+      standaloneCss = null;
+    }
+  }
 
   function reportHtml(range: Range, records: IncidentRecord[], now: number): string {
     const sum = summarize(records);
@@ -376,7 +387,7 @@ ${table(
 )}`}
 <p class="foot">Document généré par le PSIM à partir de son journal. Les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur.</p>
 ${anchorLine()}
-${PAGE_FOOT}`;
+${PAGE_FOOT()}`;
   }
 
   function incidentHtml(id: number, now: number): string {
@@ -402,10 +413,10 @@ ${d.notifications.length === 0 ? '<p class="empty">Aucune alerte envoyée pour c
 ${d.snapshotIds.length === 0 ? '<p class="empty">Aucune image enregistrée.</p>' : `<div class="shots">${d.snapshotIds.map((s) => `<figure><img src="/api/snapshots/${s.id}?t=${s.takenAt}" alt="Caméra ${esc(s.cameraId)}"><figcaption>${esc(s.cameraId)} — ${esc(fmtDateTime(s.takenAt))} (${esc(s.reason)})</figcaption></figure>`).join('')}</div>`}
 <p class="foot">Document généré par le PSIM à partir de son journal.</p>
 ${anchorLine()}
-${PAGE_FOOT}`;
+${PAGE_FOOT()}`;
   }
 
-  return { query, auditCsv, detail, reportHtml, incidentHtml, incidentsCsv: (range: Range) => incidentsCsv(query(range)) };
+  return { query, auditCsv, detail, reportHtml, standaloneReportHtml, incidentHtml, incidentsCsv: (range: Range) => incidentsCsv(query(range)) };
 }
 
 export type Reports = ReturnType<typeof createReports>;

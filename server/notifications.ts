@@ -60,10 +60,8 @@ export interface EmailConfig {
   starttls?: boolean;
 }
 
-export function emailChannel(cfg: EmailConfig, recipientsSource: Recipients): Channel | null {
-  const recipients = resolveRecipients(recipientsSource);
-  if (!cfg.host || !cfg.from) return null;
-  const transporter = nodemailer.createTransport({
+function smtpTransport(cfg: EmailConfig) {
+  return nodemailer.createTransport({
     host: cfg.host,
     port: cfg.port,
     secure: cfg.secure,
@@ -73,6 +71,35 @@ export function emailChannel(cfg: EmailConfig, recipientsSource: Recipients): Ch
     greetingTimeout: 10_000,
     socketTimeout: TIMEOUT_MS,
   });
+}
+
+export interface MailMessage {
+  to: string[];
+  subject: string;
+  text: string;
+  html: string;
+  attachments?: { filename: string; content: string | Buffer; contentType: string }[];
+}
+
+/** Envoi d'un e-mail complet (HTML, pieces jointes), pour les rapports. Meme serveur SMTP que les alertes. */
+export interface Mailer {
+  send(message: MailMessage): Promise<void>;
+}
+
+export function createMailer(cfg: EmailConfig): Mailer | null {
+  if (!cfg.host || !cfg.from) return null;
+  const transporter = smtpTransport(cfg);
+  return {
+    async send(message) {
+      await transporter.sendMail({ from: cfg.from, to: message.to, subject: message.subject, text: message.text, html: message.html, attachments: message.attachments });
+    },
+  };
+}
+
+export function emailChannel(cfg: EmailConfig, recipientsSource: Recipients): Channel | null {
+  const recipients = resolveRecipients(recipientsSource);
+  if (!cfg.host || !cfg.from) return null;
+  const transporter = smtpTransport(cfg);
   const safeName = (s: string) => s.replace(/[^\w.-]+/g, '_').slice(0, 60);
   return {
     id: 'email',

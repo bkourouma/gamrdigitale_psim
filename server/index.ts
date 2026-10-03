@@ -15,13 +15,14 @@ import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
 import { startBroker } from './mqtt.ts';
-import { createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
+import { createMailer, createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
 import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
 import { createArming } from './arming.ts';
 import type { Arming } from './arming.ts';
 import { createReports } from './reports.ts';
+import { createReportMail } from './reportmail.ts';
 import { createRiskService } from './risk.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
@@ -246,6 +247,10 @@ const system = createSystemStatus({
   backup: { everyH: config.backup.everyH, dir: backupDir, last: () => lastBackup, count: () => listBackups(backupDir).length },
   lastGap: () => continuity.lastGap(),
   journal: () => journalGuard.last() ?? journalGuard.lastKnown(),
+  reportMail: () => {
+    const s = reportMail.get();
+    return { enabled: s.frequency !== 'off', lastError: s.lastError, lastSentAt: s.lastSentAt };
+  },
   heartbeat: () => heartbeat.status(),
 });
 
@@ -296,6 +301,23 @@ if (startupGap) {
 }
 
 
+// Rapports : pages et exports a la demande, et rapport periodique par e-mail (meme serveur SMTP que les alertes).
+const siteName = () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site';
+const reports = createReports(db, siteName, () => headOf(db));
+const reportMail = createReportMail({
+  db,
+  reports,
+  mailer: createMailer({ ...notify.smtp }),
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  siteName,
+  journalHead: () => headOf(db),
+  css: () => readFileSync(join(root, 'web', 'report.css'), 'utf8'),
+  publicUrl: notify.publicUrl,
+});
+const reportTimer = setInterval(() => {
+  reportMail.tick().catch((err) => console.error('[psim] rapport periodique :', err));
+}, 60_000);
+
 const app = createApp({
   db,
   engine,
@@ -306,7 +328,8 @@ const app = createApp({
   users,
   recipients,
   arming,
-  reports: createReports(db, () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site', () => headOf(db)),
+  reports,
+  reportMail,
   journal: journalGuard,
   tls: tlsFiles !== null,
   trustProxy: config.trustProxy,
@@ -430,6 +453,7 @@ async function shutdown() {
   clearInterval(purgeTimer);
   clearInterval(riskTimer);
   clearInterval(journalTimer);
+  clearInterval(reportTimer);
   if (backupTimer) clearInterval(backupTimer);
   heartbeat.stop();
   video.shutdown();

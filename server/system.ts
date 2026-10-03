@@ -35,6 +35,8 @@ export interface SystemDeps {
   heartbeat?: () => HeartbeatStatus;
   /** Derniere verification du journal (chaine d'empreintes). */
   journal?: () => { ok: boolean; at: number; checked: number; unprotected?: number } | null;
+  /** Rapport periodique par e-mail. */
+  reportMail?: () => { enabled: boolean; lastError: string | null; lastSentAt: number | null };
 }
 
 const GB = 1024 ** 3;
@@ -95,6 +97,8 @@ export function createSystemStatus(deps: SystemDeps) {
     if (notif.failedLast24h > 0) warnings.push({ level: 'attention', message: `${notif.failedLast24h} notification(s) en echec sur 24 h.` });
     const journal = deps.journal?.() ?? null;
     if (journal && !journal.ok) warnings.push({ level: 'critique', message: "Le journal a ete ALTERE (verification d'integrite en echec) : traiter comme un incident de securite, voir `npm run verify-journal`." });
+    const rm = deps.reportMail?.() ?? null;
+    if (rm?.enabled && rm.lastError) warnings.push({ level: 'attention', message: `Le dernier rapport periodique par e-mail n'a pas pu partir : ${rm.lastError}.` });
     const gap = deps.lastGap?.() ?? null;
     if (gap && !gap.clean && t - gap.to < 24 * 3_600_000) {
       warnings.push({ level: 'attention', message: `Redemarrage apres un arret inattendu : le PSIM n'a rien surveille pendant ${Math.round(gap.durationMs / 60_000) || 1} min (${new Date(gap.from).toLocaleString('fr-FR')}). Verifier ce qui s'est passe.` });
