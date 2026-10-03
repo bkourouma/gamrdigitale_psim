@@ -1,9 +1,11 @@
-import { AUTO_SEQUENCE, DEMO_CAMERAS, DEMO_DETECTORS, SCENARIOS, lastStepAt } from './scenarios.ts';
+import { AUTO_SEQUENCE, DEMO_CAMERAS, DEMO_DETECTORS, DEMO_SENSORS, SCENARIOS, lastStepAt } from './scenarios.ts';
 import type { DetectorState, Scenario } from './scenarios.ts';
 
 export interface RunnerDeps {
   /** Publie l'etat d'un detecteur (MQTT). */
   publish: (detectorId: string, state: DetectorState) => void | Promise<void>;
+  /** Message d'un capteur hors incendie : `{event}` ou `{value}`. Ignore si absent (certains tests n'en ont pas besoin). */
+  publishMessage?: (detectorId: string, message: { event?: string; value?: number }) => void | Promise<void>;
   /** Fixe ce que les cameras d'une zone "voient". */
   setFire: (zone: string, level: 0 | 1 | 2) => void;
   log: (message: string) => void;
@@ -25,6 +27,8 @@ export function createRunner(deps: RunnerDeps) {
   // Un detecteur reel emet un signal de vie periodique : on rejoue donc l'etat courant de chacun.
   const states = new Map<string, DetectorState>(DEMO_DETECTORS.map((id) => [id, 'normal']));
   const muted = new Set<string>();
+  // Derniere mesure des capteurs qui emettent en continu : c'est elle qui sert de signal de vie.
+  const values = new Map<string, number>(DEMO_SENSORS.flatMap((s) => (s.reset.value !== undefined ? [[s.id, s.reset.value] as [string, number]] : [])));
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
   function cancel(): void {
@@ -41,6 +45,12 @@ export function createRunner(deps: RunnerDeps) {
     states.set(detectorId, state);
     if (muted.has(detectorId)) return; // un detecteur muet n'emet rien du tout
     Promise.resolve(deps.publish(detectorId, state)).catch((err) => deps.log(`  ! publication ${detectorId} : ${err.message}`));
+  }
+
+  function publishMessage(detectorId: string, message: { event?: string; value?: number }): void {
+    if (message.value !== undefined) values.set(detectorId, message.value);
+    if (muted.has(detectorId)) return;
+    Promise.resolve(deps.publishMessage?.(detectorId, message)).catch((err) => deps.log(`  ! publication ${detectorId} : ${err.message}`));
   }
 
   /** Lance un scenario ; `onDone` est appele apres son dernier evenement. */
@@ -61,6 +71,9 @@ export function createRunner(deps: RunnerDeps) {
           }
         }
         if (step.detector && step.state) publish(step.detector, step.state);
+        if (step.detector && (step.event !== undefined || step.value !== undefined)) {
+          publishMessage(step.detector, step.event !== undefined ? { event: step.event } : { value: step.value });
+        }
         if (step.note) deps.log(`  [${step.at.toString().padStart(3)} s] ${step.note}`);
       });
     }
@@ -70,12 +83,24 @@ export function createRunner(deps: RunnerDeps) {
     });
   }
 
+  /**
+   * Prend note d'un message qui n'est pas parti du scenario (bouton du simulateur de l'interface) : le signal de
+   * vie rejoue ensuite CE que l'equipement a dit en dernier, sinon il effacerait l'alarme au bout de quelques secondes.
+   */
+  function observe(detectorId: string, message: unknown): void {
+    if (typeof message !== 'object' || message === null) return;
+    const { state, value } = message as { state?: unknown; value?: unknown };
+    if (typeof state === 'string' && states.has(detectorId)) states.set(detectorId, state as DetectorState);
+    if (typeof value === 'number' && values.has(detectorId)) values.set(detectorId, value);
+  }
+
   /** Tout revient au calme : plus de feu, tous les detecteurs a la normale. */
   function reset(quiet = false): void {
     cancel();
     muted.clear();
     for (const camera of DEMO_CAMERAS) deps.setFire(camera.zone, 0);
     for (const id of DEMO_DETECTORS) publish(id, 'normal');
+    for (const sensor of DEMO_SENSORS) publishMessage(sensor.id, sensor.reset);
     if (!quiet) deps.log('\n> Retour au calme : feu eteint, detecteurs a la normale');
   }
 
@@ -109,6 +134,8 @@ export function createRunner(deps: RunnerDeps) {
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
       for (const [id, state] of states) if (!muted.has(id)) publish(id, state);
+      // Seuls les capteurs de mesure emettent en continu ; contacts et detecteurs de mouvement ne parlent qu'aux changements.
+      for (const [id, value] of values) publishMessage(id, { value });
     }, (periodSeconds * 1000) / speed);
   }
 
@@ -120,6 +147,7 @@ export function createRunner(deps: RunnerDeps) {
   return {
     run,
     reset,
+    observe,
     startHeartbeat,
     stopHeartbeat,
     isMuted: (id: string) => muted.has(id),

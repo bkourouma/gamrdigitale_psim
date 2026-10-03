@@ -10,6 +10,12 @@ interface SeedDevice {
   zone: string;
   x: number; // en % du plan (plan demo : 1000 x 600)
   y: number;
+  /** Detecteurs hors incendie (intrusion, acces, environnement). Absent = incendie. */
+  category?: 'intrusion' | 'access' | 'environment';
+  /** Capteur a mesure : unite et seuils (prealarme, alarme). */
+  unit?: string;
+  warnAt?: number;
+  alarmAt?: number;
 }
 
 const pct = (px: number, total: number) => Math.round((px / total) * 1000) / 10;
@@ -23,6 +29,12 @@ export const DEMO_DEVICES: SeedDevice[] = [
   { id: 'D-05', kind: 'detector', name: 'Detecteur entrepot', zone: 'Entrepot', ...at(270, 450) },
   { id: 'D-06', kind: 'detector', name: 'Detecteur atelier', zone: 'Atelier', ...at(640, 450) },
   { id: 'D-07', kind: 'detector', name: 'Detecteur stockage', zone: 'Stockage', ...at(870, 450) },
+  // Autres sources : meme moteur d'incidents, meme confirmation par la camera. Non supervises par defaut
+  // (un contact de porte n'emet qu'aux changements) sauf le capteur de temperature, qui mesure en continu.
+  { id: 'I-01', kind: 'detector', category: 'intrusion', name: 'Mouvement accueil (nuit)', zone: 'Accueil', ...at(110, 200) },
+  { id: 'A-01', kind: 'detector', category: 'access', name: 'Porte de service entrepot', zone: 'Entrepot', ...at(60, 400) },
+  { id: 'E-01', kind: 'detector', category: 'environment', name: 'Temperature salle serveurs', zone: 'Salle serveurs', unit: '°C', warnAt: 30, alarmAt: 38, ...at(860, 200) },
+  { id: 'E-02', kind: 'detector', category: 'environment', name: "Fuite d'eau stockage", zone: 'Stockage', ...at(930, 500) },
   { id: 'C-01', kind: 'camera', name: 'Camera accueil', zone: 'Accueil', ...at(90, 90) },
   { id: 'C-02', kind: 'camera', name: 'Camera couloir', zone: 'Couloir', ...at(150, 300) },
   { id: 'C-03', kind: 'camera', name: 'Camera serveurs', zone: 'Salle serveurs', ...at(920, 90) },
@@ -38,6 +50,10 @@ export const DEMO_LINKS: Record<string, string[]> = {
   'D-05': ['C-04'],
   'D-06': ['C-05', 'C-04'],
   'D-07': ['C-05'],
+  'I-01': ['C-01'],
+  'A-01': ['C-04'],
+  'E-01': ['C-03'],
+  'E-02': ['C-05'],
 };
 
 /** Evaluations de risque du site de demonstration (valeurs plausibles, a remplacer par celles du site reel). */
@@ -64,10 +80,13 @@ export function seedDemo(db: DatabaseSync, dataDir: string, seedDir: string): bo
   try {
     db.prepare('INSERT INTO site (id, name, plan_file, plan_version) VALUES (1, ?, ?, 0)').run('Site de demonstration', planFile);
     const insertDevice = db.prepare(
-      'INSERT INTO device (id, kind, name, zone, x, y, stream_kind) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO device (id, kind, name, zone, x, y, stream_kind, category, value_unit, warn_at, alarm_at, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
     for (const d of DEMO_DEVICES) {
-      insertDevice.run(d.id, d.kind, d.name, d.zone, d.x, d.y, d.kind === 'camera' ? 'simulated' : null);
+      const category = d.category ?? 'fire';
+      // Seul le capteur de temperature emet en continu : les autres sources hors incendie ne sont pas supervisees.
+      const heartbeat = category === 'fire' || d.unit ? null : 0;
+      insertDevice.run(d.id, d.kind, d.name, d.zone, d.x, d.y, d.kind === 'camera' ? 'simulated' : null, category, d.unit ?? null, d.warnAt ?? null, d.alarmAt ?? null, heartbeat);
     }
     const insertLink = db.prepare('INSERT INTO device_link (detector_id, camera_id) VALUES (?, ?)');
     for (const [detectorId, cameraIds] of Object.entries(DEMO_LINKS)) {

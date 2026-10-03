@@ -61,7 +61,10 @@ describe('detecteur muet', () => {
     t.advance(30);
     assert.deepEqual(t.engine.checkSilentDetectors(), []);
     t.advance(31);
-    assert.equal(t.engine.checkSilentDetectors().length, 7, 'les 7 detecteurs muets depuis le demarrage');
+    // 7 detecteurs incendie + le capteur de temperature (qui mesure en continu) ; les contacts et detecteurs de mouvement ne sont pas supervises
+    assert.equal(t.engine.checkSilentDetectors().length, 8, 'les detecteurs supervises, muets depuis le demarrage');
+    assert.equal(t.status('I-01'), 'normal');
+    assert.equal(t.status('A-01'), 'normal');
     assert.equal(t.status('D-05'), 'offline');
   });
 

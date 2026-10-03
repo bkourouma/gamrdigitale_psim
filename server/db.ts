@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS notification_recipient (
 /** Colonnes ajoutees apres la premiere version : `CREATE TABLE IF NOT EXISTS` ne modifie pas une table existante. */
 const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'device', column: 'state_since', definition: 'INTEGER' },
+  { table: 'device', column: 'category', definition: "TEXT NOT NULL DEFAULT 'fire'" },
+  { table: 'device', column: 'value_unit', definition: 'TEXT' },
+  { table: 'device', column: 'warn_at', definition: 'REAL' },
+  { table: 'device', column: 'alarm_at', definition: 'REAL' },
+  { table: 'device', column: 'direction', definition: "TEXT NOT NULL DEFAULT 'above'" },
+  { table: 'device', column: 'last_value', definition: 'REAL' },
+  { table: 'device', column: 'heartbeat_s', definition: 'INTEGER' },
   { table: 'incident', column: 'confirmed_at', definition: 'INTEGER' },
   { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
   { table: 'incident', column: 'hint', definition: 'TEXT' },

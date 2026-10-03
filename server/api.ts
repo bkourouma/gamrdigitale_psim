@@ -16,6 +16,7 @@ import {
 import type { Session } from './auth.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
 import type { RecipientsService } from './recipients.ts';
@@ -72,7 +73,9 @@ export interface ApiDeps {
   simEnabled: boolean;
   /** Comptes proposes sur la page de connexion (mode demo), ou null. */
   demoAccounts: { username: string; label: string; password: string }[] | null;
-  triggerSim: (detectorId: string, state: string) => Promise<void>;
+  triggerSim: (detectorId: string, payload: Record<string, unknown>) => Promise<void>;
+  /** Jeton de l'entree HTTP des equipements ; vide = entree desactivee. */
+  ingestToken?: string;
 }
 
 type AuthedRequest = Request & { session: Session };
@@ -436,14 +439,42 @@ export function createApp(deps: ApiDeps) {
 
   app.post('/api/sim/detectors/:id', adminOnly, json, async (req, res) => {
     if (!deps.simEnabled) throw new PsimError(404, 'Simulateur desactive');
-    const state = (req.body as { state?: unknown } | undefined)?.state;
+    const body = (req.body ?? {}) as { state?: unknown; event?: unknown; value?: unknown };
     const id = String(req.params.id);
-    if (typeof state !== 'string') throw new PsimError(400, 'state requis');
+    // Le simulateur n'envoie que ce qu'un equipement reel pourrait envoyer : un etat, un evenement ou une mesure.
+    const payload: Record<string, unknown> = {};
+    for (const key of ['state', 'event', 'value'] as const) if (body[key] !== undefined) payload[key] = body[key];
+    if (Object.keys(payload).length === 0) throw new PsimError(400, 'state, event ou value requis');
     if (engine.getDevice(id)?.kind !== 'detector') throw new PsimError(404, 'Detecteur introuvable');
-    engine.audit(actorOf(req), 'sim_trigger', { deviceId: id, details: state });
-    await deps.triggerSim(id, state);
+    engine.audit(actorOf(req), 'sim_trigger', { deviceId: id, details: JSON.stringify(payload) });
+    await deps.triggerSim(id, payload);
     res.json({ ok: true });
   });
+
+  // ---- Entree des equipements (HTTP) -----------------------------------------------------
+
+  // Pour les systemes qui poussent leurs evenements (controle d'acces, passerelle IoT) sans parler MQTT.
+  // Authentification par jeton partage (pas de session) ; desactivee tant qu'aucun jeton n'est configure.
+  if (deps.ingestToken) {
+    const digest = (v: string) => createHash('sha256').update(v).digest();
+    const expected = digest(deps.ingestToken);
+    const ingestJson = express.json({ limit: '2kb' });
+    app.post('/api/ingest/:id', (req, res, next) => {
+      const key = `ingest:${req.ip}`;
+      if (isRateLimited(key)) return void res.status(429).json({ error: 'Trop de tentatives, reessayez dans une minute' });
+      const header = req.headers.authorization ?? '';
+      const given = header.startsWith('Bearer ') ? header.slice(7) : '';
+      if (!timingSafeEqual(digest(given), expected)) {
+        recordFailure(key);
+        return void res.status(401).json({ error: 'Jeton invalide' });
+      }
+      next();
+    }, ingestJson, (req, res) => {
+      const result = engine.ingest(String(req.params.id), req.body);
+      if (!result.ok) throw new PsimError(result.status, result.error);
+      res.status(204).end();
+    });
+  }
 
   // ---- Erreurs --------------------------------------------------------------------------
 

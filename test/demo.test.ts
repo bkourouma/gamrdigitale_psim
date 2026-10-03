@@ -13,6 +13,7 @@ import {
   DEMO_DETECTORS,
   DEMO_FALSE_ALARM_HINT_S,
   DEMO_HEARTBEAT_S,
+  DEMO_SENSORS,
   DEMO_SILENT_TIMEOUT_S,
   SCENARIOS,
   lastStepAt,
@@ -25,7 +26,7 @@ describe('scenarios de demonstration', () => {
   it('ne referencent que des equipements et des zones du site de demonstration', () => {
     const detectors = new Set(DEMO_DEVICES.filter((d) => d.kind === 'detector').map((d) => d.id));
     const zones = new Set(DEMO_DEVICES.map((d) => d.zone));
-    assert.deepEqual([...detectors].sort(), [...DEMO_DETECTORS].sort());
+    assert.deepEqual([...detectors].sort(), [...DEMO_DETECTORS, ...DEMO_SENSORS.map((x) => x.id)].sort());
     for (const camera of DEMO_CAMERAS) {
       const seeded = DEMO_DEVICES.find((d) => d.id === camera.id);
       assert.equal(seeded?.kind, 'camera', camera.id);
@@ -60,6 +61,7 @@ async function play(id: string) {
   const logs: string[] = [];
   const runner = createRunner({
     publish: (detector, state) => engine.handleDetectorMessage(detector, { state }),
+    publishMessage: (detector, message) => engine.handleDetectorMessage(detector, message),
     setFire: (zone, level) => fire.set(zone, level),
     log: (m) => logs.push(m),
     speed: 2000,
@@ -97,6 +99,66 @@ describe('execution des scenarios', () => {
     assert.equal(rest.length, 0);
     assert.equal(incident.severity, 'critical');
     assert.ok(incident.cameraIds.includes('C-03'));
+  });
+
+  it("intrusion : un incident critique d'intrusion a l'accueil, avec la camera liee", async () => {
+    const { engine } = await play('intrusion-nuit');
+    const [incident, ...rest] = engine.getSnapshot().incidents;
+    assert.equal(rest.length, 0);
+    assert.deepEqual([incident.detectorId, incident.category, incident.severity], ['I-01', 'intrusion', 'critical']);
+    assert.deepEqual(incident.cameraIds, ['C-01']);
+  });
+
+  it("porte forcee : avertissement puis critique, sur un seul incident d'acces", async () => {
+    const { engine } = await play('porte-forcee');
+    const incidents = engine.getSnapshot().incidents;
+    assert.equal(incidents.length, 1);
+    assert.deepEqual([incidents[0].category, incidents[0].severity], ['access', 'critical']);
+    assert.equal(engine.getDevice('A-01')?.status, 'normal');
+  });
+
+  it("derive de temperature : prealarme puis alarme par les seuils, retour a 26 °C", async () => {
+    const { engine } = await play('derive-temperature');
+    const incident = engine.getSnapshot().incidents.find((i) => i.detectorId === 'E-01')!;
+    assert.equal(incident.severity, 'critical', "le seuil d'alarme (38) a ete franchi");
+    assert.equal(engine.getDevice('E-01')?.lastValue, 26);
+    assert.equal(engine.getDevice('E-01')?.status, 'normal');
+  });
+
+  it("fuite d'eau : un incident d'environnement, puis le sol est sec", async () => {
+    const { engine } = await play('fuite-eau');
+    const [incident] = engine.getSnapshot().incidents;
+    assert.deepEqual([incident.detectorId, incident.category], ['E-02', 'environment']);
+    assert.equal(engine.getDevice('E-02')?.status, 'normal');
+  });
+
+  it("le signal de vie du capteur de temperature rejoue sa derniere mesure ; contacts et mouvements restent silencieux", async () => {
+    const seen: string[] = [];
+    const runner = createRunner({ publish: () => {}, publishMessage: (id, m) => void seen.push(`${id}:${JSON.stringify(m)}`), setFire: () => {}, log: () => {}, speed: 200 });
+    runner.reset(true);
+    seen.length = 0;
+    runner.startHeartbeat(DEMO_HEARTBEAT_S);
+    for (const start = Date.now(); seen.length < 2 && Date.now() - start < 4000; ) await new Promise((r) => setTimeout(r, 10));
+    runner.stopHeartbeat();
+    assert.ok(seen.length >= 2);
+    assert.ok(seen.every((m) => m === 'E-01:{"value":24}'), seen.join(' '));
+  });
+
+  it("un message venu du simulateur de l'interface est repris par le signal de vie, qui n'efface plus l'alarme", async () => {
+    const seen: string[] = [];
+    const runner = createRunner({ publish: (d, st) => void seen.push(`${d}:${st}`), publishMessage: (id, m) => void seen.push(`${id}:${JSON.stringify(m)}`), setFire: () => {}, log: () => {}, speed: 200 });
+    runner.reset(true);
+    runner.observe('D-03', { state: 'alarm', ts: 1 });
+    runner.observe('E-01', { value: 41 });
+    runner.observe('INCONNU', { state: 'alarm' }); // ignore
+    runner.observe('D-01', 'texte'); // ignore
+    seen.length = 0;
+    runner.startHeartbeat(DEMO_HEARTBEAT_S);
+    for (const start = Date.now(); seen.length < 9 && Date.now() - start < 4000; ) await new Promise((r) => setTimeout(r, 10));
+    runner.stopHeartbeat();
+    assert.ok(seen.includes('D-03:alarm') && !seen.includes('D-03:normal'), seen.join(' '));
+    assert.ok(seen.includes('E-01:{"value":41}') && !seen.includes('E-01:{"value":24}'));
+    assert.ok(!seen.some((m) => m.startsWith('INCONNU')));
   });
 
   it("defaut et perte de contact : le statut change, aucun incident n'est cree", async () => {

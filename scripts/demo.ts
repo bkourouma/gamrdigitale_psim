@@ -361,9 +361,20 @@ if (discoveryResponding) {
 const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${MQTT_PORT}`, { username: config.mqttUser, password: config.mqttPassword });
 const runner = createRunner({
   publish: (id, state) => client.publishAsync(`psim/detectors/${id}/state`, JSON.stringify({ state, ts: Date.now() }), { qos: 1 }).then(() => undefined),
+  publishMessage: (id, message) => client.publishAsync(`psim/detectors/${id}/state`, JSON.stringify({ ...message, ts: Date.now() }), { qos: 1 }).then(() => undefined),
   setFire,
   log,
   speed,
+});
+// Les boutons du simulateur de l'interface publient sur le meme broker : le signal de vie en tient compte.
+await client.subscribeAsync('psim/detectors/+/state');
+client.on('message', (topic, payload) => {
+  const id = topic.split('/')[2];
+  try {
+    runner.observe(id, JSON.parse(payload.toString('utf8')));
+  } catch {
+    // message illisible : ignore
+  }
 });
 runner.reset(true);
 runner.startHeartbeat(DEMO_HEARTBEAT_S);

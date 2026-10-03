@@ -53,6 +53,7 @@ const findings = preflight({
   detectorTimeoutS: config.detectorTimeoutS,
   backupEveryH: config.backup.everyH,
   requireTotp: config.requireTotp,
+  ingestToken: config.ingestToken,
 });
 
 console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_ENV=production pour le verdict de production)`);

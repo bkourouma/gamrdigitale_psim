@@ -261,7 +261,7 @@ describe('priorites d\'action', () => {
 
   it("propose d'installer un detecteur / une camera quand il en manque, avec le gain", () => {
     const t = setup();
-    t.db.prepare("DELETE FROM device_link WHERE detector_id = 'D-03'").run(); // la salle serveurs perd ses cameras liees
+    t.db.prepare("DELETE FROM device_link WHERE detector_id IN ('D-03', 'E-01')").run(); // la salle serveurs perd ses cameras liees
     t.db.prepare("UPDATE device SET zone = 'Ailleurs' WHERE id = 'C-03'").run();
     const z = t.zone('Salle serveurs');
     assert.equal(z.facts.cameras, 0);

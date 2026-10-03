@@ -12,6 +12,8 @@ export interface Broker {
   server: Server;
   /** Publie un etat de detecteur comme le ferait un equipement reel (utilise par le simulateur). */
   publishDetectorState(detectorId: string, state: string): Promise<void>;
+  /** Idem avec un message complet : `{state}`, `{event}` ou `{value}` (capteurs d'intrusion, d'acces, d'environnement). */
+  publishDetector(detectorId: string, payload: Record<string, unknown>): Promise<void>;
   /** Nombre de clients MQTT connectes (passerelles de detecteurs). */
   clients(): number;
   close(): Promise<void>;
@@ -62,10 +64,11 @@ export async function startBroker(
     server.listen(opts.port, opts.host, resolve);
   });
 
-  return {
+  const broker: Broker = {
     server: server as Server,
     clients: () => aedes.connectedClients,
-    publishDetectorState(detectorId, state) {
+    publishDetectorState: (detectorId, state) => broker.publishDetector(detectorId, { state }),
+    publishDetector(detectorId, payload) {
       return new Promise((resolve, reject) => {
         aedes.publish(
           {
@@ -74,7 +77,7 @@ export async function startBroker(
             dup: false,
             retain: false,
             topic: `psim/detectors/${detectorId}/state`,
-            payload: Buffer.from(JSON.stringify({ state, ts: Date.now() })),
+            payload: Buffer.from(JSON.stringify({ ...payload, ts: Date.now() })),
           },
           (err) => (err ? reject(err) : resolve()),
         );
@@ -87,4 +90,5 @@ export async function startBroker(
       });
     },
   };
+  return broker;
 }

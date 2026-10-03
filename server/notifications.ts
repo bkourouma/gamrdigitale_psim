@@ -12,6 +12,7 @@ import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import nodemailer from 'nodemailer';
 import type { Engine } from './engine.ts';
+import { CATEGORY_LABEL_PLAIN } from './sources.ts';
 import type { Device, Incident } from './types.ts';
 
 export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'test';
@@ -219,7 +220,9 @@ export function createNotifier(deps: NotifierDeps) {
   function incidentMessage(incident: Incident, kind: Kind, ageMs = 0): Message {
     const critical = incident.severity === 'critical';
     const confirmed = incident.confirmedAt !== null;
-    const level = critical ? 'ALARME' : 'PREALARME';
+    // Hors incendie, le type d'alarme figure dans le titre : « ALARME INTRUSION », « PREALARME CONTROLE D'ACCES »...
+    const type = incident.category === 'fire' ? '' : ` ${CATEGORY_LABEL_PLAIN[incident.category].toUpperCase()}`;
+    const level = `${critical ? 'ALARME' : 'PREALARME'}${type}`;
     let title: string;
     switch (kind) {
       case 'opened':
@@ -238,6 +241,7 @@ export function createNotifier(deps: NotifierDeps) {
     const lines = [
       `${title} - ${incident.detectorName}`,
       `Zone : ${incident.zone || 'non renseignee'}`,
+      incident.lastValue === null ? '' : `Derniere mesure : ${incident.lastValue}${incident.valueUnit ? ` ${incident.valueUnit}` : ''}`,
       `Incident n°${incident.id}, ouvert a ${new Date(incident.openedAt).toLocaleTimeString('fr-FR')}`,
       confirmed ? `Confirmee : ${incident.confirmationReason?.replace('neighbor:', 'detecteur voisin ').replace('persistence', 'persistance')}` : "A confirmer : rien ne la corrobore pour l'instant, a traiter quand meme",
       incident.status === 'open' ? 'Etat : NON ACQUITTEE' : `Etat : acquittee par ${incident.ackedBy}`,
@@ -251,6 +255,8 @@ export function createNotifier(deps: NotifierDeps) {
       text: lines.join('\n'),
       data: {
         severity: incident.severity,
+        category: incident.category,
+        value: incident.lastValue,
         confirmed,
         status: incident.status,
         detectorId: incident.detectorId,
@@ -321,7 +327,8 @@ export function createNotifier(deps: NotifierDeps) {
   /** Un detecteur muet laisse une zone sans surveillance : niveau 1. */
   function notifySilent(device: Device): Promise<void> {
     const text = `${device.name} (${device.zone || 'zone non renseignee'}) ne donne plus signe de vie : la zone n'est peut-etre plus surveillee.`;
-    return dispatch({ kind: 'silent', incidentId: null, subject: `[PSIM] ${KIND_TITLE.silent} - ${device.name}`, text: deps.publicUrl ? `${text}\nOuvrir le PSIM : ${deps.publicUrl}` : text, data: { detectorId: device.id, detector: device.name, zone: device.zone } }, [1]);
+    const title = device.category === 'fire' ? KIND_TITLE.silent : `CAPTEUR ${CATEGORY_LABEL_PLAIN[device.category].toUpperCase()} HORS LIGNE`;
+    return dispatch({ kind: 'silent', incidentId: null, subject: `[PSIM] ${title} - ${device.name}`, text: deps.publicUrl ? `${text}\nOuvrir le PSIM : ${deps.publicUrl}` : text, data: { detectorId: device.id, detector: device.name, zone: device.zone, category: device.category } }, [1]);
   }
 
   /** Images prises a l'etape `kind`, envoyees en complement (apres le texte, qui part sans attendre). */

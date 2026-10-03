@@ -90,6 +90,9 @@ export const config = {
   // Gestion des risques : periode (jours) de l'historique d'incendies, et age (mois) apres lequel une evaluation est « a revoir ».
   riskFireWindowDays: seconds('PSIM_RISK_FIRE_WINDOW_DAYS', 180),
   riskStaleMonths: seconds('PSIM_RISK_STALE_MONTHS', 12),
+  // Entree HTTP pour les systemes qui poussent leurs evenements (controle d'acces, passerelles IoT) : POST /api/ingest/<id>
+  // avec « Authorization: Bearer <jeton> ». Desactivee si le jeton est vide. 24 caracteres minimum (verifie au demarrage).
+  ingestToken: env.PSIM_INGEST_TOKEN ?? '',
   // Double authentification obligatoire : 'none', 'admin' (les administrateurs) ou 'all'. Par defaut : administrateurs en production.
   requireTotp: ((): 'none' | 'admin' | 'all' => {
     const v = env.PSIM_REQUIRE_2FA;

@@ -14,7 +14,7 @@ import { startBroker } from './mqtt.ts';
 import { createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
 import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
-import { formatFindings, preflight } from './preflight.ts';
+import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
 import { createRiskService } from './risk.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
@@ -95,6 +95,7 @@ const findings = preflight({
   detectorTimeoutS: config.detectorTimeoutS,
   backupEveryH: config.backup.everyH,
   requireTotp: config.requireTotp,
+  ingestToken: config.ingestToken,
 });
 if (findings.length > 0) {
   const fatal = config.production && findings.some((f) => f.level === 'error');
@@ -256,7 +257,8 @@ const app = createApp({
         { username: 'operateur', label: 'Opérateur', password: config.operatorPassword },
       ]
     : null,
-  triggerSim: (id, state) => broker.publishDetectorState(id, state),
+  triggerSim: (id, payload) => broker.publishDetector(id, payload),
+  ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
 });
 
 const server: Server = createWebServer(app, tlsFiles);

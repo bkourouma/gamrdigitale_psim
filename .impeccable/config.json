@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-10-03T06:56:10.878Z",
+        "reason": "Claude: plan-img has no src in HTML on purpose; app.js renderPlan() sets it at runtime from /api/plan, and the empty state is handled by #plan-empty"
+      }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ import { startSimCamera } from './camera.js';
 import { startLiveCamera } from './live.js';
 import { createAccountUi, createDialogs } from './account.js';
 import { createRiskView } from './risk.js';
+import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { createUsersAdmin } from './users.js';
 
 // ---------------------------------------------------------------- outils
@@ -81,7 +82,6 @@ const ACTION_LABEL = {
   backup_manual: 'Sauvegarde manuelle',
   camera_source_updated: 'Source vidéo modifiée',
 };
-const QUALIF_LABEL = { fire: 'Feu confirmé', false_alarm: 'Fausse alarme' };
 
 async function api(path, { method = 'GET', body } = {}) {
   const init = { method, credentials: 'same-origin', headers: {} };
@@ -376,7 +376,7 @@ $('logout').addEventListener('click', logout);
 // ---------------------------------------------------------------- plan
 
 function pinClass(d) {
-  return `pin ${d.kind} ${d.kind === 'detector' ? d.status : ''}${S.selectedId === d.id ? ' selected' : ''}${
+  return `pin ${d.kind} ${d.kind === 'detector' ? `${d.status} cat-${d.category}` : ''}${S.selectedId === d.id ? ' selected' : ''}${
     S.editMode ? ' editable' : ''
   }${wallCameraIds().includes(d.id) ? ' on-wall' : ''}`;
 }
@@ -400,12 +400,12 @@ function renderPlan() {
           class: pinClass(d),
           title: `${d.name} - ${d.zone || 'sans zone'}${
             d.kind === 'detector'
-              ? ` - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage'}`
+              ? ` - ${CATEGORY_LABEL[d.category]}${d.lastValue !== null ? ` - ${formatValue(d.lastValue, d.valueUnit)}` : ''} - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage'}`
               : ''
           }`,
           dataset: { id: d.id },
         },
-        h('span', { class: 'pin-glyph', text: d.kind === 'detector' ? 'D' : 'C' }),
+        h('span', { class: 'pin-glyph', text: d.kind === 'detector' ? CATEGORY_GLYPH[d.category] : 'C' }),
         h('span', { class: 'pin-label', text: d.id }),
       );
       pin.style.left = `${d.x}%`;
@@ -501,10 +501,12 @@ function onPinClick(id) {
 
 const tiles = new Map(); // idCamera -> { el, stop }
 
-function fireLevelFor(camera) {
+// `fireOnly` : la camera simulee ne dessine fumee et flammes que pour un detecteur d'incendie.
+function fireLevelFor(camera, fireOnly = false) {
   let level = 0;
   for (const d of devicesOf('detector')) {
     if (!camera.zone || d.zone !== camera.zone) continue;
+    if (fireOnly && d.category !== 'fire') continue;
     if (d.status === 'alarm') return 2;
     if (d.status === 'prealarm') level = 1;
   }
@@ -537,7 +539,7 @@ function makeTile(camera) {
     : startSimCamera(canvas, {
         label: camera.id,
         zone: camera.zone,
-        getFire: () => fireLevelFor(S.devices.get(camera.id) ?? camera),
+        getFire: () => fireLevelFor(S.devices.get(camera.id) ?? camera, true),
       });
   return { el, stop, caption, kind: camera.streamKind };
 }
@@ -673,14 +675,15 @@ function buildCard(incident) {
   refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: 'Commentaire (facultatif)', 'aria-label': 'Commentaire' });
   const close = (qualification) => () =>
     act(() => api(`/api/incidents/${incident.id}/close`, { method: 'POST', body: { qualification, comment: refs.comment.value } }));
-  refs.fire = h('button', { class: 'btn small danger', type: 'button', text: 'Feu confirmé', onclick: close('fire') });
+  refs.fire = h('button', { class: 'btn small danger', type: 'button', text: realEventLabel(incident.category), onclick: close('fire') });
+  refs.type = h('span', { class: 'chip type' });
   refs.false = h('button', { class: 'btn small', type: 'button', text: 'Fausse alarme', onclick: close('false_alarm') });
   refs.hint = h('p', { class: 'small hint', text: 'Clôture possible quand le détecteur est revenu à la normale.' });
 
   const el = h(
     'article',
     { class: 'incident' },
-    h('header', {}, refs.badge, refs.chip, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
+    h('header', {}, refs.badge, refs.type, refs.chip, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
     h('p', { class: 'small inc-where' }),
     refs.status,
     refs.conf,
@@ -700,6 +703,9 @@ function updateCard({ el, refs }, incident) {
   const confirmed = incident.confirmedAt !== null;
   el.className = `incident ${critical ? 'critical' : 'warning'} ${incident.status} ${confirmed ? 'confirmed' : 'unconfirmed'}${focusedIncident()?.id === incident.id ? ' focused' : ''}`;
   refs.badge.textContent = critical ? 'ALARME' : 'PRÉALARME';
+  refs.type.textContent = CATEGORY_LABEL[incident.category];
+  refs.type.hidden = incident.category === 'fire'; // l'incendie reste le cas par défaut : on ne répète pas
+  refs.fire.textContent = realEventLabel(incident.category);
   refs.chip.textContent = confirmed ? 'CONFIRMÉE' : 'À CONFIRMER';
   refs.chip.className = `chip ${confirmed ? 'confirmed' : 'unconfirmed'}`;
   // Une alarme « à confirmer » reste une alarme à traiter : on le dit pour qu'elle ne soit jamais prise a la legere.
@@ -710,7 +716,7 @@ function updateCard({ el, refs }, incident) {
   refs.advice.hidden = !incident.hint;
   refs.advice.textContent = incident.hint ? `Probable fausse alarme : ${hintText(incident.hintDetails)} À vérifier : l'incident reste ouvert.` : '';
   el.querySelector('.inc-title').textContent = incident.detectorName;
-  el.querySelector('.inc-where').textContent = whereText(incident);
+  el.querySelector('.inc-where').textContent = whereText(incident) + (incident.lastValue !== null ? ` - mesure : ${formatValue(incident.lastValue, incident.valueUnit)}` : '');
   refs.status.textContent =
     incident.status === 'open'
       ? 'Non acquitté'
@@ -760,7 +766,7 @@ function renderIncidents() {
         'li',
         {},
         h('strong', { text: `n°${i.id} ${i.detectorName}` }),
-        h('span', { class: `tag ${i.qualification}`, text: QUALIF_LABEL[i.qualification] ?? '' }),
+        h('span', { class: `tag ${i.qualification}`, text: qualificationLabel(i.category, i.qualification) }),
         h('span', { class: 'muted small', text: `clôturé à ${time(i.closedAt)} par ${i.closedBy}${i.comment ? ` - ${i.comment}` : ''}` }),
         i.snapshots.length ? (() => { const box = h('div', { class: 'shots mini' }); renderShots(box, i, true); return box; })() : null,
       ),
@@ -784,7 +790,7 @@ function describe(entry) {
             ? hintText(entry.details)
             : entry.action === 'device_state'
         ? entry.details.replace(/\w+/g, (w) => STATUS_LABEL[w] ?? w)
-        : (QUALIF_LABEL[entry.details] ?? entry.details),
+        : entry.details === 'fire' || entry.details === 'false_alarm' ? qualificationLabel(S.devices.get(entry.deviceId)?.category, entry.details) : entry.details,
     );
   }
   return parts.join(' - ');
@@ -869,12 +875,7 @@ document.addEventListener('click', ensureAudio);
 
 // ---------------------------------------------------------------- administration
 
-const SIM_STATES = [
-  ['normal', 'Normal'],
-  ['prealarm', 'Préalarme'],
-  ['alarm', 'Alarme'],
-  ['fault', 'Défaut'],
-];
+const simRow = createSimControls({ api, h, toast });
 
 const fmtBytes = (n) => (n == null ? '—' : n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} Go` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} Mo` : `${Math.max(1, Math.round(n / 1024))} Ko`);
 const fmtDuration = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} j ${Math.floor((s % 86400) / 3600)} h` : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : `${Math.floor(s / 60)} min`);
@@ -973,22 +974,7 @@ function renderAdmin(force = false) {
   if (S.me?.role !== 'admin') return;
   if (S.me.simEnabled) {
     $('sim-list').replaceChildren(
-      ...devicesOf('detector').map((d) =>
-        h(
-          'div',
-          { class: 'sim-row' },
-          h('span', { class: `dot ${d.status}` }),
-          h('span', { class: 'sim-name', text: `${d.id} ${d.name}` }),
-          ...SIM_STATES.map(([state, label]) =>
-            h('button', {
-              class: `btn tiny${d.status === state ? ' active' : ''}`,
-              type: 'button',
-              text: label,
-              onclick: () => api(`/api/sim/detectors/${encodeURIComponent(d.id)}`, { method: 'POST', body: { state } }).catch((e) => toast(e.message)),
-            }),
-          ),
-        ),
-      ),
+      ...devicesOf('detector').map(simRow),
     );
   }
   $('edit-tools').hidden = !S.editMode;
@@ -1006,7 +992,7 @@ function renderDeviceEditor(force = false) {
   const name = h('input', { value: d.name, maxlength: '80', 'aria-label': 'Nom' });
   const zone = h('input', { value: d.zone, maxlength: '80', 'aria-label': 'Zone' });
   const children = [
-    h('strong', { text: `${d.id} (${d.kind === 'detector' ? 'détecteur' : 'caméra'})` }),
+    h('strong', { text: `${d.id} (${d.kind === 'detector' ? `détecteur - ${CATEGORY_LABEL[d.category]}` : 'caméra'})` }),
     h(
       'div',
       { class: 'row wrap' },
@@ -1037,6 +1023,7 @@ function renderDeviceEditor(force = false) {
   if (d.kind === 'detector') {
     const linked = new Set(S.links[d.id] ?? []);
     children.push(
+      buildSensorForm(d, { api, h, toast }),
       h('p', { class: 'small muted', text: 'Caméras affichées quand ce détecteur déclenche :' }),
       h(
         'div',
@@ -1216,12 +1203,21 @@ $('plan-file').addEventListener('change', async (e) => {
   }
 });
 
+for (const c of CATEGORIES) $('add-category').append(h('option', { value: c, text: CATEGORY_LABEL[c] }));
+$('add-kind').addEventListener('change', () => ($('add-category').hidden = $('add-kind').value !== 'detector'));
+
 $('add-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     const created = await api('/api/devices', {
       method: 'POST',
-      body: { kind: $('add-kind').value, id: $('add-id').value.trim(), name: $('add-name').value, zone: $('add-zone').value },
+      body: {
+        kind: $('add-kind').value,
+        id: $('add-id').value.trim(),
+        name: $('add-name').value,
+        zone: $('add-zone').value,
+        ...($('add-kind').value === 'detector' ? { category: $('add-category').value } : {}),
+      },
     });
     S.selectedId = created.id;
     $('add-id').value = '';

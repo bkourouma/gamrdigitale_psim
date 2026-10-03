@@ -7,6 +7,7 @@
 
 export const DEV_PASSWORDS = ['admin-dev-only', 'operator-dev-only', 'psim-dev-only'];
 export const MIN_PASSWORD_LENGTH = 12;
+export const MIN_INGEST_TOKEN_LENGTH = 24;
 
 export interface Finding {
   level: 'error' | 'warn';
@@ -33,6 +34,8 @@ export interface PreflightInput {
   backupEveryH: number;
   /** Double authentification imposee : none, admin ou all. */
   requireTotp: 'none' | 'admin' | 'all';
+  /** Jeton de l'entree HTTP des equipements (vide = entree desactivee). */
+  ingestToken?: string;
 }
 
 const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1'].includes(host);
@@ -53,6 +56,9 @@ export function preflight(c: PreflightInput): Finding[] {
   }
   if (c.adminPassword === c.operatorPassword) add(strict, "Les mots de passe administrateur et operateur sont identiques.");
 
+  if (c.ingestToken && c.ingestToken.length < MIN_INGEST_TOKEN_LENGTH) {
+    add(strict, `Jeton d'entree des equipements (PSIM_INGEST_TOKEN) trop court (${MIN_INGEST_TOKEN_LENGTH} caracteres minimum) : generez-en un avec \`node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"\`.`);
+  }
   if (c.simEnabled) add(strict, 'Le simulateur est actif (PSIM_SIM_ENABLED) : il permet de declencher de fausses alarmes. Mettre 0 en production.');
   if (c.demoLogin) add(strict, 'Les comptes cliquables de la page de connexion sont actifs (PSIM_DEMO_LOGIN) : les mots de passe seraient lisibles depuis le navigateur.');
 

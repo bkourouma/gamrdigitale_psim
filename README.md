@@ -44,8 +44,12 @@ Scénarios (menu dans le terminal : taper le numéro, `r` pour tout remettre au 
 | 3 | `surchauffe-serveurs` | Alarme immédiate en salle serveurs, sans préalarme |
 | 4 | `defaut-detecteur` | Défaut technique : le statut change, aucun incident n'est créé |
 | 5 | `detecteur-muet` | Un détecteur cesse d'émettre sans rien annoncer : le PSIM le déclare hors ligne de lui-même, compteur « hors service » en haut de l'écran |
-| 6 | `detecteur-hors-ligne` | Un détecteur annonce lui-même qu'il est hors ligne |
-| 7 | `confirmation-croisee` | Deux détecteurs voisins (couloir, bureaux) se confirment mutuellement |
+| 6 | `confirmation-croisee` | Deux détecteurs voisins (couloir, bureaux) se confirment mutuellement |
+| 7 | `detecteur-hors-ligne` | Un détecteur annonce lui-même qu'il est hors ligne |
+| 8 | `intrusion-nuit` | Mouvement détecté à l'accueil la nuit : incident d'intrusion avec l'image de la caméra |
+| 9 | `porte-forcee` | Porte de service restée ouverte (avertissement), puis forcée (critique) |
+| 10 | `derive-temperature` | La température de la salle serveurs franchit les seuils de préalarme (30 °C) puis d'alarme (38 °C) |
+| 11 | `fuite-eau` | Fuite d'eau détectée au stockage |
 
 Options : `npm run demo -- --no-onvif` (toutes les caméras en RTSP direct), `--auto` (enchaîne les scénarios en boucle, pour une présentation), `--scenario=incendie-atelier` (lance un scénario au démarrage), `--speed=2` (deux fois plus vite), `--duration=120` (s'arrête seul après 120 s). `Ctrl+C` arrête tout proprement.
 
@@ -234,6 +238,46 @@ Un détecteur qui tombe en panne ou perd son réseau ne prévient pas : sans sur
 
 Réglage : **`PSIM_DETECTOR_TIMEOUT_S`**. Comptez 3 à 4 fois la période d'émission de vos détecteurs (période de 60 s : 180-240 s). `0` désactive. Valeur par défaut : **180 en exploitation** (`PSIM_SIM_ENABLED=0`), **désactivé en mode simulateur** : le simulateur et `npm run sim` n'envoient qu'un message ponctuel, sans signal de vie, et les détecteurs simulés passeraient sinon hors ligne au bout de 3 minutes. Le démarrage du PSIM affiche l'état de cette surveillance.
 
+## Autres sources d'alarme : intrusion, contrôle d'accès, environnement
+
+Un détecteur a une **catégorie** : `fire` (incendie, par défaut), `intrusion`, `access` (contrôle d'accès) ou `environment` (température, fuite d'eau, humidité…). Toutes passent par **le même circuit** : incident, acquittement, clôture, journal, notifications avec escalade, images des caméras liées, confirmation par un voisin. Seul change ce que dit l'équipement et la façon de le lire.
+
+**Ce qu'un équipement peut envoyer** (MQTT `psim/detectors/<id>/state`, ou HTTP, voir plus bas). Un message contient l'un des trois, dans cet ordre de priorité :
+
+| Message | Effet |
+|---|---|
+| `{"state": "alarm"}` | État déjà interprété par l'équipement : `normal`, `prealarm`, `alarm`, `fault`, `offline` |
+| `{"event": "door_forced"}` | Événement nommé, voir ci-dessous |
+| `{"value": 41.5}` | Mesure, comparée aux **seuils réglés dans le PSIM** (préalarme, alarme, sens « trop haut » ou « trop bas », unité) |
+
+`value` peut accompagner `state` ou `event` : la mesure est alors seulement mémorisée et affichée. Une mesure sans seuil réglé est affichée sans rien déclencher.
+
+Événements reconnus : **alarme** `intrusion`, `motion`, `glass_break`, `tamper`, `panic`, `door_forced`, `forced_entry`, `leak`, `flood`, `over_temperature` ; **préalarme** `door_held_open`, `badge_denied_repeated` ; **normal** `normal`, `clear`, `restored`, `door_closed`, `alarm_reset`, `dry` ; **défaut** `fault`, `low_battery` ; **simple signe de vie** `heartbeat`, `ping`, `badge_granted`, `badge_denied`, `door_opened`. Tout autre message est refusé (HTTP 400, ou ignoré en MQTT).
+
+Un badge refusé isolé est un fait courant, pas un incident : c'est à la passerelle d'envoyer `badge_denied_repeated` après plusieurs refus rapprochés.
+
+**Entrée HTTP** pour les systèmes qui poussent leurs événements sans parler MQTT :
+
+```bash
+curl -X POST http://serveur:3033/api/ingest/A-01 \
+  -H "Authorization: Bearer $PSIM_INGEST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"event": "door_forced"}'
+```
+
+Elle n'existe que si **`PSIM_INGEST_TOKEN`** est défini (24 caractères minimum, sinon le contrôle de démarrage le signale et l'entrée reste fermée). Jeton comparé en temps constant ; 5 échecs par minute bloquent l'adresse ; corps limité à 2 Ko ; le jeton n'apparaît jamais dans les journaux ni dans les réponses. Un seul jeton partagé : à placer derrière HTTPS dès que le réseau n'est pas isolé.
+
+**Réglages** (administrateur, *Édition du plan* → choisir le détecteur) : catégorie, unité, seuils, sens, et **supervision**. Les capteurs hors incendie ne sont **pas supervisés par défaut** : un contact de porte n'émet qu'aux changements, le déclarer « muet » après quelques minutes serait une fausse panne. Pour un capteur qui émet en continu (température), renseignez le délai attendu ; vide = délai général, `0` = non supervisé. **Conséquence à connaître** : un capteur non supervisé qui tombe en panne ne le dit pas.
+
+**Précisions de comportement**
+- La confirmation par un voisin ne joue qu'entre détecteurs **de même catégorie** (un détecteur de fumée ne corrobore pas un contact de porte). Deux détecteurs de mouvement voisins se confirment.
+- L'**indice de risque incendie** ne compte que les détecteurs et incidents d'incendie.
+- Les notifications précisent le type (`ALARME INTRUSION`, `PREALARME CONTROLE D'ACCES`…) et la dernière mesure.
+- La clôture d'un incident hors incendie propose « Intrusion avérée », « Accès anormal avéré » ou « Incident avéré ». En base, la qualification d'un événement réel reste `fire` pour toutes les catégories (donnée historique, pas de migration risquée) : à savoir si vous exploitez la base directement.
+- Les caméras simulées ne dessinent fumée et flammes que pour l'incendie.
+- Changer la catégorie d'un détecteur en incident est refusé.
+
+Démonstration : le site contient un détecteur de mouvement (`I-01`), une porte de service (`A-01`), un capteur de température 30/38 °C (`E-01`) et un capteur d'eau (`E-02`), avec les scénarios `intrusion-nuit`, `porte-forcee`, `derive-temperature` et `fuite-eau` (`npm run demo -- --scenario=<id>`).
+
 ## Architecture
 
 ```
@@ -259,18 +303,20 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/recipients.ts` | Destinataires de notification modifiables à chaud |
 | `server/backup.ts`, `server/lock.ts` | Sauvegarde / restauration vérifiées ; verrou d'instance unique |
 | `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
+| `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
 | `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
+| `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |
 | `scripts/install-mediamtx.ts` | Installation vérifiée de MediaMTX |
 | `web/live.js` | Lecteur de caméra réelle : lit le flux du serveur, détecte coupures et gels |
 
-Message MQTT attendu : `{"state": "normal" | "prealarm" | "alarm" | "fault" | "offline"}` sur `psim/detectors/<id>/state`.
+Message MQTT attendu sur `psim/detectors/<id>/state` : `{"state": "normal" | "prealarm" | "alarm" | "fault" | "offline"}`, ou `{"event": …}` / `{"value": …}` pour les autres sources (voir plus haut).
 
 ## Passer aux équipements réels
 
@@ -313,8 +359,9 @@ npm run typecheck
 
 ## Limites connues du MVP
 
-- Pas de HTTPS intégré : à placer derrière un proxy TLS pour tout usage hors poste local (`PSIM_COOKIE_SECURE=1`).
 - Sessions gardées en mémoire : une déconnexion des utilisateurs a lieu à chaque redémarrage.
-- Un seul site, un seul plan.
-- Pas de détection de perte de contact d'un détecteur (« hors ligne » n'est reçu que s'il est publié).
+- Un seul site, un seul plan, une seule instance (pas de haute disponibilité).
+- Les sources hors incendie (intrusion, accès, environnement) ne sont **ni armées/désarmées ni planifiées** : un détecteur de mouvement alarme à toute heure. Pas de gestion de badges ni de portes, pas de commande des équipements : le PSIM écoute, il ne pilote rien.
+- Pas de prise en charge native des protocoles de terrain (BACnet, Modbus, OPC UA, Wiegand…) : passer par une passerelle vers MQTT ou HTTP.
+- Matériel réel (détecteurs, caméras, SMTP, Telegram) jamais testé ici : tout a été validé avec des équipements simulés.
 

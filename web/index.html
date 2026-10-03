@@ -16,7 +16,7 @@
   <section id="login" class="login" hidden>
     <form id="login-form" class="card login-card">
       <h1>GAMRdigitale PSIM</h1>
-      <p class="muted">Supervision incendie et vidéosurveillance</p>
+      <p class="muted">Supervision incendie, sécurité et vidéosurveillance</p>
       <div id="demo-accounts" class="demo-accounts" hidden>
         <span class="small muted">Mode démonstration : cliquer pour remplir</span>
         <div id="demo-buttons" class="row wrap"></div>
@@ -63,6 +63,7 @@
               <span class="lg detector fault"></span>Défaut
               <span class="lg detector offline"></span>Hors ligne
               <span class="lg camera"></span>Caméra
+              <span class="muted" title="Lettre de la pastille : D incendie, I intrusion, A contrôle d'accès, E environnement">D incendie · I intrusion · A accès · E environnement</span>
             </div>
           </div>
           <div id="plan-empty" class="empty" hidden>Aucun plan. Un administrateur peut en téléverser un.</div>
@@ -109,6 +110,7 @@
               </div>
               <form id="add-form" class="row wrap">
                 <select id="add-kind" aria-label="Type"><option value="detector">Détecteur</option><option value="camera">Caméra</option></select>
+                <select id="add-category" aria-label="Catégorie du détecteur"></select>
                 <input id="add-id" placeholder="Identifiant (ex. D-08)" maxlength="32" required>
                 <input id="add-name" placeholder="Nom" maxlength="80" required>
                 <input id="add-zone" placeholder="Zone" maxlength="80">

@@ -137,6 +137,14 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .pin.detector.fault .pin-glyph, .lg.fault { background: var(--fault); }
 .pin.detector.offline .pin-glyph, .lg.offline { background: var(--off); }
 .pin.camera .pin-glyph { background: var(--cam); border-radius: 5px; }
+/* Autres sources : la forme les distingue de l'incendie (rond), la couleur reste celle de l'état. */
+.pin.detector.cat-intrusion .pin-glyph { border-radius: 50% 0; }
+.pin.detector.cat-access .pin-glyph { border-radius: 3px 3px 10px 10px; }
+.pin.detector.cat-environment .pin-glyph { border-radius: 10px 10px 3px 3px; }
+.chip.type { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }
+.sensor-form { display: grid; gap: 6px; margin-bottom: 8px; }
+.sensor-form input { max-width: 150px; }
+.sim-value { width: 70px; }
 .pin.on-wall .pin-glyph { box-shadow: 0 0 0 3px rgba(74, 163, 255, .55); }
 .pin.selected .pin-glyph { box-shadow: 0 0 0 4px rgba(61, 139, 253, .8); }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(240, 72, 62, .8); } 100% { box-shadow: 0 0 0 16px rgba(240, 72, 62, 0); } }

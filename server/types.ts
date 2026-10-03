@@ -1,8 +1,13 @@
 export type Role = 'operator' | 'admin';
 export type DeviceKind = 'detector' | 'camera';
+/** Ce que surveille un detecteur. Les incidents, notifications et confirmations suivent le meme circuit pour toutes. */
+export type DeviceCategory = 'fire' | 'intrusion' | 'access' | 'environment';
+/** Sens du depassement d'un seuil : `above` = trop haut (chaleur), `below` = trop bas (gel, batterie). */
+export type Direction = 'above' | 'below';
 export type DetectorState = 'normal' | 'prealarm' | 'alarm' | 'fault' | 'offline';
 export type IncidentStatus = 'open' | 'acknowledged' | 'closed';
 export type Severity = 'warning' | 'critical';
+/** `fire` = evenement reel, quelle que soit la categorie (intrusion averee, effraction...) ; le mot est conserve pour les donnees existantes. */
 export type Qualification = 'fire' | 'false_alarm';
 
 export interface Device {
@@ -15,6 +20,16 @@ export interface Device {
   status: string;
   streamKind: string | null;
   lastSeen: number | null;
+  /** Detecteurs : ce qu'ils surveillent. `fire` pour les cameras. */
+  category: DeviceCategory;
+  /** Capteurs a mesure : unite, seuils et derniere valeur recue. */
+  valueUnit: string | null;
+  warnAt: number | null;
+  alarmAt: number | null;
+  direction: Direction;
+  lastValue: number | null;
+  /** Delai (s) sans message avant « hors ligne » : `null` = delai general, 0 = non supervise. */
+  heartbeatS: number | null;
 }
 
 export interface Incident {
@@ -22,6 +37,10 @@ export interface Incident {
   detectorId: string;
   detectorName: string;
   zone: string;
+  category: DeviceCategory;
+  /** Derniere mesure du capteur (affichee a titre indicatif). */
+  lastValue: number | null;
+  valueUnit: string | null;
   severity: Severity;
   status: IncidentStatus;
   qualification: Qualification | null;

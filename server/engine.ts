@@ -1,8 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
 import type {
   AuditEntry,
   Device,
+  DeviceCategory,
   DeviceKind,
+  Direction,
   DetectorState,
   Incident,
   PsimEvent,
@@ -11,11 +14,12 @@ import type {
   Snapshot,
 } from './types.ts';
 
-const DETECTOR_STATES: ReadonlySet<string> = new Set(['normal', 'prealarm', 'alarm', 'fault', 'offline']);
 const QUALIFICATIONS: ReadonlySet<string> = new Set(['fire', 'false_alarm']);
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_COMMENT = 500;
 const MAX_LABEL = 80;
+const MAX_UNIT = 12;
+const MAX_HEARTBEAT_S = 7 * 24 * 3600;
 
 /** Erreur destinee a etre renvoyee telle quelle a l'appelant (code HTTP inclus). */
 export class PsimError extends Error {
@@ -39,6 +43,13 @@ function rowToDevice(r: Row): Device {
     status: r.status as string,
     streamKind: (r.stream_kind as string | null) ?? null,
     lastSeen: (r.last_seen as number | null) ?? null,
+    category: ((r.category as string | null) ?? 'fire') as DeviceCategory,
+    valueUnit: (r.value_unit as string | null) ?? null,
+    warnAt: (r.warn_at as number | null) ?? null,
+    alarmAt: (r.alarm_at as number | null) ?? null,
+    direction: ((r.direction as string | null) ?? 'above') as Direction,
+    lastValue: (r.last_value as number | null) ?? null,
+    heartbeatS: (r.heartbeat_s as number | null) ?? null,
   };
 }
 
@@ -120,7 +131,7 @@ export function createEngine(
   function incidentView(id: number): Incident {
     const r = db
       .prepare(
-        `SELECT i.*, d.name AS detector_name, d.zone AS zone
+        `SELECT i.*, d.name AS detector_name, d.zone AS zone, d.category AS category, d.last_value AS last_value, d.value_unit AS value_unit
            FROM incident i JOIN device d ON d.id = i.detector_id WHERE i.id = ?`,
       )
       .get(id) as Row | undefined;
@@ -130,6 +141,9 @@ export function createEngine(
       detectorId: r.detector_id as string,
       detectorName: r.detector_name as string,
       zone: r.zone as string,
+      category: ((r.category as string | null) ?? 'fire') as DeviceCategory,
+      lastValue: (r.last_value as number | null) ?? null,
+      valueUnit: (r.value_unit as string | null) ?? null,
       severity: r.severity as Severity,
       status: r.status as Incident['status'],
       qualification: (r.qualification as Qualification | null) ?? null,
@@ -187,13 +201,13 @@ export function createEngine(
 
   // ---- Regles anti-fausses alarmes (qualification uniquement, jamais de suppression) -------------
 
-  /** Detecteurs voisins : meme zone (non vide) ou au moins une camera en commun. */
+  /** Detecteurs voisins de MEME categorie (un detecteur de fumee ne corrobore pas un contact de porte) : meme zone (non vide) ou au moins une camera en commun. */
   function neighborsOf(detectorId: string): string[] {
     return (
       db
         .prepare(
           `SELECT DISTINCT d2.id AS id FROM device d1
-             JOIN device d2 ON d2.kind = 'detector' AND d2.id <> d1.id
+             JOIN device d2 ON d2.kind = 'detector' AND d2.id <> d1.id AND d2.category = d1.category
             WHERE d1.id = ? AND (
               (d1.zone <> '' AND d2.zone = d1.zone)
               OR EXISTS (SELECT 1 FROM device_link a JOIN device_link b ON a.camera_id = b.camera_id
@@ -268,24 +282,49 @@ export function createEngine(
     publishIncident(incident.id as number);
   }
 
-  /** Point d'entree des messages MQTT `psim/detectors/<id>/state`. Ne leve jamais d'exception. */
-  function handleDetectorMessage(deviceId: string, payload: unknown): void {
-    if (typeof payload !== 'object' || payload === null) return;
-    const state = (payload as { state?: unknown }).state;
-    if (typeof state !== 'string' || !DETECTOR_STATES.has(state)) return;
+  /**
+   * Point d'entree des messages d'equipements (MQTT `psim/detectors/<id>/state`, HTTP `/api/ingest/<id>`).
+   * Ne leve jamais d'exception ; renvoie `{ ok: false }` avec la raison et le code HTTP adaptes.
+   */
+  function ingest(deviceId: string, payload: unknown): { ok: true } | { ok: false; status: number; error: string } {
     const device = getDevice(deviceId);
-    if (!device || device.kind !== 'detector') return;
+    if (!device || device.kind !== 'detector') return { ok: false, status: 404, error: 'Detecteur introuvable' };
+    const reading = interpret(device, payload);
+    if (!reading.ok) return { ok: false, status: 400, error: reading.error };
 
+    const t = now();
+    db.prepare('UPDATE device SET last_seen = ? WHERE id = ?').run(t, deviceId);
+    if (reading.value !== null) db.prepare('UPDATE device SET last_value = ? WHERE id = ?').run(reading.value, deviceId);
+    // Un equipement supervise qui donne signe de vie alors qu'on le croyait mort est de nouveau en ligne.
+    const state = reading.state ?? (reading.alive && device.status === 'offline' ? 'normal' : null);
+    if (state === null) {
+      publishDevice(deviceId);
+      return { ok: true };
+    }
+    applyState(device, state);
+    return { ok: true };
+  }
+
+  function handleDetectorMessage(deviceId: string, payload: unknown): void {
+    try {
+      ingest(deviceId, payload);
+    } catch (err) {
+      console.error('[engine] message :', err);
+    }
+  }
+
+  function applyState(device: Device, state: DetectorState): void {
+    const deviceId = device.id;
     const previous = device.status;
     const t = now();
-    db.prepare('UPDATE device SET status = ?, last_seen = ? WHERE id = ?').run(state, t, deviceId);
+    db.prepare('UPDATE device SET status = ? WHERE id = ?').run(state, deviceId);
     if (previous !== state) db.prepare('UPDATE device SET state_since = ? WHERE id = ?').run(t, deviceId);
     if (previous !== state) {
       audit('detecteur', 'device_state', { deviceId, details: `${previous} -> ${state}` });
     }
     publishDevice(deviceId);
 
-    const s = state as DetectorState;
+    const s = state;
     if (s === 'prealarm' || s === 'alarm') {
       const severity: Severity = s === 'alarm' ? 'critical' : 'warning';
       const open = db
@@ -333,16 +372,19 @@ export function createEngine(
    * silence pourrait masquer un feu en cours. Renvoie les identifiants nouvellement declares muets.
    */
   function checkSilentDetectors(): string[] {
-    if (silentTimeoutMs <= 0) return [];
     const t = now();
     const rows = db
-      .prepare("SELECT id, status, last_seen FROM device WHERE kind = 'detector' AND status IN ('normal', 'fault')")
+      .prepare("SELECT id, status, last_seen, heartbeat_s FROM device WHERE kind = 'detector' AND status IN ('normal', 'fault')")
       .all() as Row[];
     const silent: string[] = [];
     for (const row of rows) {
+      // Delai propre a l'equipement (0 = non supervise : un contact de porte n'emet qu'aux changements), sinon delai general.
+      const own = (row.heartbeat_s as number | null) ?? null;
+      const timeoutMs = own === null ? silentTimeoutMs : own * 1000;
+      if (timeoutMs <= 0) continue;
       const reference = Math.max((row.last_seen as number | null) ?? 0, startedAt);
       const silence = t - reference;
-      if (silence < silentTimeoutMs) continue;
+      if (silence < timeoutMs) continue;
       const id = row.id as string;
       const res = db
         .prepare("UPDATE device SET status = 'offline' WHERE id = ? AND status IN ('normal', 'fault')")
@@ -422,6 +464,47 @@ export function createEngine(
     return value;
   }
 
+  const SENSOR_FIELDS = ['category', 'valueUnit', 'warnAt', 'alarmAt', 'direction', 'heartbeatS'];
+
+  function cleanNumberOrNull(value: unknown, field: string): number | null {
+    if (value === null || value === '') return null;
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new PsimError(400, `${field} doit etre un nombre`);
+    return value;
+  }
+
+  /**
+   * Reglages d'un detecteur (categorie, seuils, supervision). `current` = valeurs actuelles pour une
+   * modification partielle ; `defaults` = cameras (aucun reglage). Les detecteurs hors incendie ne sont
+   * pas supervises par defaut : beaucoup n'emettent qu'aux changements d'etat.
+   */
+  function cleanSensor(
+    input: Record<string, unknown>,
+    current: Device | null,
+    defaults = false,
+  ): { category: DeviceCategory; valueUnit: string | null; warnAt: number | null; alarmAt: number | null; direction: Direction; heartbeatS: number | null } {
+    if (defaults) return { category: 'fire', valueUnit: null, warnAt: null, alarmAt: null, direction: 'above', heartbeatS: null };
+    const category = (input.category === undefined ? (current?.category ?? 'fire') : input.category) as DeviceCategory;
+    if (!CATEGORIES.includes(category)) throw new PsimError(400, `categorie invalide (${CATEGORIES.join(', ')})`);
+    let valueUnit = current?.valueUnit ?? null;
+    if (input.valueUnit !== undefined) {
+      if (input.valueUnit === null || input.valueUnit === '') valueUnit = null;
+      else if (typeof input.valueUnit !== 'string' || input.valueUnit.length > MAX_UNIT) throw new PsimError(400, `unite invalide (max ${MAX_UNIT} caracteres)`);
+      else valueUnit = input.valueUnit.trim() || null;
+    }
+    const warnAt = input.warnAt === undefined ? (current?.warnAt ?? null) : cleanNumberOrNull(input.warnAt, 'seuil de prealarme');
+    const alarmAt = input.alarmAt === undefined ? (current?.alarmAt ?? null) : cleanNumberOrNull(input.alarmAt, "seuil d'alarme");
+    const direction = (input.direction === undefined ? (current?.direction ?? 'above') : input.direction) as Direction;
+    const problem = checkSensorSettings({ category, warnAt, alarmAt, direction });
+    if (problem) throw new PsimError(400, problem);
+    let heartbeatS: number | null;
+    if (input.heartbeatS === undefined) heartbeatS = current ? current.heartbeatS : category === 'fire' ? null : 0;
+    else if (input.heartbeatS === null || input.heartbeatS === '') heartbeatS = null;
+    else if (typeof input.heartbeatS !== 'number' || !Number.isInteger(input.heartbeatS) || input.heartbeatS < 0 || input.heartbeatS > MAX_HEARTBEAT_S) {
+      throw new PsimError(400, `supervision invalide (0 = non supervise, ou un nombre entier de secondes, ${MAX_HEARTBEAT_S} max)`);
+    } else heartbeatS = input.heartbeatS;
+    return { category, valueUnit, warnAt, alarmAt, direction, heartbeatS };
+  }
+
   function createDevice(actor: string, input: Record<string, unknown>): Device {
     const id = input.id;
     if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
@@ -435,16 +518,11 @@ export function createEngine(
     const zone = cleanLabel(input.zone, 'zone', false);
     const x = input.x === undefined ? 50 : cleanPercent(input.x, 'x');
     const y = input.y === undefined ? 50 : cleanPercent(input.y, 'y');
-    db.prepare('INSERT INTO device (id, kind, name, zone, x, y, stream_kind) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-      id,
-      input.kind,
-      name,
-      zone,
-      x,
-      y,
-      input.kind === 'camera' ? 'simulated' : null,
-    );
-    audit(actor, 'device_created', { deviceId: id, details: `${input.kind} ${name}` });
+    const sensor = input.kind === 'detector' ? cleanSensor(input, null) : cleanSensor({}, null, true);
+    db.prepare(
+      'INSERT INTO device (id, kind, name, zone, x, y, stream_kind, category, value_unit, warn_at, alarm_at, direction, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, input.kind, name, zone, x, y, input.kind === 'camera' ? 'simulated' : null, sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS);
+    audit(actor, 'device_created', { deviceId: id, details: `${input.kind} ${name}${sensor.category === 'fire' ? '' : ` (${sensor.category})`}` });
     publish({ type: 'config' });
     return getDevice(id) as Device;
   }
@@ -456,7 +534,17 @@ export function createEngine(
     const zone = input.zone === undefined ? device.zone : cleanLabel(input.zone, 'zone', false);
     const x = input.x === undefined ? device.x : cleanPercent(input.x, 'x');
     const y = input.y === undefined ? device.y : cleanPercent(input.y, 'y');
+    const sensor = device.kind === 'detector' ? cleanSensor(input, device) : null;
+    if (sensor && sensor.category !== device.category && db.prepare("SELECT 1 AS x FROM incident WHERE detector_id = ? AND status <> 'closed'").get(id)) {
+      throw new PsimError(409, 'Un incident est en cours sur ce detecteur : le traiter avant de changer sa categorie');
+    }
+    if (!sensor && SENSOR_FIELDS.some((f) => input[f] !== undefined)) throw new PsimError(400, 'Ces reglages ne concernent que les detecteurs');
     db.prepare('UPDATE device SET name = ?, zone = ?, x = ?, y = ? WHERE id = ?').run(name, zone, x, y, id);
+    if (sensor) {
+      db.prepare('UPDATE device SET category = ?, value_unit = ?, warn_at = ?, alarm_at = ?, direction = ?, heartbeat_s = ? WHERE id = ?').run(
+        sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS, id,
+      );
+    }
     audit(actor, 'device_updated', { deviceId: id });
     publish({ type: 'config' });
     return getDevice(id) as Device;
@@ -538,6 +626,7 @@ export function createEngine(
   }
 
   return {
+    ingest,
     handleDetectorMessage,
     incidentView,
     checkSilentDetectors,

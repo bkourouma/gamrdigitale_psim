@@ -13,6 +13,10 @@ export interface Step {
   detector?: string;
   state?: DetectorState;
   fire?: { zone: string; level: 0 | 1 | 2 };
+  /** Avec `detector` : evenement nomme envoye par un capteur hors incendie (intrusion, acces, environnement). */
+  event?: string;
+  /** Avec `detector` : mesure envoyee par un capteur (temperature...). */
+  value?: number;
   /** Avec `detector` : true = le detecteur cesse d'emettre son signal de vie, false = il reprend. */
   mute?: boolean;
   note?: string;
@@ -29,6 +33,17 @@ export interface Scenario {
 
 /** Doit rester coherent avec le site de demonstration (server/seed.ts). */
 export const DEMO_DETECTORS = ['D-01', 'D-02', 'D-03', 'D-04', 'D-05', 'D-06', 'D-07'];
+/**
+ * Autres sources du site de demonstration (intrusion, acces, environnement). Chacune sait revenir au calme.
+ * Seul le capteur de temperature emet en continu (sa mesure sert de signal de vie) ; les autres n'emettent
+ * qu'aux changements, comme un contact de porte reel.
+ */
+export const DEMO_SENSORS: { id: string; reset: { event?: string; value?: number } }[] = [
+  { id: 'I-01', reset: { event: 'clear' } },
+  { id: 'A-01', reset: { event: 'door_closed' } },
+  { id: 'E-01', reset: { value: 24 } },
+  { id: 'E-02', reset: { event: 'dry' } },
+];
 export const DEMO_CAMERAS = [
   { id: 'C-01', zone: 'Accueil' },
   { id: 'C-02', zone: 'Couloir' },
@@ -122,10 +137,53 @@ export const SCENARIOS: Scenario[] = [
       { at: 25, detector: 'D-07', state: 'normal', note: 'Le detecteur est de nouveau en ligne' },
     ],
   },
+  {
+    id: 'intrusion-nuit',
+    title: "Intrusion : mouvement detecte a l'accueil en pleine nuit",
+    description: "Le detecteur de mouvement de l'accueil se declenche hors des heures d'ouverture. L'incident s'ouvre avec l'image de la camera liee.",
+    holdSeconds: 30,
+    steps: [
+      { at: 0, detector: 'I-01', event: 'motion', note: "Mouvement detecte a l'accueil" },
+      { at: 22, detector: 'I-01', event: 'clear', note: 'Plus de mouvement' },
+    ],
+  },
+  {
+    id: 'porte-forcee',
+    title: "Controle d'acces : porte de service forcee a l'entrepot",
+    description: "La porte reste ouverte (avertissement), puis est forcee (alarme critique). La camera de l'entrepot est associee.",
+    holdSeconds: 30,
+    steps: [
+      { at: 0, detector: 'A-01', event: 'door_held_open', note: 'La porte de service reste ouverte' },
+      { at: 12, detector: 'A-01', event: 'door_forced', note: 'Porte FORCEE : alarme' },
+      { at: 30, detector: 'A-01', event: 'door_closed', note: 'La porte est refermee' },
+    ],
+  },
+  {
+    id: 'derive-temperature',
+    title: 'Environnement : la temperature de la salle serveurs derive',
+    description: "La mesure monte au-dela du seuil de prealarme (30 °C) puis du seuil d'alarme (38 °C) : une panne de climatisation, avant meme tout depart de feu.",
+    holdSeconds: 25,
+    steps: [
+      { at: 0, detector: 'E-01', value: 27, note: '27 °C : normal' },
+      { at: 6, detector: 'E-01', value: 32, note: '32 °C : prealarme (seuil 30 °C)' },
+      { at: 14, detector: 'E-01', value: 39.5, note: '39,5 °C : ALARME (seuil 38 °C)' },
+      { at: 32, detector: 'E-01', value: 26, note: 'La climatisation est reparee : 26 °C' },
+    ],
+  },
+  {
+    id: 'fuite-eau',
+    title: "Environnement : fuite d'eau au stockage",
+    description: "Le capteur d'eau du stockage signale une fuite. A traiter vite : les marchandises sont en jeu.",
+    holdSeconds: 25,
+    steps: [
+      { at: 0, detector: 'E-02', event: 'leak', note: "Fuite d'eau detectee au stockage" },
+      { at: 24, detector: 'E-02', event: 'dry', note: 'Le sol est de nouveau sec' },
+    ],
+  },
 ];
 
 /** Ordre du mode automatique (presentation en boucle). */
-export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'confirmation-croisee', 'defaut-detecteur', 'detecteur-muet', 'surchauffe-serveurs', 'incendie-atelier'];
+export const AUTO_SEQUENCE = ['fausse-alarme-vapeur', 'intrusion-nuit', 'confirmation-croisee', 'porte-forcee', 'defaut-detecteur', 'detecteur-muet', 'derive-temperature', 'fuite-eau', 'surchauffe-serveurs', 'incendie-atelier'];
 
 /** Delai de la demo avant de declarer un detecteur muet (s) ; le signal de vie part bien plus souvent. */
 export const DEMO_SILENT_TIMEOUT_S = 30;

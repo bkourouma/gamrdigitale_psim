@@ -253,7 +253,7 @@ export function createRiskService(db: DatabaseSync, engine: Engine, options: Ris
   }
 
   function facts(zone: string): ZoneFacts {
-    const detectors = db.prepare("SELECT id, status FROM device WHERE kind = 'detector' AND zone = ?").all(zone) as Row[];
+    const detectors = db.prepare("SELECT id, status FROM device WHERE kind = 'detector' AND category = 'fire' AND zone = ?").all(zone) as Row[];
     const cameras = (
       db
         .prepare(
@@ -268,7 +268,7 @@ export function createRiskService(db: DatabaseSync, engine: Engine, options: Ris
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM incident i JOIN device d ON d.id = i.detector_id
-            WHERE d.zone = ? AND ((i.qualification = 'fire' AND i.closed_at >= ?) OR (i.status <> 'closed' AND i.confirmed_at IS NOT NULL))`,
+            WHERE d.zone = ? AND d.category = 'fire' AND ((i.qualification = 'fire' AND i.closed_at >= ?) OR (i.status <> 'closed' AND i.confirmed_at IS NOT NULL))`,
         )
         .get(zone, since) as { n: number }
     ).n;
