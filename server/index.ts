@@ -17,6 +17,7 @@ import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
 import { createArming } from './arming.ts';
 import type { Arming } from './arming.ts';
+import { createReports } from './reports.ts';
 import { createRiskService } from './risk.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
@@ -246,6 +247,7 @@ const app = createApp({
   users,
   recipients,
   arming,
+  reports: createReports(db, () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site'),
   tls: tlsFiles !== null,
   trustProxy: config.trustProxy,
   health: () => system.health(),

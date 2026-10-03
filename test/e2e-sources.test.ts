@@ -187,6 +187,53 @@ describe("entree HTTP des equipements (processus reel)", { timeout: 120_000 }, (
     await as(cookie, 'PUT', '/api/arming/Accueil/schedule', { schedule: null });
   });
 
+  it("rapports : HTML imprimable, exports CSV, fiche d'incident ; journal complet reserve a l'administrateur", async () => {
+    const op = await fetch(`${main.base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'operateur', password: OPERATOR_PW }) });
+    const opCookie = op.headers.getSetCookie()[0].split(';')[0];
+    const get = (path: string, who: string | null = cookie) => fetch(`${main.base}${path}`, { headers: who ? { Cookie: who } : {} });
+
+    assert.equal((await get('/api/reports/incidents', null)).status, 401, 'sans session : refuse');
+    assert.equal((await get('/api/reports/incidents.csv', null)).status, 401);
+
+    const html = await get('/api/reports/incidents');
+    assert.equal(html.status, 200);
+    assert.match(html.headers.get('content-type') ?? '', /text\/html/);
+    assert.equal(html.headers.get('cache-control'), 'no-store');
+    const page = await html.text();
+    assert.match(page, /Rapport d'incidents/);
+    assert.match(page, /\/report\.css/);
+    assert.ok(!/<script>/.test(page), 'aucun script en ligne (politique de securite)');
+    assert.equal((await get('/report.css')).status, 200);
+    assert.equal((await get('/report.js')).status, 200);
+
+    const csv = await get('/api/reports/incidents.csv?category=access');
+    assert.equal(csv.status, 200);
+    assert.match(csv.headers.get('content-disposition') ?? '', /^attachment; filename="incidents_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv"$/);
+    const bytes = Buffer.from(await csv.arrayBuffer());
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM UTF-8 (fetch le retire du texte : on lit les octets)');
+    const text = bytes.toString('utf8');
+    assert.ok(text.includes('N°;'));
+    assert.match(text, /A-01/, "l'incident de porte forcee y figure");
+    assert.ok(!/I-01/.test(text), 'filtre par categorie');
+
+    assert.equal((await get('/api/reports/incidents?from=pas-une-date')).status, 400);
+    assert.equal((await get('/api/reports/incidents.csv?category=gaz')).status, 400);
+    assert.equal((await get('/api/reports/incidents.csv?from=2020-01-01&to=2026-01-01')).status, 400);
+
+    const state = (await api('GET', '/api/state')).body;
+    const id = state.incidents.find((i: any) => i.detectorId === 'A-01').id;
+    const fiche = await get(`/api/reports/incidents/${id}`, opCookie);
+    assert.equal(fiche.status, 200, "l'operateur peut lire une fiche");
+    assert.match(await fiche.text(), /Fiche d'incident/);
+    assert.equal((await get('/api/reports/incidents/99999')).status, 404);
+    assert.equal((await get('/api/reports/incidents/abc')).status, 404);
+
+    assert.equal((await get('/api/reports/audit.csv', opCookie)).status, 403, 'journal complet : administrateur');
+    const audit = await get('/api/reports/audit.csv');
+    assert.equal(audit.status, 200);
+    assert.match(await audit.text(), /report_exported/, 'les exports precedents sont tracables');
+  });
+
   it("le jeton ne figure ni dans les journaux du serveur ni dans les reponses", async () => {
     assert.ok(!main.output().includes(TOKEN));
     const system = JSON.stringify((await api('GET', '/api/system')).body) + JSON.stringify((await api('GET', '/api/notifications/status')).body);

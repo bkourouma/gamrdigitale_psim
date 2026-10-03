@@ -296,6 +296,18 @@ Un mouvement ignoré dans une zone désarmée est noté au journal (`Intrusion i
 
 **Limites** : pas de temporisation d'entrée/sortie (le désarmement est un geste manuel avant d'entrer) ; un mouvement survenu pendant le désarmement n'est pas rejoué à l'armement ; le planning suit l'heure du serveur (vérifiez le fuseau horaire de la machine) ; seuls les détecteurs d'intrusion sont armables.
 
+## Rapports et exports
+
+Panneau **Rapports et exports** (tout utilisateur connecté) : choisir une période (jours inclus, 366 maximum, 30 derniers jours par défaut) et éventuellement une catégorie.
+
+- **Rapport imprimable** : synthèse chiffrée (incidents, critiques, événements réels, **taux de fausses alarmes**, **délai d'acquittement** médian et maximal, durée de clôture, alertes envoyées ou en échec), répartition par catégorie, zones et détecteurs les plus sollicités, détail de chaque incident. Il s'ouvre dans un onglet ; **Imprimer, puis « Enregistrer au format PDF »** produit le PDF (le PSIM ne fabrique pas de PDF lui-même : pas de composant supplémentaire à installer ni à surveiller).
+- **Fiche d'incident** (lien « fiche » sur chaque incident clôturé, ou depuis le rapport) : chronologie complète du journal, alertes envoyées avec leur résultat, images des caméras. Pensée pour un assureur ou une enquête.
+- **Exports CSV** des incidents et (administrateur) du **journal complet**, prêts pour Excel : séparateur `;`, UTF-8 avec marque BOM (accents corrects), dates à l'heure du serveur.
+
+**Sûretés** : lecture seule, rien n'est modifié. Les textes saisis (noms, commentaires) sont **échappés** dans les pages et **neutralisés** dans les CSV (une cellule commençant par `=`, `+`, `-` ou `@` est préfixée, pour qu'Excel ne l'exécute pas comme une formule). Les pages n'embarquent aucun script en ligne. Chaque rapport ou export est **inscrit au journal** avec son auteur. Le rapport HTML liste au plus 2 000 incidents (il le dit), les exports CSV 50 000.
+
+**Limites** : pas d'envoi automatique par e-mail ni de rapport périodique planifié ; les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur (pas le temps d'intervention sur le terrain) ; les dates suivent le fuseau horaire du serveur.
+
 ## Architecture
 
 ```
@@ -323,6 +335,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
+| `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
@@ -330,6 +343,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
 | `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
 | `web/arming.js` | Panneau d'armement des zones et éditeur de planning |
+| `web/reports.js`, `web/report.css` | Panneau d'exports ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |

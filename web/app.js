@@ -4,6 +4,7 @@ import { createAccountUi, createDialogs } from './account.js';
 import { createRiskView } from './risk.js';
 import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { createArmingView } from './arming.js';
+import { createReportsView } from './reports.js';
 import { createUsersAdmin } from './users.js';
 
 // ---------------------------------------------------------------- outils
@@ -60,6 +61,7 @@ const ACTION_LABEL = {
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
   zone_armed: 'Zone armée',
+  report_exported: 'Export / rapport',
   zone_disarmed: 'Zone désarmée',
   arming_schedule: "Planning d'armement",
   intrusion_ignored: 'Intrusion ignorée (zone désarmée)',
@@ -311,6 +313,7 @@ const logout = async () => {
 const refreshMe = async () => {
   S.me = await api('/api/me');
 };
+const reportsView = createReportsView({ h, getMe: () => S.me });
 const armingView = createArmingView({ api, h, toast, getMe: () => S.me });
 const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
 const admin = createUsersAdmin({ api, h, toast, dialogs, getMe: () => S.me, onRecipientsChanged: () => loadNotifStatus() });
@@ -355,6 +358,7 @@ function showApp() {
   }
   $('app').hidden = false;
   loadSystem(false);
+  reportsView.draw();
   $('whoami').textContent = `${S.me.displayName || S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
   $('admin').hidden = S.me.role !== 'admin';
   $('sim-box').hidden = !S.me.simEnabled;
@@ -775,6 +779,7 @@ function renderIncidents() {
         'li',
         {},
         h('strong', { text: `n°${i.id} ${i.detectorName}` }),
+        h('a', { class: 'small', href: `/api/reports/incidents/${i.id}`, target: '_blank', rel: 'noopener', text: 'fiche', title: "Fiche détaillée de l'incident (imprimable)" }),
         h('span', { class: `tag ${i.qualification}`, text: qualificationLabel(i.category, i.qualification) }),
         h('span', { class: 'muted small', text: `clôturé à ${time(i.closedAt)} par ${i.closedBy}${i.comment ? ` - ${i.comment}` : ''}` }),
         i.snapshots.length ? (() => { const box = h('div', { class: 'shots mini' }); renderShots(box, i, true); return box; })() : null,

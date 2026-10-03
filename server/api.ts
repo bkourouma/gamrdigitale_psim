@@ -15,6 +15,8 @@ import {
 } from './auth.ts';
 import type { Session } from './auth.ts';
 import type { Arming } from './arming.ts';
+import { parseRange } from './reports.ts';
+import type { Reports } from './reports.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -62,6 +64,7 @@ export interface ApiDeps {
   users: UsersService;
   recipients: RecipientsService;
   arming: Arming;
+  reports: Reports;
   /** HTTPS integre : active HSTS. */
   tls: boolean;
   trustProxy: boolean;
@@ -477,6 +480,41 @@ export function createApp(deps: ApiDeps) {
       res.status(204).end();
     });
   }
+
+  // ---- Rapports et exports (lecture seule) -------------------------------------------------
+
+  const sendHtml = (res: Response, html: string) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(html);
+  };
+  const sendCsv = (res: Response, name: string, csv: string) => {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(csv);
+  };
+  app.get('/api/reports/incidents', anyUser, (req, res) => {
+    const range = parseRange(req.query);
+    engine.audit(actorOf(req), 'report_exported', { details: `rapport ${range.fromDay} au ${range.toDay}${range.category ? ` (${range.category})` : ''}` });
+    sendHtml(res, deps.reports.reportHtml(range, deps.reports.query(range), Date.now()));
+  });
+  app.get('/api/reports/incidents.csv', anyUser, (req, res) => {
+    const range = parseRange(req.query);
+    engine.audit(actorOf(req), 'report_exported', { details: `export CSV des incidents ${range.fromDay} au ${range.toDay}${range.category ? ` (${range.category})` : ''}` });
+    sendCsv(res, `incidents_${range.fromDay}_${range.toDay}.csv`, deps.reports.incidentsCsv(range));
+  });
+  // Le journal complet contient les actions de tous les utilisateurs : administrateur.
+  app.get('/api/reports/audit.csv', adminOnly, (req, res) => {
+    const range = parseRange(req.query);
+    engine.audit(actorOf(req), 'report_exported', { details: `export CSV du journal ${range.fromDay} au ${range.toDay}` });
+    sendCsv(res, `journal_${range.fromDay}_${range.toDay}.csv`, deps.reports.auditCsv(range));
+  });
+  app.get('/api/reports/incidents/:id', anyUser, (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new PsimError(404, 'Incident introuvable');
+    sendHtml(res, deps.reports.incidentHtml(id, Date.now()));
+  });
 
   // ---- Armement des zones d'intrusion ---------------------------------------------------
 
