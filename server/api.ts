@@ -14,6 +14,7 @@ import {
   setSessionValidator,
 } from './auth.ts';
 import type { Session } from './auth.ts';
+import type { Arming } from './arming.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -60,6 +61,7 @@ export interface ApiDeps {
   risk: RiskService;
   users: UsersService;
   recipients: RecipientsService;
+  arming: Arming;
   /** HTTPS integre : active HSTS. */
   tls: boolean;
   trustProxy: boolean;
@@ -475,6 +477,22 @@ export function createApp(deps: ApiDeps) {
       res.status(204).end();
     });
   }
+
+  // ---- Armement des zones d'intrusion ---------------------------------------------------
+
+  app.get('/api/arming', anyUser, (_req, res) => res.json(deps.arming.list()));
+  // Armer / desarmer pour une duree limitee : geste d'exploitation courant, ouvert a l'operateur (trace au journal).
+  app.put('/api/arming/:zone/override', anyUser, json, (req, res) => {
+    const { mode, hours } = (req.body ?? {}) as { mode?: unknown; hours?: unknown };
+    res.json(deps.arming.setOverride(actorOf(req), String(req.params.zone), mode, hours));
+  });
+  app.delete('/api/arming/:zone/override', anyUser, (req, res) => {
+    res.json(deps.arming.clearOverride(actorOf(req), String(req.params.zone)));
+  });
+  // Le planning est une configuration : administrateur.
+  app.put('/api/arming/:zone/schedule', adminOnly, json, (req, res) => {
+    res.json(deps.arming.setSchedule(actorOf(req), String(req.params.zone), (req.body as { schedule?: unknown } | undefined)?.schedule));
+  });
 
   // ---- Erreurs --------------------------------------------------------------------------
 

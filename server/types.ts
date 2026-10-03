@@ -85,6 +85,8 @@ export interface Snapshot {
   site: { name: string; hasPlan: boolean; planVersion: number };
   devices: Device[];
   links: Record<string, string[]>;
+  /** Zones d'intrusion : `true` = armee. Les zones sans detecteur d'intrusion n'y figurent pas. */
+  arming: Record<string, boolean>;
   incidents: Incident[];
   audit: AuditEntry[];
 }

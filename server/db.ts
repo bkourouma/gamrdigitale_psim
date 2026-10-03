@@ -101,6 +101,15 @@ CREATE TABLE IF NOT EXISTS risk_history (
   idx INTEGER NOT NULL,
   PRIMARY KEY (day, zone)
 );
+-- Armement des zones d'intrusion : planning hebdomadaire (JSON) et derogation manuelle qui expire toujours.
+CREATE TABLE IF NOT EXISTS arming_zone (
+  zone TEXT PRIMARY KEY,
+  schedule TEXT,
+  override_mode TEXT CHECK (override_mode IN ('armed', 'disarmed')),
+  override_until INTEGER,
+  override_by TEXT,
+  override_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,

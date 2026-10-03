@@ -26,8 +26,8 @@ const fire: SensorSettings = { category: 'fire', warnAt: null, alarmAt: null, di
 
 describe('lecture des messages (etat, evenement, mesure)', () => {
   it("un etat explicite est repris tel quel, une mesure jointe est seulement memorisee", () => {
-    assert.deepEqual(interpret(fire, { state: 'alarm' }), { ok: true, state: 'alarm', alive: false, value: null });
-    assert.deepEqual(interpret(temperature, { state: 'normal', value: 99 }), { ok: true, state: 'normal', alive: false, value: 99 });
+    assert.deepEqual(interpret(fire, { state: 'alarm' }), { ok: true, state: 'alarm', event: null, alive: false, value: null });
+    assert.deepEqual(interpret(temperature, { state: 'normal', value: 99 }), { ok: true, state: 'normal', event: null, alive: false, value: 99 });
   });
 
   it('les evenements nommes donnent un etat, ou un simple signe de vie', () => {
@@ -36,7 +36,7 @@ describe('lecture des messages (etat, evenement, mesure)', () => {
     assert.equal((interpret(fire, { event: 'door_closed' }) as { state: string }).state, 'normal');
     assert.equal((interpret(fire, { event: 'low_battery' }) as { state: string }).state, 'fault');
     const alive = interpret(fire, { event: 'badge_granted' });
-    assert.deepEqual(alive, { ok: true, state: null, alive: true, value: null });
+    assert.deepEqual(alive, { ok: true, state: null, event: 'badge_granted', alive: true, value: null });
     // un badge refuse isole n'est pas un incident ; seul « refus repetes » (decide par la passerelle) en est un
     assert.equal((interpret(fire, { event: 'badge_denied' }) as { state: null }).state, null);
     assert.equal((interpret(fire, { event: 'badge_denied_repeated' }) as { state: string }).state, 'prealarm');

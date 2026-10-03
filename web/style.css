@@ -141,6 +141,15 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .pin.detector.cat-intrusion .pin-glyph { border-radius: 50% 0; }
 .pin.detector.cat-access .pin-glyph { border-radius: 3px 3px 10px 10px; }
 .pin.detector.cat-environment .pin-glyph { border-radius: 10px 10px 3px 3px; }
+.pin.detector.disarmed .pin-glyph { opacity: .55; border-style: dashed; }
+.arming-list { display: grid; gap: 8px; }
+.arming-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
+.arming-row.disarmed { border-color: var(--warn); }
+.arming-head { display: flex; align-items: center; gap: 8px; }
+.tag.armed { color: var(--ok); border-color: var(--ok); }
+.tag.disarmed { color: var(--warn); border-color: var(--warn); }
+.schedule-editor { display: grid; gap: 6px; margin-top: 4px; }
+.window { align-items: center; }
 .chip.type { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }
 .sensor-form { display: grid; gap: 6px; margin-bottom: 8px; }
 .sensor-form input { max-width: 150px; }

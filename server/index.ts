@@ -15,6 +15,8 @@ import { createNotifier, emailChannel, telegramChannel, webhookChannel } from '.
 import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
+import { createArming } from './arming.ts';
+import type { Arming } from './arming.ts';
 import { createRiskService } from './risk.ts';
 import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedUsers } from './seed.ts';
@@ -114,7 +116,10 @@ seedUsers(db, config.adminPassword, config.operatorPassword);
 
 const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
+let arming: Arming | undefined;
 const engine = createEngine(db, publish, Date.now, {
+  isArmed: (zone) => arming?.isArmed(zone) ?? true,
+  armingState: () => arming?.snapshot() ?? {},
   silentTimeoutMs: config.detectorTimeoutS * 1000,
   confirmWindowMs: config.confirmWindowS * 1000,
   persistMs: config.confirmPersistS * 1000,
@@ -127,6 +132,7 @@ const engine = createEngine(db, publish, Date.now, {
   },
   onDetectorSilent: (device) => void notifier?.notifySilent(device),
 });
+arming = createArming(db, (actor, action, ref) => engine.audit(actor, action, ref), Date.now, () => publish({ type: 'config' }));
 let snapshots: SnapshotService | undefined;
 let notifier: Notifier | undefined;
 const video = createVideoService({
@@ -239,6 +245,7 @@ const app = createApp({
   risk,
   users,
   recipients,
+  arming,
   tls: tlsFiles !== null,
   trustProxy: config.trustProxy,
   health: () => system.health(),
@@ -293,6 +300,11 @@ const tickTimer = setInterval(() => {
   lastTickAt = Date.now();
   engine.tick();
   notifier?.tick();
+  try {
+    arming?.tick(); // armements et desarmements dus au planning
+  } catch (err) {
+    console.error('[psim] armement :', err);
+  }
 }, 1000);
 
 server.once('error', (err: NodeJS.ErrnoException) => {

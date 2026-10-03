@@ -278,6 +278,24 @@ Elle n'existe que si **`PSIM_INGEST_TOKEN`** est défini (24 caractères minimum
 
 Démonstration : le site contient un détecteur de mouvement (`I-01`), une porte de service (`A-01`), un capteur de température 30/38 °C (`E-01`) et un capteur d'eau (`E-02`), avec les scénarios `intrusion-nuit`, `porte-forcee`, `derive-temperature` et `fuite-eau` (`npm run demo -- --scenario=<id>`).
 
+## Armement des zones d'intrusion
+
+Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Panneau **Armement des zones** (sous le plan, visible dès qu'il existe une telle zone).
+
+**État effectif d'une zone**, du plus au moins prioritaire :
+1. une **dérogation manuelle** (« Désarmer 1 h / 4 h / 12 h », « Armer maintenant »), ouverte à l'opérateur comme à l'administrateur. Elle **expire toujours** (24 h maximum, durée obligatoire) : un désarmement oublié ne laisse jamais une zone sans surveillance indéfiniment ;
+2. le **planning hebdomadaire** de la zone, s'il y en a un (administrateur) : plages pendant lesquelles la zone est armée, en **heure locale du serveur**. Une plage de nuit (`19:00 → 07:00`, du lundi au vendredi) se termine le lendemain matin, donc la nuit du vendredi se prolonge le samedi matin ;
+3. sinon, **armée en permanence**. Rien ne change tant qu'on ne configure rien.
+
+**Ce que le désarmement ne masque jamais**
+- le **sabotage** (`tamper`) et la **panique** (`panic`) d'un détecteur d'intrusion alarment toujours ;
+- l'**incendie**, le **contrôle d'accès** et l'**environnement** ne sont jamais concernés par l'armement ;
+- un incident **déjà ouvert** n'est pas fermé par un désarmement ; un retour à la normale ou un défaut passent toujours.
+
+Un mouvement ignoré dans une zone désarmée est noté au journal (`Intrusion ignorée`), au plus une fois par minute et par détecteur. Chaque armement, désarmement et changement de planning est journalisé avec son auteur, y compris les changements automatiques dus au planning. Sur le plan, les détecteurs d'une zone désarmée sont estompés (contour pointillé).
+
+**Limites** : pas de temporisation d'entrée/sortie (le désarmement est un geste manuel avant d'entrer) ; un mouvement survenu pendant le désarmement n'est pas rejoué à l'armement ; le planning suit l'heure du serveur (vérifiez le fuseau horaire de la machine) ; seuls les détecteurs d'intrusion sont armables.
+
 ## Architecture
 
 ```
@@ -304,12 +322,14 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/backup.ts`, `server/lock.ts` | Sauvegarde / restauration vérifiées ; verrou d'instance unique |
 | `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
+| `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
 | `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
 | `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
+| `web/arming.js` | Panneau d'armement des zones et éditeur de planning |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |
@@ -361,7 +381,7 @@ npm run typecheck
 
 - Sessions gardées en mémoire : une déconnexion des utilisateurs a lieu à chaque redémarrage.
 - Un seul site, un seul plan, une seule instance (pas de haute disponibilité).
-- Les sources hors incendie (intrusion, accès, environnement) ne sont **ni armées/désarmées ni planifiées** : un détecteur de mouvement alarme à toute heure. Pas de gestion de badges ni de portes, pas de commande des équipements : le PSIM écoute, il ne pilote rien.
+- Armement : seuls les détecteurs d'intrusion sont armables (voir plus haut). Pas de gestion de badges ni de portes, pas de commande des équipements : le PSIM écoute, il ne pilote rien.
 - Pas de prise en charge native des protocoles de terrain (BACnet, Modbus, OPC UA, Wiegand…) : passer par une passerelle vers MQTT ou HTTP.
 - Matériel réel (détecteurs, caméras, SMTP, Telegram) jamais testé ici : tout a été validé avec des équipements simulés.
 

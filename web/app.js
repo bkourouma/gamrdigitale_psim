@@ -3,6 +3,7 @@ import { startLiveCamera } from './live.js';
 import { createAccountUi, createDialogs } from './account.js';
 import { createRiskView } from './risk.js';
 import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
+import { createArmingView } from './arming.js';
 import { createUsersAdmin } from './users.js';
 
 // ---------------------------------------------------------------- outils
@@ -58,6 +59,10 @@ const ACTION_LABEL = {
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
+  zone_armed: 'Zone armée',
+  zone_disarmed: 'Zone désarmée',
+  arming_schedule: "Planning d'armement",
+  intrusion_ignored: 'Intrusion ignorée (zone désarmée)',
   risk_assessed: 'Risque évalué',
   snapshot_failed: 'Image non prise',
   notification_failed: 'Notification en échec',
@@ -126,6 +131,7 @@ $('nav-risk').addEventListener('click', () => showView(riskView?.isOpen() ? 'sup
 // ---------------------------------------------------------------- état
 
 const S = {
+  arming: {},
   me: null,
   site: { name: '', hasPlan: false, planVersion: 0 },
   devices: new Map(),
@@ -166,6 +172,8 @@ function applySnapshot(snap) {
   S.site = snap.site;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
+  S.arming = snap.arming ?? {};
+  armingView.load(); // etat detaille des zones d'intrusion (planning, derogations)
   S.incidents = new Map(snap.incidents.map((i) => [i.id, i]));
   S.audit = snap.audit;
   if (S.selectedId && !S.devices.has(S.selectedId)) S.selectedId = null;
@@ -303,6 +311,7 @@ const logout = async () => {
 const refreshMe = async () => {
   S.me = await api('/api/me');
 };
+const armingView = createArmingView({ api, h, toast, getMe: () => S.me });
 const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
 const admin = createUsersAdmin({ api, h, toast, dialogs, getMe: () => S.me, onRecipientsChanged: () => loadNotifStatus() });
 $('whoami').addEventListener('click', () => account.openAccount());
@@ -376,7 +385,7 @@ $('logout').addEventListener('click', logout);
 // ---------------------------------------------------------------- plan
 
 function pinClass(d) {
-  return `pin ${d.kind} ${d.kind === 'detector' ? `${d.status} cat-${d.category}` : ''}${S.selectedId === d.id ? ' selected' : ''}${
+  return `pin ${d.kind} ${d.kind === 'detector' ? `${d.status} cat-${d.category}${d.category === 'intrusion' && S.arming[d.zone] === false ? ' disarmed' : ''}` : ''}${S.selectedId === d.id ? ' selected' : ''}${
     S.editMode ? ' editable' : ''
   }${wallCameraIds().includes(d.id) ? ' on-wall' : ''}`;
 }
@@ -398,7 +407,7 @@ function renderPlan() {
         {
           type: 'button',
           class: pinClass(d),
-          title: `${d.name} - ${d.zone || 'sans zone'}${
+          title: `${d.name} - ${d.zone || 'sans zone'}${d.category === 'intrusion' && S.arming[d.zone] === false ? ' - zone DÉSARMÉE' : ''}${
             d.kind === 'detector'
               ? ` - ${CATEGORY_LABEL[d.category]}${d.lastValue !== null ? ` - ${formatValue(d.lastValue, d.valueUnit)}` : ''} - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage'}`
               : ''

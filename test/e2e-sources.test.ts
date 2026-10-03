@@ -145,6 +145,48 @@ describe("entree HTTP des equipements (processus reel)", { timeout: 120_000 }, (
     assert.equal(denied.status, 403);
   });
 
+  it("armement : l'operateur desarme pour une duree limitee, seul l'administrateur regle le planning", async () => {
+    const op = await fetch(`${main.base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'operateur', password: OPERATOR_PW }) });
+    const opCookie = op.headers.getSetCookie()[0].split(';')[0];
+    const as = async (who: string, method: string, path: string, body?: unknown) => {
+      const res = await fetch(`${main.base}${path}`, { method, headers: { 'Content-Type': 'application/json', Cookie: who }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await res.text();
+      return { status: res.status, body: text ? JSON.parse(text) : null };
+    };
+    const state = async () => (await api('GET', '/api/state')).body;
+
+    assert.equal((await state()).arming.Accueil, true, 'armee par defaut');
+    const zones = await as(opCookie, 'GET', '/api/arming');
+    assert.deepEqual(zones.body.map((z: any) => [z.zone, z.armed, z.source]), [['Accueil', true, 'default']]);
+
+    // un desarmement sans duree, ou trop long, est refuse
+    assert.equal((await as(opCookie, 'PUT', '/api/arming/Accueil/override', { mode: 'disarmed' })).status, 400);
+    assert.equal((await as(opCookie, 'PUT', '/api/arming/Accueil/override', { mode: 'disarmed', hours: 48 })).status, 400);
+    assert.equal((await as(opCookie, 'PUT', '/api/arming/Bureaux/override', { mode: 'disarmed', hours: 1 })).status, 404);
+
+    assert.equal((await as(opCookie, 'PUT', '/api/arming/Accueil/override', { mode: 'disarmed', hours: 2 })).body.armed, false);
+    assert.equal((await state()).arming.Accueil, false);
+    assert.equal((await ingest('I-01', { event: 'motion' })).status, 204);
+    assert.equal((await state()).incidents.some((i: any) => i.detectorId === 'I-01'), false, 'mouvement ignore');
+    assert.equal((await ingest('I-01', { event: 'tamper' })).status, 204);
+    assert.equal((await state()).incidents.some((i: any) => i.detectorId === 'I-01'), true, 'le sabotage alarme toujours');
+
+    // le planning est reserve a l'administrateur
+    const schedule = [{ days: [1, 2, 3, 4, 5], from: '19:00', to: '07:00' }];
+    assert.equal((await as(opCookie, 'PUT', '/api/arming/Accueil/schedule', { schedule })).status, 403);
+    assert.equal((await as(cookie, 'PUT', '/api/arming/Accueil/schedule', { schedule: [{ days: [9], from: '19:00', to: '07:00' }] })).status, 400);
+    assert.equal((await as(cookie, 'PUT', '/api/arming/Accueil/schedule', { schedule })).status, 200);
+
+    const back = await as(opCookie, 'DELETE', '/api/arming/Accueil/override');
+    assert.equal(back.status, 200);
+    assert.equal(back.body.source, 'schedule');
+    const journal = (await api('GET', '/api/audit?limit=50')).body.map((e: any) => `${e.actor}:${e.action}`);
+    assert.ok(journal.includes('operateur:zone_disarmed') && journal.includes('admin:arming_schedule'));
+    assert.ok(journal.includes('systeme:intrusion_ignored'));
+    // retour a un etat neutre pour les tests suivants
+    await as(cookie, 'PUT', '/api/arming/Accueil/schedule', { schedule: null });
+  });
+
   it("le jeton ne figure ni dans les journaux du serveur ni dans les reponses", async () => {
     assert.ok(!main.output().includes(TOKEN));
     const system = JSON.stringify((await api('GET', '/api/system')).body) + JSON.stringify((await api('GET', '/api/notifications/status')).body);

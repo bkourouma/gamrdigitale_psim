@@ -28,6 +28,12 @@ export const CATEGORY_LABEL_PLAIN: Record<DeviceCategory, string> = {
   environment: 'Environnement',
 };
 
+/**
+ * Evenements qu'un desarmement ne masque JAMAIS : le sabotage d'un detecteur et l'alarme de panique restent
+ * actifs 24 h sur 24, zone armee ou non.
+ */
+export const ALWAYS_ACTIVE_EVENTS: ReadonlySet<string> = new Set(['tamper', 'panic']);
+
 export type EventEffect = DetectorState | 'alive';
 
 /**
@@ -84,6 +90,8 @@ export type Reading =
       ok: true;
       /** `null` : rien a changer dans l'etat (signe de vie, ou mesure sans seuil). */
       state: DetectorState | null;
+      /** Evenement nomme a l'origine du message, s'il y en a un. */
+      event: string | null;
       /** Signe de vie sans etat : si l'equipement etait « hors ligne », il redevient normal. */
       alive: boolean;
       value: number | null;
@@ -116,16 +124,16 @@ export function interpret(settings: SensorSettings, payload: unknown): Reading {
 
   if (state !== undefined) {
     if (typeof state !== 'string' || !DETECTOR_STATES.has(state)) return { ok: false, error: 'state invalide' };
-    return { ok: true, state: state as DetectorState, alive: false, value: reading };
+    return { ok: true, state: state as DetectorState, event: null, alive: false, value: reading };
   }
   if (event !== undefined) {
     if (typeof event !== 'string' || !Object.hasOwn(EVENTS, event)) return { ok: false, error: 'event inconnu' };
     const effect = EVENTS[event];
-    return effect === 'alive' ? { ok: true, state: null, alive: true, value: reading } : { ok: true, state: effect, alive: false, value: reading };
+    return effect === 'alive' ? { ok: true, state: null, event, alive: true, value: reading } : { ok: true, state: effect, event, alive: false, value: reading };
   }
   if (reading !== null) {
     const derived = stateFromValue(reading, settings);
-    return { ok: true, state: derived, alive: derived === null, value: reading };
+    return { ok: true, state: derived, event: null, alive: derived === null, value: reading };
   }
   return { ok: false, error: 'state, event ou value requis' };
 }

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
+import { ALWAYS_ACTIVE_EVENTS, CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
 import type {
   AuditEntry,
   Device,
@@ -93,6 +93,14 @@ export interface EngineOptions {
   onIncidentEvent?: (incident: Incident, kind: 'opened' | 'escalated' | 'confirmed') => void;
   /** Appele quand un detecteur est declare muet (zone potentiellement non surveillee). Jamais bloquant. */
   onDetectorSilent?: (device: Device) => void;
+  /**
+   * Armement des zones d'intrusion : `false` = la zone est desarmee, ses detecteurs d'intrusion n'ouvrent pas d'incident
+   * (sabotage et panique restent toujours actifs ; incendie, acces et environnement ne sont jamais concernes).
+   * Absent = toutes les zones sont armees.
+   */
+  isArmed?: (zone: string) => boolean;
+  /** Etat d'armement de chaque zone d'intrusion, pour l'interface. */
+  armingState?: () => Record<string, boolean>;
 }
 
 function describeDuration(ms: number): string {
@@ -297,12 +305,27 @@ export function createEngine(
     if (reading.value !== null) db.prepare('UPDATE device SET last_value = ? WHERE id = ?').run(reading.value, deviceId);
     // Un equipement supervise qui donne signe de vie alors qu'on le croyait mort est de nouveau en ligne.
     const state = reading.state ?? (reading.alive && device.status === 'offline' ? 'normal' : null);
+    if (state !== null && (state === 'alarm' || state === 'prealarm') && device.category === 'intrusion' && options.isArmed && !(reading.event && ALWAYS_ACTIVE_EVENTS.has(reading.event)) && !options.isArmed(device.zone)) {
+      noteIgnored(device, reading.event ?? state);
+      publishDevice(deviceId);
+      return { ok: true };
+    }
     if (state === null) {
       publishDevice(deviceId);
       return { ok: true };
     }
     applyState(device, state);
     return { ok: true };
+  }
+
+  // Un detecteur de mouvement dans une zone desarmee parle souvent : on le note, mais pas a chaque message.
+  const lastIgnored = new Map<string, number>();
+
+  function noteIgnored(device: Device, what: string): void {
+    const t = now();
+    if (t - (lastIgnored.get(device.id) ?? -Infinity) < 60_000) return;
+    lastIgnored.set(device.id, t);
+    audit('systeme', 'intrusion_ignored', { deviceId: device.id, details: `zone ${device.zone} desarmee : ${what} ignore` });
   }
 
   function handleDetectorMessage(deviceId: string, payload: unknown): void {
@@ -615,6 +638,7 @@ export function createEngine(
       },
       devices,
       links,
+      arming: options.armingState?.() ?? {},
       incidents: incidentIds.map(incidentView),
       audit: listAudit(50),
     };
