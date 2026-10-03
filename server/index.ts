@@ -6,7 +6,9 @@ import { WebSocketServer } from 'ws';
 import { createApp, sessionFromRequest } from './api.ts';
 import { createBackup, listBackups, pruneBackups } from './backup.ts';
 import { config } from './config.ts';
+import { createContinuity } from './continuity.ts';
 import { openDb } from './db.ts';
+import { createHeartbeat } from './heartbeat.ts';
 import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
@@ -65,6 +67,10 @@ try {
 }
 
 const db = openDb(join(dataDir, 'psim.db')); // migration seulement : AUCUN compte n'est cree avant le controle ci-dessous
+// Continuite : l'ecart avec le dernier signe de vie est la periode pendant laquelle rien n'a ete surveille.
+// Note tout de suite que le PSIM est en marche (arret non propre tant qu'il n'a pas dit le contraire).
+const continuity = createContinuity(db);
+const startupGap = continuity.begin();
 const secretKey = loadSecretKey(dataDir, config.secretKey);
 
 // Destinataires : .env (lecture seule) + base (modifiables dans l'interface) ; relus a chaque envoi.
@@ -99,6 +105,7 @@ const findings = preflight({
   backupEveryH: config.backup.everyH,
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
+  heartbeatUrl: config.heartbeatUrl,
 });
 if (findings.length > 0) {
   const fatal = config.production && findings.some((f) => f.level === 'error');
@@ -235,7 +242,34 @@ const system = createSystemStatus({
     return { channels: s.activeChannels, failedLast24h: s.failedLast24h, sentLast24h: s.sentLast24h };
   },
   backup: { everyH: config.backup.everyH, dir: backupDir, last: () => lastBackup, count: () => listBackups(backupDir).length },
+  lastGap: () => continuity.lastGap(),
+  heartbeat: () => heartbeat.status(),
 });
+
+// Supervision externe : un signal regulier vers un service qui s'inquiete s'il ne le recoit plus.
+const heartbeat = createHeartbeat({
+  url: config.heartbeatUrl,
+  everyMs: config.heartbeatEveryS * 1000,
+  health: () => system.health(),
+  onChange: (state, status) =>
+    engine.audit('systeme', state === 'failing' ? 'heartbeat_failing' : 'heartbeat_recovered', {
+      details: state === 'failing' ? `signal de supervision externe en echec (${status.lastError ?? 'erreur'})` : 'signal de supervision externe retabli',
+    }),
+});
+
+// Le PSIM redemarre : si rien n'a ete surveille entre-temps, on le dit (journal) et on previent (niveau 1).
+if (startupGap) {
+  const minutes = Math.max(1, Math.round(startupGap.durationMs / 60_000));
+  engine.audit('systeme', 'supervision_gap', {
+    details: `${startupGap.clean ? 'arret volontaire' : 'arret INATTENDU'} : aucune surveillance du ${new Date(startupGap.from).toLocaleString('fr-FR')} au ${new Date(startupGap.to).toLocaleString('fr-FR')} (${minutes} min)`,
+  });
+  console.warn(`[psim] ${startupGap.clean ? 'redemarrage' : 'REDEMARRAGE APRES ARRET INATTENDU'} : ${minutes} min sans surveillance`);
+  if (startupGap.durationMs >= config.gapNotifyS * 1000) {
+    const openIncidents = (db.prepare("SELECT COUNT(*) AS n FROM incident WHERE status <> 'closed'").get() as { n: number }).n;
+    void notifier.notifyRestart(startupGap, openIncidents);
+  }
+}
+
 
 const app = createApp({
   db,
@@ -297,6 +331,7 @@ bus.on('event', (event: PsimEvent) => {
   }
 });
 
+let lastBeatAt = 0;
 // Controle periodique : detecteurs muets, confirmation par persistance, escalade des incidents non acquittes.
 const tickTimer = setInterval(() => {
   lastTickAt = Date.now();
@@ -304,8 +339,12 @@ const tickTimer = setInterval(() => {
   notifier?.tick();
   try {
     arming?.tick(); // armements et desarmements dus au planning
+    if (lastTickAt - lastBeatAt >= 10_000) {
+      lastBeatAt = lastTickAt;
+      continuity.beat(); // signe de vie : sert a mesurer la periode aveugle d'un prochain arret
+    }
   } catch (err) {
-    console.error('[psim] armement :', err);
+    console.error('[psim] controle periodique :', err);
   }
 }, 1000);
 
@@ -322,6 +361,12 @@ server.listen(config.port, config.host, () => {
   console.log(`[psim] broker MQTT: ${mqttTlsFiles ? 'mqtts' : 'mqtt'}://${config.mqttHost}:${config.mqttPort}  (topic psim/detectors/<id>/state)`);
   console.log(`[psim] sante      : ${scheme}://${config.host}:${config.port}/healthz`);
   if (redirect) redirect.listen(config.httpRedirectPort, config.host, () => console.log(`[psim] redirection HTTP -> HTTPS sur le port ${config.httpRedirectPort}`));
+  console.log(
+    heartbeat.status().configured
+      ? `[psim] supervision externe : signal toutes les ${config.heartbeatEveryS} s vers ${heartbeat.status().host}`
+      : '[psim] supervision externe : non configuree (PSIM_HEARTBEAT_URL)',
+  );
+  heartbeat.start();
   console.log(
     config.detectorTimeoutS > 0
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
@@ -359,15 +404,21 @@ async function shutdown() {
   clearInterval(purgeTimer);
   clearInterval(riskTimer);
   if (backupTimer) clearInterval(backupTimer);
+  heartbeat.stop();
   video.shutdown();
   wss.close();
   server.close();
   redirect?.close();
   await broker.close();
+  continuity.markClean(); // arret volontaire : le prochain demarrage ne parlera pas de plantage
   db.close();
   releaseLock();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+// Arret propre demande par le superviseur (scripts/supervise.ts) : le signal SIGTERM n'existe pas sous Windows.
+process.on('message', (message) => {
+  if (message === 'shutdown') void shutdown();
+});
 process.on('exit', () => releaseLock());

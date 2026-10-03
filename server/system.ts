@@ -6,6 +6,8 @@
 import { existsSync, statSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { Gap } from './continuity.ts';
+import type { HeartbeatStatus } from './heartbeat.ts';
 
 export interface BackupStatus {
   at: number | null;
@@ -28,6 +30,9 @@ export interface SystemDeps {
   disk?: () => { freeBytes: number; totalBytes: number } | null;
   notificationChannels: () => { channels: number; failedLast24h: number; sentLast24h: number };
   backup: { everyH: number; dir: string; last: () => BackupStatus; count: () => number };
+  /** Derniere periode aveugle (PSIM arrete), et etat du signal de supervision externe. */
+  lastGap?: () => Gap | null;
+  heartbeat?: () => HeartbeatStatus;
 }
 
 const GB = 1024 ** 3;
@@ -86,6 +91,14 @@ export function createSystemStatus(deps: SystemDeps) {
     if (offline > 0) warnings.push({ level: 'attention', message: `${offline} detecteur(s) hors service : leurs zones ne sont pas surveillees.` });
     if (notif.channels === 0) warnings.push({ level: 'attention', message: "Aucun canal de notification configure : une alarme ne previent personne hors de l'ecran." });
     if (notif.failedLast24h > 0) warnings.push({ level: 'attention', message: `${notif.failedLast24h} notification(s) en echec sur 24 h.` });
+    const gap = deps.lastGap?.() ?? null;
+    if (gap && !gap.clean && t - gap.to < 24 * 3_600_000) {
+      warnings.push({ level: 'attention', message: `Redemarrage apres un arret inattendu : le PSIM n'a rien surveille pendant ${Math.round(gap.durationMs / 60_000) || 1} min (${new Date(gap.from).toLocaleString('fr-FR')}). Verifier ce qui s'est passe.` });
+    }
+    const beat = deps.heartbeat?.() ?? null;
+    if (beat?.configured && beat.consecutiveFailures >= 3) {
+      warnings.push({ level: 'attention', message: `Supervision externe : ${beat.consecutiveFailures} signaux sans succes (${beat.lastError ?? 'erreur'}). Si le PSIM s'arrete, personne ne sera prevenu.` });
+    }
     if (deps.backup.everyH > 0) {
       const limit = deps.backup.everyH * 2 * 3_600_000;
       if (backup.ok === false) warnings.push({ level: 'critique', message: `La derniere sauvegarde a echoue : ${backup.error ?? 'erreur inconnue'}.` });
@@ -109,6 +122,8 @@ export function createSystemStatus(deps: SystemDeps) {
       openIncidents: open,
       notifications: notif,
       backup: { ...backup, everyH: deps.backup.everyH, count: deps.backup.count(), dir: deps.backup.dir },
+      continuity: { lastGap: gap },
+      heartbeat: beat,
       warnings,
     };
   }

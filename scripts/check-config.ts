@@ -54,6 +54,7 @@ const findings = preflight({
   backupEveryH: config.backup.everyH,
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
+  heartbeatUrl: config.heartbeatUrl,
 });
 
 console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_ENV=production pour le verdict de production)`);

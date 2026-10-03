@@ -181,8 +181,10 @@ describe('rapport et fiche HTML', () => {
     t.db.prepare("INSERT INTO notification_log (incident_id, kind, channel, recipient, level, status, attempts, created_at) VALUES (?, 'opened', 'email', 'a***@x.fr', 1, 'failed', 3, ?)").run(id, at(2026, 2, 10, 9, 1));
     t.db.prepare("INSERT INTO notification_log (incident_id, kind, channel, recipient, level, status, attempts, created_at) VALUES (?, 'round', 'email', '', 2, 'sent', 1, ?)").run(id, at(2026, 2, 10, 9, 2));
     const html = t.reports.incidentHtml(id, at(2026, 2, 10));
-    assert.match(html, /incident_opened/);
-    assert.match(html, /incident_acked/);
+    assert.match(html, /Incident ouvert/);
+    assert.match(html, /Acquitté/);
+    assert.match(html, /Clôturé/);
+    assert.ok(!/incident_opened|incident_acked/.test(html), 'libelles en francais, pas les codes internes');
     assert.match(html, /ÉCHEC \(3 tentatives\)/);
     assert.ok(!/round/.test(html), 'les lignes techniques de l escalade ne sont pas affichees');
     assert.throws(() => t.reports.incidentHtml(999, 0), (e: unknown) => e instanceof PsimError && e.status === 404);

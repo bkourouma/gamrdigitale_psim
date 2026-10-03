@@ -15,7 +15,7 @@ import type { Engine } from './engine.ts';
 import { CATEGORY_LABEL_PLAIN } from './sources.ts';
 import type { Device, Incident } from './types.ts';
 
-export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'test';
+export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'test';
 export type Level = 1 | 2;
 
 export interface Message {
@@ -197,6 +197,7 @@ const KIND_TITLE: Record<Kind, string> = {
   unacked: 'NON ACQUITTEE',
   reminder: 'RAPPEL - TOUJOURS NON ACQUITTEE',
   silent: 'DETECTEUR HORS LIGNE',
+  restart: 'SURVEILLANCE INTERROMPUE',
   test: 'MESSAGE DE TEST',
 };
 
@@ -331,6 +332,22 @@ export function createNotifier(deps: NotifierDeps) {
     return dispatch({ kind: 'silent', incidentId: null, subject: `[PSIM] ${title} - ${device.name}`, text: deps.publicUrl ? `${text}\nOuvrir le PSIM : ${deps.publicUrl}` : text, data: { detectorId: device.id, detector: device.name, zone: device.zone, category: device.category } }, [1]);
   }
 
+  /**
+   * Le PSIM redemarre apres une periode ou il ne surveillait rien : des alarmes ont pu passer inapercues.
+   * Niveau 1 (les destinataires d'ouverture). Jamais bloquant.
+   */
+  function notifyRestart(gap: { from: number; to: number; durationMs: number; clean: boolean }, openIncidents: number): Promise<void> {
+    const when = (ts: number) => new Date(ts).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+    const text = [
+      `Le PSIM n'a rien surveille de ${when(gap.from)} a ${when(gap.to)} (${minutes(gap.durationMs)}).`,
+      gap.clean ? 'Cause : arret volontaire (maintenance ?).' : 'Cause : arret INATTENDU (plantage, coupure de courant ou processus tue).',
+      "Pendant ce temps, une alarme a pu passer inapercue : verifier les zones et l'etat des detecteurs.",
+      openIncidents > 0 ? `${openIncidents} incident(s) restent ouverts.` : '',
+      deps.publicUrl ? `Ouvrir le PSIM : ${deps.publicUrl}` : '',
+    ].filter(Boolean).join('\n');
+    return dispatch({ kind: 'restart', incidentId: null, subject: `[PSIM] ${KIND_TITLE.restart} - ${minutes(gap.durationMs)}`, text, data: { from: gap.from, to: gap.to, durationS: Math.round(gap.durationMs / 1000), clean: gap.clean, openIncidents } }, [1]);
+  }
+
   /** Images prises a l'etape `kind`, envoyees en complement (apres le texte, qui part sans attendre). */
   async function sendImages(incidentId: number, kind: 'opened' | 'escalated' | 'confirmed'): Promise<void> {
     if (!deps.readSnapshot) return;
@@ -431,7 +448,7 @@ export function createNotifier(deps: NotifierDeps) {
     };
   }
 
-  return { notifyIncident, notifySilent, sendImages, tick, test, status };
+  return { notifyIncident, notifySilent, notifyRestart, sendImages, tick, test, status };
 }
 
 export type Notifier = ReturnType<typeof createNotifier>;

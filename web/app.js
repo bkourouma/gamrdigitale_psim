@@ -60,6 +60,9 @@ const ACTION_LABEL = {
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
+  supervision_gap: 'Période sans surveillance',
+  heartbeat_failing: 'Supervision externe en échec',
+  heartbeat_recovered: 'Supervision externe rétablie',
   zone_armed: 'Zone armée',
   report_exported: 'Export / rapport',
   zone_disarmed: 'Zone désarmée',
@@ -630,14 +633,14 @@ function renderShots(container, incident, mini = false) {
   container.hidden = incident.snapshots.length === 0;
   container.replaceChildren(
     ...incident.snapshots.map((shot) => {
-      const img = h('img', { src: `/api/snapshots/${shot.id}`, alt: shotCaption(shot), draggable: 'false' });
+      const img = h('img', { src: `/api/snapshots/${shot.id}?t=${shot.takenAt}`, alt: shotCaption(shot), draggable: 'false' });
       return h('button', { type: 'button', class: 'shot', title: shotCaption(shot), onclick: () => openLightbox(shot) }, img);
     }),
   );
 }
 
 function openLightbox(shot) {
-  $('lightbox-img').src = `/api/snapshots/${shot.id}`;
+  $('lightbox-img').src = `/api/snapshots/${shot.id}?t=${shot.takenAt}`;
   $('lightbox-caption').textContent = shotCaption(shot);
   $('lightbox').hidden = false;
 }
@@ -895,6 +898,24 @@ const fmtBytes = (n) => (n == null ? '—' : n >= 1024 ** 3 ? `${(n / 1024 ** 3)
 const fmtDuration = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} j ${Math.floor((s % 86400) / 3600)} h` : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : `${Math.floor(s / 60)} min`);
 
 /** Etat du PSIM lui-meme (administrateur) : alimente le panneau « Systeme » et le badge d'alerte du haut. */
+// Continuité : dernière période sans surveillance, et état du signal de supervision externe.
+function continuityText(sys) {
+  const gap = sys.continuity?.lastGap;
+  const hb = sys.heartbeat;
+  const parts = [];
+  parts.push(
+    gap
+      ? `Dernière période sans surveillance : ${fmtDuration(Math.round(gap.durationMs / 1000))} le ${new Date(gap.from).toLocaleString('fr-FR')} (${gap.clean ? 'arrêt volontaire' : 'arrêt INATTENDU'}).`
+      : 'Aucune période sans surveillance enregistrée.',
+  );
+  parts.push(
+    hb?.configured
+      ? `Supervision externe : signal toutes les ${hb.everyS} s vers ${hb.host}${hb.consecutiveFailures > 0 ? ` - ${hb.consecutiveFailures} échec(s) (${hb.lastError})` : hb.lastOkAt ? `, dernier succès à ${time(hb.lastOkAt)}` : ''}.`
+      : "Supervision externe : non configurée (si le PSIM s'arrête, personne n'est prévenu).",
+  );
+  return parts.join(' ');
+}
+
 async function loadSystem(render = true) {
   if (S.me?.role !== 'admin') return;
   try {
@@ -912,7 +933,8 @@ async function loadSystem(render = true) {
       `Base : ${fmtBytes(sys.database.bytes)} - images : ${fmtBytes(sys.snapshotsBytes)} - disque libre : ${fmtBytes(sys.disk?.freeBytes)} - ` +
       `passerelles MQTT connectées : ${sys.brokerClients}. ` +
       `Sauvegardes : ${b.everyH > 0 ? `automatiques toutes les ${b.everyH} h` : 'automatiques désactivées'}, ${b.count} conservée(s)` +
-      `${b.at ? `, dernière ${b.ok ? 'réussie' : 'EN ÉCHEC'} le ${new Date(b.at).toLocaleString('fr-FR')}` : ', aucune pour l\'instant'} (${b.dir}).`;
+      `${b.at ? `, dernière ${b.ok ? 'réussie' : 'EN ÉCHEC'} le ${new Date(b.at).toLocaleString('fr-FR')}` : ', aucune pour l\'instant'} (${b.dir}). ` +
+      continuityText(sys);
     $('sys-warnings').replaceChildren(
       ...(sys.warnings.length
         ? sys.warnings.map((w) => h('li', { class: w.level === 'critique' ? 'bad' : 'warn', text: `${w.level === 'critique' ? 'CRITIQUE' : 'Attention'} : ${w.message}` }))
@@ -942,7 +964,7 @@ setInterval(() => {
   if (S.me?.role === 'admin') loadSystem($('sys-box').open);
 }, 60000);
 
-const KIND_LABEL = { opened: 'ouverture', escalated: 'aggravation', confirmed: 'confirmation', unacked: 'escalade', reminder: 'rappel', silent: 'détecteur muet', test: 'test' };
+const KIND_LABEL = { opened: 'ouverture', escalated: 'aggravation', confirmed: 'confirmation', unacked: 'escalade', reminder: 'rappel', silent: 'détecteur muet', restart: 'redémarrage', test: 'test' };
 
 async function loadNotifStatus() {
   try {

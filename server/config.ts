@@ -40,6 +40,11 @@ export const config = {
     everyH: Number(env.PSIM_BACKUP_EVERY_H ?? (production ? 24 : 0)),
     keep: Number(env.PSIM_BACKUP_KEEP ?? 14),
   },
+  // Supervision externe : signal HTTP regulier vers un service qui s'inquiete s'il ne le recoit plus (healthchecks.io, Uptime Kuma...).
+  heartbeatUrl: env.PSIM_HEARTBEAT_URL ?? '',
+  heartbeatEveryS: Number(env.PSIM_HEARTBEAT_EVERY_S ?? 60),
+  // Periode aveugle (PSIM arrete) a partir de laquelle on previent par notification, en secondes.
+  gapNotifyS: Number(env.PSIM_GAP_NOTIFY_S ?? 60),
   logFile: env.PSIM_LOG_FILE === undefined ? production : env.PSIM_LOG_FILE === '1',
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',

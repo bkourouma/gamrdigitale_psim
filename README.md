@@ -308,6 +308,23 @@ Panneau **Rapports et exports** (tout utilisateur connecté) : choisir une péri
 
 **Limites** : pas d'envoi automatique par e-mail ni de rapport périodique planifié ; les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur (pas le temps d'intervention sur le terrain) ; les dates suivent le fuseau horaire du serveur.
 
+## Reprise après panne et supervision externe
+
+Un PSIM arrêté ne surveille rien, et ne peut pas le dire. Trois protections complémentaires :
+
+**1. Savoir qu'on a été aveugle.** Le PSIM inscrit en base un signe de vie toutes les 10 s, et une marque à l'arrêt volontaire. Au redémarrage, l'écart est la **période sans surveillance** : inscrite au journal (`Période sans surveillance`, arrêt volontaire ou **INATTENDU**), affichée dans *Système*, signalée par un avertissement pendant 24 h après un arrêt inattendu, et **notifiée** (niveau 1) si elle dure au moins `PSIM_GAP_NOTIFY_S` secondes (60 par défaut) : « le PSIM n'a rien surveillé de 02:10 à 02:17, une alarme a pu passer inaperçue, vérifier les zones ». Un redémarrage volontaire court n'est pas signalé ; une horloge revenue en arrière n'invente pas d'écart.
+
+**2. Être prévenu quand le PSIM meurt.** Il envoie un simple signal HTTP à un service **externe** qui s'inquiète de ne plus le recevoir (*dead man's switch*). Réglage : **`PSIM_HEARTBEAT_URL`** (et `PSIM_HEARTBEAT_EVERY_S`, 60 s par défaut). Compatible [healthchecks.io](https://healthchecks.io) (gratuit pour un petit usage), Uptime Kuma (monitor « push ») ou tout service qui attend un appel. Quand la santé du PSIM est dégradée (boucle de contrôle figée, base inaccessible), il appelle `<adresse>/fail`. Rien du site n'est transmis, seulement un appel vide. L'adresse contient en général un jeton : elle n'apparaît **jamais** en entier (journaux, écran : seul l'hôte), les redirections ne sont pas suivies, et **`https://` est exigé en production**. Un échec d'envoi ne gêne pas le PSIM ; il est journalisé une fois, avec le rétablissement. Au démarrage en production, l'absence de supervision externe est signalée.
+
+> À configurer côté service : une « période » égale à l'intervalle choisi et un délai de grâce de quelques minutes, avec alerte par e-mail ou SMS **vers quelqu'un qui n'est pas derrière le même réseau que le PSIM**. Un service externe qui prévient la même boîte e-mail que le PSIM ne vaut rien si le PSIM est coupé du réseau.
+
+**3. Relance automatique, y compris des blocages : `npm run supervise`.** Superviseur portable (Windows, Linux, macOS), sans composant à installer :
+- PSIM **planté ou tué** : relancé avec une pause croissante (1, 2, 4… 60 s au plus), remise à 1 s après 10 minutes de bon fonctionnement. Il **ne renonce jamais** ; chaque redémarrage est tracé et notifié par le PSIM lui-même (point 1) ;
+- PSIM **bloqué** (il tourne mais `/healthz` ne répond plus ou signale une boucle de contrôle figée) : arrêté de force après **3 échecs consécutifs** (sonde toutes les 30 s, après 60 s de démarrage), puis relancé, y compris ses processus enfants (ffmpeg) ;
+- **arrêt volontaire** (Ctrl+C, arrêt du service) : le PSIM reçoit une demande d'arrêt **propre** (canal interne, valable sous Windows où SIGTERM n'existe pas), forcée au bout de 10 s ; rien n'est relancé et le prochain démarrage ne parlera pas de plantage.
+
+Sous Windows, le lancer à l'ouverture de la machine (tâche planifiée, voir `scripts/windows-service.ps1`) ; sous Linux, `deploy/psim.service` (systemd, `Restart=always`) relance déjà, et `npm run supervise` ou `npm run healthcheck -- --restart 3` y ajoute la détection des blocages. **Limite** : le superviseur et le PSIM tournent sur la même machine : une machine éteinte ou coupée du réseau n'est détectée que par la supervision externe (point 2), pas par le superviseur. Pas de bascule vers une seconde machine : une seule instance (verrou de données), pas de haute disponibilité.
+
 ## Architecture
 
 ```
@@ -336,6 +353,9 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
+| `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
+| `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
+| `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
 | `server/snapshots.ts` | Images des caméras prises à l'ouverture, l'aggravation et la confirmation d'un incident |

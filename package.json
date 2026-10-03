@@ -20,7 +20,8 @@
     "set-password": "node --env-file-if-exists=.env scripts/set-password.ts",
     "make-cert": "node --env-file-if-exists=.env scripts/make-cert.ts",
     "check-config": "node --env-file-if-exists=.env scripts/check-config.ts",
-    "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts"
+    "healthcheck": "node --env-file-if-exists=.env scripts/healthcheck.ts",
+    "supervise": "node --env-file-if-exists=.env scripts/supervise.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",

@@ -180,6 +180,29 @@ export function fmtDuration(seconds: number | null): string {
   return h < 48 ? `${h} h ${String(m % 60).padStart(2, '0')}` : `${Math.round(h / 24)} j`;
 }
 
+const ACTION_TEXT: Record<string, string> = {
+  incident_opened: 'Incident ouvert',
+  incident_escalated: 'Aggravation (préalarme → alarme)',
+  incident_confirmed: 'Incident confirmé',
+  incident_hint: 'Indice : fausse alarme probable',
+  incident_acked: 'Acquitté',
+  incident_closed: 'Clôturé',
+  notification_escalated: 'Escalade : niveau 2 prévenu',
+  notification_reminder: 'Rappel envoyé',
+  notification_failed: "Échec d'envoi d'une alerte",
+  device_state: "Changement d'état",
+  sim_trigger: 'Simulation',
+};
+
+/** Détails du journal en français lisible quand ils suivent un code connu ; sinon tels quels. */
+function detailsText(action: string, details: string | null, category: DeviceCategory): string {
+  if (!details) return '';
+  if (action === 'incident_opened') return details === 'critical' ? 'critique' : details === 'warning' ? 'avertissement' : details;
+  if (action === 'incident_closed') return qualificationText(category, details === 'fire' || details === 'false_alarm' ? details : null);
+  if (action === 'incident_confirmed') return details.startsWith('neighbor:') ? `détecteur voisin ${details.slice(9)}` : details === 'persistence' ? 'persistance' : details;
+  return details;
+}
+
 function confirmationText(r: IncidentRecord): string {
   if (r.confirmedAt === null) return 'à confirmer';
   const why = r.confirmationReason ?? '';
@@ -365,11 +388,11 @@ ${PAGE_FOOT}`;
 <tr><th>Commentaire</th><td>${esc(r.comment ?? '')}</td></tr>
 </tbody></table>
 <h2>Chronologie</h2>
-${d.timeline.length === 0 ? '<p class="empty">Aucune entrée de journal.</p>' : `<table><thead><tr><th>Heure</th><th>Auteur</th><th>Événement</th><th>Détails</th></tr></thead><tbody>${d.timeline.map((t) => `<tr><td>${esc(fmtDateTime(t.ts))}</td><td>${esc(t.actor)}</td><td>${esc(t.action)}</td><td>${esc(t.details ?? '')}</td></tr>`).join('')}</tbody></table>`}
+${d.timeline.length === 0 ? '<p class="empty">Aucune entrée de journal.</p>' : `<table><thead><tr><th>Heure</th><th>Auteur</th><th>Événement</th><th>Détails</th></tr></thead><tbody>${d.timeline.map((t) => `<tr><td>${esc(fmtDateTime(t.ts))}</td><td>${esc(t.actor)}</td><td>${esc(ACTION_TEXT[t.action] ?? t.action)}</td><td>${esc(detailsText(t.action, t.details, r.category))}</td></tr>`).join('')}</tbody></table>`}
 <h2>Alertes envoyées</h2>
 ${d.notifications.length === 0 ? '<p class="empty">Aucune alerte envoyée pour cet incident.</p>' : `<table><thead><tr><th>Heure</th><th>Canal</th><th>Destinataire</th><th>Niveau</th><th>Résultat</th></tr></thead><tbody>${d.notifications.map((n) => `<tr><td>${esc(fmtDateTime(n.created_at as number))}</td><td>${esc(n.channel)}</td><td>${esc(n.recipient)}</td><td>${esc(n.level)}</td><td>${n.status === 'sent' ? 'envoyée' : 'ÉCHEC'} (${esc(n.attempts)} tentative${(n.attempts as number) > 1 ? 's' : ''})</td></tr>`).join('')}</tbody></table>`}
 <h2>Images des caméras</h2>
-${d.snapshotIds.length === 0 ? '<p class="empty">Aucune image enregistrée.</p>' : `<div class="shots">${d.snapshotIds.map((s) => `<figure><img src="/api/snapshots/${s.id}" alt="Caméra ${esc(s.cameraId)}"><figcaption>${esc(s.cameraId)} — ${esc(fmtDateTime(s.takenAt))} (${esc(s.reason)})</figcaption></figure>`).join('')}</div>`}
+${d.snapshotIds.length === 0 ? '<p class="empty">Aucune image enregistrée.</p>' : `<div class="shots">${d.snapshotIds.map((s) => `<figure><img src="/api/snapshots/${s.id}?t=${s.takenAt}" alt="Caméra ${esc(s.cameraId)}"><figcaption>${esc(s.cameraId)} — ${esc(fmtDateTime(s.takenAt))} (${esc(s.reason)})</figcaption></figure>`).join('')}</div>`}
 <p class="foot">Document généré par le PSIM à partir de son journal.</p>
 ${PAGE_FOOT}`;
   }

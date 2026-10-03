@@ -38,6 +38,7 @@ const GOOD: PreflightInput = {
   detectorTimeoutS: 180,
   backupEveryH: 24,
   requireTotp: 'admin',
+  heartbeatUrl: 'https://hc.exemple.test/ping/jeton',
 };
 const errors = (c: PreflightInput) => preflight(c).filter((f) => f.level === 'error').map((f) => f.message);
 
@@ -75,6 +76,7 @@ describe('controle de demarrage (preflight)', () => {
     assert.match(w({ ...GOOD, detectorTimeoutS: 0 }), /detecteurs muets desactivee/);
     assert.match(w({ ...GOOD, backupEveryH: 0 }), /Sauvegarde automatique desactivee/);
     assert.match(w({ ...GOOD, requireTotp: 'none' }), /double authentification n'est imposee a personne/);
+    assert.match(w({ ...GOOD, heartbeatUrl: '' }), /Aucune supervision externe/);
   });
 
   it("hors production, les memes constats ne sont que des avertissements : le developpement reste possible", () => {
