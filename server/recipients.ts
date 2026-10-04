@@ -29,7 +29,30 @@ export interface RecipientView {
   source: 'env' | 'db';
   createdBy: string | null;
   createdAt: number | null;
+  /** Zones dont il recoit les alarmes ; null = toutes (et les messages generaux : redemarrage, securite...). */
+  zones: string[] | null;
 }
+
+/**
+ * Portee d'un envoi : la zone de l'alarme, `null` pour un message general (redemarrage, journal, securite, alarme sans
+ * zone). Absente = tout le monde (message de test, decompte).
+ */
+export interface Scope {
+  zone: string | null;
+}
+
+/** Un destinataire limite a des zones ne recoit que les alarmes de ces zones ; les autres recoivent tout. */
+export const inScope = (zones: string[] | null, scope?: Scope): boolean => !scope || zones === null || (scope.zone !== null && zones.includes(scope.zone));
+
+const parseZones = (raw: unknown): string[] | null => {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value) ? value.filter((z): z is string => typeof z === 'string') : null;
+  } catch {
+    return null;
+  }
+};
 
 export interface RecipientsDeps {
   db: DatabaseSync;
@@ -88,11 +111,16 @@ export function createRecipientsService(deps: RecipientsDeps) {
   const { db } = deps;
   const now = deps.now ?? Date.now;
 
-  /** Adresses effectives d'un canal et d'un niveau : .env + base (actives), sans doublon. */
-  function effective(channel: ChannelId, level: Level): string[] {
+  /**
+   * Adresses effectives d'un canal et d'un niveau : .env (toutes les alarmes) + base (actives, dans la portee), sans doublon.
+   * Sans portee : tout le monde (test, decompte).
+   */
+  function effective(channel: ChannelId, level: Level, scope?: Scope): string[] {
     const fromDb = (
-      db.prepare('SELECT address FROM notification_recipient WHERE channel = ? AND level = ? AND active = 1 ORDER BY id').all(channel, level) as { address: string }[]
-    ).map((r) => r.address);
+      db.prepare('SELECT address, zones FROM notification_recipient WHERE channel = ? AND level = ? AND active = 1 ORDER BY id').all(channel, level) as { address: string; zones: string | null }[]
+    )
+      .filter((r) => inScope(parseZones(r.zones), scope))
+      .map((r) => r.address);
     return [...new Set([...(deps.env[channel]?.[level - 1] ?? []), ...fromDb])];
   }
 
@@ -101,7 +129,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
     for (const channel of CHANNELS) {
       for (const level of [1, 2] as Level[]) {
         for (const address of deps.env[channel]?.[level - 1] ?? []) {
-          out.push({ id: null, channel, display: maskAddress(channel, address), level, label: '', active: true, source: 'env', createdBy: null, createdAt: null });
+          out.push({ id: null, channel, display: maskAddress(channel, address), level, label: '', active: true, source: 'env', createdBy: null, createdAt: null, zones: null });
         }
       }
     }
@@ -116,6 +144,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
         source: 'db',
         createdBy: r.created_by as string,
         createdAt: r.created_at as number,
+        zones: parseZones(r.zones),
       });
     }
     return out;
@@ -131,6 +160,39 @@ export function createRecipientsService(deps: RecipientsDeps) {
     if (value === undefined || value === null || value === '') return '';
     if (typeof value !== 'string' || value.length > 80 || CONTROL.test(value)) throw new PsimError(400, 'Libelle invalide (80 caracteres max)');
     return value.trim();
+  }
+
+  /** Zones des detecteurs, telles qu'ecrites sur les detecteurs. */
+  const detectorZones = (): string[] => (db.prepare("SELECT DISTINCT zone FROM device WHERE kind = 'detector' AND zone <> ''").all() as { zone: string }[]).map((r) => r.zone);
+  const fold = (zone: string) => zone.normalize('NFC').trim().toLocaleLowerCase('fr');
+
+  /**
+   * Zones : null / absent = toutes ; sinon 1 a 50 zones EXISTANTES (celles des detecteurs), ramenees a leur ecriture exacte
+   * (« portail » devient « Portail ») : une zone mal ecrite ne correspondrait a aucune alarme, sans que rien ne le signale.
+   */
+  function cleanZones(value: unknown): string[] | null {
+    if (value === undefined || value === null) return null;
+    if (!Array.isArray(value) || value.length === 0 || value.length > 50) throw new PsimError(400, 'Zones : une liste de 1 a 50 noms, ou null pour toutes les alarmes');
+    const known = new Map(detectorZones().map((z) => [fold(z), z]));
+    const zones = value.map((z) => {
+      if (typeof z !== 'string' || !z.trim() || z.length > 80 || CONTROL.test(z)) throw new PsimError(400, 'Nom de zone invalide');
+      const zone = known.get(fold(z));
+      if (!zone) throw new PsimError(400, `Zone inconnue : « ${z.trim()} » (aucun detecteur n'est dans cette zone)`);
+      return zone;
+    });
+    return [...new Set(zones)];
+  }
+
+  /**
+   * Destinataires actifs limites a une zone qui n'a plus de detecteur (zone renommee, detecteur deplace) : ils ne recoivent
+   * plus rien de cette zone, sans erreur d'envoi. A signaler en rouge.
+   */
+  function orphanZones(): { recipient: string; zones: string[] }[] {
+    const known = new Set(detectorZones());
+    return list()
+      .filter((r) => r.active && r.zones)
+      .map((r) => ({ recipient: `${r.display}${r.label ? ` (${r.label})` : ''}`, zones: (r.zones ?? []).filter((z) => !known.has(z)) }))
+      .filter((r) => r.zones.length > 0);
   }
 
   function cleanLevel(value: unknown): Level {
@@ -155,15 +217,16 @@ export function createRecipientsService(deps: RecipientsDeps) {
     const address = validateAddress(channel, input.address);
     const level = cleanLevel(input.level);
     const label = cleanLabel(input.label);
+    const zones = cleanZones(input.zones);
     if ((db.prepare('SELECT COUNT(*) AS n FROM notification_recipient').get() as { n: number }).n >= MAX_RECIPIENTS) {
       throw new PsimError(409, `Limite de ${MAX_RECIPIENTS} destinataires atteinte`);
     }
     if (deps.env[channel]?.[level - 1]?.includes(address)) throw new PsimError(409, 'Ce destinataire est deja defini dans le .env');
     try {
       const res = db
-        .prepare('INSERT INTO notification_recipient (channel, address, level, label, active, created_at, created_by) VALUES (?, ?, ?, ?, 1, ?, ?)')
-        .run(channel, address, level, label, now(), actor);
-      deps.audit(actor, 'recipient_added', { details: `${channel} ${maskAddress(channel, address)} niveau ${level}` });
+        .prepare('INSERT INTO notification_recipient (channel, address, level, label, active, created_at, created_by, zones) VALUES (?, ?, ?, ?, 1, ?, ?, ?)')
+        .run(channel, address, level, label, now(), actor, zones ? JSON.stringify(zones) : null);
+      deps.audit(actor, 'recipient_added', { details: `${channel} ${maskAddress(channel, address)} niveau ${level}${zones ? ` (zones : ${zones.join(', ')})` : ''}` });
       return view(Number(res.lastInsertRowid));
     } catch (err) {
       if (/UNIQUE/i.test((err as Error).message)) throw new PsimError(409, 'Ce destinataire existe deja pour ce niveau');
@@ -188,6 +251,11 @@ export function createRecipientsService(deps: RecipientsDeps) {
       sets.push('label = ?');
       values.push(cleanLabel(patch.label));
     }
+    if (patch.zones !== undefined) {
+      const zones = cleanZones(patch.zones);
+      sets.push('zones = ?');
+      values.push(zones ? JSON.stringify(zones) : (null as unknown as string));
+    }
     if (sets.length === 0) return before;
     try {
       db.prepare(`UPDATE notification_recipient SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
@@ -205,7 +273,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
     deps.audit(actor, 'recipient_removed', { details: `${before.channel} ${before.display} niveau ${before.level}` });
   }
 
-  return { effective, list, add, update, remove, available: deps.available };
+  return { effective, list, add, update, remove, orphanZones, available: deps.available };
 }
 
 export type RecipientsService = ReturnType<typeof createRecipientsService>;

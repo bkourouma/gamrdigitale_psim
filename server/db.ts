@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS device_link (
   camera_id TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
   PRIMARY KEY (detector_id, camera_id)
 );
+-- Source d'evenements d'un detecteur : la detection d'un appareil Dahua (voie d'un enregistreur), via les identifiants
+-- de la camera choisie. Pas de ligne = le detecteur parle lui-meme (MQTT, HTTP).
+CREATE TABLE IF NOT EXISTS detector_source (
+  device_id TEXT PRIMARY KEY REFERENCES device(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('dahua')),
+  camera_id TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+  channel INTEGER NOT NULL,
+  events TEXT NOT NULL,
+  http_port INTEGER NOT NULL DEFAULT 80
+);
 -- Source video reelle d'une camera. Pas de ligne = camera simulee.
 -- Le mot de passe est chiffre (AES-256-GCM, cle hors base) : voir server/secrets.ts.
 CREATE TABLE IF NOT EXISTS camera_source (
@@ -187,6 +197,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
   { table: 'incident', column: 'hint', definition: 'TEXT' },
   { table: 'incident', column: 'hint_details', definition: 'TEXT' },
+  // Destinataire limite a certaines zones (JSON) ; NULL = toutes les alarmes.
+  { table: 'notification_recipient', column: 'zones', definition: 'TEXT' },
   { table: 'app_user', column: 'display_name', definition: 'TEXT' },
   { table: 'app_user', column: 'active', definition: 'INTEGER NOT NULL DEFAULT 1' },
   { table: 'app_user', column: 'must_change_password', definition: 'INTEGER NOT NULL DEFAULT 0' },
@@ -242,8 +254,9 @@ export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path, { timeout: 5000 });
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // AVANT l'ajout des colonnes : la table des destinataires recreee ne garderait pas une colonne ajoutee juste avant (zones).
+  migrateRecipientChannels(db); // canal WhatsApp accepte pour les destinataires saisis dans l'interface
   migrate(db); // les donnees existantes sont conservees
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
-  migrateRecipientChannels(db); // canal WhatsApp accepte pour les destinataires saisis dans l'interface
   return db;
 }

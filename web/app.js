@@ -5,6 +5,7 @@ import { createRiskView } from './risk.js';
 import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { createArmingView } from './arming.js';
 import { createFloorsUi } from './floors.js';
+import { buildDetectorSource } from './detsource.js';
 import { createReportsView } from './reports.js';
 import { createUsersAdmin } from './users.js';
 
@@ -101,6 +102,8 @@ const ACTION_LABEL = {
   backup_failed: 'Sauvegarde en échec',
   backup_manual: 'Sauvegarde manuelle',
   camera_source_updated: 'Source vidéo modifiée',
+  detector_source_updated: 'Source du détecteur modifiée',
+  detector_source_removed: 'Source du détecteur retirée',
 };
 
 async function api(path, { method = 'GET', body } = {}) {
@@ -389,7 +392,15 @@ const refreshMe = async () => {
 const reportsView = createReportsView({ h, getMe: () => S.me, api, toast });
 const armingView = createArmingView({ api, h, toast, getMe: () => S.me });
 const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
-const admin = createUsersAdmin({ api, h, toast, dialogs, getMe: () => S.me, onRecipientsChanged: () => loadNotifStatus() });
+const admin = createUsersAdmin({
+  api,
+  h,
+  toast,
+  dialogs,
+  getMe: () => S.me,
+  onRecipientsChanged: () => loadNotifStatus(),
+  getZones: () => [...new Set([...S.devices.values()].filter((d) => d.kind === 'detector' && d.zone).map((d) => d.zone))],
+});
 $('whoami').addEventListener('click', () => account.openAccount());
 $('users-box').addEventListener('toggle', () => $('users-box').open && admin.loadUsers());
 
@@ -1174,6 +1185,21 @@ async function loadNotifStatus() {
       `${st.channels.map((c) => `${c.label} : ${c.level1} destinataire(s) niveau 1, ${c.level2} niveau 2`).join(' - ')}. ` +
       `Escalade ${st.escalateAfterS > 0 ? `après ${st.escalateAfterS} s sans acquittement, puis rappel toutes les ${st.reminderS} s (${st.maxReminders} max)` : 'désactivée'}. ` +
       `24 h : ${st.sentLast24h} envoyé(s), ${st.failedLast24h} en échec.`;
+    // Une zone dont tous les destinataires sont limites a d'autres zones : une alarme n'y previendrait personne.
+    // Personne n'est designe pour une zone : ses alarmes partent a tous (repli), pas a la bonne personne.
+    if (st.uncoveredZones?.length) {
+      box.className = 'small error';
+      box.textContent += ` ATTENTION : aucun destinataire de niveau 1 pour la zone ${st.uncoveredZones.join(', ')} : ses alarmes partiront à tous les destinataires.`;
+    }
+    if (st.generalFallback) {
+      box.className = 'small error';
+      box.textContent += ' ATTENTION : aucun destinataire « toutes les alarmes » : redémarrages, alertes de sécurité et détecteurs sans zone partiront à tous les destinataires.';
+    }
+    // Destinataire limite a une zone qui n'a plus de detecteur (zone renommee) : il ne recoit plus rien d'elle.
+    for (const o of st.orphanRecipientZones ?? []) {
+      box.className = 'small error';
+      box.textContent += ` ATTENTION : ${o.recipient} est limité à ${o.zones.join(', ')}, zone(s) sans détecteur : il n'en reçoit plus rien (zone renommée ?).`;
+    }
   } catch (err) {
     $('notif-status').textContent = err.message;
   }
@@ -1283,6 +1309,7 @@ function renderDeviceEditor(force = false) {
     const linked = new Set(S.links[d.id] ?? []);
     children.push(
       buildSensorForm(d, { api, h, toast }),
+      buildDetectorSource(d, { api, h, toast, cameras: () => devicesOf('camera') }),
       h('p', { class: 'small muted', text: 'Caméras affichées quand ce détecteur déclenche :' }),
       h(
         'div',

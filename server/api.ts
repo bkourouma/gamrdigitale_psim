@@ -25,6 +25,7 @@ import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { PLAN_TYPES } from './floors.ts';
 import type { Floors } from './floors.ts';
+import type { DahuaEvents } from './dahua.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
@@ -43,6 +44,7 @@ export interface ApiDeps {
   db: DatabaseSync;
   engine: Engine;
   floors: Floors;
+  dahua: DahuaEvents;
   video: VideoService;
   snapshots: SnapshotService;
   notifier: Notifier;
@@ -361,7 +363,7 @@ export function createApp(deps: ApiDeps) {
   });
 
   // Notifications (administrateur) : etat des canaux + message de test pour verifier la configuration.
-  app.get('/api/notifications/status', adminOnly, (_req, res) => res.json(deps.notifier.status()));
+  app.get('/api/notifications/status', adminOnly, (_req, res) => res.json({ ...deps.notifier.status(), orphanRecipientZones: deps.recipients.orphanZones() }));
   app.post('/api/notifications/test', adminOnly, async (req, res) => {
     engine.audit(actorOf(req), 'notification_test');
     res.json(await deps.notifier.test());
@@ -477,6 +479,33 @@ export function createApp(deps: ApiDeps) {
   });
   app.post('/api/cameras/:id/test', adminOnly, async (req, res) => {
     res.json(await deps.video.test(String(req.params.id)));
+  });
+
+  // ---- Source d'evenements d'un detecteur (detection d'un appareil Dahua) ----------------
+  app.get('/api/detectors/:id/source', adminOnly, (req, res) => {
+    if (engine.getDevice(String(req.params.id))?.kind !== 'detector') throw new PsimError(404, 'Detecteur introuvable');
+    res.json(deps.dahua.view(String(req.params.id)));
+  });
+  app.put('/api/detectors/:id/source', adminOnly, json, (req, res) => {
+    res.json(deps.dahua.setSource(actorOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.delete('/api/detectors/:id/source', adminOnly, (req, res) => {
+    deps.dahua.removeSource(actorOf(req), String(req.params.id));
+    res.status(204).end();
+  });
+  // Essai : ecoute l'appareil d'une camera 20 s et rapporte tout ce qu'il emet (un essai a la fois).
+  let listening = false;
+  app.post('/api/cameras/:id/events-test', adminOnly, json, async (req, res) => {
+    if (listening) throw new PsimError(429, 'Un essai est deja en cours');
+    const body = (req.body ?? {}) as { httpPort?: unknown };
+    const port = body.httpPort === undefined ? 80 : Number(body.httpPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new PsimError(400, 'Port HTTP invalide (1 a 65535)');
+    listening = true;
+    try {
+      res.json(await deps.dahua.test(String(req.params.id), port, 20));
+    } finally {
+      listening = false;
+    }
   });
   let discovering = false;
   app.get('/api/onvif/discover', adminOnly, async (_req, res) => {

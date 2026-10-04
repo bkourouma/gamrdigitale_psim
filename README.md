@@ -334,6 +334,26 @@ Un site peut avoir **plusieurs étages**, chacun avec **son plan** ; chaque équ
 
 **Limites** : pas de vraie 3D (modèle de la maison, rotation libre) ; les plans des étages ne sont pas superposés à l'échelle (chaque plan garde son cadrage) ; une image de vue d'ensemble dessinée à part (2,5D) n'est pas utilisée ; l'étage cité dans les rapports est l'étage **actuel** du détecteur (comme sa zone).
 
+## Détection des enregistreurs Dahua et alertes par zone
+
+Exemple type : **« mouvement devant le portail la nuit → prévenir le gardien par WhatsApp »**. Trois réglages, sans programmation :
+
+1. **Le mouvement vient de l'enregistreur.** Un enregistreur ou une caméra **Dahua** (XVR, NVR, caméra IP) détecte déjà les mouvements, et sur les modèles récents distingue **humains et véhicules** (SMD). Le PSIM s'abonne à ses événements (`/cgi-bin/eventManager.cgi?action=attach`, authentification Digest, signe de vie toutes les 5 s) avec les **identifiants déjà enregistrés pour la caméra**. Dans l'éditeur d'un **détecteur d'intrusion** (par exemple `I-PORTAIL`, zone `Portail`) : section *Source*, choisir la caméra, la **voie** (déduite du chemin RTSP `channel=N`), le type d'événement (humain, humain ou véhicule, tout mouvement, franchissement de ligne), puis **Tester (20 s)** : la liste montre ce que l'appareil émet réellement, voie par voie, en vert ce qui déclenchera **ce** détecteur (bonne voie **et** type suivi), avec un avertissement si rien de tel n'est arrivé. *Enregistrer la source* : le PSIM écoute en permanence. Le détecteur doit avoir une **zone**.
+   - Début d'événement → **alarme** du détecteur ; fin → retour au calme ; un humain **et** un véhicule : le calme ne revient qu'à la fin des deux ; événement ponctuel (franchissement) : alarme puis calme après 10 s. Une alarme en cours n'est jamais bloquée : connexion coupée, source retirée ou réglage changé avant la fin → retour au calme (l'incident ouvert, lui, reste à traiter).
+   - **Perte vidéo** de la voie (`VideoLoss`) : zone **armée** (la nuit) → **alarme de sabotage** (caméra du portail aveuglée : le gardien est prévenu) ; zone désarmée → simple **défaut** du détecteur (coupure de courant de la caméra en journée) ; une perte commencée le jour et toujours en cours quand la zone s'arme devient l'alarme de sabotage.
+   - Une connexion par appareil, quel que soit le nombre de détecteurs. Tant qu'elle vit, les détecteurs reçoivent un signe de vie ; la source pose une **supervision d'au moins 120 s** (les signes de vie partent toutes les 30 s) : appareil éteint, câble coupé ou mot de passe changé → détecteur **« hors ligne »** et notification « détecteur muet ». L'appareil n'est « connecté » qu'à sa première partie lue (un simple « 200 » ou une page web ne suffit pas).
+   - Tant que la source existe, le détecteur reste **d'intrusion**, **avec une zone** et une supervision **≥ 120 s** (sinon la règle « la nuit seulement » ne tiendrait plus) : retirer d'abord la source pour changer cela.
+   - Authentification **Digest** seulement (MD5, SHA-256) : un appareil qui demande **Basic** est refusé (le mot de passe passerait en clair sur le réseau). Nom d'utilisateur de la caméra en lettres simples (sans accent ni guillemet).
+   - Identifiants refusés : nouvel essai après **5 minutes** seulement (un appareil Dahua bloque le compte après quelques échecs) ; reconnexion automatique sinon (2 s… 60 s).
+   - Vérifié sur un vrai `DH-XVR5108HS-I3/T` : authentification acceptée, signes de vie, événements `SmartMotionHuman` et `VideoMotion` reçus voie par voie.
+2. **La nuit** : le planning d'armement de la zone (*Armement des zones*, par exemple 19:00 → 07:00). Zone désarmée : le mouvement est ignoré (noté au journal, une fois par minute au plus).
+3. **Le gardien** : dans *Notifications*, un destinataire peut être **limité à certaines zones** (*Zones…*). Il ne reçoit alors que les alarmes (et détecteurs muets) de ces zones, jamais les messages généraux (redémarrage, sécurité des comptes, journal). Les destinataires du `.env` reçoivent tout. Seules les zones **existantes** (celles des détecteurs) sont acceptées, ramenées à leur écriture exacte.
+   - **Une alarme notifie toujours** : si personne n'est désigné pour une zone (tous limités à d'autres zones), ou si aucun destinataire ne reçoit « toutes les alarmes », le message part à **tous** les destinataires du niveau plutôt qu'à personne. L'état des notifications le signale en rouge à l'avance, ainsi qu'un destinataire limité à une zone qui n'a plus de détecteur (zone renommée) ; `npm run commission` aussi.
+
+**Prérequis côté enregistreur** : la détection activée sur la voie (*Menu → Événement → Détection vidéo* ou *SMD*), et l'accès HTTP (port 80 par défaut) depuis le poste du PSIM.
+
+**Limites** : appareils Dahua seulement (Hikvision et ONVIF « events » non pris en charge) ; zones de détection et sensibilité se règlent sur l'enregistreur, pas dans le PSIM.
+
 ## Armement des zones d'intrusion
 
 Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Panneau **Armement des zones** (sous le plan, visible dès qu'il existe une telle zone).
@@ -435,6 +455,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
 | `server/floors.ts` | Étages : migration du plan unique, ajout / ordre / suppression, plan de chaque étage |
+| `server/dahua.ts` | Événements des appareils Dahua (Digest, flux multipart) → alarmes des détecteurs d'intrusion, supervision de la connexion |
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
 | `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
@@ -451,6 +472,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
 | `web/arming.js` | Panneau d'armement des zones et éditeur de planning |
 | `web/floors.js` | Onglets d'étages avec leur état, vue éclatée en perspective, gestion des étages |
+| `web/detsource.js` | Source d'un détecteur : détection d'un enregistreur Dahua, essai de 20 s |
 | `web/reports.js`, `web/report.css` | Panneau d'exports ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |

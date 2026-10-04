@@ -31,10 +31,15 @@ export interface ImageAttachment {
   data: Buffer;
 }
 
+/** Portee d'un envoi (voir recipients.ts) : zone de l'alarme, ou null pour un message general ; absente = tout le monde. */
+export interface Scope {
+  zone: string | null;
+}
+
 export interface Channel {
   id: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook' | string;
   label: string;
-  recipients(level: Level): string[];
+  recipients(level: Level, scope?: Scope): string[];
   send(message: Message, recipient: string): Promise<void>;
   sendImages?(message: Message, recipient: string, images: ImageAttachment[]): Promise<void>;
   /** Forme affichable du destinataire (jamais un secret). */
@@ -43,9 +48,9 @@ export interface Channel {
 
 const TIMEOUT_MS = 15_000;
 
-/** Destinataires : liste fixe par niveau, ou fonction relue a chaque envoi (destinataires modifiables a chaud). */
-export type Recipients = string[][] | ((level: Level) => string[]);
-const resolveRecipients = (r: Recipients) => (level: Level): string[] => (typeof r === 'function' ? r(level) : (r[level - 1] ?? []));
+/** Destinataires : liste fixe par niveau (toutes les alarmes), ou fonction relue a chaque envoi (modifiables a chaud, par zone). */
+export type Recipients = string[][] | ((level: Level, scope?: Scope) => string[]);
+const resolveRecipients = (r: Recipients) => (level: Level, scope?: Scope): string[] => (typeof r === 'function' ? r(level, scope) : (r[level - 1] ?? []));
 
 // ---------------------------------------------------------------- canaux
 
@@ -107,7 +112,7 @@ export function emailChannel(cfg: EmailConfig, recipientsSource: Recipients): Ch
   return {
     id: 'email',
     label: 'E-mail',
-    recipients,
+    recipients: (level, scope) => recipients(level, scope),
     mask: (to) => to.replace(/^(.).*(@.*)$/, '$1***$2'),
     async send(message, to) {
       await transporter.sendMail({ from: cfg.from, to, subject: message.subject, text: message.text });
@@ -148,7 +153,7 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
   return {
     id: 'telegram',
     label: 'Telegram',
-    recipients,
+    recipients: (level, scope) => recipients(level, scope),
     mask: (chat) => chat,
     send: (message, chat) => call('sendMessage', JSON.stringify({ chat_id: chat, text: `${message.subject}\n\n${message.text}`.slice(0, 4000) })),
     async sendImages(_message, chat, images) {
@@ -229,7 +234,7 @@ export function whatsappChannel(cfg: WhatsappConfig, recipientsSource: Recipient
   return {
     id: 'whatsapp',
     label: 'WhatsApp',
-    recipients: (level) => valid(source(level)),
+    recipients: (level, scope) => valid(source(level, scope)),
     mask: maskPhone,
     async send(message, phone) {
       const place = [message.data.zone, message.data.floor].filter((v) => typeof v === 'string' && v).join(' - ');
@@ -307,7 +312,7 @@ export function callmebotChannel(cfg: { apiBase: string }, recipientsSource: Rec
   return {
     id: 'callmebot',
     label: 'WhatsApp (CallMeBot)',
-    recipients: (level) => valid(source(level)),
+    recipients: (level, scope) => valid(source(level, scope)),
     mask: maskCallmebot,
     async send(message, recipient) {
       const [, phone, key] = CALLMEBOT_RECIPIENT.exec(recipient) ?? [];
@@ -346,7 +351,7 @@ export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipi
   return {
     id: 'webhook',
     label: 'Webhook',
-    recipients: (level) => valid(source(level)),
+    recipients: (level, scope) => valid(source(level, scope)),
     // L'adresse complete peut contenir un secret (jeton dans le chemin) : on n'affiche que l'hote.
     mask: (url) => {
       try {
@@ -369,6 +374,28 @@ export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipi
       if (!res.ok) throw new Error(`Webhook HTTP ${res.status}`);
     },
   };
+}
+
+export interface ChannelsConfig {
+  smtp: EmailConfig;
+  telegram: { token: string; apiBase: string };
+  whatsapp: WhatsappConfig;
+  callmebot: { apiBase: string };
+  webhookSecret: string;
+}
+
+/**
+ * Les canaux du serveur, chacun relisant ses destinataires a chaque envoi AVEC la portee de l'envoi : un destinataire
+ * limite a la zone Portail ne recoit que les alarmes du portail. Seule construction utilisee par le serveur (et les tests).
+ */
+export function buildChannels(cfg: ChannelsConfig, source: (channel: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook', level: Level, scope?: Scope) => string[]): Channel[] {
+  return [
+    emailChannel({ ...cfg.smtp }, (level, scope) => source('email', level, scope)),
+    telegramChannel({ token: cfg.telegram.token, apiBase: cfg.telegram.apiBase }, (level, scope) => source('telegram', level, scope)),
+    whatsappChannel({ ...cfg.whatsapp }, (level, scope) => source('whatsapp', level, scope)),
+    callmebotChannel({ apiBase: cfg.callmebot.apiBase }, (level, scope) => source('callmebot', level, scope)),
+    webhookChannel({ secret: cfg.webhookSecret }, (level, scope) => source('webhook', level, scope)),
+  ].filter((c): c is Channel => c !== null);
 }
 
 // ---------------------------------------------------------------- notificateur
@@ -515,11 +542,26 @@ export function createNotifier(deps: NotifierDeps) {
     return { ok: false, error };
   }
 
+  /**
+   * Portee d'un message : une alarme ou un detecteur muet concerne sa zone (un destinataire limite a d'autres zones ne le
+   * recoit pas) ; tout autre message (redemarrage, journal, securite) est general : seuls les destinataires sans limite.
+   */
+  const scopeOf = (message: Message): Scope => ({ zone: typeof message.data.zone === 'string' && message.data.zone ? message.data.zone : null });
+
+  /**
+   * Portee effective a un niveau : celle du message, sauf si personne n'y est (tous limites a d'autres zones) ; alors TOUS
+   * les destinataires du niveau. Une alarme notifie toujours : mieux vaut prevenir le gardien d'une autre zone que personne
+   * (signale a l'avance par status() : uncoveredZones, generalFallback).
+   */
+  const effectiveScope = (level: Level, scope: Scope): Scope | undefined => (channels.some((c) => c.recipients(level, scope).length > 0) ? scope : undefined);
+
   async function dispatch(message: Message, levels: Level[]): Promise<void> {
     const jobs: Promise<unknown>[] = [];
+    const scope = scopeOf(message);
+    const scopes = new Map(levels.map((level) => [level, effectiveScope(level, scope)]));
     for (const channel of channels) {
       for (const level of levels) {
-        for (const recipient of channel.recipients(level)) jobs.push(deliver(channel, recipient, message, level));
+        for (const recipient of channel.recipients(level, scopes.get(level))) jobs.push(deliver(channel, recipient, message, level));
       }
     }
     await Promise.all(jobs);
@@ -598,9 +640,10 @@ export function createNotifier(deps: NotifierDeps) {
     if (images.length === 0) return;
     const message = incidentMessage(incident, kind);
     const jobs: Promise<unknown>[] = [];
+    const scope = effectiveScope(1, scopeOf(message)); // les memes destinataires que le texte
     for (const channel of channels) {
       if (!channel.sendImages) continue;
-      for (const recipient of channel.recipients(1)) {
+      for (const recipient of channel.recipients(1, scope)) {
         jobs.push(deliver(channel, recipient, { ...message, kind }, 1, (c, r) => c.sendImages!(message, r, images)));
       }
     }
@@ -676,6 +719,17 @@ export function createNotifier(deps: NotifierDeps) {
       channels: channels.map((c) => ({ id: c.id, label: c.label, level1: c.recipients(1).length, level2: c.recipients(2).length })),
       /** Canaux qui ont au moins un destinataire (ceux qui previennent reellement quelqu'un). */
       activeChannels: channels.filter((c) => c.recipients(1).length + c.recipients(2).length > 0).length,
+      /**
+       * Zones de detecteurs sans destinataire de niveau 1 qui leur soit propre (tous limites a d'autres zones) : leurs alarmes
+       * partiraient a TOUS les destinataires de niveau 1 (repli), pas a la bonne personne.
+       */
+      uncoveredZones: hasRecipients(1)
+        ? (db.prepare("SELECT DISTINCT zone FROM device WHERE kind = 'detector' AND zone <> '' ORDER BY zone").all() as { zone: string }[])
+            .map((r) => r.zone)
+            .filter((zone) => effectiveScope(1, { zone }) === undefined)
+        : [],
+      /** Aucun destinataire « toutes les alarmes » : messages generaux (redemarrage, securite, journal) et detecteurs sans zone partiraient a tous. */
+      generalFallback: hasRecipients(1) && effectiveScope(1, { zone: null }) === undefined,
       sentLast24h: (db.prepare("SELECT COUNT(*) AS n FROM notification_log WHERE channel <> 'round' AND status = 'sent' AND created_at >= ?").get(since) as { n: number }).n,
       failedLast24h: (db.prepare("SELECT COUNT(*) AS n FROM notification_log WHERE channel <> 'round' AND status = 'failed' AND created_at >= ?").get(since) as { n: number }).n,
       recent: (

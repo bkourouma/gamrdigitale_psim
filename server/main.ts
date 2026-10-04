@@ -17,12 +17,13 @@ import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
 import { startBroker } from './mqtt.ts';
-import { callmebotChannel, createMailer, createNotifier, emailChannel, telegramChannel, webhookChannel, whatsappChannel } from './notifications.ts';
+import { buildChannels, createMailer, createNotifier } from './notifications.ts';
 import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
 import { createArming } from './arming.ts';
 import { createFloors } from './floors.ts';
+import { createDahuaEvents } from './dahua.ts';
 import type { Arming } from './arming.ts';
 import { createReports } from './reports.ts';
 import { createReportMail } from './reportmail.ts';
@@ -86,13 +87,8 @@ const recipients = createRecipientsService({
   env: notify.recipients,
   available: { ...Object.fromEntries(channelSetup(notify).map((c) => [c.id, c.configured])), callmebot: false, webhook: true } as Record<'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook', boolean>,
 });
-const channels = [
-  emailChannel({ ...notify.smtp }, (level) => recipients.effective('email', level)),
-  telegramChannel({ token: notify.telegram.token, apiBase: notify.telegram.apiBase }, (level) => recipients.effective('telegram', level)),
-  whatsappChannel({ ...notify.whatsapp }, (level) => recipients.effective('whatsapp', level)),
-  callmebotChannel({ apiBase: notify.callmebot.apiBase }, (level) => recipients.effective('callmebot', level)),
-  webhookChannel({ secret: notify.webhookSecret }, (level) => recipients.effective('webhook', level)),
-].filter((c) => c !== null);
+// Chaque envoi transmet sa portee (zone de l'alarme) : un destinataire limite a une zone ne recoit que ses alarmes.
+const channels = buildChannels(notify, recipients.effective);
 
 const findings = preflight({
   production: config.production,
@@ -184,6 +180,15 @@ const video = createVideoService({
   key: secretKey,
   publish,
   ffmpegPath: config.ffmpegPath,
+});
+// Detection des appareils Dahua -> detecteurs d'intrusion. Relue a chaque changement de configuration (source, camera).
+const dahua = createDahuaEvents({ db, engine, key: secretKey, isArmed: (zone) => arming?.isArmed(zone) ?? true });
+dahua.reload();
+let dahuaReload: ReturnType<typeof setTimeout> | undefined;
+bus.on('event', (event: PsimEvent) => {
+  if (event.type !== 'config') return;
+  clearTimeout(dahuaReload);
+  dahuaReload = setTimeout(() => dahua.reload(), 1000);
 });
 
 snapshots = createSnapshotService({
@@ -369,6 +374,7 @@ const app = createApp({
   db,
   engine,
   floors,
+  dahua,
   video,
   snapshots,
   notifier,
@@ -545,6 +551,7 @@ async function shutdown() {
   clearInterval(reportTimer);
   if (backupTimer) clearInterval(backupTimer);
   heartbeat.stop();
+  dahua.stop();
   video.shutdown();
   wss.close();
   server.close();

@@ -460,6 +460,18 @@ export function checkInventory(db: DatabaseSync): Check[] {
     const spread = db.prepare("SELECT zone, COUNT(DISTINCT floor_id) AS n FROM device WHERE zone <> '' GROUP BY zone HAVING n > 1 ORDER BY zone").all() as Row[];
     if (spread.length) out.push(check('zone-floors', 'Zones et etages', 'warn', `zone(s) presente(s) sur plusieurs etages : ${spread.map((z) => z.zone).join(', ')}`, "Donner un nom de zone par niveau (ex. « Etage - Chambre 1 ») : la confirmation par un voisin, l'armement et le risque sont calcules par zone."));
   }
+  // Destinataire limite a une zone qui n'a plus de detecteur (zone renommee) : il ne recoit plus rien, sans erreur d'envoi.
+  const zoneNames = new Set(detectors.map((d) => d.zone));
+  const limited = (db.prepare('SELECT zones FROM notification_recipient WHERE active = 1 AND zones IS NOT NULL').all() as Row[]).flatMap((r) => {
+    try {
+      return (JSON.parse(String(r.zones)) as string[]).filter((z) => !zoneNames.has(z));
+    } catch {
+      return [];
+    }
+  });
+  if (limited.length) {
+    out.push(check('recipient-zones', 'Destinataires par zone', 'fail', `destinataire(s) limite(s) a une zone sans detecteur : ${[...new Set(limited)].join(', ')}`, 'Notifications > destinataires > « Zones… » : choisir la zone actuelle (zone renommee ?).'));
+  }
   const silent = detectors.filter((d) => d.last_seen === null);
   if (silent.length) out.push(check('heard', 'Detecteurs jamais entendus', 'warn', `${silent.length} detecteur(s) n'ont jamais emis : ${silent.slice(0, 12).map((d) => d.id).join(', ')}${silent.length > 12 ? '...' : ''}`, 'Lancer `npm run commission -- watch` et declencher chaque detecteur (voir la fiche de recette).'));
   const admins = db.prepare("SELECT username, totp_enabled_at FROM app_user WHERE role = 'admin' AND active = 1").all() as Row[];

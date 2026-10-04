@@ -5,7 +5,7 @@ const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur' };
 const CHANNEL_LABEL = { email: 'E-mail', telegram: 'Telegram', whatsapp: 'WhatsApp', callmebot: 'WhatsApp (CallMeBot)', webhook: 'Webhook' };
 const ADDRESS_HINT = { email: 'agent@exemple.fr', telegram: 'numéro de conversation ou @canal', whatsapp: '+2250700000000', webhook: 'https://…' };
 
-export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsChanged }) {
+export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsChanged, getZones = () => [] }) {
   const usersBox = document.getElementById('users-list');
   const createBox = document.getElementById('users-create');
   const recipientsBox = document.getElementById('recipients-box');
@@ -156,6 +156,41 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
     else loadRecipients();
   }
 
+  /**
+   * Choix des zones d'un destinataire : « Toutes les alarmes » (et les messages generaux : redemarrage, securite), ou
+   * seulement certaines zones (un gardien : la zone Portail). Renvoie l'element et la lecture de la valeur (null = toutes).
+   */
+  function zonePicker(initial) {
+    const all = h('input', { type: 'checkbox' });
+    all.checked = initial === null;
+    const current = new Set(getZones());
+    const known = [...new Set([...(initial ?? []), ...current])].sort((a, b) => a.localeCompare(b, 'fr'));
+    const list = h(
+      'div',
+      { class: 'row wrap zone-list' },
+      ...(known.length
+        ? known.map((zone) => {
+            const box = h('input', { type: 'checkbox', value: zone });
+            box.checked = Boolean(initial?.includes(zone));
+            // Zone qui n'a plus de detecteur (renommee) : a decocher, sinon le destinataire ne recoit plus rien d'elle.
+            return current.has(zone) ? h('label', { class: 'check small' }, box, ` ${zone}`) : h('label', { class: 'check small warn' }, box, ` ${zone} (aucun détecteur : zone renommée ?)`);
+          })
+        : [h('span', { class: 'small muted', text: "Aucune zone : donnez d'abord une zone aux détecteurs." })]),
+    );
+    const sync = () => (list.hidden = all.checked);
+    all.addEventListener('change', sync);
+    sync();
+    return {
+      el: h('fieldset', { class: 'zone-picker' }, h('legend', { text: 'Alarmes envoyées à ce destinataire' }), h('label', { class: 'check small' }, all, ' Toutes les alarmes (et les messages généraux)'), list),
+      focus: () => all.focus(),
+      value: () => (all.checked ? null : [...list.querySelectorAll('input:checked')].map((i) => i.value)),
+    };
+  }
+
+  const zonesText = (zones) => (zones === null ? 'toutes les alarmes' : `seulement : ${zones.join(', ')}`);
+  /** Une zone du destinataire n'a plus de detecteur : il ne recoit plus rien d'elle. */
+  const staleZones = (zones) => (zones ?? []).filter((z) => !getZones().includes(z));
+
   function renderRecipients({ recipients, available }) {
     // Destinataire d'un canal sans configuration (jeton, serveur) : il ne recevrait rien, on le dit sur sa ligne.
     const unconfigured = (id) => (id in available && !available[id] && id !== 'callmebot' ? h('span', { class: 'tag warn', text: 'canal non configuré : ne reçoit rien' }) : null);
@@ -170,6 +205,7 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
     channel.addEventListener('change', () => (address.placeholder = ADDRESS_HINT[channel.value]));
     const level = h('select', { 'aria-label': 'Niveau' }, h('option', { value: '1', text: 'Niveau 1 (dès l\'ouverture)' }), h('option', { value: '2', text: 'Niveau 2 (escalade)' }));
     const label = h('input', { placeholder: 'Libellé (ex. Astreinte)', maxlength: '80', autocomplete: 'off', 'aria-label': 'Libellé' });
+    const addZones = zonePicker(null);
 
     // replaceChildren(null) insererait le texte « null » : on ecarte les valeurs vides.
     const children = [
@@ -191,14 +227,48 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
         const on = h('input', { type: 'checkbox', 'aria-label': `${r.display} actif` });
         on.checked = r.active;
         on.addEventListener('change', () => actRecipient(() => api(`/api/notifications/recipients/${r.id}`, { method: 'PATCH', body: { active: on.checked } })));
+        // Zones : affichees sur la ligne, modifiables dans un petit editeur (une limite a enregistrer explicitement).
+        const editor = h('div', { class: 'zone-editor', id: `zones-${r.id}` });
+        editor.hidden = true;
+        const zonesBtn = h('button', { class: 'btn tiny', type: 'button', text: 'Zones…', 'aria-label': `Zones de ${r.display}`, 'aria-expanded': 'false', 'aria-controls': editor.id });
+        const editZones = () => {
+          if (!editor.hidden) {
+            editor.hidden = true;
+            zonesBtn.setAttribute('aria-expanded', 'false');
+            return;
+          }
+          const picker = zonePicker(r.zones);
+          editor.replaceChildren(
+            picker.el,
+            h('button', {
+              class: 'btn tiny primary',
+              type: 'button',
+              text: 'Enregistrer les zones',
+              onclick: () => {
+                const zones = picker.value();
+                if (zones !== null && zones.length === 0) return toast('Cochez au moins une zone, ou « Toutes les alarmes »');
+                actRecipient(() => api(`/api/notifications/recipients/${r.id}`, { method: 'PATCH', body: { zones } }), 'Zones enregistrées');
+              },
+            }),
+          );
+          editor.hidden = false;
+          zonesBtn.setAttribute('aria-expanded', 'true');
+          picker.focus();
+        };
+        zonesBtn.addEventListener('click', editZones);
+        const stale = staleZones(r.zones);
         return h(
           'div',
           { class: `recipient-row${r.active ? '' : ' inactive'}` },
           h('span', { text: `${CHANNEL_LABEL[r.channel]} — ${r.display}${r.label ? ` (${r.label})` : ''}` }),
+          h('span', { class: `tag${r.zones ? ' zones' : ''}`, text: zonesText(r.zones) }),
+          stale.length && r.active ? h('span', { class: 'tag warn', text: `zone sans détecteur : ${stale.join(', ')} (ne reçoit plus rien d'elle)` }) : null,
           unconfigured(r.channel),
           lv,
           h('label', { class: 'check small' }, on, ' actif'),
+          zonesBtn,
           h('button', { class: 'btn tiny danger', type: 'button', text: 'Retirer', onclick: () => confirm(`Retirer ${r.display} ?`) && actRecipient(() => api(`/api/notifications/recipients/${r.id}`, { method: 'DELETE' }), 'Destinataire retiré') }),
+          editor,
         );
       }),
       h(
@@ -207,11 +277,14 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           class: 'dialog-form',
           onsubmit: async (e) => {
             e.preventDefault();
-            await actRecipient(() => api('/api/notifications/recipients', { method: 'POST', body: { channel: channel.value, address: address.value, level: Number(level.value), label: label.value } }), 'Destinataire ajouté');
+            const zones = addZones.value();
+            if (zones !== null && zones.length === 0) return toast('Cochez au moins une zone, ou « Toutes les alarmes »');
+            await actRecipient(() => api('/api/notifications/recipients', { method: 'POST', body: { channel: channel.value, address: address.value, level: Number(level.value), label: label.value, zones } }), 'Destinataire ajouté');
           },
         },
         h('h4', { text: 'Ajouter un destinataire' }),
         h('div', { class: 'row wrap' }, channel, address, level, label),
+        addZones.el,
         h('button', { class: 'btn small primary', type: 'submit', text: 'Ajouter' }),
         h('p', { class: 'small muted', text: "Prise en compte immédiate, sans redémarrage. Les secrets des canaux (mot de passe SMTP, jeton Telegram) se règlent dans le fichier .env. Utilisez « Envoyer un message de test » pour vérifier." }),
       ),

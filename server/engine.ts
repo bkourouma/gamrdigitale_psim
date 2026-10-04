@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { appendSealed } from './auditchain.ts';
+import { DAHUA_SUPERVISION_S } from './dahua.ts';
 import { PsimError } from './errors.ts';
 import { defaultFloorId, listFloors } from './floors.ts';
 import { hasForbiddenChar, normalizeName } from './text.ts';
@@ -611,6 +612,16 @@ export function createEngine(
       throw new PsimError(409, 'Un incident est en cours sur ce detecteur : le traiter avant de changer sa categorie');
     }
     if (!sensor && SENSOR_FIELDS.some((f) => input[f] !== undefined)) throw new PsimError(400, 'Ces reglages ne concernent que les detecteurs');
+    // Detecteur alimente par un enregistreur Dahua : la regle « la nuit seulement » tient a sa categorie (intrusion) et a sa
+    // zone ; sa supervision ne descend pas sous la cadence des signes de vie de l'appareil (sinon « hors ligne » en boucle).
+    if (sensor && db.prepare('SELECT 1 AS x FROM detector_source WHERE device_id = ?').get(id)) {
+      if (sensor.category !== 'intrusion' || !zone) {
+        throw new PsimError(409, "Ce detecteur lit la detection d'un enregistreur Dahua : il reste un detecteur d'intrusion avec une zone (retirer d'abord sa source)");
+      }
+      if (!sensor.heartbeatS || sensor.heartbeatS < DAHUA_SUPERVISION_S) {
+        throw new PsimError(409, `Ce detecteur lit la detection d'un enregistreur Dahua : supervision d'au moins ${DAHUA_SUPERVISION_S} s`);
+      }
+    }
     db.prepare('UPDATE device SET name = ?, zone = ?, x = ?, y = ?, floor_id = ? WHERE id = ?').run(name, zone, x, y, floorId, id);
     if (sensor) {
       db.prepare('UPDATE device SET category = ?, value_unit = ?, warn_at = ?, alarm_at = ?, direction = ?, heartbeat_s = ? WHERE id = ?').run(

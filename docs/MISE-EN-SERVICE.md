@@ -52,6 +52,8 @@ Les contrôles de `npm run commission` sont en lecture seule et n'envoient **auc
 - [ ] Pour un capteur à mesure (température…) : unité, **seuils** de préalarme et d'alarme, sens. Pour un capteur qui n'émet qu'aux changements (contact de porte) : laisser la supervision à « non supervisé » ; pour un équipement qui émet en continu : régler son délai de signe de vie.
 - [ ] **Lier** chaque détecteur aux caméras qui voient sa zone : c'est ce qui donne une image à l'opérateur à l'ouverture de l'incident.
 - [ ] Zones d'intrusion : régler le **planning d'armement** (*Armement des zones*).
+- [ ] Enregistreur Dahua : pour chaque détecteur d'intrusion alimenté par une caméra, *Source* → caméra, voie, type d'événement → **Tester (20 s)** en passant devant la caméra, puis *Enregistrer la source*. L'état « Connecté à l'appareil » doit s'afficher.
+- [ ] Destinataires limités à une zone (gardien, voisin) : *Notifications* → *Zones…* ; vérifier qu'aucune zone n'est signalée « sans destinataire ».
 - [ ] Évaluer le **risque** de chaque zone (vue *Risques*).
 
 Une zone sans détecteur de même catégorie à proximité ne bénéficie pas de la confirmation par un voisin : c'est voulu, mais à savoir.

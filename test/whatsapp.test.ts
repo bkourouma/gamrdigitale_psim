@@ -349,7 +349,7 @@ describe('WhatsApp : destinataires, configuration et base', () => {
       INSERT INTO notification_recipient (id, channel, address, level, label, active, created_at, created_by) VALUES (5, 'email', 'chef@exemple.fr', 2, 'Chef', 1, 1, 'admin');`);
     old.close();
     const db = openDb(path);
-    assert.deepEqual({ ...(db.prepare('SELECT id, channel, address, label FROM notification_recipient').get() as object) }, { id: 5, channel: 'email', address: 'chef@exemple.fr', label: 'Chef' });
+    assert.deepEqual({ ...(db.prepare('SELECT id, channel, address, label, zones FROM notification_recipient').get() as object) }, { id: 5, channel: 'email', address: 'chef@exemple.fr', label: 'Chef', zones: null }, 'colonne zones presente des la premiere ouverture');
     db.prepare("INSERT INTO notification_recipient (channel, address, level, label, active, created_at, created_by) VALUES ('whatsapp', ?, 1, '', 1, 2, 'admin')").run(PHONE);
     assert.equal((db.prepare("SELECT id FROM notification_recipient WHERE channel = 'whatsapp'").get() as { id: number }).id, 6, 'la numerotation continue');
     assert.throws(() => db.prepare("INSERT INTO notification_recipient (channel, address, level, label, active, created_at, created_by) VALUES ('fax', 'x', 1, '', 1, 2, 'a')").run(), /CHECK/);

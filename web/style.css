@@ -329,6 +329,15 @@ a.btn { text-decoration: none; display: inline-block; }
 .user-row, .recipient-row { border-top: 1px solid var(--line); padding: 8px 0; display: grid; gap: 4px; }
 .recipient-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .user-row.inactive, .recipient-row.inactive { opacity: .6; }
+.tag.zones { color: var(--warn); border-color: var(--warn); }
+.zone-picker { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 8px; margin: 0; padding: 6px 8px; }
+.zone-picker legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.dialog-form .zone-picker label.check { display: flex; gap: 6px; align-items: center; }
+.dialog-form .zone-picker input[type="checkbox"] { width: auto; }
+.zone-editor { flex-basis: 100%; display: grid; gap: 6px; border-left: 2px solid var(--line); padding-left: 8px; }
+.source-box { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+.source-box input.narrow { width: 90px; }
+.source-events { list-style: none; margin: 0; padding: 0; font: 12px/1.5 ui-monospace, Consolas, monospace; max-height: 160px; overflow: auto; }
 .users-list, .recipients { display: grid; margin-bottom: 8px; }
 #whoami { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
