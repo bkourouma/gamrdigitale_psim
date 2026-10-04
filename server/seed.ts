@@ -2,6 +2,7 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { createUser } from './auth.ts';
+import { defaultFloorId } from './floors.ts';
 
 interface SeedDevice {
   id: string;
@@ -90,15 +91,18 @@ export function seedDemo(db: DatabaseSync, dataDir: string, seedDir: string): bo
 
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO site (id, name, plan_file, plan_version) VALUES (1, ?, ?, 0)').run('Site de demonstration', planFile);
+    db.prepare('INSERT INTO site (id, name, plan_file, plan_version) VALUES (1, ?, NULL, 0)').run('Site de demonstration');
+    // Le plan de demonstration est celui de l'etage cree a l'ouverture de la base (un seul niveau).
+    const floorId = defaultFloorId(db);
+    db.prepare('UPDATE floor SET plan_file = ?, plan_version = 0 WHERE id = ?').run(planFile, floorId);
     const insertDevice = db.prepare(
-      'INSERT INTO device (id, kind, name, zone, x, y, stream_kind, category, value_unit, warn_at, alarm_at, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO device (id, kind, name, zone, x, y, floor_id, stream_kind, category, value_unit, warn_at, alarm_at, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
     for (const d of DEMO_DEVICES) {
       const category = d.category ?? 'fire';
       // Seul le capteur de temperature emet en continu : les autres sources hors incendie ne sont pas supervisees.
       const heartbeat = category === 'fire' || d.unit ? null : 0;
-      insertDevice.run(d.id, d.kind, d.name, d.zone, d.x, d.y, d.kind === 'camera' ? 'simulated' : null, category, d.unit ?? null, d.warnAt ?? null, d.alarmAt ?? null, heartbeat);
+      insertDevice.run(d.id, d.kind, d.name, d.zone, d.x, d.y, floorId, d.kind === 'camera' ? 'simulated' : null, category, d.unit ?? null, d.warnAt ?? null, d.alarmAt ?? null, heartbeat);
     }
     const insertLink = db.prepare('INSERT INTO device_link (detector_id, camera_id) VALUES (?, ?)');
     for (const [detectorId, cameraIds] of Object.entries(DEMO_LINKS)) {

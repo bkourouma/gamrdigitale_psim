@@ -305,6 +305,31 @@ Elle n'existe que si **`PSIM_INGEST_TOKEN`** est défini (24 caractères minimum
 
 Démonstration : le site contient un détecteur de mouvement (`I-01`), une porte de service (`A-01`), un capteur de température 30/38 °C (`E-01`) et un capteur d'eau (`E-02`), avec les scénarios `intrusion-nuit`, `porte-forcee`, `derive-temperature` et `fuite-eau` (`npm run demo -- --scenario=<id>`).
 
+## Étages (duplex, immeuble)
+
+Un site peut avoir **plusieurs étages**, chacun avec **son plan** ; chaque équipement appartient à **un seul étage**. Une installation existante (un seul plan) devient automatiquement un étage « Rez-de-chaussée » qui garde son plan et tous ses équipements : rien à refaire.
+
+**Supervision**
+- Au-dessus du plan, un **bouton par étage** (du plus bas au plus haut) avec son état : « 1 alarme, 1 à acquitter », « 2 préalarmes », « 1 hors service ». Le plan n'affiche que les équipements de l'étage choisi ; pendant le chargement du plan d'un autre étage, un fond neutre (jamais le dessin de l'étage précédent). Les plans de tous les étages sont préchargés.
+- **Une alarme n'attend jamais sur un étage qu'on ne regarde pas** : à l'ouverture (ou à l'aggravation) d'un incident, l'écran bascule sur l'étage du détecteur (annoncé aux lecteurs d'écran) ; si l'opérateur revient sur un autre étage, le bouton de l'étage en alarme reste **rouge et son cadre clignote** ; à la connexion, et à la reconnexion après une coupure, une alarme non acquittée impose son étage. Un incident critique garde son étage en rouge jusqu'à sa clôture. La légende des vignettes vidéo cite l'étage de la caméra.
+- **Vue éclatée** : tous les étages empilés en perspective (CSS 3D, sans bibliothèque), le plus haut en haut, espacement adapté au nombre d'étages (jusqu'à 20). L'étage en alarme s'entoure de rouge, chaque détecteur qui sonne porte une **balise dressée** avec son identifiant, et les étages **au-dessus** deviennent transparents pour ne pas le cacher. Une liste à côté dit la même chose en texte, identifiants en alarme compris (lecteur d'écran, petit écran) ; un clic sur un plateau ou sur sa ligne ouvre l'étage à plat. Boutons et plateaux sont mis à jour sur place : un message d'équipement ne fait jamais perdre un clic ni le focus. Choix de l'étage et de la vue mémorisés par poste.
+- Les fiches d'incident, les **notifications** (e-mail, Telegram, webhook : champ `floor`), l'export **CSV** (colonne « Étage ») et la fiche imprimable citent l'étage dès qu'il y en a plusieurs : une « Chambre » peut exister à chaque niveau.
+- Un étage **sans plan** reste affiché (fond quadrillé) : ses équipements restent visibles et déplaçables.
+
+**Administration** (*Édition du plan et de l'inventaire*, mode édition)
+- Ajouter un étage (au-dessus des autres), le renommer, le monter ou le descendre, le supprimer. Refusé : supprimer le **dernier** étage, ou un étage qui porte encore des équipements (ils disparaîtraient du plan), raison écrite sur la ligne. 20 étages au plus, noms uniques (même écrits avec des accents codés autrement ; caractères invisibles et de contrôle refusés, comme pour les noms d'équipements).
+- **Une zone appartient à un seul étage** : une zone déjà utilisée à un autre étage est refusée (création, changement de zone ou d'étage), avec la marche à suivre. Deux « Chambre » sur deux niveaux formeraient une seule zone pour l'armement (désarmer l'une ferait ignorer les intrusions de l'autre), la confirmation par un voisin et le risque. Nommer par niveau : « Étage - Chambre 1 ».
+- *Remplacer le plan de « … »* et *Ajouter au centre de « … »* visent l'étage **écrit sur le bouton au moment du clic** (une alarme qui change l'étage affiché entre-temps ne détourne ni le plan ni l'équipement) ; le sélecteur **Étage** d'un équipement puis *Déplacer vers cet étage* le change d'étage (position en % conservée, l'écran suit).
+- Chaque changement est au journal (`floor_created`, `floor_updated`, `floor_deleted`, `plan_updated` avec le nom de l'étage, `device_updated` « déplacé vers l'étage … »).
+
+**Obtenir les plans** : une image par niveau (PNG, JPEG, WEBP ou SVG). Depuis **Sweet Home 3D** : *Plan > Exporter au format SVG*, un niveau à la fois. Depuis un **dossier d'architecte en PDF** : le PSIM n'accepte pas le PDF ; extraire la page « aménagement » de chaque niveau en image (de préférence en noir et blanc : des pièces colorées en vert, orange ou rouge gêneraient la lecture des pastilles d'état).
+
+**Mise en service** : `npm run commission` signale les étages **sans plan** et les **zones à cheval sur plusieurs étages** (possibles seulement dans une base ancienne ou modifiée à la main) ; la fiche de recette et `commission -- watch` indiquent l'étage de chaque équipement, et l'essai de bout en bout vérifie « le bon étage ».
+
+**API** : `GET /api/floors/:id/plan` (tout utilisateur), `PUT /api/floors/:id/plan`, `POST /api/floors`, `PATCH /api/floors/:id` (`name`, `position` : 0 = le plus bas), `DELETE /api/floors/:id` (administrateur) ; `floorId` dans `POST/PATCH /api/devices`. `GET/PUT /api/plan` restent, pour l'étage le plus bas.
+
+**Limites** : pas de vraie 3D (modèle de la maison, rotation libre) ; les plans des étages ne sont pas superposés à l'échelle (chaque plan garde son cadrage) ; une image de vue d'ensemble dessinée à part (2,5D) n'est pas utilisée ; l'étage cité dans les rapports est l'étage **actuel** du détecteur (comme sa zone).
+
 ## Armement des zones d'intrusion
 
 Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Panneau **Armement des zones** (sous le plan, visible dès qu'il existe une telle zone).
@@ -391,7 +416,7 @@ caméras (simulées) ◄── mur vidéo             │
 |---|---|
 | `server/engine.ts` | Règle unique : alarme → incident → caméras liées ; acquittement, clôture, inventaire, journal |
 | `server/mqtt.ts` | Broker MQTT (127.0.0.1, authentifié, publication limitée aux topics détecteurs) |
-| `server/api.ts` | API REST, sessions par cookie, rôles, plan du site |
+| `server/api.ts` | API REST, sessions par cookie, rôles, étages et plans |
 | `server/db.ts` | Schéma SQLite (un seul incident actif par détecteur, garanti par la base) |
 | `web/` | Interface : plan, mur vidéo, incidents, journal, simulateur, édition |
 | `server/onvif.ts` | Client ONVIF (Profile S/T) : choix du flux le plus léger, recherche réseau |
@@ -403,6 +428,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/system.ts`, `server/tls.ts`, `server/logger.ts` | Santé et état système ; HTTPS ; journaux avec rotation |
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
+| `server/floors.ts` | Étages : migration du plan unique, ajout / ordre / suppression, plan de chaque étage |
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
 | `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
@@ -418,6 +444,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
 | `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
 | `web/arming.js` | Panneau d'armement des zones et éditeur de planning |
+| `web/floors.js` | Onglets d'étages avec leur état, vue éclatée en perspective, gestion des étages |
 | `web/reports.js`, `web/report.css` | Panneau d'exports ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
@@ -440,7 +467,7 @@ Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équ
 ## Passer aux équipements réels
 
 - **Détecteurs** : publier sur le topic ci-dessus (directement ou via une passerelle vers MQTT). Rien d'autre à changer. Voir « Mise en service sur site » pour la recette, détecteur par détecteur.
-- **Plan** : en administrateur, *Édition du plan* → *Remplacer le plan* (PNG, JPEG, WEBP ou SVG), puis glisser les pastilles à leur emplacement réel.
+- **Plan** : en administrateur, *Édition du plan* → *Remplacer le plan* (PNG, JPEG, WEBP ou SVG), puis glisser les pastilles à leur emplacement réel. Plusieurs niveaux : voir « Étages ».
 - **Caméras** : voir la section suivante.
 
 ## Brancher une caméra ONVIF réelle
@@ -453,6 +480,8 @@ Prérequis : `ffmpeg` installé (dans le `PATH`, ou chemin dans `PSIM_FFMPEG`) e
 4. Cliquer **Enregistrer et tester** : le message indique le modèle de la caméra, le profil choisi et confirme qu'une image a été reçue.
 
 Si ONVIF ne fonctionne pas sur votre modèle, choisir **Flux RTSP direct** avec le chemin du flux (souvent indiqué dans la fiche du constructeur, par exemple `/Streaming/Channels/102`).
+
+**Enregistreur (DVR/XVR/NVR)** : une seule adresse, une caméra du PSIM par voie. Dahua : port 554, chemin `/cam/realmonitor?channel=<voie>&subtype=1` (`subtype=1` = flux secondaire, léger), avec un compte de l'enregistreur en lecture seule. Vérifié sur la voie 1 d'un `DH-XVR5108HS-I3/T`. Si le poste du PSIM a un **VPN** qui annonce le même réseau (`192.168.1.0/24` par exemple), le trafic vers l'enregistreur part dans le tunnel : couper le VPN ou ajouter une route vers l'enregistreur.
 
 Fonctionnement :
 
@@ -479,8 +508,8 @@ npm run typecheck
 ## Limites connues du MVP
 
 - Sessions gardées en mémoire : une déconnexion des utilisateurs a lieu à chaque redémarrage.
-- Un seul site, un seul plan, une seule instance (pas de haute disponibilité).
+- Un seul site (plusieurs étages possibles), une seule instance (pas de haute disponibilité).
 - Armement : seuls les détecteurs d'intrusion sont armables (voir plus haut). Pas de gestion de badges ni de portes, pas de commande des équipements : le PSIM écoute, il ne pilote rien.
 - Pas de prise en charge native des protocoles de terrain (BACnet, Modbus, OPC UA, Wiegand…) : passer par une passerelle vers MQTT ou HTTP.
-- Matériel réel (détecteurs, caméras, SMTP, Telegram) jamais testé ici : tout a été validé avec des équipements simulés.
+- Matériel réel : seule **une voie d'un enregistreur Dahua** (XVR, flux RTSP direct) a été affichée dans le PSIM ; détecteurs, autres caméras, SMTP et Telegram n'ont été validés qu'avec des équipements simulés.
 

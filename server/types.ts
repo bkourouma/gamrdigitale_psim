@@ -15,8 +15,10 @@ export interface Device {
   kind: DeviceKind;
   name: string;
   zone: string;
-  x: number; // % de la largeur du plan
-  y: number; // % de la hauteur du plan
+  x: number; // % de la largeur du plan de son etage
+  y: number; // % de la hauteur du plan de son etage
+  /** Etage (voir `floors.ts`) : chaque equipement est sur exactement un etage. */
+  floorId: number;
   status: string;
   streamKind: string | null;
   lastSeen: number | null;
@@ -37,6 +39,8 @@ export interface Incident {
   detectorId: string;
   detectorName: string;
   zone: string;
+  /** Nom de l'etage du detecteur (un duplex a une « Chambre » a chaque niveau : l'etage dit laquelle). */
+  floor: string;
   category: DeviceCategory;
   /** Derniere mesure du capteur (affichee a titre indicatif). */
   lastValue: number | null;
@@ -81,8 +85,20 @@ export type PsimEvent =
   | { type: 'audit'; entry: AuditEntry }
   | { type: 'config' };
 
+/** Un etage du site, du plus bas (`position` 0) au plus haut, avec son propre plan. */
+export interface Floor {
+  id: number;
+  name: string;
+  position: number;
+  hasPlan: boolean;
+  planVersion: number;
+}
+
 export interface Snapshot {
+  /** `hasPlan` / `planVersion` : ceux de l'etage le plus bas (compatibilite avec l'ancien plan unique). */
   site: { name: string; hasPlan: boolean; planVersion: number };
+  /** Du plus bas au plus haut ; jamais vide. */
+  floors: Floor[];
   devices: Device[];
   links: Record<string, string[]>;
   /** Zones d'intrusion : `true` = armee. Les zones sans detecteur d'intrusion n'y figurent pas. */

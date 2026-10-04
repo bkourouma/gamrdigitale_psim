@@ -127,14 +127,17 @@ function readDevices(dataDir: string): { detectors: WatchDevice[]; sheet: SheetD
     }
     const sources = new Map((db.prepare('SELECT device_id, kind, host, port FROM camera_source').all() as Row[]).map((s) => [s.device_id as string, `${String(s.kind).toUpperCase()} ${s.host}:${s.port}`]));
     const site = (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site';
+    // Plusieurs etages : la recette verifie aussi le rattachement de chaque equipement a son etage (c'est lui qui dit ou aller).
+    const floors = schemaProblem(db) ? [] : (db.prepare('SELECT id, name FROM floor ORDER BY position, id').all() as Row[]);
+    const floorOf = (r: Row) => (floors.length > 1 ? ((floors.find((f) => f.id === r.floor_id) ?? floors[0]).name as string) : undefined);
     return {
       site,
       detectors: rows.filter((r) => r.kind === 'detector').map((r) => ({
-        id: r.id as string, name: r.name as string, zone: r.zone as string, category: ((r.category as string) ?? 'fire') as WatchDevice['category'],
+        id: r.id as string, name: r.name as string, zone: r.zone as string, floor: floorOf(r), category: ((r.category as string) ?? 'fire') as WatchDevice['category'],
         warnAt: (r.warn_at as number | null) ?? null, alarmAt: (r.alarm_at as number | null) ?? null, direction: ((r.direction as string) ?? 'above') as WatchDevice['direction'], valueUnit: (r.value_unit as string | null) ?? null,
       })),
       sheet: rows.map((r) => ({
-        id: r.id as string, kind: r.kind as 'detector' | 'camera', name: r.name as string, zone: r.zone as string, category: ((r.category as string) ?? 'fire') as SheetDevice['category'],
+        id: r.id as string, kind: r.kind as 'detector' | 'camera', name: r.name as string, zone: r.zone as string, floor: floorOf(r), category: ((r.category as string) ?? 'fire') as SheetDevice['category'],
         source: r.kind === 'camera' ? (sources.get(r.id as string) ?? 'simulee') : undefined, links: links.get(r.id as string),
       })),
     };

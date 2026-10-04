@@ -15,6 +15,8 @@ export interface WatchDevice extends SensorSettings {
   id: string;
   name: string;
   zone: string;
+  /** Nom de l'etage, s'il y en a plusieurs. */
+  floor?: string;
   valueUnit: string | null;
 }
 
@@ -82,7 +84,7 @@ export function createWatcher(devices: WatchDevice[], now: () => number = Date.n
     const missing = devices.filter((d) => !heard.has(d.id));
     return {
       heard: devices.filter((d) => heard.has(d.id)).map((d) => ({ id: d.id, name: d.name, count: heard.get(d.id)!.count, states: [...heard.get(d.id)!.states] })),
-      missing: missing.map((d) => ({ id: d.id, name: d.name, zone: d.zone })),
+      missing: missing.map((d) => ({ id: d.id, name: d.name, zone: d.floor ? `${d.zone || 'sans zone'}, etage : ${d.floor}` : d.zone })),
       unknown: [...unknown].map(([id, count]) => ({ id, count })),
       invalid: [...invalid].map(([id, v]) => ({ id, reason: v.reason, count: v.count })),
       allHeard: missing.length === 0,

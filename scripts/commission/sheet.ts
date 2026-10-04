@@ -10,6 +10,8 @@ export interface SheetDevice {
   kind: 'detector' | 'camera';
   name: string;
   zone: string;
+  /** Nom de l'etage, s'il y en a plusieurs. */
+  floor?: string;
   category: DeviceCategory;
   /** Camera : « ONVIF 192.168.1.20 », « RTSP ... » ou « simulee ». */
   source?: string;
@@ -23,7 +25,7 @@ const ESSAIS: { titre: string; etapes: string[] }[] = [
   {
     titre: 'Alarme de bout en bout',
     etapes: [
-      "Declencher un detecteur reel (bouton test) : l'incident s'ouvre en moins de 5 s, avec le bon nom et la bonne zone",
+      "Declencher un detecteur reel (bouton test) : l'incident s'ouvre en moins de 5 s, avec le bon nom, la bonne zone et le bon etage",
       "L'alerte sonore retentit ; les cameras liees s'affichent ; l'image est jointe a l'incident",
       "La notification arrive sur chaque canal (e-mail, Telegram, webhook) chez chaque destinataire de niveau 1",
       "Ne pas acquitter : apres le delai, le niveau 2 est prevenu (escalade) ; puis acquitter, remettre a la normale, cloturer (« fausse alarme : recette »)",
@@ -54,7 +56,7 @@ export function buildSheet(opts: { site: string; generatedAt: number; devices: S
   const row = (d: SheetDevice) => {
     const cat = d.kind === 'camera' ? 'Camera' : CATEGORY_LABEL[d.category];
     const extra = d.kind === 'camera' ? esc(d.source ?? '') : d.links?.length ? `cameras : ${esc(d.links.join(', '))}` : 'aucune camera liee';
-    return `<tr><td><b>${esc(d.id)}</b></td><td>${esc(d.name)}<br><small>${esc(d.zone || 'sans zone')}</small></td><td>${esc(cat)}<br><small>${extra}</small></td>${
+    return `<tr><td><b>${esc(d.id)}</b></td><td>${esc(d.name)}<br><small>${esc(d.zone || 'sans zone')}${d.floor ? ` - etage : ${esc(d.floor)}` : ''}</small></td><td>${esc(cat)}<br><small>${extra}</small></td>${
       d.kind === 'detector'
         ? '<td class="c">&#9744;</td><td class="c">&#9744;</td><td class="c">&#9744;</td><td class="c">&#9744;</td>'
         : '<td class="c">&mdash;</td><td class="c">&mdash;</td><td class="c">&#9744;</td><td class="c">&mdash;</td>'

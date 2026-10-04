@@ -158,6 +158,102 @@ a.btn { text-decoration: none; display: inline-block; }
 .sensor-form { display: grid; gap: 6px; margin-bottom: 8px; }
 .sensor-form input { max-width: 150px; }
 .sim-value { width: 70px; }
+/* ------------------------------------------------ etages : onglets, plan absent, vue eclatee */
+.floor-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.floor-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.floor-tab {
+  display: inline-flex; gap: 6px; align-items: center;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.floor-tab:hover { border-color: var(--accent); }
+/* Contrastes >= 4,5:1 pour du petit texte blanc (rouge, violet et bleu plus sombres que ceux de la legende). */
+.floor-tab.current { background: #1f5fc9; border-color: #1f5fc9; color: #fff; }
+.floor-tab:focus-visible, .stack-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.floor-state { font-size: 11px; font-weight: 700; border-radius: 4px; padding: 0 6px; }
+.floor-state.lvl-alarm { background: #c42a20; color: #fff; }
+.floor-state.lvl-prealarm { background: var(--warn); color: #1b1300; }
+.floor-state.lvl-down { background: #6c3fb8; color: #fff; }
+/* Alarme sur un etage qu'on ne regarde pas : le CADRE du bouton clignote tant qu'on n'y va pas (le texte reste lisible). */
+.floor-tab.lvl-alarm:not(.current) { border-color: var(--alarm); animation: tab-alert 1s steps(2) infinite; }
+@keyframes tab-alert { 0% { box-shadow: 0 0 0 2px var(--alarm); } 50% { box-shadow: 0 0 0 2px transparent; } }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.floor-tab.lvl-prealarm:not(.current) { border-color: var(--warn); }
+.stack-toggle { margin-left: auto; }
+
+.plan-stage.no-plan {
+  aspect-ratio: 3 / 2; background-color: #eef1f4;
+  background-image: linear-gradient(#dde3e9 1px, transparent 1px), linear-gradient(90deg, #dde3e9 1px, transparent 1px);
+  background-size: 5% 7.5%;
+}
+.plan-none { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: #5b6774; font-size: 13px; pointer-events: none; }
+.floor-admin { display: grid; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.floor-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.floor-row input { flex: 1 1 140px; min-width: 0; }
+.floor-row.current input { border-color: var(--accent); }
+
+.stack-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 260px); gap: 12px; align-items: center; }
+@media (max-width: 700px) { .stack-view { grid-template-columns: 1fr; } }
+.stack-scene {
+  --gap: 150px;
+  height: clamp(320px, calc(var(--n) * 150px + 200px), 760px);
+  display: grid; place-items: center; overflow: hidden; perspective: 1500px;
+  background: radial-gradient(ellipse at 50% 60%, #22303c, var(--panel) 70%); border-radius: 8px;
+}
+.stack { position: relative; width: min(74%, 520px); aspect-ratio: 3 / 2; transform-style: preserve-3d; transform: rotateX(57deg) rotateZ(-34deg); }
+/* Plateau d'un etage : centre sur l'empilement, monte de --gap par niveau (aucun overflow ni opacite : ils aplatiraient la 3D). */
+.layer {
+  position: absolute; left: 0; width: 100%; top: 50%; aspect-ratio: var(--ratio, 3 / 2);
+  transform: translateY(-50%) translateZ(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap)));
+  transform-style: preserve-3d; cursor: pointer;
+  background: #fff; border: 2px solid #9fb0c0; border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .25), 0 18px 30px rgba(0, 0, 0, .45);
+}
+.layer:hover { border-color: var(--accent); }
+.layer.lvl-alarm { border-color: var(--alarm); box-shadow: 0 0 0 3px var(--alarm), 0 0 36px rgba(240, 72, 62, .75); }
+.layer.lvl-prealarm { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn), 0 18px 30px rgba(0, 0, 0, .45); }
+.layer.lvl-down { border-color: var(--fault); }
+.layer-plan { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.layer-plan.none { display: grid; place-items: center; background: #eef1f4; color: #4f5b67; font-size: 12px; }
+/* Plateaux au-dessus d'un etage en alarme : transparents, pour ne jamais cacher ses balises (l'opacite sur l'image
+   seule, element sans enfant 3D, ne casse pas la perspective). */
+.layer.see-through { background: transparent; border-style: dashed; box-shadow: none; }
+.layer.see-through .layer-plan { opacity: .18; }
+.layer-dots { position: absolute; inset: 0; transform-style: preserve-3d; pointer-events: none; }
+.firing-ids { color: #ff9b94; font-weight: 700; }
+.layer-name {
+  /* Etiquette dressee face a l'observateur, au coin avant gauche du plateau : lisible meme sous l'etage du dessus. */
+  position: absolute; left: 0; bottom: 0; padding: 1px 8px; border-radius: 4px; transform-origin: 0 100%;
+  transform: rotateZ(34deg) rotateX(-57deg) translateY(-4px);
+  background: rgba(15, 20, 24, .9); color: #fff; font-size: 13px; font-weight: 700; white-space: nowrap;
+}
+.layer.lvl-alarm .layer-name { background: var(--alarm); }
+.dot3 { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--ok); border: 1px solid #fff; transform-style: preserve-3d; }
+.dot3.camera { background: var(--cam); border-radius: 2px; }
+.dot3.prealarm { background: var(--warn); }
+.dot3.alarm { background: var(--alarm); }
+.dot3.fault { background: var(--fault); }
+.dot3.offline { background: var(--off); }
+.dot3.firing { width: 14px; height: 14px; margin: -7px 0 0 -7px; animation: pulse 1s ease-out infinite; }
+/* Balise dressee face a l'observateur (inverse de l'inclinaison de l'empilement). */
+.beacon {
+  position: absolute; left: 50%; bottom: 50%; transform-origin: 50% 100%;
+  transform: translateX(-50%) rotateZ(34deg) rotateX(-57deg);
+  padding: 1px 6px 14px; border-radius: 4px 4px 0 0; white-space: nowrap;
+  background: linear-gradient(var(--alarm) 0 70%, transparent); color: #fff; font-size: 12px; font-weight: 800;
+}
+.dot3.prealarm .beacon { background: linear-gradient(var(--warn) 0 70%, transparent); color: #1b1300; }
+.stack-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.stack-open {
+  width: 100%; display: grid; gap: 2px; justify-items: start; text-align: left;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-left: 4px solid var(--ok);
+  border-radius: 6px; padding: 8px 10px; font: inherit; cursor: pointer;
+}
+.stack-open:hover { border-color: var(--accent); }
+.stack-list .lvl-alarm .stack-open { border-left-color: var(--alarm); }
+.stack-list .lvl-prealarm .stack-open { border-left-color: var(--warn); }
+.stack-list .lvl-down .stack-open { border-left-color: var(--fault); }
+
 .pin.on-wall .pin-glyph { box-shadow: 0 0 0 3px rgba(74, 163, 255, .55); }
 .pin.selected .pin-glyph { box-shadow: 0 0 0 4px rgba(61, 139, 253, .8); }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(240, 72, 62, .8); } 100% { box-shadow: 0 0 0 16px rgba(240, 72, 62, 0); } }

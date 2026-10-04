@@ -22,6 +22,7 @@ import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
 import { createArming } from './arming.ts';
+import { createFloors } from './floors.ts';
 import type { Arming } from './arming.ts';
 import { createReports } from './reports.ts';
 import { createReportMail } from './reportmail.ts';
@@ -168,6 +169,7 @@ const engine = createEngine(db, publish, Date.now, {
   onDetectorSilent: (device) => void notifier?.notifySilent(device),
 });
 arming = createArming(db, (actor, action, ref) => engine.audit(actor, action, ref), Date.now, () => publish({ type: 'config' }));
+const floors = createFloors({ db, dataDir, audit: (actor, action, ref) => engine.audit(actor, action, ref), publishConfig: () => publish({ type: 'config' }) });
 let snapshots: SnapshotService | undefined;
 let notifier: Notifier | undefined;
 const video = createVideoService({
@@ -359,6 +361,7 @@ const reportTimer = setInterval(() => {
 const app = createApp({
   db,
   engine,
+  floors,
   video,
   snapshots,
   notifier,

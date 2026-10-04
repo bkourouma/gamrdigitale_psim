@@ -1,5 +1,4 @@
-import { createReadStream, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createReadStream } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
@@ -24,6 +23,8 @@ import { parseRange } from './reports.ts';
 import type { Reports } from './reports.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
+import { PLAN_TYPES } from './floors.ts';
+import type { Floors } from './floors.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
@@ -36,32 +37,12 @@ import type { Role } from './types.ts';
 
 export const SESSION_COOKIE = 'psim_session';
 
-const PLAN_TYPES: Record<string, { ext: string; mime: string }> = {
-  'image/png': { ext: 'png', mime: 'image/png' },
-  'image/jpeg': { ext: 'jpg', mime: 'image/jpeg' },
-  'image/webp': { ext: 'webp', mime: 'image/webp' },
-  'image/svg+xml': { ext: 'svg', mime: 'image/svg+xml' },
-};
 const MAX_PLAN_BYTES = 10 * 1024 * 1024;
-
-function looksLike(mime: string, body: Buffer): boolean {
-  switch (mime) {
-    case 'image/png':
-      return body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-    case 'image/jpeg':
-      return body.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
-    case 'image/webp':
-      return body.subarray(0, 4).toString('latin1') === 'RIFF' && body.subarray(8, 12).toString('latin1') === 'WEBP';
-    case 'image/svg+xml':
-      return body.subarray(0, 2048).toString('utf8').includes('<svg');
-    default:
-      return false;
-  }
-}
 
 export interface ApiDeps {
   db: DatabaseSync;
   engine: Engine;
+  floors: Floors;
   video: VideoService;
   snapshots: SnapshotService;
   notifier: Notifier;
@@ -424,50 +405,43 @@ export function createApp(deps: ApiDeps) {
     res.json(engine.close(incidentId(req), actorOf(req), qualification, comment));
   });
 
-  // ---- Plan du site ---------------------------------------------------------------------
+  // ---- Etages et plans --------------------------------------------------------------------
 
-  app.get('/api/plan', anyUser, (_req, res) => {
-    const site = db.prepare('SELECT plan_file FROM site WHERE id = 1').get() as { plan_file: string | null } | undefined;
-    const file = site?.plan_file;
-    const path = file ? join(deps.dataDir, file) : null;
-    if (!file || !path || !existsSync(path)) return void res.status(404).json({ error: 'Aucun plan' });
-    const mime = Object.values(PLAN_TYPES).find((t) => file.endsWith(`.${t.ext}`))?.mime ?? 'application/octet-stream';
-    res.setHeader('Content-Type', mime);
+  const sendPlan = (floorId: unknown, res: Response) => {
+    const plan = deps.floors.planPath(floorId);
+    if (!plan) return void res.status(404).json({ error: 'Aucun plan pour cet etage' });
+    res.setHeader('Content-Type', plan.mime);
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
     // Un SVG televerse ne doit jamais pouvoir executer de script s'il est ouvert directement.
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-    const stream = createReadStream(path);
+    const stream = createReadStream(plan.path);
     // Plan supprime entre la verification et l'ouverture (remplacement en cours) : jamais d'exception non geree.
-    stream.on('error', () => (res.headersSent ? res.destroy() : res.status(404).json({ error: 'Aucun plan' })));
+    stream.on('error', () => (res.headersSent ? res.destroy() : res.status(404).json({ error: 'Aucun plan pour cet etage' })));
     stream.pipe(res);
+  };
+  const rawPlan = express.raw({ type: Object.keys(PLAN_TYPES), limit: MAX_PLAN_BYTES });
+  const planMime = (req: Request) => (req.headers['content-type'] ?? '').split(';')[0].trim();
+
+  app.get('/api/floors/:id/plan', anyUser, (req, res) => sendPlan(req.params.id, res));
+  app.put('/api/floors/:id/plan', adminOnly, rawPlan, (req, res) => {
+    res.json({ ok: true, ...deps.floors.setPlan(actorOf(req), req.params.id, planMime(req), req.body) });
+  });
+  app.post('/api/floors', adminOnly, json, (req, res) => {
+    res.status(201).json(deps.floors.create(actorOf(req), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.patch('/api/floors/:id', adminOnly, json, (req, res) => {
+    res.json(deps.floors.update(actorOf(req), req.params.id, (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.delete('/api/floors/:id', adminOnly, (req, res) => {
+    deps.floors.remove(actorOf(req), req.params.id);
+    res.status(204).end();
   });
 
-  app.put(
-    '/api/plan',
-    adminOnly,
-    express.raw({ type: Object.keys(PLAN_TYPES), limit: MAX_PLAN_BYTES }),
-    (req, res) => {
-      const mime = (req.headers['content-type'] ?? '').split(';')[0].trim();
-      const type = PLAN_TYPES[mime];
-      const body = req.body as unknown;
-      if (!type || !Buffer.isBuffer(body) || body.length === 0) {
-        throw new PsimError(415, 'Envoyer une image PNG, JPEG, WEBP ou SVG');
-      }
-      if (!looksLike(mime, body)) throw new PsimError(400, "Le contenu ne correspond pas au type d'image annonce");
-
-      mkdirSync(deps.dataDir, { recursive: true });
-      const current = db.prepare('SELECT plan_version FROM site WHERE id = 1').get() as { plan_version: number };
-      const version = current.plan_version + 1;
-      const file = `plan-${version}.${type.ext}`;
-      writeFileSync(join(deps.dataDir, file), body);
-      db.prepare('UPDATE site SET plan_file = ?, plan_version = ? WHERE id = 1').run(file, version);
-      for (const old of readdirSync(deps.dataDir)) {
-        if (/^plan-\d+\.\w+$/.test(old) && old !== file) unlinkSync(resolve(deps.dataDir, old));
-      }
-      engine.audit(actorOf(req), 'plan_updated', { details: `${(body.length / 1024).toFixed(0)} Ko` });
-      res.json({ ok: true, planVersion: version });
-    },
-  );
+  // Ancien plan unique (avant les etages) : celui de l'etage le plus bas.
+  app.get('/api/plan', anyUser, (_req, res) => sendPlan(deps.floors.defaultId(), res));
+  app.put('/api/plan', adminOnly, rawPlan, (req, res) => {
+    res.json({ ok: true, ...deps.floors.setPlan(actorOf(req), deps.floors.defaultId(), planMime(req), req.body) });
+  });
 
   // ---- Inventaire (admin) ---------------------------------------------------------------
 

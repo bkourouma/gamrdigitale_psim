@@ -47,6 +47,7 @@ Les contrôles de `npm run commission` sont en lecture seule et n'envoient **auc
 ## 3. Plan, zones et inventaire
 
 - [ ] *Édition du plan* → remplacer le plan ; placer chaque pastille à son emplacement réel.
+- [ ] Bâtiment à plusieurs niveaux : **ajouter les étages** (du bas vers le haut), importer le plan de chacun, ranger chaque équipement sur son étage (sélecteur *Étage*). Donner aux zones un nom **par niveau** (« Étage - Chambre 1 ») : `npm run commission` signale une zone présente sur deux étages et un étage sans plan.
 - [ ] Déclarer chaque **détecteur** avec un **identifiant exact** (lettres, chiffres, `-`, `_`, 32 caractères au plus), un nom parlant, sa **zone** et sa **catégorie** (incendie, intrusion, accès, environnement). Cet identifiant est celui que l'équipement ou sa passerelle publiera : une faute de frappe et ses messages seront ignorés.
 - [ ] Pour un capteur à mesure (température…) : unité, **seuils** de préalarme et d'alarme, sens. Pour un capteur qui n'émet qu'aux changements (contact de porte) : laisser la supervision à « non supervisé » ; pour un équipement qui émet en continu : régler son délai de signe de vie.
 - [ ] **Lier** chaque détecteur aux caméras qui voient sa zone : c'est ce qui donne une image à l'opérateur à l'ouverture de l'incident.

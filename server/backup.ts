@@ -17,11 +17,12 @@ import { headOf } from './auditchain.ts';
 import { lockHolder } from './lock.ts';
 
 const NAME_PATTERN = /^psim-\d{8}-\d{6}(-\d+)?$/;
-const PLAN_PATTERN = /^plan-\d+\.(png|jpg|webp|svg)$/;
+// Plans : ancien plan unique (plan-3.svg) ou plan d'un etage (plan-2-5.svg). Voir floors.ts.
+const PLAN_PATTERN = /^plan-\d+(-\d+)?\.(png|jpg|webp|svg)$/;
 const SNAPSHOT_PATTERN = /^\d+\.jpg$/;
 
 /** Contenu legitime d'une sauvegarde : la base, la cle (si demandee), les plans et les images d'incident. */
-const ALLOWED_BACKUP_FILE = /^(psim\.db|secret\.key|plan-\d+\.(png|jpg|webp|svg)|snapshots\/\d+\.jpg)$/;
+const ALLOWED_BACKUP_FILE = /^(psim\.db|secret\.key|plan-\d+(-\d+)?\.(png|jpg|webp|svg)|snapshots\/\d+\.jpg)$/;
 
 export interface ManifestFile {
   path: string;

@@ -4,6 +4,7 @@ import { createAccountUi, createDialogs } from './account.js';
 import { createRiskView } from './risk.js';
 import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { createArmingView } from './arming.js';
+import { createFloorsUi } from './floors.js';
 import { createReportsView } from './reports.js';
 import { createUsersAdmin } from './users.js';
 
@@ -54,6 +55,9 @@ const ACTION_LABEL = {
   incident_closed: 'Incident clôturé',
   login: 'Connexion',
   plan_updated: 'Plan remplacé',
+  floor_created: 'Étage ajouté',
+  floor_updated: 'Étage modifié',
+  floor_deleted: 'Étage supprimé',
   device_created: 'Équipement ajouté',
   device_updated: 'Équipement modifié',
   device_deleted: 'Équipement supprimé',
@@ -145,6 +149,9 @@ const S = {
   arming: {},
   me: null,
   site: { name: '', hasPlan: false, planVersion: 0 },
+  floors: [],
+  floorId: null, // etage affiche a plat
+  planMode: 'floor', // 'floor' (un etage a plat) ou 'stack' (vue eclatee)
   devices: new Map(),
   links: {},
   incidents: new Map(),
@@ -179,14 +186,66 @@ function focusedIncident() {
   return chosen && isActive(chosen) ? chosen : (activeIncidents()[0] ?? null);
 }
 
+// Etage et vue choisis : simple confort par poste (le navigateur peut refuser le stockage : on s'en passe).
+function loadPlanPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('psim.plan') ?? 'null');
+    if (saved && typeof saved === 'object') {
+      if (Number.isInteger(saved.floorId)) S.floorId = saved.floorId;
+      if (saved.mode === 'stack' || saved.mode === 'floor') S.planMode = saved.mode;
+    }
+  } catch {
+    // stockage indisponible
+  }
+}
+function savePlanPrefs() {
+  try {
+    localStorage.setItem('psim.plan', JSON.stringify({ floorId: S.floorId, mode: S.planMode }));
+  } catch {
+    // stockage indisponible
+  }
+}
+loadPlanPrefs();
+
+const floorOf = (deviceId) => S.devices.get(deviceId)?.floorId ?? null;
+const floorName = (floorId) => S.floors.find((f) => f.id === floorId)?.name ?? '';
+
+/** Bascule vers l'etage d'une alarme (ouverture, aggravation, reconnexion), annoncee aux lecteurs d'ecran. */
+function followAlarm(incident) {
+  const floorId = floorOf(incident.detectorId);
+  if (floorId === null) return;
+  const moved = floorId !== S.floorId || S.planMode !== 'floor';
+  S.floorId = floorId;
+  S.planMode = 'floor';
+  if (moved && S.floors.length > 1) $('floor-announce').textContent = `Plan affiché : ${floorName(floorId)}, alarme ${incident.detectorName}.`;
+}
+
 function applySnapshot(snap) {
+  const before = S.incidents;
   S.site = snap.site;
+  S.floors = snap.floors ?? [];
+  if (!S.floors.some((f) => f.id === S.floorId)) S.floorId = S.floors[0]?.id ?? null;
+  // Plans de tous les etages charges d'avance : la bascule vers l'etage d'une alarme est immediate.
+  for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
   S.arming = snap.arming ?? {};
   armingView.load(); // etat detaille des zones d'intrusion (planning, derogations)
   S.incidents = new Map(snap.incidents.map((i) => [i.id, i]));
   S.audit = snap.audit;
+  // Premier etat recu (connexion) : une alarme non acquittee impose son etage, quel que soit le dernier choisi.
+  // Reconnexion apres une coupure : une alarme ouverte (ou aggravee) pendant la coupure fait de meme.
+  const pending = activeIncidents().filter((i) => i.status === 'open');
+  const fresh = S.loaded ? pending.filter((i) => !before.has(i.id) || before.get(i.id).status !== 'open' || before.get(i.id).severity !== i.severity) : pending;
+  if (fresh.length) {
+    if (S.loaded) {
+      S.focusIncidentId = fresh[0].id;
+      S.manualCams = [];
+      showView('supervision');
+    }
+    followAlarm(fresh[0]);
+  }
+  S.loaded = true;
   if (S.selectedId && !S.devices.has(S.selectedId)) S.selectedId = null;
   S.manualCams = S.manualCams.filter((id) => S.devices.has(id));
   renderAll(true);
@@ -201,10 +260,13 @@ function onIncident(incident) {
   if (incident.status === 'open' && (!previous || previous.status !== 'open' || previous.severity !== incident.severity)) {
     S.focusIncidentId = incident.id;
     S.manualCams = [];
+    // ... et l'etage concerne, a plat : une alarme ne reste jamais sur un etage qu'on ne regarde pas.
+    followAlarm(incident);
   }
   renderPlan();
   renderWall();
   renderIncidents();
+  renderAdmin(); // les libelles d'edition (« Remplacer le plan de ... ») suivent l'etage affiche
   updateAlarmState();
 }
 
@@ -302,6 +364,8 @@ async function loadDemoAccounts() {
 
 function showLogin() {
   S.me = null;
+  S.loaded = false;
+  S.incidents = new Map();
   S.ws?.close();
   stopTiles();
   dialogs.close();
@@ -403,18 +467,87 @@ function pinClass(d) {
   }${wallCameraIds().includes(d.id) ? ' on-wall' : ''}`;
 }
 
+const floorsUi = createFloorsUi({ h, api, toast });
+
+function currentFloor() {
+  return S.floors.find((f) => f.id === S.floorId) ?? S.floors[0] ?? null;
+}
+
+/** Affiche un etage a plat (onglet, plateau de la vue eclatee, incident). */
+function showFloor(floorId) {
+  S.floorId = floorId;
+  S.planMode = 'floor';
+  savePlanPrefs();
+  renderPlan();
+  renderAdmin();
+}
+
+function setPlanMode(mode) {
+  S.planMode = mode;
+  savePlanPrefs();
+  renderPlan();
+}
+
 function renderPlan() {
   if (S.dragging) return;
-  const img = $('plan-img');
-  $('plan-empty').hidden = S.site.hasPlan;
-  $('plan-stage').hidden = !S.site.hasPlan;
   $('site-name').textContent = S.site.name;
-  const src = `/api/plan?v=${S.site.planVersion}`;
-  if (S.site.hasPlan && !img.src.endsWith(src)) img.src = src;
+  const floor = currentFloor();
+  S.floorId = floor?.id ?? null;
+  const stack = S.planMode === 'stack' && S.floors.length > 1;
+  const devices = [...S.devices.values()];
+  const incidents = activeIncidents();
+  floorsUi.renderBar($('floor-bar'), {
+    floors: S.floors,
+    currentId: S.floorId,
+    mode: stack ? 'stack' : 'floor',
+    devices,
+    incidents,
+    editMode: S.editMode,
+    onSelect: showFloor,
+    onMode: setPlanMode,
+  });
+  $('stack-view').hidden = !stack;
+  $('plan-stage').hidden = stack;
+  if (stack) {
+    floorsUi.renderStack($('stack-view'), { floors: S.floors, devices, incidents, statusLabel: STATUS_LABEL, onOpen: showFloor });
+    return;
+  }
 
+  // Un etage sans plan reste affiche (fond neutre) : ses equipements doivent rester visibles et deplacables.
+  // Pendant le chargement du plan d'un autre etage, fond neutre aussi : jamais les pastilles d'un etage sur le dessin d'un autre.
+  const img = $('plan-img');
+  const hasPlan = Boolean(floor?.hasPlan);
+  const src = floor ? `/api/floors/${floor.id}/plan?v=${floor.planVersion}` : '';
+  if (hasPlan && img.dataset.src !== src) {
+    img.dataset.src = src;
+    img.dataset.ready = '';
+    $('plan-empty').textContent = 'Chargement du plan…';
+    img.onload = () => {
+      if (img.dataset.src === src) {
+        img.dataset.ready = '1';
+        renderPlan();
+      }
+    };
+    img.onerror = () => {
+      if (img.dataset.src === src) $('plan-empty').textContent = 'Plan indisponible (réseau ?) : les équipements restent affichés.';
+    };
+    img.src = src;
+  }
+  const planShown = hasPlan && img.dataset.ready === '1';
+  $('plan-stage').classList.toggle('no-plan', !planShown);
+  $('plan-empty').hidden = planShown;
+  if (!planShown && !(hasPlan && /indisponible/.test($('plan-empty').textContent))) {
+    $('plan-empty').textContent = hasPlan
+      ? 'Chargement du plan…'
+      : `Pas encore de plan${S.floors.length > 1 && floor ? ` pour « ${floor.name} »` : ''}. Un administrateur peut en téléverser un (Édition du plan).`;
+  }
+  img.hidden = !planShown;
+  img.alt = floor ? `Plan : ${floor.name}` : 'Plan du site';
+
+  const here = devices.filter((d) => d.floorId === S.floorId);
   const pins = $('plan-pins');
   pins.replaceChildren(
-    ...[...S.devices.values()].map((d) => {
+    ...here.map((d) => {
       const pin = h(
         'button',
         {
@@ -437,17 +570,17 @@ function renderPlan() {
     }),
   );
 
-  // Traits detecteur -> cameras associees (detecteur selectionne ou en incident).
+  // Traits detecteur -> cameras associees (detecteur selectionne ou en incident), sur l'etage affiche seulement.
   const svg = $('plan-links');
   svg.replaceChildren();
-  const shown = new Set(activeIncidents().map((i) => i.detectorId));
+  const shown = new Set(incidents.map((i) => i.detectorId));
   if (S.selectedId) shown.add(S.selectedId);
   for (const detectorId of shown) {
     const det = S.devices.get(detectorId);
-    if (det?.kind !== 'detector') continue;
+    if (det?.kind !== 'detector' || det.floorId !== S.floorId) continue;
     for (const camId of S.links[detectorId] ?? []) {
       const cam = S.devices.get(camId);
-      if (!cam) continue;
+      if (!cam || cam.floorId !== S.floorId) continue;
       const line = document.createElementNS(SVG_NS, 'line');
       line.setAttribute('x1', det.x);
       line.setAttribute('y1', det.y);
@@ -607,7 +740,8 @@ function renderWall() {
       tile = makeTile(camera);
       tiles.set(id, tile);
     }
-    tile.caption.textContent = `${camera.name}${camera.zone ? ` - ${camera.zone}` : ''}`;
+    // Plusieurs etages : la legende dit ou est la camera (elle peut filmer un autre etage que celui affiche).
+    tile.caption.textContent = `${camera.name}${camera.zone ? ` - ${camera.zone}` : ''}${S.floors.length > 1 && floorName(camera.floorId) ? ` (${floorName(camera.floorId)})` : ''}`;
     tile.el.classList.toggle('alert', fireLevelFor(camera) > 0);
     if (wall.children[index] !== tile.el) wall.insertBefore(tile.el, wall.children[index] ?? null);
   });
@@ -673,7 +807,9 @@ function hintText(details) {
 }
 
 function whereText(incident) {
-  return `${incident.zone || 'Zone non renseignée'} - ouvert à ${time(incident.openedAt)} - depuis ${elapsed(incident.openedAt)}`;
+  // Plusieurs etages : l'etage fait partie du « ou » (une meme zone peut exister a chaque niveau).
+  const floor = S.floors.length > 1 && incident.floor ? ` (${incident.floor})` : '';
+  return `${incident.zone || 'Zone non renseignée'}${floor} - ouvert à ${time(incident.openedAt)} - depuis ${elapsed(incident.openedAt)}`;
 }
 
 function buildCard(incident) {
@@ -692,8 +828,10 @@ function buildCard(incident) {
     onclick: () => {
       S.focusIncidentId = incident.id;
       S.manualCams = [];
+      followAlarm(incident);
       renderPlan();
       renderWall();
+      renderAdmin();
     },
   });
   refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: 'Commentaire (facultatif)', 'aria-label': 'Commentaire' });
@@ -1042,6 +1180,15 @@ function renderAdmin(force = false) {
     );
   }
   $('edit-tools').hidden = !S.editMode;
+  if (S.editMode) {
+    const floor = currentFloor();
+    $('plan-file-text').textContent = S.floors.length > 1 && floor ? `Remplacer le plan de « ${floor.name} »` : 'Remplacer le plan';
+    $('add-submit').textContent = S.floors.length > 1 && floor ? `Ajouter au centre de « ${floor.name} »` : 'Ajouter au centre du plan';
+    // L'etage vise est celui ECRIT sur le bouton au moment du clic, pas celui affiche au moment de l'envoi.
+    $('plan-file').dataset.floor = floor ? String(floor.id) : '';
+    $('add-submit').dataset.floor = floor ? String(floor.id) : '';
+    floorsUi.renderAdmin($('floor-admin'), { floors: S.floors, devices: [...S.devices.values()], currentId: S.floorId, rerender: () => renderAdmin() });
+  }
   renderDeviceEditor(force);
 }
 
@@ -1055,6 +1202,26 @@ function renderDeviceEditor(force = false) {
 
   const name = h('input', { value: d.name, maxlength: '80', 'aria-label': 'Nom' });
   const zone = h('input', { value: d.zone, maxlength: '80', 'aria-label': 'Zone' });
+  // Changer d'etage : l'equipement garde sa position (en % du plan) et l'ecran suit vers son nouvel etage.
+  const floorSelect = h('select', { 'aria-label': 'Étage' }, ...S.floors.map((f) => h('option', { value: String(f.id), text: f.name })));
+  floorSelect.value = String(d.floorId);
+  // Rien ne part au simple changement de choix (les fleches du clavier en declenchent un a chaque pas) : bouton explicite.
+  const moveButton = h('button', {
+    class: 'btn small',
+    type: 'button',
+    text: 'Déplacer vers cet étage',
+    disabled: true,
+    onclick: () => {
+      const floorId = Number(floorSelect.value);
+      api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { floorId } })
+        .then(() => {
+          toast(`${d.id} déplacé vers « ${floorName(floorId)} » : placez-le sur ce plan`, 'ok');
+          showFloor(floorId);
+        })
+        .catch((e) => toast(e.message));
+    },
+  });
+  floorSelect.addEventListener('change', () => (moveButton.disabled = Number(floorSelect.value) === d.floorId));
   const children = [
     h('strong', { text: `${d.id} (${d.kind === 'detector' ? `détecteur - ${CATEGORY_LABEL[d.category]}` : 'caméra'})` }),
     h(
@@ -1083,6 +1250,7 @@ function renderDeviceEditor(force = false) {
       }),
     ),
   ];
+  if (S.floors.length > 1) children.push(h('div', { class: 'row wrap' }, h('label', { class: 'row' }, h('span', { class: 'small muted', text: 'Étage :' }), floorSelect), moveButton));
   if (d.kind === 'camera') children.push(buildSourceForm(d));
   if (d.kind === 'detector') {
     const linked = new Set(S.links[d.id] ?? []);
@@ -1251,15 +1419,20 @@ $('edit-mode').addEventListener('change', (e) => {
   renderAdmin();
 });
 
+// Etage vise, fige au moment ou l'administrateur ouvre le choix du fichier (une alarme peut changer l'etage affiche entre-temps).
+let planTarget = null;
+$('plan-file').addEventListener('click', () => (planTarget = Number($('plan-file').dataset.floor) || null));
 $('plan-file').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
   try {
-    const res = await fetch('/api/plan', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': file.type }, body: file });
+    const floor = S.floors.find((f) => f.id === planTarget);
+    if (!floor) throw new Error("L'étage visé n'existe plus");
+    const res = await fetch(`/api/floors/${floor.id}/plan`, { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': file.type }, body: file });
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
-    toast('Plan remplacé', 'ok');
+    toast(S.floors.length > 1 ? `Plan de « ${floor.name} » remplacé` : 'Plan remplacé', 'ok');
     const snap = await api('/api/state');
     applySnapshot(snap);
   } catch (err) {
@@ -1280,13 +1453,14 @@ $('add-form').addEventListener('submit', async (e) => {
         id: $('add-id').value.trim(),
         name: $('add-name').value,
         zone: $('add-zone').value,
+        ...($('add-submit').dataset.floor ? { floorId: Number($('add-submit').dataset.floor) } : {}),
         ...($('add-kind').value === 'detector' ? { category: $('add-category').value } : {}),
       },
     });
     S.selectedId = created.id;
     $('add-id').value = '';
     $('add-name').value = '';
-    toast(`${created.id} ajouté au centre du plan : glissez-le à sa place`, 'ok');
+    toast(`${created.id} ajouté au centre du plan${S.floors.length > 1 ? ` de « ${floorName(created.floorId)} »` : ''} : glissez-le à sa place`, 'ok');
   } catch (err) {
     toast(err.message);
   }

@@ -278,6 +278,8 @@ export function schemaProblem(db: DatabaseSync): string | null {
   if (!columns('audit_log').includes('hash')) missing.push('audit_log.hash');
   if (columns('notification_recipient').length === 0) missing.push('table notification_recipient');
   if (columns('app_user').length > 0 && !columns('app_user').includes('totp_enabled_at')) missing.push('app_user.totp_enabled_at');
+  if (columns('floor').length === 0) missing.push('table floor');
+  if (!columns('device').includes('floor_id')) missing.push('device.floor_id');
   return missing.length ? `base d'une version anterieure (manque : ${missing.join(', ')})` : null;
 }
 
@@ -285,7 +287,7 @@ export function checkInventory(db: DatabaseSync): Check[] {
   const out: Check[] = [];
   const detectors = db.prepare("SELECT id, name, category, zone, last_seen FROM device WHERE kind = 'detector' ORDER BY id").all() as Row[];
   const cameras = db.prepare("SELECT id, name FROM device WHERE kind = 'camera' ORDER BY id").all() as Row[];
-  const site = db.prepare('SELECT plan_file FROM site WHERE id = 1').get() as Row | undefined;
+  const floors = db.prepare('SELECT id, name, plan_file FROM floor ORDER BY position, id').all() as Row[];
   out.push(
     detectors.length === 0
       ? check('inventory', 'Inventaire', 'fail', 'aucun detecteur declare', 'Ajouter les detecteurs (Edition du plan et de l\'inventaire).')
@@ -297,7 +299,19 @@ export function checkInventory(db: DatabaseSync): Check[] {
   if (unplaced.length) out.push(check('zones', 'Zones', 'warn', `${unplaced.length} detecteur(s) sans zone : ${unplaced.map((d) => d.id).join(', ')}`, "Sans zone, pas de confirmation par un voisin, ni de risque par zone."));
   const unlinked = detectors.filter((d) => !(db.prepare('SELECT 1 AS x FROM device_link WHERE detector_id = ? LIMIT 1').get(d.id as string)));
   if (unlinked.length) out.push(check('links', 'Cameras liees', 'warn', `${unlinked.length} detecteur(s) sans camera liee : ${unlinked.map((d) => d.id).join(', ')}`, "Sans camera liee, l'operateur n'a pas d'image a l'ouverture de l'incident."));
-  if (site && !site.plan_file) out.push(check('plan', 'Plan', 'warn', 'aucun plan du site', 'Edition du plan : remplacer le plan, puis placer les pastilles.'));
+  const withoutPlan = floors.filter((f) => !f.plan_file);
+  if (withoutPlan.length) {
+    out.push(
+      floors.length > 1
+        ? check('plan', 'Plan', 'warn', `etage(s) sans plan : ${withoutPlan.map((f) => f.name).join(', ')}`, "Edition du plan : choisir l'etage, remplacer son plan, puis placer les pastilles.")
+        : check('plan', 'Plan', 'warn', 'aucun plan du site', 'Edition du plan : remplacer le plan, puis placer les pastilles.'),
+    );
+  }
+  // Une zone a cheval sur deux etages : le voisin qui « confirme » une alarme, l'armement et le risque y melangent deux niveaux.
+  if (floors.length > 1) {
+    const spread = db.prepare("SELECT zone, COUNT(DISTINCT floor_id) AS n FROM device WHERE zone <> '' GROUP BY zone HAVING n > 1 ORDER BY zone").all() as Row[];
+    if (spread.length) out.push(check('zone-floors', 'Zones et etages', 'warn', `zone(s) presente(s) sur plusieurs etages : ${spread.map((z) => z.zone).join(', ')}`, "Donner un nom de zone par niveau (ex. « Etage - Chambre 1 ») : la confirmation par un voisin, l'armement et le risque sont calcules par zone."));
+  }
   const silent = detectors.filter((d) => d.last_seen === null);
   if (silent.length) out.push(check('heard', 'Detecteurs jamais entendus', 'warn', `${silent.length} detecteur(s) n'ont jamais emis : ${silent.slice(0, 12).map((d) => d.id).join(', ')}${silent.length > 12 ? '...' : ''}`, 'Lancer `npm run commission -- watch` et declencher chaque detecteur (voir la fiche de recette).'));
   const admins = db.prepare("SELECT username, totp_enabled_at FROM app_user WHERE role = 'admin' AND active = 1").all() as Row[];

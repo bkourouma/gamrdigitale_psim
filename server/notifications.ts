@@ -272,9 +272,11 @@ export function createNotifier(deps: NotifierDeps) {
         title = `${KIND_TITLE[kind]}`;
     }
     const cameras = incident.cameraIds.map((id) => engine.getDevice(id)?.name ?? id);
+    // Plusieurs etages (duplex) : l'etage dit OU intervenir, une meme zone pouvant exister a chaque niveau.
+    const manyFloors = (db.prepare('SELECT COUNT(*) AS n FROM floor').get() as { n: number }).n > 1;
     const lines = [
       `${title} - ${incident.detectorName}`,
-      `Zone : ${incident.zone || 'non renseignee'}`,
+      `Zone : ${incident.zone || 'non renseignee'}${manyFloors && incident.floor ? ` - Etage : ${incident.floor}` : ''}`,
       incident.lastValue === null ? '' : `Derniere mesure : ${incident.lastValue}${incident.valueUnit ? ` ${incident.valueUnit}` : ''}`,
       `Incident n°${incident.id}, ouvert a ${new Date(incident.openedAt).toLocaleTimeString('fr-FR')}`,
       confirmed ? `Confirmee : ${incident.confirmationReason?.replace('neighbor:', 'detecteur voisin ').replace('persistence', 'persistance')}` : "A confirmer : rien ne la corrobore pour l'instant, a traiter quand meme",
@@ -296,6 +298,7 @@ export function createNotifier(deps: NotifierDeps) {
         detectorId: incident.detectorId,
         detector: incident.detectorName,
         zone: incident.zone,
+        floor: incident.floor,
         cameras,
       },
     };
@@ -360,9 +363,11 @@ export function createNotifier(deps: NotifierDeps) {
 
   /** Un detecteur muet laisse une zone sans surveillance : niveau 1. */
   function notifySilent(device: Device): Promise<void> {
-    const text = `${device.name} (${device.zone || 'zone non renseignee'}) ne donne plus signe de vie : la zone n'est peut-etre plus surveillee.`;
+    const floors = db.prepare('SELECT id, name FROM floor').all() as { id: number; name: string }[];
+    const floor = floors.length > 1 ? floors.find((f) => f.id === device.floorId)?.name : undefined;
+    const text = `${device.name} (${device.zone || 'zone non renseignee'}${floor ? `, etage : ${floor}` : ''}) ne donne plus signe de vie : la zone n'est peut-etre plus surveillee.`;
     const title = device.category === 'fire' ? KIND_TITLE.silent : `CAPTEUR ${CATEGORY_LABEL_PLAIN[device.category].toUpperCase()} HORS LIGNE`;
-    return dispatch({ kind: 'silent', incidentId: null, subject: `[PSIM] ${title} - ${device.name}`, text: deps.publicUrl ? `${text}\nOuvrir le PSIM : ${deps.publicUrl}` : text, data: { detectorId: device.id, detector: device.name, zone: device.zone, category: device.category } }, [1]);
+    return dispatch({ kind: 'silent', incidentId: null, subject: `[PSIM] ${title} - ${device.name}`, text: deps.publicUrl ? `${text}\nOuvrir le PSIM : ${deps.publicUrl}` : text, data: { detectorId: device.id, detector: device.name, zone: device.zone, floor: floors.find((f) => f.id === device.floorId)?.name ?? '', category: device.category } }, [1]);
   }
 
   /**

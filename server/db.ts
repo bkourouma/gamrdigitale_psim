@@ -1,9 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
+import { migrateFloors } from './floors.ts';
 
 const SCHEMA = `
+-- plan_file / plan_version : ancien plan unique, repris par le premier etage a la migration (voir floors.ts), plus utilises ensuite.
 CREATE TABLE IF NOT EXISTS site (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   name TEXT NOT NULL,
+  plan_file TEXT,
+  plan_version INTEGER NOT NULL DEFAULT 0
+);
+-- Etages (duplex, immeuble) : position 0 = le plus bas ; chacun son plan. Toujours au moins un.
+CREATE TABLE IF NOT EXISTS floor (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL,
   plan_file TEXT,
   plan_version INTEGER NOT NULL DEFAULT 0
 );
@@ -168,6 +178,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'device', column: 'direction', definition: "TEXT NOT NULL DEFAULT 'above'" },
   { table: 'device', column: 'last_value', definition: 'REAL' },
   { table: 'device', column: 'heartbeat_s', definition: 'INTEGER' },
+  // Etage de l'equipement ; rempli par migrateFloors (etage le plus bas) pour les equipements existants.
+  { table: 'device', column: 'floor_id', definition: 'INTEGER REFERENCES floor(id)' },
   // Journal infalsifiable : chaine d'empreintes (voir auditchain.ts). NULL = entree anterieure au mecanisme.
   { table: 'audit_log', column: 'prev_hash', definition: 'TEXT' },
   { table: 'audit_log', column: 'hash', definition: 'TEXT' },
@@ -195,9 +207,11 @@ function migrate(db: DatabaseSync): void {
 }
 
 export function openDb(path: string): DatabaseSync {
-  const db = new DatabaseSync(path);
+  // Attendre un verrou (sauvegarde, outil, serveur qui ecrit) plutot qu'echouer aussitot sur « database is locked ».
+  const db = new DatabaseSync(path, { timeout: 5000 });
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   migrate(db); // les donnees existantes sont conservees
+  migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
   return db;
 }

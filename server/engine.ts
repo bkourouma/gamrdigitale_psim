@@ -1,5 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { appendSealed } from './auditchain.ts';
+import { PsimError } from './errors.ts';
+import { defaultFloorId, listFloors } from './floors.ts';
+import { hasForbiddenChar, normalizeName } from './text.ts';
 import { ALWAYS_ACTIVE_EVENTS, CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
 import type {
   AuditEntry,
@@ -22,18 +25,12 @@ const MAX_LABEL = 80;
 const MAX_UNIT = 12;
 const MAX_HEARTBEAT_S = 7 * 24 * 3600;
 
-/** Erreur destinee a etre renvoyee telle quelle a l'appelant (code HTTP inclus). */
-export class PsimError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+export { PsimError };
 
 type Row = Record<string, unknown>;
 
-function rowToDevice(r: Row): Device {
+/** `fallbackFloor` : etage d'un equipement insere sans etage depuis l'ouverture de la base (la migration le rattachera). */
+function rowToDevice(r: Row, fallbackFloor: number): Device {
   return {
     id: r.id as string,
     kind: r.kind as DeviceKind,
@@ -41,6 +38,7 @@ function rowToDevice(r: Row): Device {
     zone: r.zone as string,
     x: r.x as number,
     y: r.y as number,
+    floorId: (r.floor_id as number | null) ?? fallbackFloor,
     status: r.status as string,
     streamKind: (r.stream_kind as string | null) ?? null,
     lastSeen: (r.last_seen as number | null) ?? null,
@@ -126,7 +124,7 @@ export function createEngine(
   const startedAt = now();
   function getDevice(id: string): Device | null {
     const r = db.prepare('SELECT * FROM device WHERE id = ?').get(id) as Row | undefined;
-    return r ? rowToDevice(r) : null;
+    return r ? rowToDevice(r, r.floor_id === null ? defaultFloorId(db) : 0) : null;
   }
 
   function linkedCameras(detectorId: string): string[] {
@@ -140,8 +138,9 @@ export function createEngine(
   function incidentView(id: number): Incident {
     const r = db
       .prepare(
-        `SELECT i.*, d.name AS detector_name, d.zone AS zone, d.category AS category, d.last_value AS last_value, d.value_unit AS value_unit
-           FROM incident i JOIN device d ON d.id = i.detector_id WHERE i.id = ?`,
+        `SELECT i.*, d.name AS detector_name, d.zone AS zone, d.category AS category, d.last_value AS last_value, d.value_unit AS value_unit,
+                COALESCE(f.name, (SELECT name FROM floor ORDER BY position, id LIMIT 1)) AS floor_name
+           FROM incident i JOIN device d ON d.id = i.detector_id LEFT JOIN floor f ON f.id = d.floor_id WHERE i.id = ?`,
       )
       .get(id) as Row | undefined;
     if (!r) throw new PsimError(404, 'Incident introuvable');
@@ -150,6 +149,7 @@ export function createEngine(
       detectorId: r.detector_id as string,
       detectorName: r.detector_name as string,
       zone: r.zone as string,
+      floor: (r.floor_name as string | null) ?? '',
       category: ((r.category as string | null) ?? 'fire') as DeviceCategory,
       lastValue: (r.last_value as number | null) ?? null,
       valueUnit: (r.value_unit as string | null) ?? null,
@@ -495,9 +495,23 @@ export function createEngine(
     if (typeof value !== 'string' || value.length > MAX_LABEL) {
       throw new PsimError(400, `${field} invalide (max ${MAX_LABEL} caracteres)`);
     }
-    // Pas de retour a la ligne ni de sequence d'echappement dans un nom : ils finiraient dans des e-mails, des messages Telegram, des journaux et des terminaux.
-    if (/[\u0000-\u001f\u007f]/.test(value)) throw new PsimError(400, `${field} invalide (caracteres de controle interdits)`);
-    return value.trim();
+    // Pas de retour a la ligne, de sequence d'echappement ni de caractere invisible dans un nom (voir text.ts).
+    if (hasForbiddenChar(value)) throw new PsimError(400, `${field} invalide (caracteres de controle ou invisibles interdits)`);
+    return normalizeName(value);
+  }
+
+  /**
+   * Une zone appartient a UN etage. Deux « Chambre » sur deux niveaux seraient une seule zone pour l'armement (desarmer
+   * l'une ferait ignorer les intrusions de l'autre), la confirmation par un voisin et le risque : refuse, avec la marche a suivre.
+   */
+  function checkZoneFloor(zone: string, floorId: number, deviceId: string): void {
+    if (!zone) return;
+    const other = db
+      .prepare('SELECT d.id AS id, f.name AS floor FROM device d LEFT JOIN floor f ON f.id = d.floor_id WHERE d.zone = ? AND d.id <> ? AND COALESCE(d.floor_id, ?) <> ? LIMIT 1')
+      .get(zone, deviceId, defaultFloorId(db), floorId) as { id: string; floor: string | null } | undefined;
+    if (other) {
+      throw new PsimError(409, `La zone « ${zone} » est deja utilisee a l'etage « ${other.floor ?? '?'} » (${other.id}) : une zone appartient a un seul etage. Nommer la zone par niveau (ex. « ${floorName(floorId)} - ${zone} »).`);
+    }
   }
 
   function cleanPercent(value: unknown, field: string): number {
@@ -506,6 +520,17 @@ export function createEngine(
     }
     return value;
   }
+
+  /** Etage existant (absent = l'etage le plus bas ; `null` n'est pas un etage : refuse plutot que deplacer en silence). */
+  function cleanFloor(value: unknown): number {
+    if (value === undefined) return defaultFloorId(db);
+    if (typeof value !== 'number' || !Number.isInteger(value) || !db.prepare('SELECT 1 AS x FROM floor WHERE id = ?').get(value)) {
+      throw new PsimError(400, 'Etage inconnu');
+    }
+    return value;
+  }
+
+  const floorName = (id: number) => (db.prepare('SELECT name FROM floor WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? String(id);
 
   const SENSOR_FIELDS = ['category', 'valueUnit', 'warnAt', 'alarmAt', 'direction', 'heartbeatS'];
 
@@ -561,10 +586,12 @@ export function createEngine(
     const zone = cleanLabel(input.zone, 'zone', false);
     const x = input.x === undefined ? 50 : cleanPercent(input.x, 'x');
     const y = input.y === undefined ? 50 : cleanPercent(input.y, 'y');
+    const floorId = cleanFloor(input.floorId);
+    checkZoneFloor(zone, floorId, id);
     const sensor = input.kind === 'detector' ? cleanSensor(input, null) : cleanSensor({}, null, true);
     db.prepare(
-      'INSERT INTO device (id, kind, name, zone, x, y, stream_kind, category, value_unit, warn_at, alarm_at, direction, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, input.kind, name, zone, x, y, input.kind === 'camera' ? 'simulated' : null, sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS);
+      'INSERT INTO device (id, kind, name, zone, x, y, floor_id, stream_kind, category, value_unit, warn_at, alarm_at, direction, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, input.kind, name, zone, x, y, floorId, input.kind === 'camera' ? 'simulated' : null, sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS);
     audit(actor, 'device_created', { deviceId: id, details: `${input.kind} ${name}${sensor.category === 'fire' ? '' : ` (${sensor.category})`}` });
     publish({ type: 'config' });
     return getDevice(id) as Device;
@@ -577,18 +604,20 @@ export function createEngine(
     const zone = input.zone === undefined ? device.zone : cleanLabel(input.zone, 'zone', false);
     const x = input.x === undefined ? device.x : cleanPercent(input.x, 'x');
     const y = input.y === undefined ? device.y : cleanPercent(input.y, 'y');
+    const floorId = input.floorId === undefined ? device.floorId : cleanFloor(input.floorId);
+    if (zone !== device.zone || floorId !== device.floorId) checkZoneFloor(zone, floorId, id);
     const sensor = device.kind === 'detector' ? cleanSensor(input, device) : null;
     if (sensor && sensor.category !== device.category && db.prepare("SELECT 1 AS x FROM incident WHERE detector_id = ? AND status <> 'closed'").get(id)) {
       throw new PsimError(409, 'Un incident est en cours sur ce detecteur : le traiter avant de changer sa categorie');
     }
     if (!sensor && SENSOR_FIELDS.some((f) => input[f] !== undefined)) throw new PsimError(400, 'Ces reglages ne concernent que les detecteurs');
-    db.prepare('UPDATE device SET name = ?, zone = ?, x = ?, y = ? WHERE id = ?').run(name, zone, x, y, id);
+    db.prepare('UPDATE device SET name = ?, zone = ?, x = ?, y = ?, floor_id = ? WHERE id = ?').run(name, zone, x, y, floorId, id);
     if (sensor) {
       db.prepare('UPDATE device SET category = ?, value_unit = ?, warn_at = ?, alarm_at = ?, direction = ?, heartbeat_s = ? WHERE id = ?').run(
         sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS, id,
       );
     }
-    audit(actor, 'device_updated', { deviceId: id });
+    audit(actor, 'device_updated', { deviceId: id, details: floorId !== device.floorId ? `deplace vers l'etage ${floorName(floorId)}` : undefined });
     publish({ type: 'config' });
     return getDevice(id) as Device;
   }
@@ -631,12 +660,9 @@ export function createEngine(
   }
 
   function getSnapshot(): Snapshot {
-    const site = (db.prepare('SELECT name, plan_file, plan_version FROM site WHERE id = 1').get() as Row | undefined) ?? {
-      name: 'Site',
-      plan_file: null,
-      plan_version: 0,
-    };
-    const devices = (db.prepare('SELECT * FROM device ORDER BY kind, id').all() as Row[]).map(rowToDevice);
+    const site = (db.prepare('SELECT name FROM site WHERE id = 1').get() as Row | undefined) ?? { name: 'Site' };
+    const floors = listFloors(db);
+    const devices = (db.prepare('SELECT * FROM device ORDER BY kind, id').all() as Row[]).map((r) => rowToDevice(r, floors[0].id));
     const links: Record<string, string[]> = {};
     for (const r of db.prepare('SELECT detector_id, camera_id FROM device_link ORDER BY camera_id').all() as Row[]) {
       (links[r.detector_id as string] ??= []).push(r.camera_id as string);
@@ -653,9 +679,10 @@ export function createEngine(
     return {
       site: {
         name: site.name as string,
-        hasPlan: Boolean(site.plan_file),
-        planVersion: site.plan_version as number,
+        hasPlan: floors[0].hasPlan,
+        planVersion: floors[0].planVersion,
       },
+      floors,
       devices,
       links,
       arming: options.armingState?.() ?? {},

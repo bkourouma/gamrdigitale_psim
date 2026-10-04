@@ -30,6 +30,8 @@ export interface IncidentRecord {
   detectorId: string;
   detectorName: string;
   zone: string;
+  /** Etage du detecteur (vide pour un enregistrement construit sans). */
+  floor?: string;
   category: DeviceCategory;
   severity: 'warning' | 'critical';
   status: 'open' | 'acknowledged' | 'closed';
@@ -231,7 +233,7 @@ export function toCsv(header: string[], rows: unknown[][]): string {
 
 export function incidentsCsv(records: IncidentRecord[]): string {
   return toCsv(
-    ['N°', 'Ouvert le', 'Catégorie', 'Détecteur', 'Nom', 'Zone', 'Gravité', 'État', 'Confirmation', 'Acquitté le', 'Acquitté par', 'Délai d’acquittement (s)', 'Clôturé le', 'Clôturé par', 'Durée (s)', 'Qualification', 'Commentaire', 'Images', 'Alertes envoyées', 'Alertes en échec'],
+    ['N°', 'Ouvert le', 'Catégorie', 'Détecteur', 'Nom', 'Zone', 'Étage', 'Gravité', 'État', 'Confirmation', 'Acquitté le', 'Acquitté par', 'Délai d’acquittement (s)', 'Clôturé le', 'Clôturé par', 'Durée (s)', 'Qualification', 'Commentaire', 'Images', 'Alertes envoyées', 'Alertes en échec'],
     records.map((r) => [
       r.id,
       fmtDateTime(r.openedAt),
@@ -239,6 +241,7 @@ export function incidentsCsv(records: IncidentRecord[]): string {
       r.detectorId,
       r.detectorName,
       r.zone,
+      r.floor ?? '',
       SEVERITY[r.severity],
       STATUS[r.status],
       confirmationText(r),
@@ -264,6 +267,7 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
     const rows = db
       .prepare(
         `SELECT i.*, d.name AS detector_name, d.zone AS zone, d.category AS category,
+                COALESCE((SELECT f.name FROM floor f WHERE f.id = d.floor_id), (SELECT name FROM floor ORDER BY position, id LIMIT 1)) AS floor_name,
                 (SELECT COUNT(*) FROM incident_snapshot s WHERE s.incident_id = i.id) AS snapshots,
                 (SELECT COUNT(*) FROM notification_log n WHERE n.incident_id = i.id AND n.kind <> 'round' AND n.status = 'sent') AS sent,
                 (SELECT COUNT(*) FROM notification_log n WHERE n.incident_id = i.id AND n.kind <> 'round' AND n.status = 'failed') AS failed
@@ -281,6 +285,7 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
       detectorId: r.detector_id as string,
       detectorName: r.detector_name as string,
       zone: r.zone as string,
+      floor: (r.floor_name as string | null) ?? '',
       category: ((r.category as string | null) ?? 'fire') as DeviceCategory,
       severity: r.severity as IncidentRecord['severity'],
       status: r.status as IncidentRecord['status'],
@@ -314,6 +319,7 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
     const row = db
       .prepare(
         `SELECT i.*, d.name AS detector_name, d.zone AS zone, d.category AS category,
+                COALESCE((SELECT f.name FROM floor f WHERE f.id = d.floor_id), (SELECT name FROM floor ORDER BY position, id LIMIT 1)) AS floor_name,
                 (SELECT COUNT(*) FROM incident_snapshot s WHERE s.incident_id = i.id) AS snapshots,
                 (SELECT COUNT(*) FROM notification_log n WHERE n.incident_id = i.id AND n.kind <> 'round' AND n.status = 'sent') AS sent,
                 (SELECT COUNT(*) FROM notification_log n WHERE n.incident_id = i.id AND n.kind <> 'round' AND n.status = 'failed') AS failed
@@ -406,7 +412,7 @@ ${PAGE_FOOT()}`;
 <p class="meta">${esc(siteName())} — établie le ${esc(fmtDateTime(now))} (heure du serveur)</p>
 <table class="kv"><tbody>
 <tr><th>Détecteur</th><td>${esc(r.detectorId)} — ${esc(r.detectorName)} (${esc(CATEGORY_LABEL[r.category])})</td></tr>
-<tr><th>Zone</th><td>${esc(r.zone || 'non renseignée')}</td></tr>
+<tr><th>Zone</th><td>${esc(r.zone || 'non renseignée')}${r.floor ? ` — étage : ${esc(r.floor)}` : ''}</td></tr>
 <tr><th>Ouvert le</th><td>${esc(fmtDateTime(r.openedAt))} — ${esc(SEVERITY[r.severity])}</td></tr>
 <tr><th>Confirmation</th><td>${esc(confirmationText(r))}</td></tr>
 <tr><th>Acquittement</th><td>${r.ackedAt === null ? 'Non acquitté' : `${esc(r.ackedBy)} le ${esc(fmtDateTime(r.ackedAt))} (délai : ${esc(fmtDuration(Math.round((r.ackedAt - r.openedAt) / 1000)))})`}</td></tr>

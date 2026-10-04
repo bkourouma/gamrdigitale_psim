@@ -303,7 +303,7 @@ describe('controles locaux : disque, sauvegardes, inventaire, journal, cameras',
     assert.equal(schemaProblem(db), null);
     const old = new DatabaseSync(':memory:');
     old.exec("CREATE TABLE device (id TEXT PRIMARY KEY, kind TEXT, name TEXT); CREATE TABLE audit_log (id INTEGER PRIMARY KEY, ts INTEGER, actor TEXT, action TEXT); CREATE TABLE app_user (username TEXT PRIMARY KEY, role TEXT)");
-    assert.match(schemaProblem(old)!, /base d'une version anterieure \(manque : device\.category, audit_log\.hash, table notification_recipient, app_user\.totp_enabled_at\)/);
+    assert.match(schemaProblem(old)!, /base d'une version anterieure \(manque : device\.category, audit_log\.hash, table notification_recipient, app_user\.totp_enabled_at, table floor, device\.floor_id\)/);
   });
 
   it("journal : intact = ok ; altere = echec avec l'entree en cause", () => {
