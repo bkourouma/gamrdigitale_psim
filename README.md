@@ -169,7 +169,7 @@ Le PSIM a fait l'objet d'une **relecture de sécurité indépendante** (trois re
 - **Données au repos** : sauvegardes, journaux et images ne sont pas chiffrés ; seule la clé est protégée par ACL. Codes de secours : 40 bits, hachés sans sel (la limitation d'essais en ligne les protège, pas une copie volée de la base).
 - **Pas de step-up** : créer un administrateur ou réinitialiser une 2FA n'exige pas de ressaisir un mot de passe ; un cookie d'administrateur volé suffit.
 - **HSTS d'un an** avec un certificat auto-signé de 825 jours : à l'expiration, les navigateurs interdisent de passer outre l'erreur. Prévoir le renouvellement.
-- **Pas de test d'intrusion externe** : cette relecture est faite sur le code et sur des instances jetables, pas par un tiers sur une installation réelle.
+- **Pas de test d'intrusion externe** : la relecture et l'**auto-test en boîte noire** (`test/e2e-attack.test.ts` : matrice d'autorisations de toutes les routes, fuzzing de chaque corps et paramètre, requêtes HTTP malformées, connexions lentes, rafales ; **aucune erreur interne ni plantage constatés**) sont faits par l'équipe qui a écrit le code, sur des instances jetables, pas par un tiers sur une installation réelle. Un cahier des charges prêt à remettre à un testeur est dans [docs/TEST-INTRUSION.md](docs/TEST-INTRUSION.md).
 
 ## Gestion des risques (indice par zone)
 

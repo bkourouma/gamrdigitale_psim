@@ -9,7 +9,14 @@
     - "PSIM-healthcheck" : toutes les minutes, verifie /healthz ; apres 3 echecs consecutifs, arrete le PSIM
                            bloque pour que la tache "PSIM" le relance.
 
-  A lancer dans un PowerShell OUVERT EN ADMINISTRATEUR, depuis le dossier du projet :
+  Deux modes :
+    - SERVICE (par defaut) : demarre avec la machine, meme sans session ouverte ; demande un PowerShell OUVERT EN
+      ADMINISTRATEUR (compte SYSTEM ou compte de service dedie).
+    - -AtLogon : pour un poste ordinaire, SANS droits d'administrateur : demarre a l'OUVERTURE DE SESSION de l'utilisateur
+      courant et tourne sous son compte. Le PSIM ne tourne donc que session ouverte ; a reserver aux postes ou quelqu'un se
+      connecte en permanence (poste de supervision), sinon preferer le mode service.
+
+  A lancer depuis le dossier du projet :
 
     .\scripts\windows-service.ps1 -Action Install            # installe et demarre
     .\scripts\windows-service.ps1 -Action Status             # etat
@@ -40,7 +47,10 @@ param(
     [string]$EnvFile = '.env',
 
     # Installer malgre un dossier modifiable par des utilisateurs ordinaires (deconseille : voir l'avertissement).
-    [switch]$AllowWritableTree
+    [switch]$AllowWritableTree,
+
+    # Mode poste ordinaire : tache de l'utilisateur courant, lancee a l'ouverture de session, sans administrateur.
+    [switch]$AtLogon
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,7 +87,7 @@ function Get-NodePath {
     return $cmd.Source
 }
 
-if ($Action -in 'Install', 'Uninstall', 'Start', 'Stop' -and -not $WhatIfPreference -and -not (Test-Admin)) {
+if ($Action -in 'Install', 'Uninstall', 'Start', 'Stop' -and -not $AtLogon -and -not $WhatIfPreference -and -not (Test-Admin)) {
     throw "Cette action demande un PowerShell ouvert en administrateur (clic droit > Executer en tant qu'administrateur)."
 }
 
@@ -91,7 +101,9 @@ switch ($Action) {
         if ($writable.Count -gt 0 -and -not $AllowWritableTree) {
             throw ("Le dossier du PSIM est MODIFIABLE par des utilisateurs ordinaires :`n  " + ($writable -join "`n  ") + "`nUn PSIM lance par une tache planifiee executerait leur code avec les droits du compte de service. Corrigez les droits, par exemple (PowerShell administrateur ; ATTENTION : cela retire l'ecriture aux utilisateurs ordinaires, vous compris si vous n'etes pas administrateur) :`n  icacls `"$Root`" /inheritance:r /grant:r `"*S-1-5-18:(OI)(CI)F`" `"*S-1-5-32-544:(OI)(CI)F`" `"*S-1-5-32-545:(OI)(CI)RX`"`npuis donnez au compte de service le droit d'ECRIRE dans le seul dossier de donnees. (-AllowWritableTree pour passer outre, deconseille.)")
         }
-        $principal = if ($User -eq 'SYSTEM') {
+        $principal = if ($AtLogon) {
+            New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+        } elseif ($User -eq 'SYSTEM') {
             New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         } else {
             $cred = Get-Credential -UserName $User -Message "Mot de passe du compte qui executera le PSIM"
@@ -100,7 +112,7 @@ switch ($Action) {
 
         # --- Tache principale : demarrage au boot, relance automatique -------------------------------------------
         $run = New-ScheduledTaskAction -Execute $node -Argument "--env-file=$EnvFile server/index.ts" -WorkingDirectory $Root
-        $boot = New-ScheduledTaskTrigger -AtStartup
+        $boot = if ($AtLogon) { New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name) } else { New-ScheduledTaskTrigger -AtStartup }
         $settings = New-ScheduledTaskSettingsSet `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
             -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
@@ -112,8 +124,11 @@ switch ($Action) {
         $everyMinute = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 1)
         $checkSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew
 
-        if ($PSCmdlet.ShouldProcess("$MainTask et $HealthTask", "Creer les taches planifiees (dossier : $Root, compte : $User)")) {
-            if ($User -eq 'SYSTEM') {
+        if ($PSCmdlet.ShouldProcess("$MainTask et $HealthTask", "Creer les taches planifiees (dossier : $Root, compte : $(if ($AtLogon) { $env:USERNAME + ', ouverture de session, sans administrateur' } else { $User }))")) {
+            if ($AtLogon) {
+                Register-ScheduledTask -TaskName $MainTask -Action $run -Trigger $boot -Settings $settings -Principal $principal -Description 'GAMRdigitale PSIM (ouverture de session)' -Force | Out-Null
+                Register-ScheduledTask -TaskName $HealthTask -Action $checkAction -Trigger $everyMinute -Settings $checkSettings -Principal $principal -Description 'Controle de sante du PSIM' -Force | Out-Null
+            } elseif ($User -eq 'SYSTEM') {
                 Register-ScheduledTask -TaskName $MainTask -Action $run -Trigger $boot -Settings $settings -Principal $principal -Description 'GAMRdigitale PSIM' -Force | Out-Null
                 Register-ScheduledTask -TaskName $HealthTask -Action $checkAction -Trigger $everyMinute -Settings $checkSettings -Principal $principal -Description 'Controle de sante du PSIM' -Force | Out-Null
             } else {
@@ -122,7 +137,7 @@ switch ($Action) {
                 Register-ScheduledTask -TaskName $HealthTask -Action $checkAction -Trigger $everyMinute -Settings $checkSettings -User $User -Password $plain -RunLevel Limited -Description 'Controle de sante du PSIM' -Force | Out-Null
             }
             Start-ScheduledTask -TaskName $MainTask
-            Write-Host "Installe. Le PSIM demarre maintenant et a chaque demarrage de la machine ; il est relance s'il s'arrete."
+            Write-Host $(if ($AtLogon) { "Installe (mode ouverture de session). Le PSIM demarre maintenant et a chaque ouverture de session de $env:USERNAME ; il est relance s'il s'arrete." } else { "Installe. Le PSIM demarre maintenant et a chaque demarrage de la machine ; il est relance s'il s'arrete." })
             Write-Host "Journaux : $(Join-Path $Root 'data\logs\psim.log')"
         }
     }
