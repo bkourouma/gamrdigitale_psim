@@ -2,7 +2,7 @@
  * Sauvegarde manuelle ou planifiee (tache planifiee Windows, cron) :
  *
  *   npm run backup                  sauvegarde dans ./backups (ou PSIM_BACKUP_DIR)
- *   npm run backup -- --with-key    inclut aussi data/secret.key (cle des mots de passe de cameras)
+ *   npm run backup -- --with-key    inclut aussi <dossier de donnees>/secret.key (cle des mots de passe de cameras)
  *   npm run backup -- --keep 30     conserve les 30 dernieres sauvegardes
  *
  * Peut tourner pendant que le PSIM fonctionne : la copie de la base est coherente.
@@ -31,7 +31,9 @@ try {
   console.log(`Dossier : ${result.dir}`);
   if (removed.length) console.log(`${removed.length} ancienne(s) sauvegarde(s) supprimee(s) (on garde les ${keep} dernieres).`);
   if (!withKey) {
-    console.log('\nLa cle de chiffrement des mots de passe de cameras (data/secret.key) n\'est PAS dans cette sauvegarde.');
+    // Le vrai emplacement (data-prod en production), ou la variable d'environnement si la cle n'est pas dans un fichier.
+    const keyWhere = config.secretKey ? 'variable PSIM_SECRET_KEY' : join(dataDir, 'secret.key');
+    console.log(`\nLa cle de chiffrement des mots de passe de cameras (${keyWhere}) n'est PAS dans cette sauvegarde.`);
     console.log('Conservez-la a part, dans un coffre : sans elle, il faudra ressaisir les mots de passe des cameras apres une restauration sur une autre machine.');
   }
   console.log('\nRappel : une sauvegarde sur le meme disque ne protege pas d\'une panne de disque. Copiez ce dossier ailleurs (disque externe, reseau).');
