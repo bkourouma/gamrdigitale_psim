@@ -68,14 +68,17 @@ function Test-Admin {
 function Get-WritableByOrdinaryUsers {
     param([string[]]$Paths)
     $risky = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')   # Tout le monde, Utilisateurs authentifies, Utilisateurs
-    $write = [Security.AccessControl.FileSystemRights]'WriteData, CreateFiles, AppendData, Write, Modify, FullControl'
+    # Bits d'ECRITURE seulement (jamais FullControl : il contient tous les bits, lecture comprise, et ferait passer la lecture seule pour une ecriture).
+    # Ecrire/creer 0x2, ajouter 0x4, attributs 0x10 et 0x100, supprimer dans le dossier 0x40, supprimer 0x10000, changer les droits 0x40000,
+    # prendre possession 0x80000, et les droits generiques ecriture 0x40000000 / tout 0x10000000.
+    $write = 0x500D0156
     $found = @()
     foreach ($p in $Paths) {
         if (-not (Test-Path $p)) { continue }
         foreach ($rule in (Get-Acl $p).Access) {
             if ($rule.AccessControlType -ne 'Allow') { continue }
             try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { continue }
-            if (($risky -contains $sid) -and (($rule.FileSystemRights -band $write) -ne 0)) { $found += "$p : $($rule.IdentityReference)"; break }
+            if (($risky -contains $sid) -and ((([int]$rule.FileSystemRights) -band $write) -ne 0)) { $found += "$p : $($rule.IdentityReference)"; break }
         }
     }
     return $found
