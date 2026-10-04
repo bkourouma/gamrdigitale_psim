@@ -479,6 +479,7 @@ function showFloor(floorId) {
   S.planMode = 'floor';
   savePlanPrefs();
   renderPlan();
+  renderWall(); // vue generale : les cameras de l'etage affiche
   renderAdmin();
 }
 
@@ -486,6 +487,7 @@ function setPlanMode(mode) {
   S.planMode = mode;
   savePlanPrefs();
   renderPlan();
+  renderWall();
 }
 
 function renderPlan() {
@@ -668,11 +670,31 @@ function fireLevelFor(camera, fireOnly = false) {
   return level;
 }
 
-function wallCameraIds() {
-  if (S.manualCams.length) return S.manualCams;
+// Flux affiches a la fois : le serveur en sert 6 au plus, et il en faut de reste pour les images jointes aux incidents.
+const WALL_SIZE = 4;
+
+/** Cameras du mur : selection manuelle, cameras de l'incident suivi, ou vue generale (cameras de l'etage affiche). */
+function wallSource() {
+  if (S.manualCams.length) return { key: 'manual', ids: S.manualCams, label: 'Sélection manuelle' };
   const incident = focusedIncident();
-  const ids = incident ? incident.cameraIds : devicesOf('camera').map((c) => c.id);
-  return ids.filter((id) => S.devices.has(id)).slice(0, 4);
+  if (incident) return { key: `incident:${incident.id}`, ids: incident.cameraIds, label: `Incident n°${incident.id} - ${incident.detectorName}` };
+  const floor = S.floors.length > 1 && S.planMode === 'floor' ? currentFloor() : null;
+  const here = floor ? devicesOf('camera').filter((c) => c.floorId === floor.id) : [];
+  if (floor && here.length) return { key: `floor:${floor.id}`, ids: here.map((c) => c.id), label: `Vue générale - ${floor.name}` };
+  return { key: 'all', ids: devicesOf('camera').map((c) => c.id), label: floor ? `Vue générale (aucune caméra à « ${floor.name} »)` : 'Vue générale' };
+}
+
+/** Cameras de la page affichee ; on feuillette par 4 (boutons du mur), et on revient a la page 1 quand la source change. */
+function wallCameraIds() {
+  const source = wallSource();
+  if (S.wallKey !== source.key) {
+    S.wallKey = source.key;
+    S.wallPage = 0;
+  }
+  const ids = source.ids.filter((id) => S.devices.has(id));
+  S.wallPages = Math.max(1, Math.ceil(ids.length / WALL_SIZE));
+  S.wallPage = Math.min(Math.max(0, S.wallPage ?? 0), S.wallPages - 1);
+  return ids.slice(S.wallPage * WALL_SIZE, (S.wallPage + 1) * WALL_SIZE);
 }
 
 function makeTile(camera) {
@@ -708,13 +730,11 @@ function stopTiles() {
 function renderWall() {
   const wall = $('wall');
   const ids = wallCameraIds();
-  const incident = S.manualCams.length ? null : focusedIncident();
-
-  $('wall-mode').textContent = S.manualCams.length
-    ? 'Sélection manuelle'
-    : incident
-      ? `Incident n°${incident.id} - ${incident.detectorName}`
-      : 'Vue générale';
+  const pages = S.wallPages;
+  $('wall-mode').textContent = `${wallSource().label}${pages > 1 ? ` - caméras ${S.wallPage * WALL_SIZE + 1} à ${S.wallPage * WALL_SIZE + ids.length} (page ${S.wallPage + 1}/${pages})` : ''}`;
+  $('wall-pager').hidden = pages <= 1;
+  $('wall-prev').disabled = S.wallPage === 0;
+  $('wall-next').disabled = S.wallPage >= pages - 1;
   $('wall-auto').hidden = S.manualCams.length === 0;
 
   for (const [id, tile] of tiles) {
@@ -754,6 +774,13 @@ $('wall-auto').addEventListener('click', () => {
   renderPlan();
   renderWall();
 });
+for (const [id, step] of [['wall-prev', -1], ['wall-next', 1]]) {
+  $(id).addEventListener('click', () => {
+    S.wallPage = (S.wallPage ?? 0) + step;
+    renderWall();
+    renderPlan(); // le liseré « à l'écran » des pastilles suit la page
+  });
+}
 
 // ---------------------------------------------------------------- incidents
 

@@ -487,7 +487,7 @@ Fonctionnement :
 
 - Le PSIM interroge la caméra en ONVIF, choisit le profil **le moins lourd** (H.264 ou JPEG, plus petite résolution) et reçoit son adresse RTSP. L'adresse annoncée par la caméra est ignorée au profit de celle que vous avez saisie.
 - `ffmpeg` convertit le flux en images JPEG (640 px, 8 images/s), affichées dans le mur vidéo. **Un seul `ffmpeg` par caméra**, quel que soit le nombre d'opérateurs, arrêté 5 secondes après le départ du dernier.
-- 6 flux simultanés au maximum (le mur en affiche 4).
+- 6 flux simultanés au maximum (le mur en affiche 4, il en reste pour les images jointes aux incidents). Au-delà de 4 caméras, les boutons ◀ ▶ du mur feuillettent par 4 ; la vue générale montre les caméras de l'**étage affiché** (toutes, en vue éclatée ou s'il n'y en a aucune à cet étage), un incident montre ses caméras liées, un clic sur des pastilles de caméra en compose une sélection (4 au plus).
 - Les mots de passe sont **chiffrés en base** (AES-256-GCM). La clé est dans `data/secret.key` (ou `PSIM_SECRET_KEY`) : la sauvegarder séparément de la base, la perdre oblige à ressaisir les mots de passe. Ils ne sont jamais renvoyés au navigateur, ni écrits dans le journal ni dans les logs.
 - Une caméra en panne affiche la cause dans sa vignette (connexion refusée, identifiants refusés, chemin introuvable…) et le PSIM retente automatiquement.
 
