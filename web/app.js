@@ -591,6 +591,8 @@ function renderWall() {
       tiles.delete(id);
     }
   }
+  // Le message « aucune camera » d'un mur vide doit disparaitre des qu'une camera arrive.
+  if (ids.length > 0) for (const stale of [...wall.children]) if (stale.classList.contains('empty')) stale.remove();
   ids.forEach((id, index) => {
     const camera = S.devices.get(id);
     let tile = tiles.get(id);
