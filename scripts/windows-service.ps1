@@ -141,7 +141,12 @@ switch ($Action) {
             }
             Start-ScheduledTask -TaskName $MainTask
             Write-Host $(if ($AtLogon) { "Installe (mode ouverture de session). Le PSIM demarre maintenant et a chaque ouverture de session de $env:USERNAME ; il est relance s'il s'arrete." } else { "Installe. Le PSIM demarre maintenant et a chaque demarrage de la machine ; il est relance s'il s'arrete." })
-            Write-Host "Journaux : $(Join-Path $Root 'data\logs\psim.log')"
+            # Le dossier de donnees est celui du fichier d'environnement (data-prod pour init-production), pas forcement "data".
+            $dataDir = 'data'
+            $line = Select-String -Path (Join-Path $Root $EnvFile) -Pattern '^\s*PSIM_DATA_DIR=(.+)$' | Select-Object -First 1
+            if ($line) { $dataDir = $line.Matches[0].Groups[1].Value.Trim().Trim('"') }
+            $logDir = if ([IO.Path]::IsPathRooted($dataDir)) { $dataDir } else { Join-Path $Root $dataDir }
+            Write-Host "Journaux : $(Join-Path $logDir 'logs\psim.log')"
         }
     }
     'Uninstall' {
