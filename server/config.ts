@@ -24,6 +24,20 @@ function num(name: string, fallback: number, min = 0, max = Number.MAX_SAFE_INTE
 }
 const seconds = (name: string, fallback: number): number => num(name, fallback);
 
+/**
+ * Destinataires WhatsApp « +<indicatif><numero>:<cle> » : une entree mal formee est une erreur de demarrage (jamais un
+ * destinataire ignore en silence). Le message ne cite jamais l'entree : elle contient une cle.
+ */
+function whatsappList(name: string): string[] {
+  const entries = list(name);
+  entries.forEach((entry, index) => {
+    if (!/^\+\d{8,15}:[A-Za-z0-9]{3,64}$/.test(entry)) {
+      throw new Error(`${name} : l'entree n°${index + 1} est invalide. Format attendu : +<indicatif><numero>:<cle CallMeBot>, sans espace (ex. +2250700000000:1234567), entrees separees par des virgules.`);
+    }
+  });
+  return entries;
+}
+
 /** Liste separee par des virgules ou des espaces ; absente = liste vide. */
 function list(name: string): string[] {
   return (process.env[name] ?? '')
@@ -121,10 +135,13 @@ export const config = {
       starttls: process.env.PSIM_SMTP_STARTTLS !== '0',
     },
     telegram: { token: process.env.PSIM_TELEGRAM_TOKEN ?? '', apiBase: process.env.PSIM_TELEGRAM_API ?? 'https://api.telegram.org' },
+    // WhatsApp par CallMeBot : pas de compte a configurer, une cle par telephone (dans les destinataires ci-dessous).
+    whatsapp: { apiBase: process.env.PSIM_WHATSAPP_API ?? 'https://api.callmebot.com' },
     webhookSecret: process.env.PSIM_WEBHOOK_SECRET ?? '',
     recipients: {
       email: [list('PSIM_NOTIFY_EMAIL_L1'), list('PSIM_NOTIFY_EMAIL_L2')],
       telegram: [list('PSIM_NOTIFY_TELEGRAM_L1'), list('PSIM_NOTIFY_TELEGRAM_L2')],
+      whatsapp: [whatsappList('PSIM_NOTIFY_WHATSAPP_L1'), whatsappList('PSIM_NOTIFY_WHATSAPP_L2')],
       webhook: [list('PSIM_NOTIFY_WEBHOOK_L1'), list('PSIM_NOTIFY_WEBHOOK_L2')],
     },
   },

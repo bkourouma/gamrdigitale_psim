@@ -17,7 +17,7 @@ import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
 import { startBroker } from './mqtt.ts';
-import { createMailer, createNotifier, emailChannel, telegramChannel, webhookChannel } from './notifications.ts';
+import { createMailer, createNotifier, emailChannel, telegramChannel, webhookChannel, whatsappChannel } from './notifications.ts';
 import { createRecipientsService } from './recipients.ts';
 import type { Notifier } from './notifications.ts';
 import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.ts';
@@ -84,11 +84,12 @@ const recipients = createRecipientsService({
   db,
   audit: (actor, action, ref) => engine.audit(actor, action, ref),
   env: notify.recipients,
-  available: { email: Boolean(notify.smtp.host && notify.smtp.from), telegram: Boolean(notify.telegram.token), webhook: true },
+  available: { email: Boolean(notify.smtp.host && notify.smtp.from), telegram: Boolean(notify.telegram.token), whatsapp: false, webhook: true },
 });
 const channels = [
   emailChannel({ ...notify.smtp }, (level) => recipients.effective('email', level)),
   telegramChannel({ token: notify.telegram.token, apiBase: notify.telegram.apiBase }, (level) => recipients.effective('telegram', level)),
+  whatsappChannel({ apiBase: notify.whatsapp.apiBase }, (level) => recipients.effective('whatsapp', level)),
   webhookChannel({ secret: notify.webhookSecret }, (level) => recipients.effective('webhook', level)),
 ].filter((c) => c !== null);
 
@@ -196,7 +197,8 @@ notifier = createNotifier({
   maxReminders: notify.maxReminders,
   publicUrl: notify.publicUrl,
   readSnapshot: (id) => snapshots?.read(id) ?? null,
-  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret],
+  // Cles WhatsApp comprises : jamais dans les journaux, meme si un service les renvoyait dans un message d'erreur.
+  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret, ...notify.recipients.whatsapp.flat().map((r) => r.split(':')[1])],
 });
 // Actions de securite sur les comptes : inscrites au journal ET notifiees (un pirate qui enrole sa propre 2FA ne passe pas inapercu).
 const SECURITY_ACTIONS = new Set(['totp_enabled', 'totp_disabled', 'totp_reset', 'recovery_code_used', 'user_created', 'user_updated', 'user_deleted', 'password_reset']);

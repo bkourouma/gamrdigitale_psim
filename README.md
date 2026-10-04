@@ -194,7 +194,7 @@ Le bouton **Risques** (en haut de l'écran) ouvre une vue qui répond à : *où 
 
 ## Notifications et escalade
 
-Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram** et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
+Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram**, **WhatsApp** (CallMeBot) et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
 
 **Qui est prévenu, et quand**
 
@@ -218,6 +218,8 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 **Configuration** (voir `.env.example`) : serveur SMTP (`PSIM_SMTP_*`), jeton Telegram (`PSIM_TELEGRAM_TOKEN`), destinataires par niveau (`PSIM_NOTIFY_EMAIL_L1/L2`, `PSIM_NOTIFY_TELEGRAM_L1/L2` = identifiants de conversation, `PSIM_NOTIFY_WEBHOOK_L1/L2`), `PSIM_PUBLIC_URL` (lien ajouté aux messages). En administrateur, **Notifications → Envoyer un message de test** vérifie chaque destinataire des deux niveaux et affiche le résultat par destinataire.
 
 **Limites** : pas de limitation de débit (un incendie qui se propage peut produire beaucoup de messages : c'est voulu, on ne perd pas d'alarme) ; pas de file persistante : si le PSIM s'arrête pendant un envoi, les tentatives en cours sont perdues (l'escalade, elle, repart de la base). Les destinataires ne sont pas encore modifiables depuis l'interface.
+
+**WhatsApp (CallMeBot)** : service **gratuit, à usage personnel, sans garantie** de délai ni de disponibilité (adapté à une maison ; à **doubler** par Telegram ou e-mail pour une alarme). Pas de compte à créer : chaque téléphone envoie une fois « I allow callmebot to send me messages » au numéro indiqué sur la [page CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/) et reçoit **sa clé**. Destinataires dans le `.env` uniquement (la clé est secrète) : `PSIM_NOTIFY_WHATSAPP_L1=+2250700000000:1234567,+2250500000000:7654321` (indicatif obligatoire, sans espace) ; une entrée mal formée **bloque le démarrage** (le message donne sa position, jamais son contenu). Texte seulement, raccourci à 1 500 caractères, titre en gras ; les images partent par e-mail ou Telegram. L'interface et le journal des envois n'affichent que `+225...00`, jamais la clé. CallMeBot ne documente pas ses réponses : un code HTTP d'erreur, ou une réponse qui annonce une erreur (« invalid », « not allowed »…), compte comme un échec, mais **seule la réception sur le téléphone prouve l'envoi** : *Envoyer un message de test*, ou `npm run commission -- --whatsapp-test`. En octobre 2026, la page CallMeBot indiquait que le service était **complet** pour les nouvelles activations (« check back in a few days »).
 
 **Démonstration** : la démo lance un faux serveur SMTP et un faux Telegram locaux et **affiche dans le terminal** chaque message (`[courrier]`, `[telegram]`), avec une escalade à 25 s : rien ne quitte la machine.
 

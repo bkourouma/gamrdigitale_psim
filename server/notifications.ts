@@ -1,5 +1,5 @@
 /**
- * Notifications (e-mail, Telegram, webhook) avec escalade.
+ * Notifications (e-mail, Telegram, WhatsApp, webhook) avec escalade.
  *
  * Regles de conception :
  *  - une alarme notifie TOUJOURS, meme « a confirmer » : les regles anti-fausses alarmes qualifient,
@@ -32,7 +32,7 @@ export interface ImageAttachment {
 }
 
 export interface Channel {
-  id: 'email' | 'telegram' | 'webhook' | string;
+  id: 'email' | 'telegram' | 'whatsapp' | 'webhook' | string;
   label: string;
   recipients(level: Level): string[];
   send(message: Message, recipient: string): Promise<void>;
@@ -158,6 +158,53 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
         form.set('caption', image.caption.slice(0, 900));
         form.set('photo', new Blob([new Uint8Array(image.data)], { type: 'image/jpeg' }), 'camera.jpg');
         await call('sendPhoto', form);
+      }
+    },
+  };
+}
+
+/** Destinataire WhatsApp : « +<indicatif><numero>:<cle CallMeBot> » (la cle est propre a chaque telephone, et secrete). */
+export const WHATSAPP_RECIPIENT = /^(\+\d{8,15}):([A-Za-z0-9]{3,64})$/;
+
+/** Numero affichable : indicatif et deux derniers chiffres (jamais la cle). */
+export function maskWhatsapp(recipient: string): string {
+  const phone = WHATSAPP_RECIPIENT.exec(recipient)?.[1] ?? recipient.split(':')[0];
+  return phone.length > 6 ? `${phone.slice(0, 4)}...${phone.slice(-2)}` : 'WhatsApp';
+}
+
+/**
+ * WhatsApp par CallMeBot (service gratuit, usage personnel, sans garantie de delai) : un GET par message, cle propre a
+ * chaque destinataire. Pas d'image (le service gratuit n'envoie que du texte) : les images partent par e-mail ou Telegram.
+ * CallMeBot ne documente pas ses reponses : tout code HTTP hors 2xx est un echec, ET une reponse 2xx qui contient un mot
+ * d'erreur explicite aussi. La seule preuve reste le message de test recu sur le telephone.
+ */
+export function whatsappChannel(cfg: { apiBase: string }, recipientsSource: Recipients): Channel | null {
+  const source = resolveRecipients(recipientsSource);
+  const valid = (list: string[]) => list.filter((r) => WHATSAPP_RECIPIENT.test(r));
+  if (valid(source(1)).length + valid(source(2)).length === 0) return null;
+  return {
+    id: 'whatsapp',
+    label: 'WhatsApp',
+    recipients: (level) => valid(source(level)),
+    mask: maskWhatsapp,
+    async send(message, recipient) {
+      const [, phone, key] = WHATSAPP_RECIPIENT.exec(recipient) ?? [];
+      if (!phone || !key) throw new Error('Destinataire WhatsApp invalide');
+      // Le texte passe dans l'adresse : il est raccourci (les details restent dans le PSIM).
+      const text = `*${message.subject}*\n\n${message.text}`.slice(0, 1500);
+      const url = `${cfg.apiBase.replace(/\/$/, '')}/whatsapp.php?phone=${encodeURIComponent(phone)}&text=${encodeURIComponent(text)}&apikey=${encodeURIComponent(key)}`;
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'error' });
+      } catch {
+        // Le message d'origine de fetch contient l'adresse complete, donc la cle : on ne le propage pas.
+        throw new Error('WhatsApp (CallMeBot) injoignable');
+      }
+      const body = (await res.text().catch(() => '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      const detail = body.split(key).join('***').slice(0, 100);
+      if (!res.ok) throw new Error(`WhatsApp HTTP ${res.status}${detail ? ` : ${detail}` : ''}`);
+      if (/\b(invalid|not allowed|not authori[sz]ed|blocked|error|wrong|disabled|too many|banned)\b/i.test(body)) {
+        throw new Error(`WhatsApp refuse : ${detail || 'reponse d\'erreur'}`);
       }
     },
   };

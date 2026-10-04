@@ -2,7 +2,7 @@
 import { randomPassword } from './account.js';
 
 const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur' };
-const CHANNEL_LABEL = { email: 'E-mail', telegram: 'Telegram', webhook: 'Webhook' };
+const CHANNEL_LABEL = { email: 'E-mail', telegram: 'Telegram', whatsapp: 'WhatsApp', webhook: 'Webhook' };
 const ADDRESS_HINT = { email: 'agent@exemple.fr', telegram: 'numéro de conversation ou @canal', webhook: 'https://…' };
 
 export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsChanged }) {

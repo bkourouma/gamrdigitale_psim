@@ -15,6 +15,7 @@ import nodemailer from 'nodemailer';
 import { accountsWithDevPassword } from '../../server/auth.ts';
 import { verify as verifyJournal } from '../../server/auditchain.ts';
 import { listBackups, verifyBackup } from '../../server/backup.ts';
+import { maskWhatsapp, whatsappChannel } from '../../server/notifications.ts';
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip';
 
@@ -147,6 +148,31 @@ export async function checkSmtp(cfg: SmtpOptions, sendTo?: string): Promise<Chec
   } catch (err) {
     return check('smtp', 'E-mail (SMTP)', 'fail', `connexion reussie mais envoi refuse : ${explainSmtp(err)}`, "Verifier PSIM_SMTP_FROM (certains serveurs n'acceptent qu'une adresse autorisee) et le destinataire.");
   }
+}
+
+// ---------------------------------------------------------------- WhatsApp (CallMeBot)
+
+/**
+ * Sans --whatsapp-test : compte les destinataires, n'envoie rien. Avec : un message de test a chaque destinataire de
+ * niveau 1, par le meme code que les alertes. La seule preuve est sa reception sur le telephone (CallMeBot ne garantit rien).
+ */
+export async function checkWhatsapp(cfg: { apiBase: string }, recipients: string[][], sendTest: boolean): Promise<Check> {
+  const all = [...recipients[0], ...recipients[1]];
+  if (all.length === 0) return check('whatsapp', 'WhatsApp', 'skip', 'non configure (PSIM_NOTIFY_WHATSAPP_L1 / L2)');
+  if (!sendTest) return check('whatsapp', 'WhatsApp', 'ok', `${all.length} destinataire(s) : ${all.map(maskWhatsapp).join(', ')} ; aucun message envoye (--whatsapp-test pour un essai au niveau 1)`);
+  const channel = whatsappChannel(cfg, recipients);
+  if (!channel) return check('whatsapp', 'WhatsApp', 'fail', 'aucun destinataire valide');
+  const message = { kind: 'test' as const, incidentId: null, subject: '[PSIM] Message de test', text: 'Message de test de mise en service. Aucune action requise.', data: {} };
+  const failures: string[] = [];
+  for (const recipient of channel.recipients(1)) {
+    try {
+      await channel.send(message, recipient);
+    } catch (err) {
+      failures.push(`${maskWhatsapp(recipient)} : ${(err as Error).message}`);
+    }
+  }
+  if (failures.length) return check('whatsapp', 'WhatsApp', 'fail', failures.join(' | '), 'Verifier la cle CallMeBot de ce numero (message « I allow callmebot to send me messages ») et le format +<indicatif><numero>:<cle>.');
+  return check('whatsapp', 'WhatsApp', 'ok', `message de test confie a CallMeBot pour ${channel.recipients(1).length} destinataire(s) de niveau 1 : verifier qu'il est bien arrive sur chaque telephone`);
 }
 
 // ---------------------------------------------------------------- Telegram

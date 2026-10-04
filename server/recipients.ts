@@ -2,15 +2,17 @@
  * Destinataires de notification. Deux sources, additionnees :
  *  - le .env (PSIM_NOTIFY_*) : en lecture seule dans l'interface, repere « .env » ;
  *  - la base : ajoutes, desactives et retires par l'administrateur depuis l'interface.
- * Les secrets des canaux (mot de passe SMTP, jeton Telegram) restent dans le .env : jamais en base ni dans l'interface.
+ * Les secrets des canaux (mot de passe SMTP, jeton Telegram, cles WhatsApp) restent dans le .env : jamais en base ni dans
+ * l'interface. Les destinataires WhatsApp ne se declarent donc QUE dans le .env (chacun a sa cle CallMeBot).
  */
 import type { DatabaseSync } from 'node:sqlite';
 import { PsimError } from './engine.ts';
+import { maskWhatsapp } from './notifications.ts';
 
-export type ChannelId = 'email' | 'telegram' | 'webhook';
+export type ChannelId = 'email' | 'telegram' | 'whatsapp' | 'webhook';
 export type Level = 1 | 2;
 
-const CHANNELS: ChannelId[] = ['email', 'telegram', 'webhook'];
+const CHANNELS: ChannelId[] = ['email', 'telegram', 'whatsapp', 'webhook'];
 const MAX_RECIPIENTS = 100;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -41,6 +43,7 @@ export interface RecipientsDeps {
 
 export function maskAddress(channel: ChannelId, address: string): string {
   if (channel === 'email') return address.replace(/^(.).*(@.*)$/, '$1***$2');
+  if (channel === 'whatsapp') return maskWhatsapp(address);
   if (channel === 'webhook') {
     try {
       return new URL(address).host;
@@ -86,14 +89,14 @@ export function createRecipientsService(deps: RecipientsDeps) {
     const fromDb = (
       db.prepare('SELECT address FROM notification_recipient WHERE channel = ? AND level = ? AND active = 1 ORDER BY id').all(channel, level) as { address: string }[]
     ).map((r) => r.address);
-    return [...new Set([...(deps.env[channel][level - 1] ?? []), ...fromDb])];
+    return [...new Set([...(deps.env[channel]?.[level - 1] ?? []), ...fromDb])];
   }
 
   function list(): RecipientView[] {
     const out: RecipientView[] = [];
     for (const channel of CHANNELS) {
       for (const level of [1, 2] as Level[]) {
-        for (const address of deps.env[channel][level - 1] ?? []) {
+        for (const address of deps.env[channel]?.[level - 1] ?? []) {
           out.push({ id: null, channel, display: maskAddress(channel, address), level, label: '', active: true, source: 'env', createdBy: null, createdAt: null });
         }
       }
@@ -134,6 +137,9 @@ export function createRecipientsService(deps: RecipientsDeps) {
   function add(actor: string, input: Record<string, unknown>): RecipientView {
     const channel = input.channel as ChannelId;
     if (!CHANNELS.includes(channel)) throw new PsimError(400, 'Canal invalide (email, telegram ou webhook)');
+    if (channel === 'whatsapp') {
+      throw new PsimError(409, 'Les destinataires WhatsApp se declarent dans le .env (PSIM_NOTIFY_WHATSAPP_L1 / L2) : chacun a sa cle CallMeBot, qui est secrete');
+    }
     if (!deps.available[channel]) {
       throw new PsimError(409, channel === 'email' ? 'Canal e-mail non configure (PSIM_SMTP_HOST et PSIM_SMTP_FROM dans le .env)' : 'Canal Telegram non configure (PSIM_TELEGRAM_TOKEN dans le .env)');
     }
@@ -143,7 +149,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
     if ((db.prepare('SELECT COUNT(*) AS n FROM notification_recipient').get() as { n: number }).n >= MAX_RECIPIENTS) {
       throw new PsimError(409, `Limite de ${MAX_RECIPIENTS} destinataires atteinte`);
     }
-    if (deps.env[channel][level - 1]?.includes(address)) throw new PsimError(409, 'Ce destinataire est deja defini dans le .env');
+    if (deps.env[channel]?.[level - 1]?.includes(address)) throw new PsimError(409, 'Ce destinataire est deja defini dans le .env');
     try {
       const res = db
         .prepare('INSERT INTO notification_recipient (channel, address, level, label, active, created_at, created_by) VALUES (?, ?, ?, ?, 1, ?, ?)')
