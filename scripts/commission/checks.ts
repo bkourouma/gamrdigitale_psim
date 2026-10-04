@@ -15,7 +15,8 @@ import nodemailer from 'nodemailer';
 import { accountsWithDevPassword } from '../../server/auth.ts';
 import { verify as verifyJournal } from '../../server/auditchain.ts';
 import { listBackups, verifyBackup } from '../../server/backup.ts';
-import { maskWhatsapp, whatsappChannel } from '../../server/notifications.ts';
+import { PHONE_E164, callmebotChannel, clip, maskCallmebot, maskPhone, whatsappChannel } from '../../server/notifications.ts';
+import type { WhatsappConfig } from '../../server/notifications.ts';
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip';
 
@@ -150,29 +151,150 @@ export async function checkSmtp(cfg: SmtpOptions, sendTo?: string): Promise<Chec
   }
 }
 
+// ---------------------------------------------------------------- WhatsApp officiel (Meta)
+
+type MetaReply = Record<string, unknown> & { error?: { code?: number; message?: string } };
+
+async function metaGet(cfg: WhatsappConfig, path: string, fetchImpl: typeof fetch): Promise<{ ok: boolean; status: number; body: MetaReply }> {
+  const res = await fetchImpl(`${cfg.apiBase.replace(/\/$/, '')}/${path}`, { headers: { Authorization: `Bearer ${cfg.token}` }, signal: AbortSignal.timeout(8000), redirect: 'error' });
+  const body = (await res.json().catch(() => ({}))) as MetaReply;
+  return { ok: res.ok && !body.error, status: res.status, body };
+}
+
+/**
+ * Le modele est-il APPROUVE, dans la langue attendue, avec exactement 3 variables ? Le compte WhatsApp Business vient de
+ * PSIM_WHATSAPP_WABA_ID, sinon des droits du jeton (debug_token). Renvoie null si tout va bien, sinon la raison ; `unknown`
+ * si la verification n'a pas pu se faire (le modele n'est alors PAS declare bon).
+ */
+async function templateProblem(cfg: WhatsappConfig, fetchImpl: typeof fetch): Promise<{ problem: string; unknown: boolean } | null> {
+  let wabaIds = cfg.wabaId ? [cfg.wabaId] : [];
+  if (!wabaIds.length) {
+    const debug = await metaGet(cfg, `debug_token?input_token=${encodeURIComponent(cfg.token)}`, fetchImpl);
+    const scopes = ((debug.body.data as { granular_scopes?: { scope?: string; target_ids?: string[] }[] } | undefined)?.granular_scopes ?? []);
+    wabaIds = [...new Set(scopes.filter((g) => String(g.scope).startsWith('whatsapp_business')).flatMap((g) => g.target_ids ?? []))];
+    if (!wabaIds.length) return { problem: 'compte WhatsApp Business introuvable a partir du jeton : indiquer PSIM_WHATSAPP_WABA_ID pour verifier le modele', unknown: true };
+  }
+  for (const waba of wabaIds) {
+    const list = await metaGet(cfg, `${encodeURIComponent(waba)}/message_templates?name=${encodeURIComponent(cfg.template)}&fields=name,status,language,components`, fetchImpl);
+    if (!list.ok) continue;
+    const templates = (list.body.data as { name?: string; status?: string; language?: string; components?: { type?: string; text?: string }[] }[] | undefined) ?? [];
+    const same = templates.filter((t) => t.name === cfg.template);
+    if (!same.length) continue;
+    const exact = same.find((t) => t.language === cfg.language);
+    if (!exact) return { problem: `modele « ${cfg.template} » trouve, mais pas en « ${cfg.language} » (langues : ${same.map((t) => t.language).join(', ')}) : PSIM_WHATSAPP_LANG`, unknown: false };
+    if (exact.status !== 'APPROVED') return { problem: `modele « ${cfg.template} » (${cfg.language}) au statut ${exact.status ?? '?'} : il doit etre APPROUVE par Meta`, unknown: false };
+    const body = exact.components?.find((c) => c.type === 'BODY')?.text ?? '';
+    const variables = new Set(body.match(/\{\{\s*\d+\s*\}\}/g) ?? []).size;
+    if (variables !== 3) return { problem: `modele « ${cfg.template} » : ${variables} variable(s) dans le corps, le PSIM en envoie 3 (titre, lieu, details)`, unknown: false };
+    return null;
+  }
+  return { problem: `modele « ${cfg.template} » introuvable dans le compte WhatsApp Business (nom exact, PSIM_WHATSAPP_TEMPLATE)`, unknown: false };
+}
+
+/**
+ * Verifie aupres de Meta, en LECTURE seule : jeton, numero expediteur (et son enregistrement sur la Cloud API), modele
+ * (approuve, langue, 3 variables). Avec `to` : un message de test par le modele, par le meme code que les alertes.
+ * « Accepte par Meta » n'est pas « recu » : verifier sur le telephone.
+ */
+export async function checkWhatsapp(
+  cfg: WhatsappConfig,
+  recipients: string[][],
+  opts: { to?: string; dbRecipients?: number; fetchImpl?: typeof fetch } = {},
+): Promise<Check> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const count = recipients[0].length + recipients[1].length + (opts.dbRecipients ?? 0);
+  if (!cfg.token || !cfg.phoneId) {
+    return count
+      ? check('whatsapp', 'WhatsApp', 'fail', `${count} destinataire(s) WhatsApp, mais canal non configure : ils ne recoivent rien`, 'Renseigner PSIM_WHATSAPP_TOKEN et PSIM_WHATSAPP_PHONE_ID (docs/WHATSAPP.md).')
+      : check('whatsapp', 'WhatsApp', 'skip', 'non configure (PSIM_WHATSAPP_TOKEN, PSIM_WHATSAPP_PHONE_ID)');
+  }
+  try {
+    const phone = await metaGet(cfg, `${encodeURIComponent(cfg.phoneId)}?fields=display_phone_number,verified_name,quality_rating`, fetchImpl);
+    if (!phone.ok) {
+      const why = phone.body.error?.code === 190 ? 'jeton refuse ou expire' : clipText(String(phone.body.error?.message ?? `HTTP ${phone.status}`).split(cfg.token).join('***'), 100);
+      return check('whatsapp', 'WhatsApp', 'fail', `Meta refuse : ${why}`, "Verifier PSIM_WHATSAPP_TOKEN (jeton permanent d'un utilisateur systeme, permissions whatsapp_business_messaging et whatsapp_business_management) et PSIM_WHATSAPP_PHONE_ID (identifiant du numero, pas le numero).");
+    }
+    const info = phone.body as { display_phone_number?: string; verified_name?: string; quality_rating?: string };
+    const sender = `${info.display_phone_number ?? '?'} « ${info.verified_name ?? '?'} »${info.quality_rating ? `, qualite ${info.quality_rating}` : ''}`;
+    // Enregistrement sur la Cloud API : champ lu a part (s'il n'existe pas chez Meta, la verification est simplement sautee).
+    const platform = await metaGet(cfg, `${encodeURIComponent(cfg.phoneId)}?fields=platform_type`, fetchImpl).catch(() => null);
+    const platformType = platform?.ok ? String(platform.body.platform_type ?? '') : '';
+    if (platformType && platformType !== 'CLOUD_API') {
+      return check('whatsapp', 'WhatsApp', 'fail', `expediteur ${sender} : numero non enregistre sur la Cloud API (${platformType}) : aucune alerte ne partirait`, 'Enregistrer le numero : npm run whatsapp-register:prod -- <code PIN a 6 chiffres> (docs/WHATSAPP.md, etape 4).');
+    }
+    const template = await templateProblem(cfg, fetchImpl);
+    if (template && !template.unknown) {
+      return check('whatsapp', 'WhatsApp', 'fail', `expediteur ${sender} ; ${template.problem} : aucune alerte ne partirait`, 'WhatsApp Manager > Modeles de message (docs/WHATSAPP.md, etape 2).');
+    }
+    if (opts.to) {
+      if (!PHONE_E164.test(opts.to)) return check('whatsapp', 'WhatsApp', 'fail', '--whatsapp-to : numero invalide', 'Format international, sans espace : +2250700000000.');
+      try {
+        await whatsappChannel(cfg, [[opts.to], []])!.send({ kind: 'test', incidentId: null, subject: '[PSIM] Message de test', text: 'Message de test de mise en service. Aucune action requise.', data: { zone: 'Mise en service' } }, opts.to);
+      } catch (err) {
+        return check('whatsapp', 'WhatsApp', 'fail', `expediteur ${sender} ; envoi a ${maskPhone(opts.to)} refuse : ${(err as Error).message}`, `Avec le numero de test de Meta, le destinataire doit etre dans la liste autorisee.`);
+      }
+      return check('whatsapp', 'WhatsApp', template ? 'warn' : 'ok', `expediteur ${sender} ; message de test accepte par Meta pour ${maskPhone(opts.to)} : verifier qu'il est bien arrive sur le telephone${template ? ` ; ${template.problem}` : ''}`);
+    }
+    const verified = `expediteur ${sender}${platformType ? ' (Cloud API)' : ''} ; modele « ${cfg.template} » (${cfg.language}) ${template ? 'NON verifie' : 'approuve, 3 variables'} ; ${count} destinataire(s)`;
+    if (template || count === 0) {
+      return check('whatsapp', 'WhatsApp', 'warn', `${verified}${template ? ` (${template.problem})` : ''} ; aucun message envoye`, count === 0 ? "Ajouter des destinataires (PSIM_NOTIFY_WHATSAPP_L1, ou l'interface : Notifications)." : 'Faire un essai reel : --whatsapp-to +225...');
+    }
+    return check('whatsapp', 'WhatsApp', 'ok', `${verified} ; aucun message envoye (--whatsapp-to +225... pour un essai reel)`);
+  } catch {
+    // Jamais le message d'origine de fetch (il pourrait citer l'adresse).
+    return check('whatsapp', 'WhatsApp', 'fail', 'Meta injoignable (reseau, pare-feu ou proxy)', 'Le serveur doit pouvoir joindre graph.facebook.com en HTTPS.');
+  }
+}
+
+/** Enregistre le numero expediteur sur la Cloud API (obligatoire une fois) ; le PIN protege le numero (verification en deux etapes). */
+export async function registerWhatsappNumber(cfg: WhatsappConfig, pin: string, fetchImpl: typeof fetch = fetch): Promise<{ ok: boolean; message: string }> {
+  if (!cfg.token || !cfg.phoneId) return { ok: false, message: 'PSIM_WHATSAPP_TOKEN et PSIM_WHATSAPP_PHONE_ID doivent etre renseignes.' };
+  if (!/^\d{6}$/.test(pin)) return { ok: false, message: 'Code PIN : exactement 6 chiffres (a choisir et a conserver : il protege le numero).' };
+  try {
+    const res = await fetchImpl(`${cfg.apiBase.replace(/\/$/, '')}/${encodeURIComponent(cfg.phoneId)}/register`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+      signal: AbortSignal.timeout(15000),
+      redirect: 'error',
+    });
+    const body = (await res.json().catch(() => ({}))) as { success?: boolean; error?: { code?: number; message?: string; error_data?: { details?: string } } };
+    if (res.ok && body.success) return { ok: true, message: 'Numero enregistre sur la Cloud API : les alertes peuvent partir.' };
+    const why = [body.error?.message, body.error?.error_data?.details].filter(Boolean).join(' - ').split(cfg.token).join('***');
+    return { ok: false, message: `Enregistrement refuse par Meta (HTTP ${res.status}${body.error?.code !== undefined ? `, code ${body.error.code}` : ''}) : ${clipText(why || 'sans detail', 200)}` };
+  } catch {
+    return { ok: false, message: 'Meta injoignable (reseau, pare-feu ou proxy).' };
+  }
+}
+
+const clipText = (text: string, max: number) => clip(text, max);
+
 // ---------------------------------------------------------------- WhatsApp (CallMeBot)
 
 /**
- * Sans --whatsapp-test : compte les destinataires, n'envoie rien. Avec : un message de test a chaque destinataire de
+ * Sans --callmebot-test : compte les destinataires, n'envoie rien. Avec : un message de test a chaque destinataire de
  * niveau 1, par le meme code que les alertes. La seule preuve est sa reception sur le telephone (CallMeBot ne garantit rien).
  */
-export async function checkWhatsapp(cfg: { apiBase: string }, recipients: string[][], sendTest: boolean): Promise<Check> {
+export async function checkCallmebot(cfg: { apiBase: string }, recipients: string[][], sendTest: boolean): Promise<Check> {
   const all = [...recipients[0], ...recipients[1]];
-  if (all.length === 0) return check('whatsapp', 'WhatsApp', 'skip', 'non configure (PSIM_NOTIFY_WHATSAPP_L1 / L2)');
-  if (!sendTest) return check('whatsapp', 'WhatsApp', 'ok', `${all.length} destinataire(s) : ${all.map(maskWhatsapp).join(', ')} ; aucun message envoye (--whatsapp-test pour un essai au niveau 1)`);
-  const channel = whatsappChannel(cfg, recipients);
-  if (!channel) return check('whatsapp', 'WhatsApp', 'fail', 'aucun destinataire valide');
+  if (all.length === 0) return check('callmebot', 'WhatsApp (CallMeBot)', 'skip', 'non configure (PSIM_NOTIFY_CALLMEBOT_L1 / L2)');
+  if (!sendTest) return check('callmebot', 'WhatsApp (CallMeBot)', 'ok', `${all.length} destinataire(s) : ${all.map(maskCallmebot).join(', ')} ; aucun message envoye (--callmebot-test pour un essai au niveau 1)`);
+  const channel = callmebotChannel(cfg, recipients);
+  if (!channel) return check('callmebot', 'WhatsApp (CallMeBot)', 'fail', 'aucun destinataire valide');
   const message = { kind: 'test' as const, incidentId: null, subject: '[PSIM] Message de test', text: 'Message de test de mise en service. Aucune action requise.', data: {} };
+  // Niveau 1, ou niveau 2 s'il n'y a personne au niveau 1 : un essai demande ne repond jamais « ok » sans avoir rien envoye.
+  const level = channel.recipients(1).length ? 1 : 2;
+  const targets = channel.recipients(level);
   const failures: string[] = [];
-  for (const recipient of channel.recipients(1)) {
+  for (const recipient of targets) {
     try {
       await channel.send(message, recipient);
     } catch (err) {
-      failures.push(`${maskWhatsapp(recipient)} : ${(err as Error).message}`);
+      failures.push(`${maskCallmebot(recipient)} : ${(err as Error).message}`);
     }
   }
-  if (failures.length) return check('whatsapp', 'WhatsApp', 'fail', failures.join(' | '), 'Verifier la cle CallMeBot de ce numero (message « I allow callmebot to send me messages ») et le format +<indicatif><numero>:<cle>.');
-  return check('whatsapp', 'WhatsApp', 'ok', `message de test confie a CallMeBot pour ${channel.recipients(1).length} destinataire(s) de niveau 1 : verifier qu'il est bien arrive sur chaque telephone`);
+  if (failures.length) return check('callmebot', 'WhatsApp (CallMeBot)', 'fail', failures.join(' | '), 'Verifier la cle CallMeBot de ce numero (message « I allow callmebot to send me messages ») et le format +<indicatif><numero>:<cle>.');
+  return check('callmebot', 'WhatsApp (CallMeBot)', 'ok', `message de test confie a CallMeBot pour ${targets.length} destinataire(s) de niveau ${level} : verifier qu'il est bien arrive sur chaque telephone`);
 }
 
 // ---------------------------------------------------------------- Telegram

@@ -25,15 +25,20 @@ function num(name: string, fallback: number, min = 0, max = Number.MAX_SAFE_INTE
 const seconds = (name: string, fallback: number): number => num(name, fallback);
 
 /**
- * Destinataires WhatsApp « +<indicatif><numero>:<cle> » : une entree mal formee est une erreur de demarrage (jamais un
- * destinataire ignore en silence). Le message ne cite jamais l'entree : elle contient une cle.
+ * Destinataires WhatsApp : une entree mal formee est une erreur de demarrage (jamais un destinataire ignore en silence).
+ * Le message ne cite jamais l'entree (une entree CallMeBot contient une cle) : seulement sa position.
  */
-function whatsappList(name: string): string[] {
+function whatsappList(name: string, withKey: boolean): string[] {
   const entries = list(name);
   entries.forEach((entry, index) => {
-    if (!/^\+\d{8,15}:[A-Za-z0-9]{3,64}$/.test(entry)) {
-      throw new Error(`${name} : l'entree n°${index + 1} est invalide. Format attendu : +<indicatif><numero>:<cle CallMeBot>, sans espace (ex. +2250700000000:1234567), entrees separees par des virgules.`);
-    }
+    const ok = withKey ? /^\+\d{8,15}:[A-Za-z0-9]{3,64}$/.test(entry) : /^\+\d{8,15}$/.test(entry);
+    if (ok) return;
+    const hint = withKey
+      ? 'Format attendu : +<indicatif><numero>:<cle CallMeBot>, sans espace (ex. +2250700000000:1234567)'
+      : /:/.test(entry)
+        ? "Format attendu : +<indicatif><numero>, sans cle (une entree « numero:cle » est pour CallMeBot : PSIM_NOTIFY_CALLMEBOT_L1 / L2)"
+        : 'Format attendu : +<indicatif><numero>, sans espace (ex. +2250700000000)';
+    throw new Error(`${name} : l'entree n°${index + 1} est invalide. ${hint}, entrees separees par des virgules.`);
   });
   return entries;
 }
@@ -44,6 +49,24 @@ function list(name: string): string[] {
     .split(/[,\s]+/)
     .map((v) => v.trim())
     .filter(Boolean);
+}
+
+/** Canaux dont les destinataires dependent d'une configuration (jeton, serveur) : libelle et presence de cette configuration. */
+export function channelSetup(notify: typeof config.notify): { id: 'email' | 'telegram' | 'whatsapp'; label: string; configured: boolean }[] {
+  return [
+    { id: 'email', label: 'e-mail', configured: Boolean(notify.smtp.host && notify.smtp.from) },
+    { id: 'telegram', label: 'Telegram', configured: Boolean(notify.telegram.token) },
+    { id: 'whatsapp', label: 'WhatsApp', configured: Boolean(notify.whatsapp.token && notify.whatsapp.phoneId) },
+  ];
+}
+
+/** Adresses des services de messagerie a controler (https exige hors boucle locale). */
+export function serviceUrls(notify: typeof config.notify): { name: string; url: string }[] {
+  return [
+    { name: 'PSIM_TELEGRAM_API', url: notify.telegram.apiBase },
+    { name: 'PSIM_WHATSAPP_API', url: notify.whatsapp.apiBase },
+    { name: 'PSIM_CALLMEBOT_API', url: notify.callmebot.apiBase },
+  ];
 }
 
 export const config = {
@@ -135,13 +158,24 @@ export const config = {
       starttls: process.env.PSIM_SMTP_STARTTLS !== '0',
     },
     telegram: { token: process.env.PSIM_TELEGRAM_TOKEN ?? '', apiBase: process.env.PSIM_TELEGRAM_API ?? 'https://api.telegram.org' },
-    // WhatsApp par CallMeBot : pas de compte a configurer, une cle par telephone (dans les destinataires ci-dessous).
-    whatsapp: { apiBase: process.env.PSIM_WHATSAPP_API ?? 'https://api.callmebot.com' },
+    // WhatsApp officiel (Meta, WhatsApp Cloud API) : jeton permanent d'un utilisateur systeme, identifiant du numero
+    // expediteur, modele approuve a 3 variables (titre, lieu, details). Destinataires : numeros ci-dessous ou interface.
+    whatsapp: {
+      apiBase: process.env.PSIM_WHATSAPP_API ?? 'https://graph.facebook.com/v25.0',
+      token: process.env.PSIM_WHATSAPP_TOKEN ?? '',
+      phoneId: process.env.PSIM_WHATSAPP_PHONE_ID ?? '',
+      template: process.env.PSIM_WHATSAPP_TEMPLATE ?? 'psim_alerte',
+      language: process.env.PSIM_WHATSAPP_LANG ?? 'fr',
+      wabaId: process.env.PSIM_WHATSAPP_WABA_ID ?? '',
+    },
+    // WhatsApp par CallMeBot (gratuit, usage personnel, sans garantie) : une cle par telephone, dans le .env seulement.
+    callmebot: { apiBase: process.env.PSIM_CALLMEBOT_API ?? 'https://api.callmebot.com' },
     webhookSecret: process.env.PSIM_WEBHOOK_SECRET ?? '',
     recipients: {
       email: [list('PSIM_NOTIFY_EMAIL_L1'), list('PSIM_NOTIFY_EMAIL_L2')],
       telegram: [list('PSIM_NOTIFY_TELEGRAM_L1'), list('PSIM_NOTIFY_TELEGRAM_L2')],
-      whatsapp: [whatsappList('PSIM_NOTIFY_WHATSAPP_L1'), whatsappList('PSIM_NOTIFY_WHATSAPP_L2')],
+      whatsapp: [whatsappList('PSIM_NOTIFY_WHATSAPP_L1', false), whatsappList('PSIM_NOTIFY_WHATSAPP_L2', false)],
+      callmebot: [whatsappList('PSIM_NOTIFY_CALLMEBOT_L1', true), whatsappList('PSIM_NOTIFY_CALLMEBOT_L2', true)],
       webhook: [list('PSIM_NOTIFY_WEBHOOK_L1'), list('PSIM_NOTIFY_WEBHOOK_L2')],
     },
   },

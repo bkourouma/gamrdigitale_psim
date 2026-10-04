@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS recovery_code (
 -- Destinataires de notification saisis dans l'interface (ceux du .env restent en plus, en lecture seule).
 CREATE TABLE IF NOT EXISTS notification_recipient (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'webhook')),
+  channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'webhook')),
   address TEXT NOT NULL,
   level INTEGER NOT NULL CHECK (level IN (1, 2)),
   label TEXT NOT NULL DEFAULT '',
@@ -199,6 +199,37 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'app_user', column: 'totp_last_step', definition: 'INTEGER' },
 ];
 
+/**
+ * Une contrainte CHECK ne se modifie pas en SQLite : la table des destinataires est recreee a l'identique, canal WhatsApp
+ * en plus, puis ses lignes recopiees (identifiants conserves), en une transaction. Sans effet si c'est deja fait.
+ */
+function migrateRecipientChannels(db: DatabaseSync): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_recipient'").get() as { sql: string } | undefined;
+  if (!row || row.sql.includes("'whatsapp'")) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`CREATE TABLE notification_recipient_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'webhook')),
+      address TEXT NOT NULL,
+      level INTEGER NOT NULL CHECK (level IN (1, 2)),
+      label TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      UNIQUE (channel, address, level)
+    );
+    INSERT INTO notification_recipient_v2 (id, channel, address, level, label, active, created_at, created_by)
+      SELECT id, channel, address, level, label, active, created_at, created_by FROM notification_recipient;
+    DROP TABLE notification_recipient;
+    ALTER TABLE notification_recipient_v2 RENAME TO notification_recipient;`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 function migrate(db: DatabaseSync): void {
   for (const { table, column, definition } of ADDED_COLUMNS) {
     const existing = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -213,5 +244,6 @@ export function openDb(path: string): DatabaseSync {
   db.exec(SCHEMA);
   migrate(db); // les donnees existantes sont conservees
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
+  migrateRecipientChannels(db); // canal WhatsApp accepte pour les destinataires saisis dans l'interface
   return db;
 }

@@ -1,5 +1,5 @@
 /**
- * Notifications (e-mail, Telegram, WhatsApp, webhook) avec escalade.
+ * Notifications (e-mail, Telegram, WhatsApp officiel ou CallMeBot, webhook) avec escalade.
  *
  * Regles de conception :
  *  - une alarme notifie TOUJOURS, meme « a confirmer » : les regles anti-fausses alarmes qualifient,
@@ -32,7 +32,7 @@ export interface ImageAttachment {
 }
 
 export interface Channel {
-  id: 'email' | 'telegram' | 'whatsapp' | 'webhook' | string;
+  id: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook' | string;
   label: string;
   recipients(level: Level): string[];
   send(message: Message, recipient: string): Promise<void>;
@@ -163,13 +163,135 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
   };
 }
 
-/** Destinataire WhatsApp : « +<indicatif><numero>:<cle CallMeBot> » (la cle est propre a chaque telephone, et secrete). */
-export const WHATSAPP_RECIPIENT = /^(\+\d{8,15}):([A-Za-z0-9]{3,64})$/;
+/** Numero au format international (« +2250700000000 ») : seul format accepte pour WhatsApp. */
+export const PHONE_E164 = /^\+\d{8,15}$/;
 
-/** Numero affichable : indicatif et deux derniers chiffres (jamais la cle). */
-export function maskWhatsapp(recipient: string): string {
-  const phone = WHATSAPP_RECIPIENT.exec(recipient)?.[1] ?? recipient.split(':')[0];
-  return phone.length > 6 ? `${phone.slice(0, 4)}...${phone.slice(-2)}` : 'WhatsApp';
+/** Numero affichable : indicatif et deux derniers chiffres. */
+export function maskPhone(phone: string): string {
+  return PHONE_E164.test(phone) ? `${phone.slice(0, 4)}...${phone.slice(-2)}` : 'WhatsApp';
+}
+
+/** Coupe a `max` caracteres REELS (points de code) : jamais la moitie d'un emoji, que Meta ou encodeURIComponent refuseraient. */
+export function clip(text: string, max: number, ellipsis = ''): string {
+  const chars = Array.from(text);
+  return chars.length > max ? chars.slice(0, max - ellipsis.length).join('') + ellipsis : text;
+}
+
+/**
+ * Variable de modele WhatsApp : Meta refuse un retour a la ligne, une tabulation ou plus de 4 espaces consecutifs
+ * (erreur 132018), et une variable vide. Tout separateur de ligne devient « | », tout blanc (insecables compris) une espace.
+ */
+export function templateParam(text: string, max: number): string {
+  const flat = text.normalize('NFC').replace(/\s*[\r\n\t\v\f\u0085\u2028\u2029]+\s*/g, ' | ').replace(/\s+/g, ' ').trim();
+  return clip(flat, max, '...') || '-';
+}
+
+/** Erreurs Meta les plus probables, en clair (le reste : message de Meta, raccourci). */
+const META_ERRORS: Record<number, string> = {
+  190: 'jeton refuse ou expire (PSIM_WHATSAPP_TOKEN)',
+  10: 'permission manquante sur le jeton (whatsapp_business_messaging)',
+  100: 'parametre refuse par Meta (identifiant du numero, ou variable du modele)',
+  133010: "numero expediteur non enregistre sur la Cloud API (docs/WHATSAPP.md, etape 4 : npm run whatsapp-register)",
+  131030: "destinataire non autorise : avec le numero de test de Meta, l'ajouter a la liste des destinataires autorises",
+  131026: 'message non distribuable (numero sans WhatsApp, ou destinataire injoignable)',
+  131047: 'hors de la fenetre de 24 h : un modele approuve est obligatoire',
+  132000: 'nombre de variables different de celui du modele (3 attendues)',
+  132001: "modele introuvable, pas encore approuve, ou pas dans cette langue (PSIM_WHATSAPP_TEMPLATE, PSIM_WHATSAPP_LANG)",
+  132018: 'variable de modele refusee',
+  130429: 'trop de messages (limite de debit Meta)',
+  131056: 'trop de messages vers ce destinataire (limite Meta)',
+  131042: 'probleme de paiement du compte WhatsApp Business',
+};
+
+export interface WhatsappConfig {
+  /** Ex. https://graph.facebook.com/v25.0 */
+  apiBase: string;
+  /** Jeton d'acces permanent (utilisateur systeme Meta) : secret. */
+  token: string;
+  /** Identifiant du numero expediteur (pas le numero lui-meme). */
+  phoneId: string;
+  /** Modele approuve (categorie « Utilitaire ») a 3 variables : titre, lieu, details. */
+  template: string;
+  language: string;
+  /** Compte WhatsApp Business (facultatif) : sert a verifier le modele a la mise en service. */
+  wabaId?: string;
+}
+
+/**
+ * WhatsApp officiel (Meta, WhatsApp Cloud API). Une alerte est un message a l'initiative du PSIM : elle passe par un
+ * MODELE approuve par Meta (categorie « Utilitaire »), a 3 variables : {{1}} titre, {{2}} lieu, {{3}} details.
+ * « Accepte par Meta » n'est pas « lu » : la remise est confirmee plus tard par Meta (webhooks, non branches ici).
+ */
+export function whatsappChannel(cfg: WhatsappConfig, recipientsSource: Recipients): Channel | null {
+  const source = resolveRecipients(recipientsSource);
+  if (!cfg.token || !cfg.phoneId) return null;
+  const valid = (list: string[]) => list.filter((r) => PHONE_E164.test(r));
+  return {
+    id: 'whatsapp',
+    label: 'WhatsApp',
+    recipients: (level) => valid(source(level)),
+    mask: maskPhone,
+    async send(message, phone) {
+      const place = [message.data.zone, message.data.floor].filter((v) => typeof v === 'string' && v).join(' - ');
+      const body = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: phone.replace(/^\+/, ''),
+        type: 'template',
+        template: {
+          name: cfg.template,
+          language: { code: cfg.language },
+          components: [
+            {
+              type: 'body',
+              parameters: [
+                { type: 'text', text: templateParam(message.subject.replace(/^\[PSIM\]\s*/, ''), 160) },
+                { type: 'text', text: templateParam(place || 'PSIM', 120) },
+                { type: 'text', text: templateParam(message.text, 600) },
+              ],
+            },
+          ],
+        },
+      };
+      let res: Response;
+      try {
+        res = await fetch(`${cfg.apiBase.replace(/\/$/, '')}/${encodeURIComponent(cfg.phoneId)}/messages`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+          redirect: 'error',
+        });
+      } catch {
+        throw new Error('WhatsApp (Meta) injoignable');
+      }
+      const reply = (await res.json().catch(() => ({}))) as {
+        messages?: { id?: string; message_status?: string }[];
+        error?: { code?: number; message?: string; error_data?: { details?: string } };
+      };
+      if (!res.ok || reply.error) {
+        const code = reply.error?.code;
+        const known = code !== undefined ? META_ERRORS[code] : undefined;
+        const clean = (v: unknown) => clip(String(v ?? '').split(cfg.token).join('***'), 120);
+        // Le detail de Meta (error_data.details) dit souvent la vraie cause : il suit toujours la traduction.
+        const details = clean(reply.error?.error_data?.details);
+        const why = known ?? (clean(reply.error?.message) || (res.status >= 500 ? `Meta indisponible` : 'refuse par Meta'));
+        throw new Error(`WhatsApp HTTP ${res.status}${code !== undefined ? ` (code ${code})` : ''} : ${why}${details ? ` - ${details}` : ''}`);
+      }
+      const accepted = reply.messages?.[0];
+      if (!accepted?.id) throw new Error('WhatsApp : reponse de Meta sans identifiant de message');
+      // Modele mis en pause par Meta (qualite) : le message ne partira pas, c'est un echec.
+      if (accepted.message_status === 'paused') throw new Error('WhatsApp : modele mis en pause par Meta (qualite) : message non envoye');
+    },
+  };
+}
+
+/** Destinataire CallMeBot : « +<indicatif><numero>:<cle> » (la cle est propre a chaque telephone, et secrete). */
+export const CALLMEBOT_RECIPIENT = /^(\+\d{8,15}):([A-Za-z0-9]{3,64})$/;
+
+/** Numero affichable d'un destinataire CallMeBot (jamais la cle). */
+export function maskCallmebot(recipient: string): string {
+  return maskPhone(CALLMEBOT_RECIPIENT.exec(recipient)?.[1] ?? recipient.split(':')[0]);
 }
 
 /**
@@ -178,23 +300,23 @@ export function maskWhatsapp(recipient: string): string {
  * CallMeBot ne documente pas ses reponses : tout code HTTP hors 2xx est un echec, ET une reponse 2xx qui contient un mot
  * d'erreur explicite aussi. La seule preuve reste le message de test recu sur le telephone.
  */
-export function whatsappChannel(cfg: { apiBase: string }, recipientsSource: Recipients): Channel | null {
+export function callmebotChannel(cfg: { apiBase: string }, recipientsSource: Recipients): Channel | null {
   const source = resolveRecipients(recipientsSource);
-  const valid = (list: string[]) => list.filter((r) => WHATSAPP_RECIPIENT.test(r));
+  const valid = (list: string[]) => list.filter((r) => CALLMEBOT_RECIPIENT.test(r));
   if (valid(source(1)).length + valid(source(2)).length === 0) return null;
   return {
-    id: 'whatsapp',
-    label: 'WhatsApp',
+    id: 'callmebot',
+    label: 'WhatsApp (CallMeBot)',
     recipients: (level) => valid(source(level)),
-    mask: maskWhatsapp,
+    mask: maskCallmebot,
     async send(message, recipient) {
-      const [, phone, key] = WHATSAPP_RECIPIENT.exec(recipient) ?? [];
-      if (!phone || !key) throw new Error('Destinataire WhatsApp invalide');
+      const [, phone, key] = CALLMEBOT_RECIPIENT.exec(recipient) ?? [];
+      if (!phone || !key) throw new Error('Destinataire CallMeBot invalide');
       // Le texte passe dans l'adresse : il est raccourci (les details restent dans le PSIM).
-      const text = `*${message.subject}*\n\n${message.text}`.slice(0, 1500);
-      const url = `${cfg.apiBase.replace(/\/$/, '')}/whatsapp.php?phone=${encodeURIComponent(phone)}&text=${encodeURIComponent(text)}&apikey=${encodeURIComponent(key)}`;
+      const text = clip(`*${message.subject}*\n\n${message.text}`, 1500);
       let res: Response;
       try {
+        const url = `${cfg.apiBase.replace(/\/$/, '')}/whatsapp.php?phone=${encodeURIComponent(phone)}&text=${encodeURIComponent(text)}&apikey=${encodeURIComponent(key)}`;
         res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'error' });
       } catch {
         // Le message d'origine de fetch contient l'adresse complete, donc la cle : on ne le propage pas.
@@ -202,9 +324,9 @@ export function whatsappChannel(cfg: { apiBase: string }, recipientsSource: Reci
       }
       const body = (await res.text().catch(() => '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
       const detail = body.split(key).join('***').slice(0, 100);
-      if (!res.ok) throw new Error(`WhatsApp HTTP ${res.status}${detail ? ` : ${detail}` : ''}`);
+      if (!res.ok) throw new Error(`CallMeBot HTTP ${res.status}${detail ? ` : ${detail}` : ''}`);
       if (/\b(invalid|not allowed|not authori[sz]ed|blocked|error|wrong|disabled|too many|banned)\b/i.test(body)) {
-        throw new Error(`WhatsApp refuse : ${detail || 'reponse d\'erreur'}`);
+        throw new Error(`CallMeBot refuse : ${detail || "reponse d'erreur"}`);
       }
     },
   };

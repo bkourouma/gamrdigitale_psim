@@ -13,8 +13,8 @@ function setup(over: { email?: boolean; telegram?: boolean } = {}) {
   const svc = createRecipientsService({
     db,
     audit: (actor, action, ref) => void audit.push(`${actor}:${action}:${ref?.details ?? ''}`),
-    env: { email: [['fixe@exemple.fr'], ['chef@exemple.fr']], telegram: [[], []], whatsapp: [[], []], webhook: [[], []] },
-    available: { email: over.email ?? true, telegram: over.telegram ?? true, whatsapp: false, webhook: true },
+    env: { email: [['fixe@exemple.fr'], ['chef@exemple.fr']], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], webhook: [[], []] },
+    available: { email: over.email ?? true, telegram: over.telegram ?? true, whatsapp: false, callmebot: false, webhook: true },
   });
   return { db, svc, audit };
 }

@@ -2,8 +2,8 @@
 import { randomPassword } from './account.js';
 
 const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur' };
-const CHANNEL_LABEL = { email: 'E-mail', telegram: 'Telegram', whatsapp: 'WhatsApp', webhook: 'Webhook' };
-const ADDRESS_HINT = { email: 'agent@exemple.fr', telegram: 'numéro de conversation ou @canal', webhook: 'https://…' };
+const CHANNEL_LABEL = { email: 'E-mail', telegram: 'Telegram', whatsapp: 'WhatsApp', callmebot: 'WhatsApp (CallMeBot)', webhook: 'Webhook' };
+const ADDRESS_HINT = { email: 'agent@exemple.fr', telegram: 'numéro de conversation ou @canal', whatsapp: '+2250700000000', webhook: 'https://…' };
 
 export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsChanged }) {
   const usersBox = document.getElementById('users-list');
@@ -157,13 +157,15 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
   }
 
   function renderRecipients({ recipients, available }) {
+    // Destinataire d'un canal sans configuration (jeton, serveur) : il ne recevrait rien, on le dit sur sa ligne.
+    const unconfigured = (id) => (id in available && !available[id] && id !== 'callmebot' ? h('span', { class: 'tag warn', text: 'canal non configuré : ne reçoit rien' }) : null);
     const channel = h('select', { 'aria-label': 'Canal' });
-    for (const id of ['email', 'telegram', 'webhook']) {
+    for (const id of ['whatsapp', 'email', 'telegram', 'webhook']) {
       const opt = h('option', { value: id, text: CHANNEL_LABEL[id] + (available[id] ? '' : ' (non configuré)') });
       opt.disabled = !available[id];
       channel.append(opt);
     }
-    channel.value = available.email ? 'email' : available.telegram ? 'telegram' : 'webhook';
+    channel.value = available.whatsapp ? 'whatsapp' : available.email ? 'email' : available.telegram ? 'telegram' : 'webhook';
     const address = h('input', { placeholder: ADDRESS_HINT[channel.value], maxlength: '500', autocomplete: 'off', 'aria-label': 'Adresse', required: true });
     channel.addEventListener('change', () => (address.placeholder = ADDRESS_HINT[channel.value]));
     const level = h('select', { 'aria-label': 'Niveau' }, h('option', { value: '1', text: 'Niveau 1 (dès l\'ouverture)' }), h('option', { value: '2', text: 'Niveau 2 (escalade)' }));
@@ -174,7 +176,14 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
       recipients.length === 0 ? h('p', { class: 'small muted', text: "Aucun destinataire : une alarme ne prévient personne hors de l'écran du PSIM." }) : null,
       ...recipients.map((r) => {
         if (r.source === 'env') {
-          return h('div', { class: 'recipient-row' }, h('span', { class: 'tag', text: '.env' }), h('span', { text: `${CHANNEL_LABEL[r.channel]} — ${r.display}` }), h('span', { class: 'muted small', text: `niveau ${r.level} (défini dans .env : non modifiable ici)` }));
+          return h(
+            'div',
+            { class: 'recipient-row' },
+            h('span', { class: 'tag', text: '.env' }),
+            h('span', { text: `${CHANNEL_LABEL[r.channel]} — ${r.display}` }),
+            h('span', { class: 'muted small', text: `niveau ${r.level} (défini dans .env : non modifiable ici)` }),
+            unconfigured(r.channel),
+          );
         }
         const lv = h('select', { 'aria-label': `Niveau de ${r.display}` }, h('option', { value: '1', text: 'Niveau 1' }), h('option', { value: '2', text: 'Niveau 2' }));
         lv.value = String(r.level);
@@ -186,6 +195,7 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           'div',
           { class: `recipient-row${r.active ? '' : ' inactive'}` },
           h('span', { text: `${CHANNEL_LABEL[r.channel]} — ${r.display}${r.label ? ` (${r.label})` : ''}` }),
+          unconfigured(r.channel),
           lv,
           h('label', { class: 'check small' }, on, ' actif'),
           h('button', { class: 'btn tiny danger', type: 'button', text: 'Retirer', onclick: () => confirm(`Retirer ${r.display} ?`) && actRecipient(() => api(`/api/notifications/recipients/${r.id}`, { method: 'DELETE' }), 'Destinataire retiré') }),

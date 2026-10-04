@@ -29,7 +29,8 @@
     "start:prod": "node --env-file=.env.production server/index.ts",
     "supervise:prod": "node --env-file=.env.production scripts/supervise.ts",
     "check-config:prod": "node --env-file=.env.production scripts/check-config.ts",
-    "commission:prod": "node --env-file=.env.production scripts/commission.ts"
+    "commission:prod": "node --env-file=.env.production scripts/commission.ts",
+    "whatsapp-register:prod": "node --env-file=.env.production scripts/whatsapp-register.ts"
   },
   "dependencies": {
     "aedes": "^1.2.0",

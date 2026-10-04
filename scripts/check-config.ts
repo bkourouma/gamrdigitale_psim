@@ -9,7 +9,7 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { config } from '../server/config.ts';
+import { channelSetup, config, serviceUrls } from '../server/config.ts';
 import { formatFindings, preflight } from '../server/preflight.ts';
 
 const n = config.notify;
@@ -27,12 +27,12 @@ if (existsSync(dbFile)) {
     // base absente, ancienne ou verrouillee : on s'en tient au .env
   }
 }
-const count = (channel: 'email' | 'telegram' | 'webhook', level: 1 | 2) => (n.recipients[channel][level - 1]?.length ?? 0) + (dbRecipients.get(`${channel}:${level}`) ?? 0);
-const channels = ([
-  ['email', Boolean(n.smtp.host && n.smtp.from)],
-  ['telegram', Boolean(n.telegram.token)],
-  ['webhook', true],
-] as const).filter(([channel, configured]) => configured && count(channel, 1) + count(channel, 2) > 0);
+type ChannelKey = 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook';
+const count = (channel: ChannelKey, level: 1 | 2) => (n.recipients[channel][level - 1]?.length ?? 0) + (dbRecipients.get(`${channel}:${level}`) ?? 0);
+const setup = channelSetup(n);
+const channels = ([...setup.map((c) => [c.id, c.configured] as const), ['callmebot', true] as const, ['webhook', true] as const] as (readonly [ChannelKey, boolean])[]).filter(
+  ([channel, configured]) => configured && count(channel, 1) + count(channel, 2) > 0,
+);
 const tlsEnabled = Boolean(config.tls.cert && config.tls.key);
 
 const findings = preflight({
@@ -58,6 +58,8 @@ const findings = preflight({
   mqttAllowPlaintext: config.mqttAllowPlaintext,
   smtpHost: config.notify.smtp.host,
   smtpStarttls: config.notify.smtp.starttls,
+  serviceUrls: serviceUrls(n),
+  orphanRecipients: setup.filter((c) => !c.configured && count(c.id, 1) + count(c.id, 2) > 0).map((c) => c.label),
 });
 
 console.log(`Mode : ${config.production ? 'PRODUCTION' : 'developpement'} (PSIM_ENV=production pour le verdict de production)`);

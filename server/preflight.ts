@@ -47,9 +47,13 @@ export interface PreflightInput {
   /** Serveur SMTP : hote et STARTTLS (pour avertir d'un relais externe en clair). */
   smtpHost?: string;
   smtpStarttls?: boolean;
+  /** Adresses des services de messagerie (jeton en en-tete ou cle dans l'adresse) : https:// exige hors boucle locale. */
+  serviceUrls?: { name: string; url: string }[];
+  /** Canaux qui ont des destinataires mais pas de configuration (jeton, serveur) : ces destinataires ne recevraient rien. */
+  orphanRecipients?: string[];
 }
 
-const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1'].includes(host);
+const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
 
 export function preflight(c: PreflightInput): Finding[] {
   const out: Finding[] = [];
@@ -104,6 +108,20 @@ export function preflight(c: PreflightInput): Finding[] {
 
   if (c.smtpHost && c.smtpStarttls === false && !isLoopback(c.smtpHost) && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(c.smtpHost)) {
     add('warn', `PSIM_SMTP_STARTTLS=0 avec un serveur SMTP qui n'est pas sur le reseau local (${c.smtpHost}) : identifiant, mot de passe et alertes circuleraient en clair.`);
+  }
+  for (const service of c.serviceUrls ?? []) {
+    let url: URL;
+    try {
+      url = new URL(service.url);
+    } catch {
+      add(strict, `${service.name} illisible : les envois par ce canal echoueraient.`);
+      continue;
+    }
+    if (url.protocol === 'http:' && !isLoopback(url.hostname)) add(strict, `${service.name} en http:// : le jeton ou la cle du service circuleraient en clair. Utilisez https://.`);
+    else if (url.protocol !== 'https:' && url.protocol !== 'http:') add(strict, `${service.name} : protocole ${url.protocol} refuse (https:// attendu).`);
+  }
+  for (const channel of c.orphanRecipients ?? []) {
+    add(strict, `Destinataires ${channel} declares, mais canal non configure : ils ne recevraient AUCUNE alerte. Completez sa configuration (voir .env.example) ou retirez-les.`);
   }
   if (c.notificationChannels === 0) add('warn', "Aucun canal de notification : une alarme ne previent personne en dehors de l'ecran du PSIM.");
   else if (!c.escalationConfigured) add('warn', "Aucun destinataire de niveau 2 : si personne n'acquitte, l'alerte n'est escaladee a personne.");
