@@ -16,12 +16,12 @@ describe('etat d un site, en une phrase', () => {
     assert.equal(siteStatus(s, NOW, NOW, STALE).level, 'ok');
   });
 
-  it("des cameras seules, sans detecteur : jamais « tout fonctionne » (rien n'est mesure)", () => {
+  it("des cameras non mesurees seules : jamais « tout fonctionne » (rien n'est mesure)", () => {
     const s = makeSummary('s');
     const camerasOnly: SiteSummary = { ...s, devices: s.devices.filter((d) => d.kind === 'camera') };
     const st = siteStatus(camerasOnly, NOW, NOW, STALE);
     assert.equal(st.level, 'unknown');
-    assert.match(st.label, /Aucun détecteur suivi/);
+    assert.match(st.label, /Aucun équipement suivi/);
     assert.equal(siteStatus(camerasOnly, NOW - 2 * HOUR, NOW, STALE).level, 'unreachable', 'et un site muet reste injoignable');
   });
 

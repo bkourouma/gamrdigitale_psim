@@ -40,9 +40,9 @@ export function siteStatus(summary: SiteSummary | null, receivedAt: number | nul
     const known = open.length > 0 ? ` Dernier état connu : ${plural(open.length, 'incident en cours', 'incidents en cours')}.` : '';
     return { level: 'unreachable', label: 'Site injoignable', detail: `Aucun signal depuis ${ago(silence)}.${known}` };
   }
-  // Des cameras seules : l'etat des cameras n'est pas mesure, donc rien ne permet de dire que « tout fonctionne ».
+  // Rien n'est mesure (pas de detecteur, cameras simulees ou pas encore testees) : rien ne permet de dire que « tout fonctionne ».
   if (!summary.devices.some((d) => d.monitored)) {
-    return { level: 'unknown', label: 'Aucun détecteur suivi', detail: "Ce site n'a pas encore de détecteur déclaré : seules les caméras sont listées, et leur état n'est pas mesuré." };
+    return { level: 'unknown', label: 'Aucun équipement suivi', detail: "L'état des équipements de ce site n'est pas encore mesuré : rien ne permet de dire qu'ils fonctionnent." };
   }
   if (open.length > 0) {
     const critical = open.some((i) => i.severity === 'critical');

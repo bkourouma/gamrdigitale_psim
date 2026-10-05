@@ -26,21 +26,22 @@ Un tableau de bord **pour le client**, sans vidéo en direct : équipements, tem
 - Portail : lancé à la main (`npm run portal`, port 4300), données dans `portal-data/` (inclut `master.key`).
 - Compte admin du portail : `portaladmin` (mot de passe choisi par l'utilisateur). Organisation « Résidence KOUROUMA ». Site actif : **`residence-kourouma`**. L'ancien site `identifiant-du-site` est désactivé (aucune commande de suppression/renommage n'existe).
 - Le PSIM de production envoie bien au portail (vérifié : `portail de suivi : résumé toutes les 300 s vers 127.0.0.1:4300` dans `data-prod/logs/psim.log`).
-- Ce site réel a **8 caméras et 0 détecteur** : la page affiche « Aucun détecteur suivi » avec la liste des caméras, sans pourcentage.
+- Ce site réel a **8 caméras et 0 détecteur**, toutes derrière un même enregistreur Dahua : depuis le 5 oct., elles sont mesurées (voir plus bas).
 
-## PROCHAINE TÂCHE : mesurer l'état des caméras
+## FAIT (5 oct.) : mesure de l'état des caméras
 
-Pourquoi : pour ce client, la page n'apprend rien tant que les caméras ne sont pas mesurées. L'utilisateur a validé cette tâche en premier, puis l'alerte « site injoignable ».
+- `server/camerahealth.ts` : test de connexion TCP toutes les `PSIM_CAMERA_CHECK_S` s (60 par défaut, 0 = coupé), sans identifiants ni image, un seul essai par adresse (les 8 caméras du site réel passent par un même enregistreur). Hors ligne après 3 échecs de suite, daté du premier ; retour au premier succès. Journal : `camera_offline` / `camera_online` (sans adresse). Avertissement dans l'écran Système. `device.status` n'est PAS modifié (choix de prudence).
+- `history.ts#beginHistory` : au démarrage, une caméra réelle reprend son dernier état mesuré ; jamais mesurée → rien jusqu'au premier test.
+- `portal.ts` : `monitored` = détecteur ou caméra réelle déjà mesurée ; son `status` vient de l'historique. Format du résumé inchangé (`v: 1`).
+- Portail : « Aucun équipement suivi » (au lieu de « Aucun détecteur suivi »), état réel des caméras mesurées, note « répond sur le réseau ≠ image bonne ». Démo : caméras mesurées sur Kaloum et Résidence Camara.
+- Tests : `test/camerahealth.test.ts` (14, vérifiés par mutation). Suite complète : 710/710 le 5 oct.
+- **Actif en production depuis le 5 oct. 13:50 UTC** (portail et tâche `PSIM` redémarrés par l'utilisateur) : « etat des cameras : test de connexion toutes les 60 s (8 camera(s) reelle(s)) ».
 
-État du code : une caméra n'a pas d'état de santé (`device.status` reste `normal`). Elle n'est lue que lorsqu'un opérateur ouvre l'image (`server/video.ts`). `history.ts` ne suit que `kind = 'detector'` (`beginHistory`, `createDevice`) ; `portal.ts` met `monitored: r.kind === 'detector'` ; l'interface affiche « Non mesuré » pour toute caméra (`web/app.js`, `equipmentTable`) ; `views.ts#siteStatus` renvoie « Aucun détecteur suivi » s'il n'y a aucun équipement `monitored`.
+## FAIT (5 oct.) : notifications en production
 
-Conception proposée (à confirmer avec l'utilisateur avant de coder) :
-1. Nouveau `server/camerahealth.ts` : toutes les 60 s, test de connexion TCP (délai 3 s, **sans identifiants, sans image**) vers `host:port` de chaque caméra ayant une ligne dans `camera_source` (les caméras simulées n'ont rien à mesurer). Hors ligne après 3 échecs de suite (pas d'oscillation sur un raté isolé), retour en ligne au premier succès.
-2. Écrire les transitions avec `recordState(db, id, 'offline' | 'normal', t)` (déjà réutilisable). Étendre `beginHistory` et `createDevice` aux caméras réelles ; ajouter un journal d'audit (`camera_offline` / `camera_online`) ; **ne pas** lancer d'incident ni de notification dans cette première version.
-3. `portal.ts` : `monitored` = détecteur **ou** caméra avec source réelle. Garder `monitored: false` pour les caméras simulées.
-4. Décision à prendre : faut-il aussi refléter l'état dans `device.status` (visible dans l'écran du PSIM, qui ne connaît pas `offline` pour une caméra) ? Plus sûr au début : ne pas toucher à `device.status`, et faire lire au résumé l'état ouvert de `device_state_history`.
-5. Mettre à jour : `docs/PORTAIL.md` (section « Comment lire les chiffres » dit aujourd'hui que les caméras ne sont pas mesurées), le texte « L'état des caméras n'est pas mesuré en continu » dans `web/app.js`, la règle « Aucun détecteur suivi » dans `views.ts`, et les tests (`test/history.test.ts`, `test/portal.test.ts`, `test/portal/views.test.ts`).
-6. **Limite à dire à l'utilisateur** : joindre le port d'un enregistreur Dahua prouve que l'appareil répond, pas que chaque voie vidéo fonctionne. C'est une disponibilité « appareil », pas « image ».
+Actives depuis le redémarrage de 13:50 UTC : **Telegram** (robot de l'utilisateur) et **e-mail** (Gmail, port 465, mot de passe d'application), un destinataire de niveau 1 chacun (l'utilisateur), aucun niveau 2. Saisis par l'utilisateur dans `.env.production` ; ne jamais lui demander les secrets dans la conversation. `commission:prod` : SMTP et Telegram OK, messages de test envoyés. Telegram reçu (test + alerte « surveillance interrompue »). **E-mail : accepté par Gmail mais pas encore vu par l'utilisateur** (probablement en indésirables ; sinon vérifier le journal des envois dans l'écran Notifications du PSIM).
+
+Reste : **WhatsApp officiel (Meta)** choisi par l'utilisateur, à faire en suivant `docs/WHATSAPP.md` (il doit d'abord créer l'application et faire approuver le modèle). Pièges vus : jeton Telegram copié sans sa partie « chiffres: » (erreur HTTP 404), mot de passe Gmail ordinaire au lieu d'un mot de passe d'application (16 lettres). Lecture de `data-prod/psim.db` bloquée par les permissions ; `node --env-file=.env.production` pour vérifier la FORME des valeurs sans les afficher fonctionne.
 
 Ensuite : alerte « site injoignable » (le portail n'alerte personne aujourd'hui ; e-mail ou WhatsApp au prestataire), puis rapport mensuel PDF par client, mode « maintenance annoncée », double authentification pour le portail (le compte admin voit tous les clients et n'a pas de 2FA).
 

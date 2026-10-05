@@ -34,7 +34,9 @@ function prng(seed: number) {
 }
 
 interface Plan {
-  /** Pannes passees : [il y a N heures, duree en minutes, detecteur, etat]. */
+  /** Cameras reelles, mesurees par test de connexion depuis le debut (les autres restent simulees, « non mesurees »). */
+  cameras?: string[];
+  /** Pannes passees : [il y a N heures, duree en minutes, equipement (detecteur ou camera mesuree), etat]. */
   outages: [number, number, string, 'fault' | 'offline'][];
   /** Incidents passes : [il y a N heures, detecteur, qualification]. */
   incidents: [number, string, 'fire' | 'false_alarm'][];
@@ -53,12 +55,18 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
   let clock = at - 36 * 24 * HOUR;
   const engine = createEngine(db, () => {}, () => clock, { silentTimeoutMs: 0 });
   beginHistory(db, clock, null, null);
+  for (const id of plan.cameras ?? []) {
+    db.prepare("INSERT INTO camera_source (device_id, kind, host, port) VALUES (?, 'rtsp', '192.0.2.10', 554)").run(id);
+    recordState(db, id, 'normal', clock);
+  }
   const random = prng(seed);
 
   type Ev = { t: number; run: () => void };
   const events: Ev[] = [];
   const setState = (id: string, state: string) => () => {
-    if (state === 'offline') {
+    // Camera : seul son historique change (voir camerahealth.ts : l'ecran du PSIM n'est pas modifie).
+    if (plan.cameras?.includes(id)) recordState(db, id, state, clock);
+    else if (state === 'offline') {
       db.prepare("UPDATE device SET status = 'offline', state_since = ? WHERE id = ?").run(clock, id);
       recordState(db, id, 'offline', clock);
     } else engine.handleDetectorMessage(id, { state });
@@ -102,7 +110,8 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number }
   {
     org: 'Groupe Diallo', id: 'entrepot-kaloum', name: 'Entrepôt Kaloum', seed: 11,
     plan: {
-      outages: [[700, 25, 'D-03', 'offline'], [610, 130, 'D-02', 'fault'], [400, 12, 'D-03', 'offline'], [300, 45, 'D-01', 'fault'], [97, 190, 'D-03', 'offline'], [30, 18, 'D-02', 'offline']],
+      cameras: ['C-01', 'C-02', 'C-03', 'C-04'],
+      outages: [[700, 25, 'D-03', 'offline'], [610, 130, 'D-02', 'fault'], [400, 12, 'D-03', 'offline'], [300, 45, 'D-01', 'fault'], [150, 75, 'C-02', 'offline'], [97, 190, 'D-03', 'offline'], [30, 18, 'D-02', 'offline']],
       incidents: [[760, 'D-01', 'false_alarm'], [520, 'D-02', 'false_alarm'], [333, 'D-04', 'fire'], [200, 'D-01', 'false_alarm'], [60, 'D-03', 'false_alarm']],
     },
   },
@@ -118,7 +127,7 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number }
     org: 'Groupe Diallo', id: 'bureau-nord', name: 'Bureau Conakry Nord', seed: 44,
     plan: { outages: [[300, 60, 'D-02', 'fault']], incidents: [], now: { 'D-04': ['prealarm', 20] }, silentFor: 190 },
   },
-  { org: 'Maison Camara', id: 'maison-camara', name: 'Résidence Camara', seed: 55, plan: { outages: [[100, 8, 'D-01', 'offline']], incidents: [[200, 'D-02', 'false_alarm']] } },
+  { org: 'Maison Camara', id: 'maison-camara', name: 'Résidence Camara', seed: 55, plan: { cameras: ['C-01', 'C-02', 'C-03', 'C-04'], outages: [[100, 8, 'D-01', 'offline']], incidents: [[200, 'D-02', 'false_alarm']], now: { 'C-03': ['offline', 45] } } },
 ];
 for (const s of SITES) {
   addSite(db, s.org, s.id, s.name);

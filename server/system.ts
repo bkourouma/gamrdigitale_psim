@@ -7,6 +7,7 @@ import { existsSync, statSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Gap } from './continuity.ts';
+import type { CameraHealthStatus } from './camerahealth.ts';
 import type { HeartbeatStatus } from './heartbeat.ts';
 import type { PortalStatus } from './portal.ts';
 
@@ -34,6 +35,8 @@ export interface SystemDeps {
   /** Derniere periode aveugle (PSIM arrete), et etat du signal de supervision externe. */
   lastGap?: () => Gap | null;
   heartbeat?: () => HeartbeatStatus;
+  /** Mesure de l'etat des cameras reelles (test de connexion regulier). */
+  cameras?: () => CameraHealthStatus;
   /** Envoi du resume vers le portail de suivi a distance. */
   portal?: () => PortalStatus;
   /** Derniere verification du journal (chaine d'empreintes). */
@@ -110,6 +113,11 @@ export function createSystemStatus(deps: SystemDeps) {
     if (gap && !gap.clean && t - gap.to < 24 * 3_600_000) {
       warnings.push({ level: 'attention', message: `Redemarrage apres un arret inattendu : le PSIM n'a rien surveille pendant ${Math.round(gap.durationMs / 60_000) || 1} min (${new Date(gap.from).toLocaleString('fr-FR')}). Verifier ce qui s'est passe.` });
     }
+    const cameras = deps.cameras?.() ?? null;
+    if (cameras && cameras.offline.length > 0) {
+      const names = cameras.offline.slice(0, 5).join(', ') + (cameras.offline.length > 5 ? '...' : '');
+      warnings.push({ level: 'attention', message: `${cameras.offline.length} camera(s) ne repondent plus sur le reseau : ${names}. Verifier l'alimentation et le cable de la camera ou de l'enregistreur.` });
+    }
     const beat = deps.heartbeat?.() ?? null;
     if (beat?.configured && beat.consecutiveFailures >= 3) {
       warnings.push({ level: 'attention', message: `Supervision externe : ${beat.consecutiveFailures} signaux sans succes (${beat.lastError ?? 'erreur'}). Si le PSIM s'arrete, personne ne sera prevenu.` });
@@ -145,6 +153,7 @@ export function createSystemStatus(deps: SystemDeps) {
       journal,
       heartbeat: beat,
       portal,
+      cameras,
       warnings,
     };
   }

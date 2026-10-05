@@ -1,5 +1,5 @@
 /**
- * Historique des etats des detecteurs : la base de toute mesure de disponibilite et de temps d'arret.
+ * Historique des etats des equipements : la base de toute mesure de disponibilite et de temps d'arret.
  *
  * La table `device` ne garde que l'etat ACTUEL ; le journal d'audit, lui, cesse de noter les changements d'un equipement
  * qui oscille (voir engine.ts, FLAP_LIMIT). Aucun des deux ne permet donc de dire « ce detecteur a ete hors service
@@ -12,8 +12,8 @@
  *    disponible ni comme indisponible, il est rapporte a part (sinon une coupure de courant ferait mentir le chiffre
  *    dans un sens ou dans l'autre).
  *
- * Seuls les detecteurs sont suivis. Une camera n'a pas d'etat de sante dans le PSIM (son image n'est ouverte que quand
- * quelqu'un la regarde) : lui inventer 100 % de disponibilite serait faux.
+ * Sont suivis : les detecteurs, et les cameras REELLES (avec une source video), mesurees par un test de connexion
+ * regulier (voir camerahealth.ts). Une camera simulee n'est pas mesuree : lui inventer 100 % de disponibilite serait faux.
  */
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -53,7 +53,7 @@ interface Interval {
 }
 
 /**
- * Note qu'un detecteur est (maintenant) dans cet etat. Sans effet s'il y est deja : on peut donc l'appeler sans precaution.
+ * Note qu'un equipement est (maintenant) dans cet etat. Sans effet s'il y est deja : on peut donc l'appeler sans precaution.
  * L'etat precedent est clos au meme instant : aucun trou, aucun chevauchement.
  */
 export function recordState(db: DatabaseSync, deviceId: string, state: string, at: number): void {
@@ -89,6 +89,13 @@ export function beginHistory(db: DatabaseSync, now: number, previousAlive: numbe
       const since = !known && d.state_since !== null && d.state_since <= now ? d.state_since : now;
       insert.run(d.id, d.status, since);
     }
+    // Camera reelle : son etat n'est pas dans `device.status` mais dans son dernier etat mesure, qui reprend ici. Jamais
+    // mesuree : rien a reprendre, le premier test (quelques secondes apres le demarrage) le dira.
+    const cameras = db.prepare("SELECT d.id FROM device d JOIN camera_source c ON c.device_id = d.id WHERE d.kind = 'camera'").all() as { id: string }[];
+    for (const c of cameras) {
+      const last = db.prepare('SELECT state FROM device_state_history WHERE device_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(c.id) as { state: string } | undefined;
+      if (last) insert.run(c.id, last.state, now);
+    }
     if (gap) db.prepare('INSERT INTO blind_period (from_ts, to_ts, clean) VALUES (?, ?, ?)').run(gap.from, gap.to, gap.clean ? 1 : 0);
     db.exec('COMMIT');
   } catch (err) {
@@ -112,7 +119,7 @@ export function blindPeriods(db: DatabaseSync, from: number, to: number): BlindP
   }));
 }
 
-/** Intervalles de chaque detecteur, rognes a [from, to] ; l'etat en cours s'arrete a `min(to, now)`. */
+/** Intervalles de chaque equipement, rognes a [from, to] ; l'etat en cours s'arrete a `min(to, now)`. */
 export function loadIntervals(db: DatabaseSync, from: number, to: number, now: number): Map<string, Interval[]> {
   const cap = Math.min(to, now);
   const rows = db
@@ -130,7 +137,7 @@ export function loadIntervals(db: DatabaseSync, from: number, to: number, now: n
   return byDevice;
 }
 
-/** Disponibilite d'un detecteur sur [from, to] a partir de ses intervalles (voir `loadIntervals`). */
+/** Disponibilite d'un equipement sur [from, to] a partir de ses intervalles (voir `loadIntervals`). */
 export function availabilityOf(intervals: Interval[], from: number, to: number, now: number): Availability {
   const cap = Math.min(to, now);
   let up = 0;

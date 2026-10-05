@@ -11,6 +11,7 @@ import { channelSetup, config, serviceUrls } from './config.ts';
 import { headOf } from './auditchain.ts';
 import { createContinuity } from './continuity.ts';
 import { openDb } from './db.ts';
+import { createCameraHealth } from './camerahealth.ts';
 import { createHeartbeat } from './heartbeat.ts';
 import { beginHistory, purgeHistory } from './history.ts';
 import { buildSiteSummary, createPortalSender } from './portal.ts';
@@ -316,6 +317,7 @@ const system = createSystemStatus({
   },
   heartbeat: () => heartbeat.status(),
   portal: () => portal.status(),
+  cameras: () => cameraHealth.status(),
 });
 
 // Journal infalsifiable : verification de la chaine d'empreintes au demarrage puis toutes les 6 h, ancre quotidienne.
@@ -352,6 +354,13 @@ const heartbeat = createHeartbeat({
 });
 
 // Portail de suivi a distance : un instantane complet des 35 derniers jours, envoye regulierement (voir portal.ts).
+// Etat des cameras reelles : test de connexion regulier, sans identifiants ni image (voir camerahealth.ts).
+const cameraHealth = createCameraHealth({
+  db,
+  everyMs: config.cameraCheckS * 1000,
+  audit: (action, deviceId, details) => engine.audit('systeme', action, { deviceId, details }),
+});
+
 const portal = createPortalSender({
   url: config.portal.url,
   siteId: config.portal.siteId,
@@ -543,6 +552,12 @@ server.listen(config.port, config.host, () => {
   );
   portal.start();
   console.log(
+    config.cameraCheckS > 0
+      ? `[psim] etat des cameras : test de connexion toutes les ${config.cameraCheckS} s (${cameraHealth.status().measured} camera(s) reelle(s))`
+      : '[psim] etat des cameras : non mesure (PSIM_CAMERA_CHECK_S=0)',
+  );
+  cameraHealth.start();
+  console.log(
     config.detectorTimeoutS > 0
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
       : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
@@ -583,6 +598,7 @@ async function shutdown() {
   if (backupTimer) clearInterval(backupTimer);
   heartbeat.stop();
   portal.stop();
+  cameraHealth.stop();
   dahua.stop();
   video.shutdown();
   wss.close();

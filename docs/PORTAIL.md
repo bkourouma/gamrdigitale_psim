@@ -77,9 +77,9 @@ Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et n
 
 ## Comment lire les chiffres
 
-- **Disponibilité** = temps où les détecteurs étaient en service ÷ temps observé. Une alarme est un détecteur qui *fonctionne* : elle ne compte pas comme une panne.
+- **Disponibilité** = temps où les équipements suivis (détecteurs et caméras réelles) étaient en service ÷ temps observé. Une alarme est un détecteur qui *fonctionne* : elle ne compte pas comme une panne.
 - **Temps non surveillé** : quand le PSIM d'un site était arrêté, on ne sait pas ce qui s'est passé. Ce temps n'est compté ni disponible ni indisponible ; il est montré à part (« Surveillance interrompue »).
-- **Les caméras ne sont pas mesurées** : le PSIM ne connaît leur état que lorsqu'on ouvre l'image. Aucun pourcentage n'est annoncé pour elles.
+- **Caméras** : le PSIM teste chaque minute (`PSIM_CAMERA_CHECK_S`) la connexion réseau de chaque caméra réelle, sans identifiants ni image. « Hors ligne » après 3 échecs de suite (daté du premier), « en service » au premier succès. Cela prouve que **l'appareil répond**, pas que l'image est bonne ; derrière un enregistreur, toutes les voies partagent son adresse et tombent ensemble. Une caméra simulée, ou pas encore testée, reste « Non mesuré », sans pourcentage. Une caméra injoignable apparaît dans le journal du PSIM (« Caméra injoignable ») et dans son écran Système ; elle n'ouvre pas d'incident et ne prévient personne.
 - Moyennes sur plusieurs jours **pondérées par le temps observé** ; délais en **médiane**.
 - Aucun jour manquant n'est inventé : un site récent affiche « mesures disponibles depuis le… ».
 - Le portail conserve les jours qui sortent de la fenêtre de 35 jours envoyée par le site : c'est lui qui garde l'historique long.
@@ -97,7 +97,7 @@ Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et n
 - **Il n'alerte personne** quand un site devient injoignable : il l'affiche, c'est tout. Un site mort ne prévient pas ; c'est au portail de le faire (e-mail ou WhatsApp au prestataire).
 - Pas de mode « maintenance annoncée » : une intervention planifiée compte comme un arrêt.
 - Pas de rapport mensuel PDF par client.
-- Pas de mesure de l'état des caméras ni des enregistreurs (disques, jours de vidéo conservés).
+- Pas de mesure de la qualité de l'image des caméras ni de l'état des enregistreurs (disques, jours de vidéo conservés) : seulement « l'appareil répond-il ? ».
 
 ## Tests
 

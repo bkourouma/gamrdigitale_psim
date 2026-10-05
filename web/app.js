@@ -65,6 +65,8 @@ const ACTION_LABEL = {
   links_updated: 'Caméras associées modifiées',
   sim_trigger: 'Simulation',
   detector_silent: 'Détecteur muet',
+  camera_offline: 'Caméra injoignable',
+  camera_online: 'Caméra de nouveau joignable',
   supervision_gap: 'Période sans surveillance',
   journal_integrity_failed: 'JOURNAL ALTÉRÉ',
   journal_integrity_recovered: 'Journal de nouveau cohérent',

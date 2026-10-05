@@ -422,11 +422,21 @@ function hideTip() {
 function equipmentTable(detail) {
   const avail = new Map(detail.deviceAvailability.map((a) => [a.deviceId, a]));
   const rows = detail.devices.map((d) => {
-    const [level, label] = d.kind === 'camera' ? ['unknown', 'Non mesuré'] : (DEVICE_STATE[d.status] ?? ['unknown', d.status]);
+    const [level, label] = !d.monitored ? ['unknown', 'Non mesuré'] : (DEVICE_STATE[d.status] ?? ['unknown', d.status]);
     const a = avail.get(d.id);
     return h('tr', null, h('td', null, d.name), h('td', null, d.kind === 'camera' ? 'Caméra' : (CATEGORY[d.category] ?? d.category)), h('td', null, [d.zone, d.floor].filter(Boolean).join(' · ') || '—'), h('td', null, pill(level, label)), h('td', { class: 'num' }, a ? fmtPct(a.pct) : '—'));
   });
-  return h('section', { class: 'card' }, h('h2', null, 'Équipements'), table([['Équipement'], ['Type'], ['Emplacement'], ['État'], ['Disponibilité (35 j)', true]], rows, 'Aucun équipement déclaré.'), detail.devices.some((d) => d.kind === 'camera') && h('p', { class: 'note-box' }, 'L’état des caméras n’est pas mesuré en continu : aucun pourcentage n’est annoncé pour elles.'));
+  return h('section', { class: 'card' }, h('h2', null, 'Équipements'), table([['Équipement'], ['Type'], ['Emplacement'], ['État'], ['Disponibilité (35 j)', true]], rows, 'Aucun équipement déclaré.'), cameraNote(detail.devices));
+}
+
+/** Ce que veut dire l'etat d'une camera, et pourquoi certaines n'ont pas de chiffre. */
+function cameraNote(devices) {
+  const cameras = devices.filter((d) => d.kind === 'camera');
+  if (cameras.length === 0) return null;
+  const notes = [];
+  if (cameras.some((d) => d.monitored)) notes.push('Pour une caméra, « En service » veut dire que l’appareil répond sur le réseau (vérifié régulièrement) ; cela ne garantit pas que l’image est nette ou bien cadrée.');
+  if (cameras.some((d) => !d.monitored)) notes.push('Les caméras « Non mesuré » ne sont pas encore testées : aucun pourcentage n’est annoncé pour elles.');
+  return h('p', { class: 'note-box' }, notes.join(' '));
 }
 
 function zonesTable(detail) {

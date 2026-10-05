@@ -44,7 +44,10 @@ export interface SiteSummary {
     status: string;
     since: number | null;
     lastSeen: number | null;
-    /** `false` : le PSIM ne mesure pas la sante de cet equipement (cameras) ; aucun pourcentage n'est donne. */
+    /**
+     * `false` : le PSIM ne mesure pas la sante de cet equipement (camera simulee, ou camera reelle pas encore testee) ;
+     * aucun pourcentage n'est donne. Pour une camera mesuree, l'etat dit si l'APPAREIL repond, pas si l'image est bonne.
+     */
     monitored: boolean;
   }[];
   availability: {
@@ -93,25 +96,36 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
   const siteName = (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site';
   const floors = new Map((db.prepare('SELECT id, name FROM floor').all() as { id: number; name: string }[]).map((f) => [f.id, f.name]));
   const rows = db.prepare('SELECT * FROM device ORDER BY kind, id').all() as Record<string, unknown>[];
-  const devices = rows.map((r) => ({
-    id: r.id as string,
-    name: r.name as string,
-    kind: r.kind as 'detector' | 'camera',
-    category: ((r.category as string | null) ?? 'fire'),
-    zone: r.zone as string,
-    floor: floors.get(r.floor_id as number) ?? '',
-    status: r.status as string,
-    since: (r.state_since as number | null) ?? null,
-    lastSeen: (r.last_seen as number | null) ?? null,
-    monitored: r.kind === 'detector',
-  }));
+  // L'etat d'une camera reelle est son etat MESURE (historique), pas `device.status` que la mesure ne modifie pas.
+  const measuredCameras = new Map(
+    (
+      db
+        .prepare("SELECT h.device_id, h.state, h.started_at FROM device_state_history h JOIN camera_source c ON c.device_id = h.device_id WHERE h.ended_at IS NULL")
+        .all() as { device_id: string; state: string; started_at: number }[]
+    ).map((r) => [r.device_id, r]),
+  );
+  const devices = rows.map((r) => {
+    const cam = r.kind === 'camera' ? measuredCameras.get(r.id as string) : undefined;
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      kind: r.kind as 'detector' | 'camera',
+      category: ((r.category as string | null) ?? 'fire'),
+      zone: r.zone as string,
+      floor: floors.get(r.floor_id as number) ?? '',
+      status: cam ? cam.state : (r.status as string),
+      since: cam ? cam.started_at : ((r.state_since as number | null) ?? null),
+      lastSeen: (r.last_seen as number | null) ?? null,
+      monitored: r.kind === 'detector' || cam !== undefined,
+    };
+  });
 
   const intervals = loadIntervals(db, from, now, now);
-  const detectors = devices.filter((d) => d.monitored);
+  const measured = devices.filter((d) => d.monitored); // detecteurs et cameras reelles mesurees
 
   const perDevice = new Map<string, Availability>();
   const outages: Outage[] = [];
-  const byDevice = detectors.map((d) => {
+  const byDevice = measured.map((d) => {
     const list = intervals.get(d.id) ?? [];
     const a = availabilityOf(list, from, now, now);
     perDevice.set(d.id, a);
@@ -121,7 +135,7 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
   });
 
   const zones = new Map<string, string[]>();
-  for (const d of detectors) zones.set(d.zone, [...(zones.get(d.zone) ?? []), d.id]);
+  for (const d of measured) zones.set(d.zone, [...(zones.get(d.zone) ?? []), d.id]);
   const byZone = [...zones.entries()].map(([zone, ids]) => ({ zone, devices: ids.length, ...combine(ids.map((id) => perDevice.get(id)!)) }));
 
   // Un point par jour LOCAL ; le jour en cours s'arrete a maintenant.
@@ -133,7 +147,7 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
     const s = Math.max(start.getTime(), from);
     const e = Math.min(end.getTime(), now);
     if (e <= s) continue;
-    const c = combine(detectors.map((d) => availabilityOf(intervals.get(d.id) ?? [], s, e, now)));
+    const c = combine(measured.map((d) => availabilityOf(intervals.get(d.id) ?? [], s, e, now)));
     daily.push({ day: dayKey(start), pct: c.pct, upS: c.upS, downS: c.downS, unmonitoredS: c.unmonitoredS });
   }
 
