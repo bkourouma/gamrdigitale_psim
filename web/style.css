@@ -298,7 +298,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .notif-results .good { color: var(--ok); }
 .shots { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 .shot { padding: 0; border: 1px solid var(--line); border-radius: 4px; background: #000; cursor: zoom-in; overflow: hidden; }
-.shot img { display: block; width: 96px; height: 54px; object-fit: cover; }
+.shot img { display: block; width: 96px; height: 54px; object-fit: contain; }
 .shot:hover, .shot:focus-visible { border-color: var(--accent); }
 .shots.mini .shot img { width: 56px; height: 32px; }
 .lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .85); display: grid; place-content: center; justify-items: center; gap: 8px; padding: 16px; cursor: zoom-out; }

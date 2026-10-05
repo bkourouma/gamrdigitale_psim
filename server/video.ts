@@ -18,6 +18,98 @@ const IDLE_STOP_MS = 5000;
 const FIRST_FRAME_TIMEOUT_MS = 15000;
 const MAX_FRAME_BUFFER = 8 * 1024 * 1024;
 
+/**
+ * Format d'affichage de l'image. Les enregistreurs (XVR, NVR) envoient souvent une image « compressee en largeur » :
+ * 704x576, 352x288 ou 176x144 (tailles analogiques), 1440x1620 ou 960x1080 (demi-largeur d'une image 16:9), 1296x1944
+ * (demi-largeur d'une image 4:3), sans dire comment l'afficher. Telle quelle, l'image parait ecrasee.
+ *  - auto : rapport de pixel annonce par le flux s'il est plausible ; sinon ces tailles connues -> 16:9 (ou 4:3 pour la
+ *    demi-largeur 4:3) ; sinon tel quel. Une taille analogique est ambigue (camera HD 16:9 ou ancienne camera 4:3) :
+ *    16:9 est choisi (cameras HD actuelles) ; une ancienne camera analogique se regle a la main en 4:3 ;
+ *  - 16:9 / 4:3 : impose (camera dont le format est connu) ;
+ *  - source : tel que recu, sans correction.
+ * Les memes regles existent en deux formes : expression ffmpeg (l'image) et displayRatio (le message de test) ; un test
+ * verifie qu'elles s'accordent.
+ */
+export const ASPECTS = ['auto', '16:9', '4:3', 'source'] as const;
+export type Aspect = (typeof ASPECTS)[number];
+
+/** Tailles d'enregistreur representant une image 16:9 compressee en largeur (analogiques, ou demi-largeur 16:9). */
+const ANAMORPHIC_16_9 =
+  'eq(18*iw,16*ih)+(eq(iw,704)+eq(iw,720)+eq(iw,352)+eq(iw,360)+eq(iw,176))*(eq(ih,576)+eq(ih,480)+eq(ih,288)+eq(ih,240)+eq(ih,144)+eq(ih,120))';
+/** Demi-largeur d'une image 4:3 (5M-N : 1296x1944 pour 2592x1944). */
+const ANAMORPHIC_4_3 = 'eq(3*iw,2*ih)';
+/** Rapport de pixel annonce par le flux, retenu seulement s'il donne une image plausible (sinon un en-tete faux deformerait). */
+const SAR_OK = 'gt(abs(sar-1),0.01)*between(iw*sar/ih,1.2,2)';
+
+/** Filtre ffmpeg de mise a l'echelle (640 px de large, pixels carres) pour un format d'affichage. */
+export function scaleFilter(aspect: Aspect): string {
+  if (aspect === '16:9') return 'scale=640:360,setsar=1';
+  if (aspect === '4:3') return 'scale=640:480,setsar=1';
+  if (aspect === 'source') return 'scale=640:-2,setsar=1';
+  const height = `if(${SAR_OK},2*trunc(320*ih/(iw*sar)),if(${ANAMORPHIC_16_9},360,if(${ANAMORPHIC_4_3},480,2*trunc(320*ih/iw))))`;
+  // Borne : une taille fantaisiste ne doit ni faire echouer ffmpeg ni reserver une image demesuree.
+  return `scale=w=640:h='clip(${height},2,2048)',setsar=1`;
+}
+
+/**
+ * Chaine complete : 8 images/s, format d'affichage, puis toujours une image 640x360 (bandes noires si besoin). La taille de
+ * sortie ne change jamais : si l'enregistreur change la taille de son flux en cours de route, ffmpeg ne deforme pas les
+ * images suivantes pour les ramener a la taille de la premiere (il garde leurs proportions).
+ */
+export function videoFilter(aspect: Aspect): string {
+  return `fps=8,${scaleFilter(aspect)},scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=640:360:-1:-1,setsar=1`;
+}
+
+const near = (a: number, b: number) => Math.abs(a / b - 1) < 0.01;
+
+/** Rapport largeur/hauteur affiche pour une image recue `width`x`height` (rapport de pixel `sar`) : meme regle que scaleFilter. */
+export function displayRatio(aspect: Aspect, width: number, height: number, sar = 1): number {
+  if (aspect === '16:9') return 16 / 9;
+  if (aspect === '4:3') return 4 / 3;
+  if (aspect === 'source') return width / height;
+  const shown = (width * sar) / height;
+  if (Math.abs(sar - 1) > 0.01 && shown >= 1.2 && shown <= 2) return shown;
+  if (18 * width === 16 * height || ([704, 720, 352, 360, 176].includes(width) && [576, 480, 288, 240, 144, 120].includes(height))) return 16 / 9;
+  if (3 * width === 2 * height) return 4 / 3;
+  return width / height;
+}
+
+/** « 16:9 », « 4:3 », « en hauteur » ou « 1,25:1 ». */
+export function ratioLabel(ratio: number): string {
+  if (near(ratio, 16 / 9)) return '16:9';
+  if (near(ratio, 4 / 3)) return '4:3';
+  if (ratio < 1) return 'en hauteur';
+  return `${ratio.toFixed(2).replace('.', ',')}:1`;
+}
+
+/** Taille et rapport de pixel du flux recu, lus dans le journal ffmpeg (niveau info) : premiere ligne « Stream ... Video: ». */
+export function inputVideo(stderr: string): { width: number; height: number; sar: number | null } | null {
+  const m = /Stream #\d+:\d+[^\n]*?Video:[^\n]*?, (\d{2,5})x(\d{2,5})(?: \[SAR (\d+):(\d+))?/.exec(stderr);
+  if (!m) return null;
+  return { width: Number(m[1]), height: Number(m[2]), sar: m[3] && Number(m[4]) ? Number(m[3]) / Number(m[4]) : null };
+}
+
+/** Lignes d'erreur d'un journal ffmpeg prefixe par niveau (sans les informations, qui citent l'adresse du flux). */
+const errorLines = (stderr: string) =>
+  stderr
+    .split('\n')
+    .filter((l) => !/\[(info|verbose|debug)\]/.test(l))
+    .join('\n');
+
+/** Dimensions d'une image JPEG (segment SOF), ou null. */
+export function jpegSize(jpeg: Buffer): { width: number; height: number } | null {
+  let i = 2;
+  while (i + 9 < jpeg.length) {
+    if (jpeg[i] !== 0xff) return null;
+    const marker = jpeg[i + 1];
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: jpeg.readUInt16BE(i + 5), width: jpeg.readUInt16BE(i + 7) };
+    }
+    i += 2 + jpeg.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 export interface SourceView {
   kind: 'simulated' | 'onvif' | 'rtsp';
   host: string | null;
@@ -25,6 +117,7 @@ export interface SourceView {
   rtspPath: string | null;
   username: string | null;
   hasPassword: boolean;
+  aspect: Aspect;
 }
 
 interface SourceRow {
@@ -35,6 +128,7 @@ interface SourceRow {
   rtsp_path: string | null;
   username: string | null;
   secret: string | null;
+  aspect: Aspect;
 }
 
 export interface TestResult {
@@ -91,16 +185,17 @@ function withCredentials(uri: string, username: string | null, password: string 
   return url.toString();
 }
 
-function defaultArgs(url: string, once: boolean): string[] {
+/** `info` : journal au niveau info, prefixe par niveau (pour lire la taille du flux recu lors d'un test). */
+function defaultArgs(url: string, once: boolean, aspect: Aspect = 'auto', info = false): string[] {
   return [
-    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    '-hide_banner', '-loglevel', info ? 'level+info' : 'error', '-nostdin',
     // Par defaut ffmpeg analyse le flux pendant 5 s avant d'afficher la premiere image ; une camera
     // decrit son flux des la connexion (SDP), 2 s suffisent et l'image apparait bien plus vite.
     '-fflags', '+nobuffer', '-probesize', '2000000', '-analyzeduration', '2000000',
     '-rtsp_transport', 'tcp', '-timeout', '10000000',
     '-i', url,
     '-an',
-    '-vf', 'fps=8,scale=640:-2',
+    '-vf', videoFilter(aspect),
     '-q:v', '7',
     ...(once ? ['-frames:v', '1'] : []),
     '-f', 'image2pipe', '-c:v', 'mjpeg', 'pipe:1',
@@ -132,7 +227,7 @@ export interface VideoOptions {
   /** Delai avant d'arreter ffmpeg quand plus personne ne regarde (defaut 5 s). */
   idleStopMs?: number;
   /** Surcharge des arguments ffmpeg (tests uniquement). */
-  argsFor?: (url: string, once: boolean) => string[];
+  argsFor?: (url: string, once: boolean, aspect: Aspect, info: boolean) => string[];
 }
 
 export function createVideoService(opts: VideoOptions) {
@@ -150,7 +245,7 @@ export function createVideoService(opts: VideoOptions) {
 
   function view(cameraId: string): SourceView {
     const row = getRow(cameraId);
-    if (!row) return { kind: 'simulated', host: null, port: null, rtspPath: null, username: null, hasPassword: false };
+    if (!row) return { kind: 'simulated', host: null, port: null, rtspPath: null, username: null, hasPassword: false, aspect: 'auto' };
     return {
       kind: row.kind,
       host: row.host,
@@ -158,6 +253,7 @@ export function createVideoService(opts: VideoOptions) {
       rtspPath: row.rtsp_path,
       username: row.username,
       hasPassword: Boolean(row.secret),
+      aspect: ASPECTS.includes(row.aspect) ? row.aspect : 'auto',
     };
   }
 
@@ -204,25 +300,29 @@ export function createVideoService(opts: VideoOptions) {
     const newPassword = text(input.password, 'Mot de passe', 128, false);
     // Mot de passe vide = on conserve celui deja enregistre (il n'est jamais renvoye au navigateur).
     const secret = newPassword !== null ? seal(key, newPassword) : (existing?.secret ?? null);
+    // Format absent = on conserve celui deja choisi (automatique pour une nouvelle source).
+    const aspect = input.aspect === undefined ? (existing?.aspect ?? 'auto') : input.aspect;
+    if (typeof aspect !== 'string' || !ASPECTS.includes(aspect as Aspect)) throw new PsimError(400, `Format d'image invalide (${ASPECTS.join(', ')})`);
 
     db.prepare(
-      `INSERT INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret, aspect)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(device_id) DO UPDATE SET kind = excluded.kind, host = excluded.host, port = excluded.port,
-         rtsp_path = excluded.rtsp_path, username = excluded.username, secret = excluded.secret`,
-    ).run(cameraId, kind, host, rawPort, rtspPath, username, secret);
+         rtsp_path = excluded.rtsp_path, username = excluded.username, secret = excluded.secret, aspect = excluded.aspect`,
+    ).run(cameraId, kind, host, rawPort, rtspPath, username, secret, aspect);
     db.prepare('UPDATE device SET stream_kind = ? WHERE id = ?').run(kind, cameraId);
-    engine.audit(actor, 'camera_source_updated', { deviceId: cameraId, details: `${kind} ${host}:${rawPort}` });
-    closeFeed(cameraId);
+    engine.audit(actor, 'camera_source_updated', { deviceId: cameraId, details: `${kind} ${host}:${rawPort}${aspect === 'auto' ? '' : ` ; image ${aspect}`}` });
+    restartFeed(cameraId);
     publish({ type: 'config' });
     return view(cameraId);
   }
 
   // ---- Resolution de l'adresse du flux --------------------------------------------------
 
-  async function resolve(cameraId: string): Promise<{ url: string; note: string }> {
+  async function resolve(cameraId: string): Promise<{ url: string; note: string; aspect: Aspect }> {
     const row = getRow(cameraId);
     if (!row) throw new PsimError(404, 'Cette camera utilise la source simulee');
+    const aspect: Aspect = ASPECTS.includes(row.aspect) ? row.aspect : 'auto';
     let password: string | null = null;
     if (row.secret) {
       try {
@@ -233,7 +333,7 @@ export function createVideoService(opts: VideoOptions) {
     }
     if (row.kind === 'rtsp') {
       const url = withCredentials(`rtsp://${row.host}:${row.port}${row.rtsp_path ?? '/'}`, row.username, password);
-      return { url, note: `RTSP ${row.host}:${row.port}` };
+      return { url, note: `RTSP ${row.host}:${row.port}`, aspect };
     }
     const probe = await probeOnvif({ host: row.host, port: row.port, username: row.username ?? '', password: password ?? '' });
     const device = [probe.manufacturer, probe.model].filter(Boolean).join(' ') || 'camera ONVIF';
@@ -242,12 +342,13 @@ export function createVideoService(opts: VideoOptions) {
     return {
       url: withCredentials(probe.uri, row.username, password),
       note: `${device}, profil ${p.name}${size}${p.encoding ? ` ${p.encoding}` : ''}`,
+      aspect,
     };
   }
 
-  function grabFrame(url: string): Promise<Buffer> {
+  function grabFrame(url: string, aspect: Aspect, info = false): Promise<{ frame: Buffer; stderr: string }> {
     return new Promise((resolveFrame, reject) => {
-      const proc = spawn(ffmpeg, argsFor(url, true), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(ffmpeg, argsFor(url, true, aspect, info), { stdio: ['ignore', 'pipe', 'pipe'] });
       let frame: Buffer | null = null;
       let stderr = '';
       const split = createJpegSplitter((f) => {
@@ -255,25 +356,38 @@ export function createVideoService(opts: VideoOptions) {
       });
       const timer = setTimeout(() => proc.kill(), 15000);
       proc.stdout.on('data', split);
-      proc.stderr.on('data', (d: Buffer) => (stderr = (stderr + d.toString()).slice(-2000)));
+      // Le journal au niveau info est plus long : on garde son debut (la description du flux) et sa fin (les erreurs).
+      proc.stderr.on('data', (d: Buffer) => (stderr = stderr.length < 8000 ? stderr + d.toString() : (stderr + d.toString()).slice(-8000)));
       proc.on('error', () => {
         clearTimeout(timer);
         reject(new PsimError(500, 'ffmpeg introuvable : l\'installer ou renseigner PSIM_FFMPEG'));
       });
       proc.on('close', () => {
         clearTimeout(timer);
-        if (frame) return resolveFrame(frame);
-        if (stderr) console.warn(`[video] test de connexion : ${redact(stderr)}`);
-        reject(new PsimError(502, `Aucune image recue : ${explainFfmpeg(stderr)}`));
+        if (frame) return resolveFrame({ frame, stderr });
+        const errors = errorLines(stderr);
+        if (errors.trim()) console.warn(`[video] test de connexion : ${redact(errors)}`);
+        reject(new PsimError(502, `Aucune image recue : ${explainFfmpeg(errors)}`));
       });
     });
   }
 
   async function test(cameraId: string): Promise<TestResult> {
     requireCamera(cameraId);
-    const { url, note } = await resolve(cameraId);
-    const frame = await grabFrame(url);
-    return { ok: true, message: `Image recue (${Math.round(frame.length / 1024)} Ko) - ${note}` };
+    const { url, note, aspect } = await resolve(cameraId);
+    const { frame, stderr } = await grabFrame(url, aspect, true);
+    // La taille RECUE (et son rapport de pixel), puis le format AFFICHE : l'installateur voit si une correction a ete faite.
+    const input = inputVideo(stderr);
+    if (!input) return { ok: true, message: `Image recue (${Math.round(frame.length / 1024)} Ko) - ${note}` };
+    const ratio = displayRatio(aspect, input.width, input.height, input.sar ?? 1);
+    const corrected = aspect === 'auto' && !near(ratio, (input.width * (input.sar ?? 1)) / input.height);
+    const sar = input.sar && Math.abs(input.sar - 1) > 0.01 ? ` (pixels ${input.sar.toFixed(2).replace('.', ',')})` : '';
+    return {
+      ok: true,
+      message:
+        `Image recue en ${input.width}x${input.height}${sar}, affichee en ${ratioLabel(ratio)}` +
+        `${corrected ? " (correction automatique : si les personnes paraissent trop larges, choisir 4:3)" : ''} - ${note}`,
+    };
   }
 
   // ---- Diffusion : un seul ffmpeg par camera, partage entre tous les operateurs ----------
@@ -322,24 +436,43 @@ export function createVideoService(opts: VideoOptions) {
     if (feed) dispose(feed, null);
   }
 
+  /**
+   * Source modifiee (adresse, format...) d'une camera regardee : nouveau ffmpeg sans couper les operateurs (pas de
+   * « flux interrompu » sur le mur) ; la nouvelle image arrive des qu'elle est prete. Plus personne ne regarde : on ferme.
+   */
+  function restartFeed(cameraId: string): void {
+    const feed = feeds.get(cameraId);
+    if (!feed || feed.starting || feed.viewers.size === 0) return closeFeed(cameraId);
+    const old = feed.proc;
+    feed.proc = null; // le gestionnaire « close » de l'ancien processus l'ignore alors (arret voulu)
+    old?.kill();
+    if (feed.firstFrameTimer) clearTimeout(feed.firstFrameTimer);
+    feed.firstFrameTimer = null;
+    feed.last = null; // pas d'image d'incident a l'ancien format
+    feed.stderr = '';
+    void start(feed);
+  }
+
   async function start(feed: Feed): Promise<void> {
     feed.starting = true;
     let url: string;
+    let aspect: Aspect;
     try {
-      url = (await resolve(feed.id)).url;
+      ({ url, aspect } = await resolve(feed.id));
     } catch (err) {
       return dispose(feed, err instanceof PsimError ? err : new PsimError(502, 'Camera injoignable'));
     }
     feed.starting = false;
     if (feeds.get(feed.id) !== feed || feed.viewers.size === 0) return dispose(feed, null);
 
-    const proc = spawn(ffmpeg, argsFor(url, false), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(ffmpeg, argsFor(url, false, aspect, false), { stdio: ['ignore', 'pipe', 'pipe'] });
     feed.proc = proc;
     feed.firstFrameTimer = setTimeout(
       () => dispose(feed, new PsimError(504, 'Aucune image recue de la camera')),
       FIRST_FRAME_TIMEOUT_MS,
     );
     const split = createJpegSplitter((frame) => {
+      if (feed.proc !== proc) return; // ancien ffmpeg (source modifiee) : ses dernieres images sont ignorees
       if (feed.firstFrameTimer) {
         clearTimeout(feed.firstFrameTimer);
         feed.firstFrameTimer = null;
@@ -399,8 +532,8 @@ export function createVideoService(opts: VideoOptions) {
     requireCamera(cameraId);
     const live = feeds.get(cameraId)?.last;
     if (live) return Buffer.from(live);
-    const { url } = await resolve(cameraId);
-    return grabFrame(url);
+    const { url, aspect } = await resolve(cameraId);
+    return (await grabFrame(url, aspect)).frame;
   }
 
   return { view, setSource, test, snapshot, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };

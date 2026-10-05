@@ -1378,11 +1378,27 @@ function sourceFields(d, src, url) {
     autocomplete: 'new-password',
     'aria-label': 'Mot de passe de la caméra',
   });
+  // Format de l'image : « Automatique » redresse les images d'enregistreur compressees en largeur (704x576, 1440x1620...).
+  const aspectHelp = h('p', {
+    id: `aspect-help-${d.id}`,
+    class: 'small muted',
+    text: 'Personnes trop minces sur l’image : choisissez 16:9. Trop larges ou trapues : choisissez 4:3 (ancienne caméra analogique).',
+  });
+  const aspect = h(
+    'select',
+    { 'aria-describedby': aspectHelp.id },
+    h('option', { value: 'auto', text: 'Automatique (recommandé)' }),
+    h('option', { value: '16:9', text: '16:9 (écran large)' }),
+    h('option', { value: '4:3', text: '4:3 (ancienne caméra, image plus carrée)' }),
+    h('option', { value: 'source', text: 'Tel que reçu (sans correction)' }),
+  );
+  aspect.value = src.aspect ?? 'auto';
+  const aspectField = h('label', { class: 'row' }, "Format de l'image", aspect);
   const found = h('div', { class: 'found' });
   const previous = S.sourceMsg[d.id];
   const msg = h('p', { id: 'source-msg', class: `small ${previous?.kind ?? ''}`, role: 'status', dataset: { for: d.id }, text: previous?.text ?? '' });
 
-  const netFields = [host, port, user, pass];
+  const netFields = [host, port, user, pass, aspectField, aspectHelp];
   const sync = () => {
     const k = kind.value;
     for (const el of netFields) el.hidden = k === 'simulated';
@@ -1405,6 +1421,7 @@ function sourceFields(d, src, url) {
           rtspPath: path.value.trim(),
           username: user.value,
           password: pass.value,
+          aspect: aspect.value,
         },
       });
       pass.value = '';
@@ -1461,6 +1478,8 @@ function sourceFields(d, src, url) {
     h('div', { class: 'row wrap' }, host, port),
     path,
     h('div', { class: 'row wrap' }, user, pass),
+    aspectField,
+    aspectHelp,
     h('div', { class: 'row wrap' }, testBtn, saveBtn),
     msg,
   ];

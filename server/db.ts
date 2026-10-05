@@ -199,6 +199,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'incident', column: 'hint_details', definition: 'TEXT' },
   // Destinataire limite a certaines zones (JSON) ; NULL = toutes les alarmes.
   { table: 'notification_recipient', column: 'zones', definition: 'TEXT' },
+  // Format d'affichage de l'image d'une camera (voir video.ts, scaleFilter) : auto, 16:9, 4:3 ou source.
+  { table: 'camera_source', column: 'aspect', definition: "TEXT NOT NULL DEFAULT 'auto'" },
   { table: 'app_user', column: 'display_name', definition: 'TEXT' },
   { table: 'app_user', column: 'active', definition: 'INTEGER NOT NULL DEFAULT 1' },
   { table: 'app_user', column: 'must_change_password', definition: 'INTEGER NOT NULL DEFAULT 0' },
