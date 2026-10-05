@@ -4,6 +4,8 @@ Un seul scénario, de bout en bout : **un détecteur incendie déclenche → l'o
 
 Hors périmètre volontairement : contrôle d'accès, intrusion, IoT, GPS, scoring de risque, tableau de bord décisionnel, SIEM.
 
+> Le **suivi à distance pour les clients** (état des sites, temps d'arrêt, incidents, plusieurs sites) est un composant séparé du PSIM : voir [docs/PORTAIL.md](docs/PORTAIL.md).
+
 > Le PSIM **supervise** l'incendie, il ne remplace pas la centrale de détection incendie certifiée.
 > Ce MVP lit des états et n'envoie **aucune commande** vers le système incendie.
 

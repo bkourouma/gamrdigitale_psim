@@ -6,6 +6,7 @@
  */
 
 import { validateHeartbeatUrl } from './heartbeat.ts';
+import { MIN_KEY_LENGTH, SITE_ID_PATTERN, validatePortalUrl } from './portal.ts';
 
 export const DEV_PASSWORDS = ['admin-dev-only', 'operator-dev-only', 'psim-dev-only'];
 export const MIN_PASSWORD_LENGTH = 12;
@@ -42,6 +43,8 @@ export interface PreflightInput {
   ingestToken?: string;
   /** Adresse du signal de supervision externe (vide = non configure). */
   heartbeatUrl?: string;
+  /** Portail de suivi a distance : adresse, identifiant du site et cle de signature (tous vides = pas de portail). */
+  portal?: { url: string; siteId: string; key: string };
   /** Accord explicite pour un broker MQTT ouvert au reseau sans TLS. */
   mqttAllowPlaintext?: boolean;
   /** Serveur SMTP : hote et STARTTLS (pour avertir d'un relais externe en clair). */
@@ -88,6 +91,14 @@ export function preflight(c: PreflightInput): Finding[] {
     else if (c.heartbeatUrl.startsWith('http:')) add(strict, "PSIM_HEARTBEAT_URL en http:// : l'adresse contient en general un jeton, qui circulerait en clair. Utilisez https://.");
   } else if (c.production) {
     add('warn', "Aucune supervision externe (PSIM_HEARTBEAT_URL) : si le PSIM meurt, personne n'est prevenu. Un service externe (healthchecks.io, Uptime Kuma...) doit s'inquieter de ne plus recevoir son signal.");
+  }
+  if (c.portal && (c.portal.url || c.portal.siteId || c.portal.key)) {
+    const p = c.portal;
+    const problem = p.url ? validatePortalUrl(p.url) : null;
+    if (!p.url || !p.siteId || !p.key) add(strict, 'Portail de suivi incomplet : PSIM_PORTAL_URL, PSIM_PORTAL_SITE_ID et PSIM_PORTAL_KEY vont ensemble. Rien ne serait envoye.');
+    if (problem) add(strict, `PSIM_PORTAL_URL ${problem} : le portail ne recevrait rien.`);
+    if (p.siteId && !SITE_ID_PATTERN.test(p.siteId)) add(strict, 'PSIM_PORTAL_SITE_ID invalide : 3 a 40 caracteres, minuscules, chiffres et tirets (ex. entrepot-kaloum).');
+    if (p.key && p.key.length < MIN_KEY_LENGTH) add(strict, `PSIM_PORTAL_KEY trop courte (${MIN_KEY_LENGTH} caracteres minimum) : elle signe les envois, une cle courte se devine.`);
   }
   if (c.simEnabled) add(strict, 'Le simulateur est actif (PSIM_SIM_ENABLED) : il permet de declencher de fausses alarmes. Mettre 0 en production.');
   if (c.demoLogin) add(strict, 'Les comptes cliquables de la page de connexion sont actifs (PSIM_DEMO_LOGIN) : les mots de passe seraient lisibles depuis le navigateur.');

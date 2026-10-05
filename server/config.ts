@@ -93,6 +93,13 @@ export const config = {
   // Supervision externe : signal HTTP regulier vers un service qui s'inquiete s'il ne le recoit plus (healthchecks.io, Uptime Kuma...).
   heartbeatUrl: env.PSIM_HEARTBEAT_URL ?? '',
   heartbeatEveryS: num('PSIM_HEARTBEAT_EVERY_S', 60),
+  // Portail de suivi a distance : le site lui envoie un resume (voir portal.ts). Vide = pas de portail.
+  portal: {
+    url: env.PSIM_PORTAL_URL ?? '',
+    siteId: (env.PSIM_PORTAL_SITE_ID ?? '').trim(),
+    key: env.PSIM_PORTAL_KEY ?? '',
+    everyS: num('PSIM_PORTAL_EVERY_S', 300, 0, 86_400),
+  },
   // Periode aveugle (PSIM arrete) a partir de laquelle on previent par notification, en secondes.
   gapNotifyS: num('PSIM_GAP_NOTIFY_S', 60),
   logFile: env.PSIM_LOG_FILE === undefined ? production : env.PSIM_LOG_FILE === '1',

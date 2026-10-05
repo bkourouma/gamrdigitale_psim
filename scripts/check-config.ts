@@ -55,6 +55,7 @@ const findings = preflight({
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
   heartbeatUrl: config.heartbeatUrl,
+  portal: config.portal,
   mqttAllowPlaintext: config.mqttAllowPlaintext,
   smtpHost: config.notify.smtp.host,
   smtpStarttls: config.notify.smtp.starttls,

@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["server", "scripts", "test"]
+  "include": ["server", "scripts", "test", "portal"]
 }

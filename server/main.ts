@@ -12,6 +12,8 @@ import { headOf } from './auditchain.ts';
 import { createContinuity } from './continuity.ts';
 import { openDb } from './db.ts';
 import { createHeartbeat } from './heartbeat.ts';
+import { beginHistory, purgeHistory } from './history.ts';
+import { buildSiteSummary, createPortalSender } from './portal.ts';
 import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { acquireLock } from './lock.ts';
@@ -77,7 +79,11 @@ const db = openDb(join(dataDir, 'psim.db')); // migration seulement : AUCUN comp
 // Continuite : l'ecart avec le dernier signe de vie est la periode pendant laquelle rien n'a ete surveille.
 // Note tout de suite que le PSIM est en marche (arret non propre tant qu'il n'a pas dit le contraire).
 const continuity = createContinuity(db);
+// Dernier signe de vie du demarrage precedent : lu AVANT begin(), qui le remplace. Sert a borner l'historique des etats.
+const previousAliveRaw = (db.prepare("SELECT value FROM system_state WHERE key = 'last_alive'").get() as { value: string } | undefined)?.value;
+const previousAlive = previousAliveRaw !== undefined && Number.isFinite(Number(previousAliveRaw)) ? Number(previousAliveRaw) : null;
 const startupGap = continuity.begin();
+beginHistory(db, Date.now(), previousAlive, startupGap ? { from: startupGap.from, to: startupGap.to, clean: startupGap.clean } : null);
 const secretKey = loadSecretKey(dataDir, config.secretKey);
 
 // Destinataires : .env (lecture seule) + base (modifiables dans l'interface) ; relus a chaque envoi.
@@ -110,6 +116,7 @@ const findings = preflight({
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
   heartbeatUrl: config.heartbeatUrl,
+  portal: config.portal,
   mqttAllowPlaintext: config.mqttAllowPlaintext,
   smtpHost: config.notify.smtp.host,
   smtpStarttls: config.notify.smtp.starttls,
@@ -233,7 +240,11 @@ risk.recordHistory(); // un point par jour pour les tendances (une seule ecritur
 const riskTimer = setInterval(() => risk.recordHistory(), 10 * 60 * 1000);
 const purged = snapshots.purge(config.snapshotDays);
 if (purged > 0) console.log(`[psim] ${purged} image(s) d'incident de plus de ${config.snapshotDays} jours supprimee(s)`);
-const purgeTimer = setInterval(() => snapshots?.purge(config.snapshotDays), 6 * 3600 * 1000);
+const HISTORY_KEEP_MS = 400 * 24 * 3600 * 1000; // plus d'un an : de quoi comparer a l'annee derniere
+const purgeTimer = setInterval(() => {
+  snapshots?.purge(config.snapshotDays);
+  purgeHistory(db, Date.now() - HISTORY_KEEP_MS);
+}, 6 * 3600 * 1000);
 
 // ---------------------------------------------------------------- sauvegarde automatique
 
@@ -304,6 +315,7 @@ const system = createSystemStatus({
     return { enabled: s.frequency !== 'off', lastError: s.lastError, lastSentAt: s.lastSentAt };
   },
   heartbeat: () => heartbeat.status(),
+  portal: () => portal.status(),
 });
 
 // Journal infalsifiable : verification de la chaine d'empreintes au demarrage puis toutes les 6 h, ancre quotidienne.
@@ -336,6 +348,19 @@ const heartbeat = createHeartbeat({
   onChange: (state, status) =>
     engine.audit('systeme', state === 'failing' ? 'heartbeat_failing' : 'heartbeat_recovered', {
       details: state === 'failing' ? `signal de supervision externe en echec (${status.lastError ?? 'erreur'})` : 'signal de supervision externe retabli',
+    }),
+});
+
+// Portail de suivi a distance : un instantane complet des 35 derniers jours, envoye regulierement (voir portal.ts).
+const portal = createPortalSender({
+  url: config.portal.url,
+  siteId: config.portal.siteId,
+  key: config.portal.key,
+  everyMs: config.portal.everyS * 1000,
+  build: () => buildSiteSummary(db, { siteId: config.portal.siteId, version, startedAt }),
+  onChange: (state, status) =>
+    engine.audit('systeme', state === 'failing' ? 'portal_failing' : 'portal_recovered', {
+      details: state === 'failing' ? `envoi vers le portail de suivi en echec (${status.lastError ?? 'erreur'})` : 'envoi vers le portail de suivi retabli',
     }),
 });
 
@@ -512,6 +537,12 @@ server.listen(config.port, config.host, () => {
   );
   heartbeat.start();
   console.log(
+    portal.status().configured
+      ? `[psim] portail de suivi : resume toutes les ${config.portal.everyS} s vers ${portal.status().host} (site ${config.portal.siteId})`
+      : '[psim] portail de suivi : non configure (PSIM_PORTAL_URL)',
+  );
+  portal.start();
+  console.log(
     config.detectorTimeoutS > 0
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
       : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
@@ -551,6 +582,7 @@ async function shutdown() {
   clearInterval(reportTimer);
   if (backupTimer) clearInterval(backupTimer);
   heartbeat.stop();
+  portal.stop();
   dahua.stop();
   video.shutdown();
   wss.close();

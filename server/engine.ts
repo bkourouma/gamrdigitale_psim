@@ -3,6 +3,7 @@ import { appendSealed } from './auditchain.ts';
 import { DAHUA_SUPERVISION_S } from './dahua.ts';
 import { PsimError } from './errors.ts';
 import { defaultFloorId, listFloors } from './floors.ts';
+import { recordState } from './history.ts';
 import { hasForbiddenChar, normalizeName } from './text.ts';
 import { ALWAYS_ACTIVE_EVENTS, CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
 import type {
@@ -362,6 +363,7 @@ export function createEngine(
     db.prepare('UPDATE device SET status = ? WHERE id = ?').run(state, deviceId);
     if (previous !== state) db.prepare('UPDATE device SET state_since = ? WHERE id = ?').run(t, deviceId);
     if (previous !== state) {
+      recordState(db, deviceId, state, t); // historique complet, meme quand le journal cesse de noter un equipement qui oscille
       noteStateChange(deviceId, `${previous} -> ${state}`);
     }
     publishDevice(deviceId);
@@ -432,6 +434,7 @@ export function createEngine(
         .prepare("UPDATE device SET status = 'offline' WHERE id = ? AND status IN ('normal', 'fault')")
         .run(id);
       if (res.changes === 0) continue;
+      recordState(db, id, 'offline', t);
       audit('systeme', 'detector_silent', {
         deviceId: id,
         details: `aucun message depuis ${describeDuration(silence)} (etait : ${row.status})`,
@@ -593,6 +596,7 @@ export function createEngine(
     db.prepare(
       'INSERT INTO device (id, kind, name, zone, x, y, floor_id, stream_kind, category, value_unit, warn_at, alarm_at, direction, heartbeat_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(id, input.kind, name, zone, x, y, floorId, input.kind === 'camera' ? 'simulated' : null, sensor.category, sensor.valueUnit, sensor.warnAt, sensor.alarmAt, sensor.direction, sensor.heartbeatS);
+    if (input.kind === 'detector') recordState(db, id, 'normal', now());
     audit(actor, 'device_created', { deviceId: id, details: `${input.kind} ${name}${sensor.category === 'fire' ? '' : ` (${sensor.category})`}` });
     publish({ type: 'config' });
     return getDevice(id) as Device;

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Gap } from './continuity.ts';
 import type { HeartbeatStatus } from './heartbeat.ts';
+import type { PortalStatus } from './portal.ts';
 
 export interface BackupStatus {
   at: number | null;
@@ -33,6 +34,8 @@ export interface SystemDeps {
   /** Derniere periode aveugle (PSIM arrete), et etat du signal de supervision externe. */
   lastGap?: () => Gap | null;
   heartbeat?: () => HeartbeatStatus;
+  /** Envoi du resume vers le portail de suivi a distance. */
+  portal?: () => PortalStatus;
   /** Derniere verification du journal (chaine d'empreintes). */
   journal?: () => { ok: boolean; at: number; checked: number; unprotected?: number } | null;
   /** Rapport periodique par e-mail. */
@@ -111,6 +114,10 @@ export function createSystemStatus(deps: SystemDeps) {
     if (beat?.configured && beat.consecutiveFailures >= 3) {
       warnings.push({ level: 'attention', message: `Supervision externe : ${beat.consecutiveFailures} signaux sans succes (${beat.lastError ?? 'erreur'}). Si le PSIM s'arrete, personne ne sera prevenu.` });
     }
+    const portal = deps.portal?.() ?? null;
+    if (portal?.configured && portal.consecutiveFailures >= 3) {
+      warnings.push({ level: 'attention', message: `Portail de suivi : ${portal.consecutiveFailures} envois sans succes (${portal.lastError ?? 'erreur'}). Le client ne voit plus ce site a jour.` });
+    }
     if (deps.backup.everyH > 0) {
       const limit = deps.backup.everyH * 2 * 3_600_000;
       if (backup.ok === false) warnings.push({ level: 'critique', message: `La derniere sauvegarde a echoue : ${backup.error ?? 'erreur inconnue'}.` });
@@ -137,6 +144,7 @@ export function createSystemStatus(deps: SystemDeps) {
       continuity: { lastGap: gap },
       journal,
       heartbeat: beat,
+      portal,
       warnings,
     };
   }

@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS notification_recipient (
   created_by TEXT NOT NULL,
   UNIQUE (channel, address, level)
 );
+-- Historique des etats des detecteurs (fin NULL = etat en cours) : base de la disponibilite et des temps d'arret (voir history.ts).
+CREATE TABLE IF NOT EXISTS device_state_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_state_per_device ON device_state_history(device_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS state_history_by_device ON device_state_history(device_id, started_at);
+-- Periodes pendant lesquelles le PSIM etait arrete : ni disponibles ni indisponibles, a rapporter a part.
+CREATE TABLE IF NOT EXISTS blind_period (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_ts INTEGER NOT NULL,
+  to_ts INTEGER NOT NULL,
+  clean INTEGER NOT NULL
+);
 `;
 
 /** Colonnes ajoutees apres la premiere version : `CREATE TABLE IF NOT EXISTS` ne modifie pas une table existante. */
