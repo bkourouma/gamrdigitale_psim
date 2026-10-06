@@ -1,0 +1,227 @@
+/* =====================================================================================================================
+   Équipe Administration : Personnes prévenues (notifications.js, users.js), Utilisateurs (users.js), Système
+   (system.js) et fenêtre Mon compte (account.js, fenêtres de confirmation).
+   Jetons et composants de base.css seulement ; rien de neuf en couleur ni en police.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ éléments communs */
+.adm-address { overflow-wrap: break-word; font-variant-numeric: tabular-nums; }
+td.adm-address { min-width: 14ch; }
+.adm-mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; letter-spacing: 0.04em; }
+.adm-error { color: var(--alarm-ink); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.adm-channel { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
+.adm-channel .icon { color: var(--ink-3); }
+.adm-cell-stack { display: grid; justify-items: start; gap: var(--s1); }
+.adm-form { display: grid; gap: var(--s4); }
+.adm-form .adm-grid { align-items: start; }
+.adm-form select { min-width: min(30ch, 100%); max-width: 100%; }
+.adm-form .field { min-width: 0; }
+.adm-input-row { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.adm-input-row > input { flex: 1 1 220px; min-width: 0; }
+.adm-result:empty, .form-error:empty { display: none; }
+.adm-result-text { display: grid; gap: var(--s2); min-width: 0; }
+.adm-result-text p { margin: 0; }
+.adm-result-text code { display: inline-block; padding: 1px var(--s2); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--surface); user-select: all; overflow-wrap: anywhere; }
+.view-notifications h3, .view-utilisateurs h3, .view-systeme h3 { font-size: var(--fs-md); }
+.view-notifications .actions .btn:focus-visible, .view-utilisateurs .actions .btn:focus-visible { outline-offset: 2px; }
+
+/* Tableaux d'administration : à partir de 760 px, chaque ligne devient une carte dont chaque cellule porte son libellé. */
+table.adm-stack td { vertical-align: top; }
+table.adm-stack td.adm-actions-cell { width: 1%; }
+tr.is-inactive > td:not(.adm-actions-cell) { opacity: 0.62; }
+tr.is-inactive .check, tr.is-inactive select { opacity: 1; }
+.adm-actions-cell .actions { flex-wrap: nowrap; justify-content: flex-end; gap: var(--s2); }
+.adm-actions-cell .actions .btn { white-space: nowrap; }
+/* « Supprimer » / « Retirer » : isolé à l'écart, jamais collé à une action courante (base.css pose déjà margin-left: auto). */
+.adm-users .adm-actions-cell .actions { flex-wrap: wrap; gap: var(--s2); }
+.adm-users .adm-actions-cell .actions > .btn-danger { margin-left: var(--s3); }
+.adm-users td.adm-actions-cell { min-width: 15rem; }
+@media (max-width: 1400px) {
+  .adm-users .adm-actions-cell .actions { flex-wrap: wrap; gap: var(--s2); }
+  .adm-users .adm-actions-cell .actions > .btn-danger { margin-left: auto; }
+}
+@media (max-width: 1400px) {
+  table.adm-stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.adm-stack, table.adm-stack tbody { display: block; }
+  table.adm-stack tbody { display: grid; gap: var(--s3); }
+  table.adm-stack tr {
+    display: grid; gap: var(--s2); padding: var(--s3) var(--s4);
+    border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
+  }
+  table.adm-stack tr:hover { background: var(--surface); }
+  table.adm-stack td { display: grid; grid-template-columns: minmax(96px, 36%) minmax(0, 1fr); gap: var(--s2); align-items: center; padding: 0; border: 0; white-space: normal; }
+  table.adm-stack td[data-label]::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+  table.adm-stack td.adm-actions-cell { display: block; width: auto; padding-top: var(--s2); border-top: 1px solid var(--line); }
+  table.adm-stack td.adm-actions-cell .actions { justify-content: flex-start; flex-wrap: wrap; }
+  .adm-users .adm-actions-cell .actions > .btn-danger, .adm-recipients .adm-actions-cell .actions > .btn-danger { margin-left: auto; }
+  tr.is-inactive > td:not(.adm-actions-cell) { opacity: 1; }
+  tr.is-inactive { background: var(--surface-2); }
+  tr.is-inactive > td[data-label]:not([data-label='Actif']) { opacity: 0.62; }
+}
+
+/* Cases à cocher des listes : cible tactile d'au moins 36 px (44 px en carte). */
+table.adm-stack .check, .adm-zone-list .check, .adm-zone-picker .check { min-height: var(--control-h-sm); }
+@media (max-width: 1400px) { table.adm-stack .check, .adm-zone-list .check, .adm-zone-picker .check { min-height: var(--control-h); } }
+
+/* Les étiquettes d'alerte à l'intérieur d'une cellule passent à la ligne au lieu de faire déborder la carte. */
+table.adm-stack td .tag { white-space: normal; max-width: 100%; }
+.adm-zones-line { min-width: 0; }
+.adm-cell-stack { min-width: 0; max-width: 100%; }
+
+/* ------------------------------------------------------------------------------------------------ utilisateurs */
+td.adm-who { min-width: 180px; }
+.adm-who > * + * { margin-top: var(--s1); }
+.adm-who-sub { display: block; }
+.adm-who-name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.adm-who-sub { font-size: var(--fs-sm); color: var(--ink-2); }
+.adm-2fa { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+@media (max-width: 1400px) {
+  table.adm-stack td.adm-who { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: var(--s1); }
+  .adm-who > * + * { margin-top: 0; }
+  table.adm-stack td.adm-who::before { display: none; }
+}
+
+/* ------------------------------------------------------------------------------------------------ destinataires */
+.recipients { display: grid; gap: var(--s4); }
+.adm-zones-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+tr.adm-zone-row > td { padding: 0 var(--s3) var(--s3); border-bottom: 1px solid var(--line); }
+tr.adm-zone-row:hover { background: transparent; }
+tr.is-editing > td { border-bottom-color: transparent; }
+.adm-zone-editor { display: grid; gap: var(--s3); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.adm-zone-picker { display: grid; gap: var(--s2); }
+.adm-zone-list { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); padding-left: var(--s5); }
+.adm-env { display: grid; gap: var(--s3); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.adm-env h3 { display: flex; align-items: center; gap: var(--s2); }
+.adm-env h3 .icon { color: var(--ink-3); }
+@media (max-width: 1400px) {
+  table.adm-stack tr.adm-zone-row { display: block; padding: 0; border: 0; background: transparent; margin-top: calc(-1 * var(--s3)); }
+  table.adm-stack tr.adm-zone-row > td { display: block; padding: 0; border: 0; }
+  table.adm-stack tr.adm-zone-row[hidden] { display: none; }
+  tr.is-editing { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .adm-zone-list { padding-left: 0; }
+}
+
+/* ------------------------------------------------------------------------------------------------ état des envois */
+.notif-status { display: grid; gap: var(--s3); }
+.adm-channels { display: grid; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+.adm-channels > li { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); align-items: center; gap: var(--s2) var(--s4); padding: var(--s2) 0; border-top: 1px solid var(--line); }
+.adm-channels > li:first-child { border-top: 0; }
+.adm-channel-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--fs-sm); }
+.adm-facts-line { display: flex; align-items: flex-start; gap: var(--s2); margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.adm-facts-line .icon { color: var(--ink-3); margin-top: 2px; }
+.adm-recent { border: 1px solid var(--line); border-radius: var(--r-md); }
+.adm-recent > summary { display: flex; align-items: center; gap: var(--s2); min-height: var(--control-h); padding: 0 var(--s4); font-weight: 700; cursor: pointer; border-radius: var(--r-md); }
+.adm-recent > summary:hover { background: var(--surface-2); }
+.adm-recent > summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.adm-recent[open] > summary { border-bottom: 1px solid var(--line); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.adm-recent .table-scroll { padding: var(--s2) var(--s3) var(--s3); }
+.adm-failed { display: grid; justify-items: start; gap: var(--s1); }
+@media (max-width: 640px) {
+  .adm-channels > li { grid-template-columns: minmax(0, 1fr); gap: var(--s1); }
+}
+
+/* ------------------------------------------------------------------------------------------------ message de test */
+.notif-results { display: grid; gap: var(--s3); }
+.notif-results:empty { display: none; }
+.adm-test-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.adm-test-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--line); font-size: var(--fs-sm); }
+.adm-test-list > li:first-child { border-top: 0; }
+
+/* ------------------------------------------------------------------------------------------------ système */
+.sys-warnings { display: grid; gap: var(--s2); }
+.sys-warnings:empty { display: none; }
+.sys-refresh { align-items: center; }
+.sys-status { display: grid; gap: var(--s5); }
+.sys-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: var(--s5) var(--s6); }
+.sys-group { display: grid; gap: var(--s3); align-content: start; min-width: 0; }
+.sys-group-title { display: flex; align-items: center; gap: var(--s2); padding-bottom: var(--s2); border-bottom: 2px solid var(--line); color: var(--brand-ink); }
+.sys-group-title .icon { color: var(--ink-3); }
+.facts { display: grid; gap: 0; margin: 0; }
+.fact { display: grid; grid-template-columns: minmax(130px, 38%) minmax(0, 1fr); gap: var(--s1) var(--s4); padding: var(--s3) 0; border-top: 1px solid var(--line); }
+.fact:first-child { border-top: 0; }
+.fact dt { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.fact dd { display: grid; gap: 2px; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fact-value { display: flex; align-items: flex-start; gap: var(--s2); font-weight: 600; }
+.fact-value .icon { margin-top: 2px; }
+.fact-note { font-size: var(--fs-sm); color: var(--ink-2); }
+.fact.is-ok .fact-value { color: var(--ok-ink); }
+.fact.is-warn .fact-value { color: var(--warning-ink); }
+.fact.is-bad .fact-value { color: var(--alarm-ink); }
+.sys-path { overflow-wrap: anywhere; }
+.sys-tasks { gap: 0; }
+.sys-task { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s3) var(--s5); padding: var(--s4) 0; border-top: 1px solid var(--line); }
+.sys-task:first-child { border-top: 0; padding-top: 0; }
+.sys-task:last-child { padding-bottom: 0; }
+.sys-task-text { display: grid; gap: var(--s2); flex: 1 1 320px; max-width: 70ch; }
+.sys-task > .btn { flex: 0 0 auto; }
+.sys-result { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; }
+.sys-result:empty { display: none; }
+.sys-result-text { font-size: var(--fs-sm); overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .sys-groups { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 520px) {
+  .fact { grid-template-columns: minmax(0, 1fr); }
+  .sys-task > .btn { width: 100%; }
+}
+
+/* ------------------------------------------------------------------------------------------------ fenêtres : Mon compte, confirmations */
+.dialog-card { position: relative; }
+.dialog-card > h2 { padding-right: calc(var(--control-h) + var(--s2)); }
+.dialog-close[hidden] { display: none; }
+.dialog-lead { margin: 0; color: var(--ink); }
+.dialog-details { padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--surface-2); color: var(--ink-2); font-size: var(--fs-sm); }
+.dialog-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+.dialog-actions { justify-content: flex-end; }
+#dialog-body { display: grid; gap: var(--s4); min-width: 0; }
+
+.account { display: grid; gap: var(--s5); }
+.account-who { display: flex; align-items: center; gap: var(--s3); }
+.account-avatar { display: grid; place-items: center; width: 48px; height: 48px; flex: none; border-radius: var(--r-pill); background: var(--brand-soft); color: var(--brand-ink); }
+.account-avatar .icon { width: 24px; height: 24px; }
+.account-who-text { display: grid; min-width: 0; }
+.account-who-text strong { font: 700 var(--fs-lg) / 1.2 var(--font-ui); overflow-wrap: anywhere; }
+.account-restricted-text { display: grid; justify-items: start; gap: var(--s2); }
+.account-restricted-text p { margin: 0; }
+.account-section { display: grid; gap: var(--s3); padding-top: var(--s4); border-top: 1px solid var(--line); min-width: 0; }
+.account-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); }
+.account-section-head h3 { margin: 0; font: 700 var(--fs-lg) / 1.2 var(--font-ui); color: var(--brand-ink); }
+.account-section p { margin: 0; }
+.account-form, .account-2fa, .account-code-form { display: grid; gap: var(--s3); min-width: 0; }
+.account-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s3); align-items: start; }
+
+/* Étapes numérotées : numéro Baloo dans un rond, comme les étapes d'une alarme. */
+.account-steps { display: grid; gap: var(--s4); margin: 0; padding: 0; list-style: none; }
+.account-step { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: var(--s3); align-items: start; }
+.account-step-num { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-pill); background: var(--brand); color: var(--on-brand); font: 800 var(--fs-md) / 1 var(--font-brand); }
+.account-step-body { display: grid; gap: var(--s2); justify-items: start; min-width: 0; }
+.account-step-body > * { max-width: 100%; }
+.account-qr { padding: var(--s2); border: 1px solid var(--line); border-radius: var(--r-md); background: #ffffff; max-width: 100%; height: auto; }
+.account-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.account-secret { padding: var(--s1) var(--s2); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--surface-2); letter-spacing: 0.08em; overflow-wrap: anywhere; user-select: all; }
+.account-code-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s3); align-items: end; }
+.account-code { font: 700 var(--fs-xl) / 1 ui-monospace, 'Cascadia Mono', Consolas, monospace; letter-spacing: 0.3em; text-align: center; }
+@media (max-width: 480px) { .account-code-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* Codes de secours : un bloc à copier, deux colonnes. */
+.account-codes-title { margin: 0; font: 700 var(--fs-lg) / 1.2 var(--font-ui); color: var(--brand-ink); }
+.account-codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2) var(--s4); margin: 0; padding: var(--s4) var(--s5); border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); font: 700 var(--fs-md) / 1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace; letter-spacing: 0.06em; list-style-position: inside; user-select: all; }
+.account-kept { padding: var(--s3); border-radius: var(--r-md); background: var(--surface-2); }
+
+/* Listes déroulantes de tableau : assez larges pour lire « Administrateur » et « Niveau 1 : tout de suite ». */
+.adm-users select { min-width: 160px; }
+.adm-recipients select { min-width: 28ch; }
+@media (max-width: 1400px) { .adm-users select, .adm-recipients select { min-width: 0; width: 100%; } }
+.sys-task > .btn { min-width: 220px; justify-content: center; }
+
+/* ------------------------------------------------------------------------------------------------ finitions */
+.panel-body > * { min-width: 0; }
+.btn-ghost { --btn-ink: var(--brand-ink); }
+tr.is-inactive > td:not(.adm-actions-cell) { opacity: 1; }
+tr.is-inactive > td:not(.adm-actions-cell) :is(.adm-who-name strong, .adm-address, .adm-cell-stack, td > span) { color: var(--ink-2); }
+tr.is-inactive > td[data-label]:not([data-label='Actif']) { opacity: 1; color: var(--ink-2); }
+.dialog-close { position: sticky; top: 0; grid-row: 1; grid-column: 1; justify-self: end; align-self: start; z-index: 1; inset: 0 auto auto auto; background: var(--surface); box-shadow: 0 0 0 var(--s1) var(--surface); }
+
+.adm-recent > summary { list-style: none; }
+.adm-recent > summary::-webkit-details-marker { display: none; }
+.adm-chevron { transition: transform 0.15s ease; }
+.adm-recent[open] .adm-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .adm-chevron { transition: none; } }

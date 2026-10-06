@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-05T22:33:30",
+  "title": "Système de design : GAMR-DIGITALE PSIM et portail client",
+  "extensions": {
+    "colorMeta": {
+      "frame": {
+        "role": "primary",
+        "displayName": "Marine du cadre",
+        "canonical": "#244c87",
+        "tonalRamp": [
+          "#0e2650",
+          "#133264",
+          "#1c3f73",
+          "#244c87",
+          "#2f5d9e",
+          "#bcd3ee"
+        ]
+      },
+      "brand": {
+        "role": "primary",
+        "displayName": "Bleu d'action",
+        "canonical": "#2b5fae",
+        "tonalRamp": [
+          "#1d4a81",
+          "#234f93",
+          "#2b5fae",
+          "#3b6cb7",
+          "#dceafa"
+        ]
+      },
+      "frame-alarm": {
+        "role": "secondary",
+        "displayName": "Rouge du cadre",
+        "canonical": "#b42e1c",
+        "tonalRamp": [
+          "#b42e1c",
+          "#d13a26",
+          "#fff8f6"
+        ]
+      },
+      "frame-warning": {
+        "role": "secondary",
+        "displayName": "Ambre-brun de préalarme",
+        "canonical": "#8a5300",
+        "tonalRamp": [
+          "#8a5300",
+          "#9d6000",
+          "#fff1d9"
+        ]
+      },
+      "focus-on-frame": {
+        "role": "secondary",
+        "displayName": "Jaune de l'affiche",
+        "canonical": "#fadf38"
+      },
+      "lvl-faible": {
+        "role": "tertiary",
+        "displayName": "Niveau faible",
+        "canonical": "#5da444"
+      },
+      "lvl-modere": {
+        "role": "tertiary",
+        "displayName": "Niveau modéré",
+        "canonical": "#f7d23a"
+      },
+      "lvl-eleve": {
+        "role": "tertiary",
+        "displayName": "Niveau élevé",
+        "canonical": "#f08a2c"
+      },
+      "lvl-critique": {
+        "role": "tertiary",
+        "displayName": "Niveau critique",
+        "canonical": "#e04a32"
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Feuille",
+        "canonical": "#eaf4fb",
+        "tonalRamp": [
+          "#ffffff",
+          "#f4f9fd",
+          "#eaf4fb",
+          "#e2f3fd",
+          "#99d6f3"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Bleu nuit du texte",
+        "canonical": "#10264a",
+        "tonalRamp": [
+          "#10264a",
+          "#43597b",
+          "#5b7193"
+        ]
+      },
+      "link": {
+        "role": "primary",
+        "displayName": "Bleu de lien",
+        "canonical": "#2b5fae",
+        "tonalRamp": [
+          "#2b5fae",
+          "#5b93e3",
+          "#9cc1f4"
+        ]
+      },
+      "on-warning": {
+        "role": "secondary",
+        "displayName": "Encre d'avertissement",
+        "canonical": "#2a1c00",
+        "tonalRamp": [
+          "#2a1c00",
+          "#8a5a00",
+          "#f5b800",
+          "#fff4d1"
+        ]
+      },
+      "scrim": {
+        "role": "neutral",
+        "displayName": "Voile de la loupe d'image",
+        "canonical": "rgba(4, 10, 20, 0.88)"
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Papier du plan",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#ffffff",
+          "#dbe5f1"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Chiffre de l'indice",
+        "purpose": "Baloo 2 800, chiffres et niveau de l'indice GAMR, numéros d'étape."
+      },
+      "headline": {
+        "displayName": "Titre d'écran",
+        "purpose": "Baloo 2 800, h1 et titres de fenêtre."
+      },
+      "title": {
+        "displayName": "Titre de panneau",
+        "purpose": "Atkinson 700, h2."
+      },
+      "body": {
+        "displayName": "Texte courant",
+        "purpose": "Atkinson 400, tout le texte de travail."
+      },
+      "label": {
+        "displayName": "Libellé",
+        "purpose": "Atkinson 700, libellés de champ et pastilles d'état."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Chasse fixe du système : codes de secours, clé et code de double authentification, adresses techniques."
+      }
+    },
+    "shadows": [
+      {
+        "name": "shadow-1",
+        "value": "0 1px 2px rgba(16, 38, 74, 0.06), 0 6px 18px -10px rgba(16, 38, 74, 0.18)",
+        "purpose": "Panneaux posés sur la feuille."
+      },
+      {
+        "name": "shadow-2",
+        "value": "0 2px 6px rgba(16, 38, 74, 0.08), 0 18px 40px -16px rgba(16, 38, 74, 0.32)",
+        "purpose": "Fenêtres et menus qui flottent."
+      },
+      {
+        "name": "anneaux-etat",
+        "value": "0 0 0 3px #d63a26, 0 0 0 5px #fff, 0 0 0 7px #d63a26",
+        "purpose": "Anneaux sans flou ni décalage des pastilles du plan (alarme non acquittée, sélection, caméra au mur) ; ne comptent pas comme ombres."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Courbe des changements d'état."
+      },
+      {
+        "name": "t-fast",
+        "value": "150ms",
+        "purpose": "Survol, focus, boutons."
+      },
+      {
+        "name": "t-med",
+        "value": "220ms",
+        "purpose": "Changement de couleur du cadre."
+      },
+      {
+        "name": "t-slow",
+        "value": "600ms",
+        "purpose": "Le mercure de la jauge qui glisse vers sa valeur."
+      },
+      {
+        "name": "frame-pulse",
+        "value": "2.4s ease-in-out infinite",
+        "purpose": "Cadre en attente d'acquittement ; arrêté en mouvement réduit."
+      },
+      {
+        "name": "pulse-ring",
+        "value": "1.2s ease-out infinite",
+        "purpose": "Onde autour d'une pastille de plan en alarme non acquittée."
+      },
+      {
+        "name": "tab-alert",
+        "value": "1s steps(2) infinite",
+        "purpose": "Cadre de l'onglet d'un étage en alarme qu'on ne regarde pas ; fixe en mouvement réduit."
+      },
+      {
+        "name": "toast-in",
+        "value": "220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Entrée d'un message éphémère."
+      },
+      {
+        "name": "spin",
+        "value": "0.8s linear infinite",
+        "purpose": "Anneau d'un bouton, d'un flux ou d'un chargement occupé."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "phone",
+        "value": "480px"
+      },
+      {
+        "name": "cards-alarms",
+        "value": "640px"
+      },
+      {
+        "name": "tabbar",
+        "value": "760px"
+      },
+      {
+        "name": "drawer",
+        "value": "1023px"
+      },
+      {
+        "name": "wide",
+        "value": "1280px"
+      },
+      {
+        "name": "cards-admin",
+        "value": "1400px"
+      }
+    ],
+    "focus": {
+      "onSheet": "#2b5fae",
+      "onSheetNight": "#8fb6ef",
+      "onFrame": "#fadf38"
+    },
+    "narrative": {
+      "northStar": "La jauge GAMR",
+      "rules": [
+        "Seul le cadre change de couleur avec l'état du site ; pulsation lente tant qu'une alarme n'est pas acquittée.",
+        "Chaque état : forme, icône et mot, jamais la couleur seule ; la forme dit le type, la couleur dit l'état.",
+        "Une seule échelle 0 à 60, seuils 8, 20, 36, 60 ; jamais de chiffre inventé.",
+        "Baloo 2 seulement pour la marque, les titres, les chiffres de l'indice et les numéros d'étape.",
+        "Aucune couleur, aucun rayon, aucune ombre hors des jetons de base.css.",
+        "Tout texte coloré prend le jeton -ink ; texte blanc sur plein rouge, violet ou bleu, --on-warning sur plein ambre.",
+        "Liens et intitulés cliquables en --link (encre bleue claire en Nuit).",
+        "Un tableau passe en cartes sous son seuil, chaque cellule portant son libellé (data-label).",
+        "Le verre à graduations est la forme des mesures : thermomètre, tubes par zone, frise d'armement, barre d'attente."
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "Bouton principal",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Une seule action principale par zone.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Acquitter</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px solid #a9c2d8;border-radius:10px;background:#fff;color:#10264a;font:600 16px/1.2 'Atkinson Hyperlegible Next','Segoe UI',sans-serif;transition:background-color 150ms ease}.ds-btn-primary{background:#2b5fae;border-color:#2b5fae;color:#fff}.ds-btn-primary:hover{background:#234f93;border-color:#234f93}"
+    },
+    {
+      "name": "Geste grave",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Contour rouge, isolé à droite, confirmé en mots simples.",
+      "html": "<button class=\"ds-btn-danger\">Supprimer</button>",
+      "css": ".ds-btn-danger{min-height:44px;padding:0 16px;border:1px solid #b42e1c;border-radius:10px;background:transparent;color:#b42e1c;font:600 16px/1.2 'Atkinson Hyperlegible Next','Segoe UI',sans-serif}.ds-btn-danger:hover{background:#b42e1c;color:#fff}"
+    },
+    {
+      "name": "Pastille d'état",
+      "kind": "chip",
+      "refersTo": "pill-alarm",
+      "description": "Icône + mot ; fond doux, texte -ink.",
+      "html": "<span class=\"ds-pill\">Alarme</span>",
+      "css": ".ds-pill{display:inline-flex;align-items:center;min-height:28px;padding:2px 10px;border-radius:999px;background:#fde6e2;color:#b42e1c;font:700 14px/1.2 'Atkinson Hyperlegible Next','Segoe UI',sans-serif}"
+    },
+    {
+      "name": "Panneau",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Panneau blanc posé sur la feuille.",
+      "html": "<section class=\"ds-panel\"><h2>Tout est calme</h2><p>Aucune alarme en cours.</p></section>",
+      "css": ".ds-panel{background:#fff;border:1px solid #d3e2ee;border-radius:16px;padding:16px 24px 24px;box-shadow:0 1px 2px rgba(16,38,74,.06),0 6px 18px -10px rgba(16,38,74,.18);color:#10264a;font:400 16px/1.5 'Atkinson Hyperlegible Next','Segoe UI',sans-serif}.ds-panel h2{font-size:18px;font-weight:700;margin:0 0 8px}"
+    },
+    {
+      "name": "Rail marine",
+      "kind": "nav",
+      "refersTo": "rail",
+      "description": "Cadre du menu ; passe au rouge en alarme.",
+      "html": "<nav class=\"ds-rail\"><a>Surveillance</a><a>Alarmes</a><a>Caméras</a></nav>",
+      "css": ".ds-rail{display:grid;gap:4px;width:248px;padding:18px 12px;background:#244c87;color:#fff;font:600 16px/1.2 'Atkinson Hyperlegible Next','Segoe UI',sans-serif}.ds-rail a{padding:10px 12px;border-radius:10px}.ds-rail a:hover{background:#1c3f73}"
+    },
+    {
+      "name": "Tube de l'indice par zone",
+      "kind": "custom",
+      "refersTo": "tube",
+      "description": "Même échelle 0 à 60 que le thermomètre ; repères gravés aux seuils 8, 20, 36 ; pointillé sans indice.",
+      "html": "<span class=\"ds-tube\"><span class=\"ds-tube-fill\"></span></span>",
+      "css": ".ds-tube{position:relative;display:block;height:14px;min-width:96px;border:1.5px solid #99d6f3;border-radius:999px;background:#e2f3fd;overflow:hidden}.ds-tube-fill{position:absolute;inset:0;background:linear-gradient(to right,#5da444 0 13.33%,#f7d23a 13.33% 33.33%,#f08a2c 33.33% 60%,#e04a32 60% 100%);clip-path:inset(0 45% 0 0 round 0 999px 999px 0)}.ds-tube::after{content:'';position:absolute;inset:0;background:linear-gradient(#99d6f3,#99d6f3) 13.33% 0/1px 100% no-repeat,linear-gradient(#99d6f3,#99d6f3) 33.33% 0/1px 100% no-repeat,linear-gradient(#99d6f3,#99d6f3) 60% 0/1px 100% no-repeat}"
+    },
+    {
+      "name": "Frise d'armement (un jour)",
+      "kind": "custom",
+      "refersTo": "arm-day-track",
+      "description": "Un jour = un tube de verre ; plages armées en marine, repères 6 h, 12 h, 18 h, trait jaune « maintenant ».",
+      "html": "<span class=\"ds-arm-track\"><span class=\"ds-arm-seg\"></span><span class=\"ds-arm-now\"></span></span>",
+      "css": ".ds-arm-track{position:relative;display:block;width:320px;height:16px;overflow:hidden;border:1.5px solid #99d6f3;border-radius:999px;background:#e2f3fd}.ds-arm-seg{position:absolute;top:0;bottom:0;left:0;width:30%;background:#234f93}.ds-arm-now{position:absolute;top:0;bottom:0;left:62%;width:3px;margin-left:-1.5px;background:#fadf38;box-shadow:0 0 0 1px #10264a}"
+    },
+    {
+      "name": "Carte de tableau responsive",
+      "kind": "card",
+      "refersTo": "table-card",
+      "description": "Une ligne de tableau devenue carte : chaque cellule porte son libellé, l'action en bas.",
+      "html": "<div class=\"ds-row\"><div class=\"ds-cell\"><span>Zone</span><strong>Entrepôt</strong></div><div class=\"ds-cell\"><span>État</span><strong>Armée</strong></div></div>",
+      "css": ".ds-row{display:grid;gap:8px;width:300px;padding:12px 16px;border:1px solid #d3e2ee;border-radius:10px;background:#fff;color:#10264a;font:400 16px/1.5 'Atkinson Hyperlegible Next','Segoe UI',sans-serif}.ds-cell{display:grid;grid-template-columns:minmax(96px,36%) minmax(0,1fr);gap:8px;align-items:center}.ds-cell span{font-size:13px;font-weight:700;color:#5b7193}"
+    },
+    {
+      "name": "Compteur « hors service »",
+      "kind": "chip",
+      "refersTo": "counter",
+      "description": "Compteur cliquable de la barre du haut : icône, mot et nombre ; ouvre la liste des détecteurs hors service.",
+      "html": "<button class=\"ds-counter\">Hors service : 2</button>",
+      "css": ".ds-counter{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:2px 10px 2px 8px;border:0;border-radius:999px;background:#efe8fb;color:#6b3fc0;font:700 14px/1.2 'Atkinson Hyperlegible Next','Segoe UI',sans-serif;cursor:pointer}.ds-counter:hover{filter:brightness(1.04)}.ds-counter:focus-visible{outline:3px solid #2b5fae;outline-offset:2px}"
+    }
+  ]
+}

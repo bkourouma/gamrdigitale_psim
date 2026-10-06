@@ -9,8 +9,9 @@
  * Le portail conserve, lui, les jours qui sortent de la fenetre : c'est lui qui garde l'historique long.
  *
  * Ce qui part (jamais plus) : equipements (nom, zone, etage, etat), disponibilite et periodes d'arret, incidents sans
- * leurs commentaires ni les noms des operateurs, nombre de notifications. Jamais : identifiants ou adresses des cameras,
- * images, comptes, journal, destinataires de notification.
+ * leurs commentaires ni les noms des operateurs, nombre de notifications, indice de securite GAMR (du site et par zone,
+ * sans les notes ni le nom de l'evaluateur). Jamais : identifiants ou adresses des cameras, images, comptes, journal,
+ * destinataires de notification.
  *
  * Authentification : signature HMAC-SHA256 du corps avec une cle propre a ce site (en-tetes X-Psim-*). La cle ne circule
  * jamais ; l'horodatage signe limite le rejeu. Un echec d'envoi ne gene jamais le PSIM : il est compte et reessaye.
@@ -75,6 +76,28 @@ export interface SiteSummary {
     confirmedAt: number | null;
   }[];
   notifications: { sent: number; failed: number };
+  /**
+   * Indice de securite GAMR (1 a 60 : probabilite x vulnerabilite x repercussions). Absent quand le PSIM ne le fournit
+   * pas (version plus ancienne, calcul en echec) : le portail dit alors qu'il n'est pas transmis, sans rien inventer.
+   */
+  risk?: {
+    /** Indice du site : celui de sa zone la plus exposee ; `null` tant qu'aucune zone n'est evaluee. */
+    index: number | null;
+    worstZone: string | null;
+    assessedZones: number;
+    totalZones: number;
+    /** `index` vaut `null` pour une zone non evaluee ; `stale` : evaluation de plus d'un an, a revoir. */
+    zones: { zone: string; index: number | null; stale: boolean }[];
+    /** Indice du site, un point par jour local (le plus ancien d'abord). */
+    history: { day: string; index: number }[];
+  };
+}
+
+/** Ce que la gestion des risques fournit (voir risk.ts, `overview`) ; seule une partie en est envoyee. */
+export interface RiskInput {
+  site: { index: number | null; worstZone: string | null; assessedZones: number; totalZones: number };
+  zones: { zone: string; index: number | null; stale: boolean }[];
+  history: Record<string, { day: string; index: number }[]>;
 }
 
 export interface SummaryOptions {
@@ -83,6 +106,28 @@ export interface SummaryOptions {
   startedAt: number;
   now?: number;
   windowDays?: number;
+  /** Etat du risque au moment de l'envoi ; sans lui, le resume part sans indice. */
+  risk?: () => RiskInput;
+}
+
+const MAX_RISK_ZONES = 200;
+
+function riskPart(build: (() => RiskInput) | undefined, fromDay: string): SiteSummary['risk'] {
+  if (!build) return undefined;
+  try {
+    const r = build();
+    return {
+      index: r.site.index,
+      worstZone: r.site.worstZone,
+      assessedZones: r.site.assessedZones,
+      totalZones: r.site.totalZones,
+      zones: r.zones.slice(0, MAX_RISK_ZONES).map((z) => ({ zone: z.zone, index: z.index, stale: z.stale })),
+      history: (r.history.__site__ ?? []).filter((p) => p.day >= fromDay),
+    };
+  } catch {
+    // Un calcul de risque en echec ne doit jamais empecher l'envoi de l'etat du site : le resume part sans indice.
+    return undefined;
+  }
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -191,6 +236,7 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
     blindPeriods: blindPeriods(db, from, now),
     incidents,
     notifications: { sent: notif('sent'), failed: notif('failed') },
+    risk: riskPart(options.risk, dayKey(new Date(from))),
   };
 }
 

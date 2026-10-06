@@ -85,6 +85,30 @@ const AVAIL = (v: unknown, what: string) => {
 
 const CATEGORIES = ['fire', 'intrusion', 'access', 'environment'] as const;
 const STATES = ['normal', 'prealarm', 'alarm', 'fault', 'offline'] as const;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Indice GAMR : un entier de 1 a 60, ou `null` (zone ou site pas encore evalue). */
+const riskIndex = (v: unknown, what: string): number | null => (v === null || v === undefined ? null : int(v, what, 1, 60));
+
+function parseRisk(v: unknown): NonNullable<SiteSummary['risk']> {
+  const x = obj(v, 'risk');
+  return {
+    index: riskIndex(x.index, 'risk.index'),
+    worstZone: x.worstZone === null || x.worstZone === undefined ? null : str(x.worstZone, 'risk.worstZone'),
+    assessedZones: int(x.assessedZones, 'risk.assessedZones', 0, 10_000),
+    totalZones: int(x.totalZones, 'risk.totalZones', 0, 10_000),
+    zones: arr(x.zones, 'risk.zones', 500).map((z, i) => {
+      const y = obj(z, `risk.zones[${i}]`);
+      return { zone: str(y.zone, 'risk.zone'), index: riskIndex(y.index, `risk.zones[${i}].index`), stale: y.stale === true };
+    }),
+    history: arr(x.history, 'risk.history', 400).map((p, i) => {
+      const y = obj(p, `risk.history[${i}]`);
+      const day = str(y.day, 'risk.history.day', 10);
+      if (!DAY.test(day)) fail(`risk.history[${i}].day`);
+      return { day, index: int(y.index, `risk.history[${i}].index`, 1, 60) };
+    }),
+  };
+}
 
 /** Valide un resume recu. Ne garde que les champs connus (rien d'autre n'est stocke ni renvoye aux clients). */
 export function parseSummary(raw: unknown): { ok: true; summary: SiteSummary } | { ok: false; error: string } {
@@ -129,7 +153,7 @@ export function parseSummary(raw: unknown): { ok: true; summary: SiteSummary } |
         daily: arr(av.daily, 'daily', 400).map((d, i) => {
           const x = obj(d, `daily[${i}]`);
           const day = str(x.day, 'daily.day', 10);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) fail(`daily[${i}].day`);
+          if (!DAY.test(day)) fail(`daily[${i}].day`);
           return { day, pct: pctOrNull(x.pct, 'daily.pct'), upS: int(x.upS, 'daily.upS'), downS: int(x.downS, 'daily.downS'), unmonitoredS: int(x.unmonitoredS, 'daily.unmonitoredS') };
         }),
       },
@@ -159,6 +183,8 @@ export function parseSummary(raw: unknown): { ok: true; summary: SiteSummary } |
         };
       }),
       notifications: { sent: int(obj(o.notifications, 'notifications').sent, 'notifications.sent'), failed: int(obj(o.notifications, 'notifications').failed, 'notifications.failed') },
+      // Facultatif : un PSIM plus ancien n'envoie pas d'indice, son resume reste valable.
+      risk: o.risk === undefined || o.risk === null ? undefined : parseRisk(o.risk),
     };
     return { ok: true, summary };
   } catch (err) {
@@ -196,6 +222,8 @@ export function storeSummary(db: DatabaseSync, siteId: string, s: SiteSummary, r
          qualification = excluded.qualification, acked_at = excluded.acked_at, closed_at = excluded.closed_at, confirmed_at = excluded.confirmed_at`,
     );
     for (const i of s.incidents) incident.run(siteId, i.id, i.deviceId, i.deviceName, i.zone, i.category, i.severity, i.status, i.qualification, i.openedAt, i.ackedAt, i.closedAt, i.confirmedAt);
+    const riskDay = db.prepare('INSERT INTO site_risk_day (site_id, day, idx) VALUES (?, ?, ?) ON CONFLICT(site_id, day) DO UPDATE SET idx = excluded.idx');
+    for (const p of s.risk?.history ?? []) riskDay.run(siteId, p.day, p.index);
     db.prepare('UPDATE site SET last_received_at = ? WHERE id = ?').run(receivedAt, siteId);
     db.exec('COMMIT');
   } catch (err) {

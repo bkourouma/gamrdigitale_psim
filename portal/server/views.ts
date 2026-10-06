@@ -4,6 +4,8 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 import type { SiteSummary } from '../../server/portal.ts';
+import { levelOf } from '../../server/risklevels.ts';
+import type { RiskLevel } from '../../server/risklevels.ts';
 import type { VisibleSite } from './accounts.ts';
 
 export const DAY_MS = 24 * 3_600_000;
@@ -55,6 +57,31 @@ export function siteStatus(summary: SiteSummary | null, receivedAt: number | nul
 }
 
 const SEVERITY_ORDER: Record<Level, number> = { alarm: 0, unreachable: 1, degraded: 2, unknown: 3, ok: 4 };
+
+export interface RiskView {
+  /** Indice de securite GAMR du site (1 a 60), `null` tant qu'aucune zone n'est evaluee. */
+  index: number | null;
+  level: RiskLevel | null;
+  levelLabel: string | null;
+  worstZone: string | null;
+  assessedZones: number;
+  totalZones: number;
+  /** Date du calcul (celle du dernier resume) : un site injoignable garde son dernier indice connu, date. */
+  at: number;
+}
+
+/** L'indice tel que le site l'a envoye, nomme ici (Faible, Modere...) ; `null` s'il n'est pas transmis : rien d'invente. */
+export function riskOf(summary: SiteSummary | null | undefined): RiskView | null {
+  const r = summary?.risk;
+  if (!summary || !r) return null;
+  const named = r.index === null ? null : levelOf(r.index);
+  return { index: r.index, level: named?.level ?? null, levelLabel: named?.label ?? null, worstZone: r.worstZone, assessedZones: r.assessedZones, totalZones: r.totalZones, at: summary.generatedAt };
+}
+
+/** Les N derniers jours d'indice connus du site (le plus ancien d'abord). */
+export function lastRiskDays(db: DatabaseSync, siteId: string, days: number): { day: string; index: number }[] {
+  return (db.prepare('SELECT day, idx FROM site_risk_day WHERE site_id = ? ORDER BY day DESC LIMIT ?').all(siteId, days) as { day: string; idx: number }[]).reverse().map((r) => ({ day: r.day, index: r.idx }));
+}
 
 export function loadSummary(db: DatabaseSync, siteId: string): { summary: SiteSummary; receivedAt: number } | null {
   const row = db.prepare('SELECT payload, received_at FROM snapshot WHERE site_id = ?').get(siteId) as { payload: string; received_at: number } | undefined;
@@ -128,8 +155,10 @@ export function siteCards(db: DatabaseSync, sites: VisibleSite[], now: number, s
       status,
       lastReceivedAt: snap?.receivedAt ?? null,
       availability30: month.pct,
+      availability30DownS: month.downS,
       openIncidents: snap?.summary.incidents.filter((i) => i.status !== 'closed').length ?? 0,
       devicesDown: snap?.summary.devices.filter((d) => d.monitored && (d.status === 'fault' || d.status === 'offline')).length ?? 0,
+      risk: riskOf(snap?.summary),
     };
   });
   return cards.sort((a, b) => SEVERITY_ORDER[a.status.level] - SEVERITY_ORDER[b.status.level] || a.name.localeCompare(b.name, 'fr'));
@@ -142,7 +171,18 @@ export function overview(db: DatabaseSync, sites: VisibleSite[], now: number, st
   for (const c of cards) counts[c.status.level]++;
   const all = sites.flatMap((s) => lastDays(db, s.id, 30));
   const rows = sites.flatMap((s) => incidentRows(db, s.id, now - 30 * DAY_MS).filter((r) => r.opened_at >= now - 30 * DAY_MS || r.status !== 'closed'));
-  return { sites: cards.length, counts, availability30: availabilityOfDays(all).pct, incidents30: incidentStats(rows.filter((r) => r.opened_at >= now - 30 * DAY_MS)), openNow: rows.filter((r) => r.status !== 'closed').length };
+  // Le site le plus expose : celui dont l'indice GAMR est le plus haut, parmi ceux qui en ont un.
+  const scored = cards.filter((c) => c.risk?.index != null);
+  const worst = scored.reduce<(typeof cards)[number] | null>((w, c) => (w === null || c.risk!.index! > w.risk!.index! ? c : w), null);
+  return {
+    sites: cards.length,
+    counts,
+    availability30: availabilityOfDays(all).pct,
+    availability30DownS: availabilityOfDays(all).downS,
+    incidents30: incidentStats(rows.filter((r) => r.opened_at >= now - 30 * DAY_MS)),
+    openNow: rows.filter((r) => r.status !== 'closed').length,
+    risk: { scoredSites: scored.length, worst: worst ? { siteId: worst.id, siteName: worst.name, ...worst.risk! } : null },
+  };
 }
 
 export const RANGES = [7, 30, 90] as const;
@@ -173,5 +213,11 @@ export function siteDetail(db: DatabaseSync, site: VisibleSite, days: number, no
     blindPeriods: s?.blindPeriods ?? [],
     notifications: s?.notifications ?? null,
     utcOffsetMin: s?.utcOffsetMin ?? 0,
+    risk: riskOf(s),
+    // Les zones les plus exposees d'abord ; une zone non evaluee le dit (pas de note supposee).
+    riskZones: (s?.risk?.zones ?? [])
+      .map((z) => ({ zone: z.zone, index: z.index, stale: z.stale, ...(z.index === null ? { level: null, levelLabel: null } : { level: levelOf(z.index).level, levelLabel: levelOf(z.index).label }) }))
+      .sort((a, b) => (b.index ?? -1) - (a.index ?? -1) || a.zone.localeCompare(b.zone, 'fr')),
+    riskHistory: lastRiskDays(db, site.id, days),
   };
 }

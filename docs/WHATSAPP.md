@@ -82,7 +82,7 @@ PSIM_NOTIFY_WHATSAPP_L2=+2250100000000
 ```
 
 - `L1` : prévenus à chaque alarme ; `L2` : prévenus si personne n'acquitte (escalade). Numéros au **format international**, sans espace : en Côte d'Ivoire, `+225` suivi des **10 chiffres** du numéro, 0 initial compris (`+2250700000000`).
-- Les destinataires peuvent aussi être ajoutés dans l'interface (*Notifications*), une fois le canal configuré.
+- Les destinataires peuvent aussi être ajoutés dans l'interface (menu *Administration → Personnes prévenues*), une fois le canal configuré.
 - Facultatif : `PSIM_WHATSAPP_TEMPLATE` (défaut `psim_alerte`), `PSIM_WHATSAPP_LANG` (défaut `fr`), `PSIM_WHATSAPP_API` (défaut `https://graph.facebook.com/v25.0`, toujours en `https://` : en production, une adresse `http://` est refusée), `PSIM_WHATSAPP_WABA_ID` (identifiant du compte WhatsApp Business, affiché dans *API Setup* : sert seulement à vérifier le modèle à la mise en service si le jeton ne permet pas de le retrouver).
 - Des numéros déclarés **sans** jeton ou identifiant de numéro : le PSIM refuse de démarrer en production (ils ne recevraient rien) ; dans l'interface, ils portent la mention « canal non configuré ».
 
@@ -96,7 +96,7 @@ npm run commission:prod -- --whatsapp-to +2250700000000
 
 - Sans `--whatsapp-to`, le contrôle vérifie auprès de Meta, sans rien envoyer : le jeton, le numéro expéditeur et son **enregistrement** sur la Cloud API, et le **modèle** (approuvé, en `fr`, avec 3 variables). Un modèle en attente, refusé ou mal nommé est signalé comme un **échec** : aucune alerte ne partirait.
 - Avec, il envoie en plus un message de test par le modèle. **Vérifiez qu'il arrive sur le téléphone.**
-- Dans l'interface : *Notifications* → **Envoyer un message de test** (tous les destinataires, tous canaux).
+- Dans l'interface : menu *Administration → Personnes prévenues* → **Envoyer un message de test** (tous les destinataires, tous canaux).
 
 ## En cas d'erreur
 

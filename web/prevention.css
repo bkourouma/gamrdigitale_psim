@@ -1,0 +1,232 @@
+/* =====================================================================================================================
+   Équipe Prévention — écrans Armement (arming.js) et Rapports (reports.js).
+   Armement : une carte par zone d'intrusion (état, échéance, commandes), la frise de la semaine (chaque jour est un
+   tube de verre que les plages armées remplissent en marine) et l'éditeur du planning. Rapports : période, documents
+   expliqués, envoi automatique par e-mail. Jetons et composants : base.css.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ armement : écran */
+.arm-intro > div { display: grid; gap: var(--s2); }
+.arm-intro p { max-width: 80ch; }
+.arm-load-error .arm-error-text { display: grid; gap: var(--s2); justify-items: start; }
+
+.arm-zones { display: grid; gap: var(--s3); min-width: 0; }
+.arm-zones-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); }
+.arm-zones-head h2 { display: flex; align-items: center; gap: var(--s2); }
+.arm-zones-summary { margin-left: auto; }
+
+/* Grille de cartes : une zone seule prend toute la largeur ; une zone dont on modifie le planning aussi. */
+.arm-list { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); align-items: start; }
+
+/* ------------------------------------------------------------------------------------------------ armement : carte */
+.arm-zone {
+  /* Verre des tubes de la frise et marine des plages armées (dérivés de .tube et de --brand-2, lisibles dans les deux thèmes). */
+  --arm-glass: color-mix(in srgb, var(--sky) 70%, #ffffff);
+  --arm-on: var(--brand-2);
+  container-type: inline-size;
+  display: grid; gap: var(--s4); align-content: start;
+  padding: var(--s4) var(--s5) var(--s5);
+  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease;
+}
+/* La nuit, le verre éclairci serait trop proche de la marine : le verre reste bleu nuit, les plages s'en détachent. */
+:root[data-theme='night'] .arm-zone { --arm-glass: var(--sky); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='day']) .arm-zone { --arm-glass: var(--sky); } }
+
+/* Désarmée : pointillé (grammaire des états) ; la pastille dit le mot et porte l'icône. */
+.arm-zone.is-disarmed { border: 1.5px dashed var(--warning-ink); background: color-mix(in srgb, var(--warning-soft) 40%, var(--surface)); }
+.arm-zone.is-editing { grid-column: 1 / -1; }
+
+.arm-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--s2) var(--s3); }
+.arm-name { display: flex; align-items: center; gap: var(--s2); min-width: 0; font-size: var(--fs-xl); line-height: 1.2; overflow-wrap: anywhere; }
+.arm-name .icon { width: 24px; height: 24px; color: var(--ink-3); }
+
+.arm-body { display: grid; gap: var(--s5); min-width: 0; }
+@container (min-width: 700px) {
+  .arm-body { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; }
+}
+
+.arm-now { display: grid; gap: var(--s3); align-content: start; min-width: 0; }
+.arm-state { display: grid; gap: var(--s1); }
+.arm-state-title { font-size: var(--fs-lg); font-weight: 700; line-height: 1.3; border-radius: var(--r-xs); }
+.arm-state-title time { white-space: nowrap; }
+.arm-state-rel { margin-left: var(--s2); font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.arm-state-why { font-size: var(--fs-sm); color: var(--ink-2); }
+
+.arm-actions { gap: var(--s2) var(--s3); }
+.arm-durations { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.arm-dur-label { display: inline-flex; align-items: center; gap: var(--s2); margin-right: var(--s1); font-size: var(--fs-sm); font-weight: 700; }
+.arm-dur-label .icon { color: var(--warning-ink); }
+.arm-dur { min-width: 64px; padding: 0 var(--s3); }
+.arm-hint { max-width: 60ch; }
+.arm-zone .form-error:empty, .arm-saved:empty, .arm-slot-note:empty { display: none; }
+
+/* ------------------------------------------------------------------------------------------------ armement : frise */
+.arm-plan { display: grid; gap: var(--s3); align-content: start; min-width: 0; }
+.arm-plan-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); min-height: var(--control-h-sm); }
+.arm-plan-head h4 { color: var(--ink); }
+.arm-edit-toggle { margin-left: auto; }
+
+/* Aperçu d'un planning pas encore enregistré : cadre en pointillé (ce qui n'est pas en vigueur est en pointillé). */
+.arm-week {
+  display: grid; gap: 5px;
+  padding: var(--s2) var(--s3) var(--s3);
+  border: 1.5px dashed transparent; border-radius: var(--r-md);
+  transition: border-color var(--t-fast) ease;
+}
+.arm-week.is-preview { border-color: var(--warning-ink); }
+.arm-row { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr); align-items: center; gap: var(--s2); }
+.arm-day-name { font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2); }
+.arm-row.is-today .arm-day-name { color: var(--brand-ink); font-weight: 800; }
+
+/* Graduation 0 h, 6 h, 12 h, 18 h, 24 h au-dessus des tubes. */
+.arm-scale { position: relative; height: 1.1rem; }
+.arm-scale i { position: absolute; top: 0; font-style: normal; font-size: var(--fs-xs); font-weight: 600; line-height: 1; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; transform: translateX(-50%); }
+.arm-scale i:nth-child(1) { left: 0; transform: none; }
+.arm-scale i:nth-child(2) { left: 25%; }
+.arm-scale i:nth-child(3) { left: 50%; }
+.arm-scale i:nth-child(4) { left: 75%; }
+.arm-scale i:nth-child(5) { right: 0; transform: none; }
+
+/* Un jour = un tube de verre (comme la jauge) ; les plages armées le remplissent en marine. */
+.arm-track {
+  position: relative; display: block; height: 16px; overflow: hidden;
+  border: 1.5px solid var(--tube); border-radius: var(--r-pill);
+  background: var(--arm-glass);
+}
+.arm-row.is-today .arm-track { border-color: var(--brand); }
+.arm-track::before {
+  /* Repères 6 h, 12 h, 18 h gravés dans le verre, sous les plages. */
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(var(--line-strong), var(--line-strong)) 25% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) 50% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) 75% 0 / 1px 100% no-repeat;
+}
+.arm-seg, .arm-manual { position: absolute; top: 0; bottom: 0; left: calc(var(--a) * 100%); width: calc((var(--b) - var(--a)) * 100%); }
+.arm-seg { background: var(--arm-on); }
+/* Réglage manuel en cours (jusqu'à son échéance) : hachures, par-dessus le planning qu'il remplace. */
+.arm-manual.is-disarmed, .arm-key.is-manual.is-disarmed { background: repeating-linear-gradient(135deg, var(--warning-ink) 0 2px, var(--arm-glass) 2px 6px); }
+.arm-manual.is-armed, .arm-key.is-manual.is-armed { background: repeating-linear-gradient(135deg, var(--arm-on) 0 4px, var(--tube) 4px 6px); }
+/* Maintenant : un trait jaune (le jaune de l'affiche) cerné, visible sur le verre comme sur la marine. */
+.arm-now-mark { position: absolute; top: 0; bottom: 0; left: calc(var(--a) * 100%); width: 3px; margin-left: -1.5px; background: var(--focus-on-frame); box-shadow: 0 0 0 1px var(--ink); }
+
+.arm-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); font-size: var(--fs-xs); color: var(--ink-2); }
+.arm-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.arm-key { display: inline-block; width: 20px; height: 10px; border: 1.5px solid var(--tube); border-radius: var(--r-pill); background: var(--arm-glass); }
+.arm-key.is-on { background: var(--arm-on); border-color: var(--arm-on); }
+.arm-key.is-now { width: 3px; height: 14px; border: 0; border-radius: 0; background: var(--focus-on-frame); box-shadow: 0 0 0 1px var(--ink); }
+
+.arm-plan-lead { font-size: var(--fs-sm); color: var(--ink-2); }
+.arm-plan-list { display: grid; gap: 2px; font-size: var(--fs-sm); font-weight: 600; }
+.arm-plan-list li { position: relative; padding-left: var(--s5); }
+.arm-plan-list li::before { content: ''; position: absolute; left: 0; top: 0.5em; width: 14px; height: 7px; border-radius: var(--r-pill); background: var(--arm-on); }
+
+/* ------------------------------------------------------------------------------------------------ armement : éditeur */
+.arm-editor { display: grid; gap: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line); min-width: 0; }
+.arm-editor-title { font-size: var(--fs-md); color: var(--ink); border-radius: var(--r-xs); }
+.arm-editor > .hint { max-width: 80ch; }
+.arm-slots { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); }
+.arm-slots:empty { display: none; }
+.arm-slot { display: grid; min-width: 0; }
+.arm-slot fieldset { gap: var(--s3); background: var(--surface); min-width: 0; }
+.arm-slot legend { color: var(--ink); }
+/* Jours en boutons bascule : enfoncé = plein (marine), relâché = contour. Une ligne de 7, même au téléphone. */
+.arm-days { display: grid; grid-template-columns: repeat(7, minmax(34px, 1fr)); gap: 4px; max-width: 440px; }
+.arm-day { min-width: 0; padding: 0 2px; }
+.arm-day[aria-pressed='true'] { --btn-bg: var(--brand); --btn-ink: var(--on-brand); --btn-line: var(--brand); }
+.arm-day[aria-pressed='true']:hover:not(:disabled) { --btn-bg: var(--brand-2); border-color: var(--brand-2); color: var(--on-brand); }
+.arm-hours { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+.arm-hours .field { flex: 1 1 130px; max-width: 190px; }
+.arm-remove { margin-left: auto; }
+.arm-slot-note { font-weight: 600; }
+.arm-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.arm-empty { max-width: 640px; }
+.arm-confirm-body { display: grid; gap: var(--s3); }
+.arm-confirm-body p { font-size: var(--fs-md); font-weight: 600; }
+.arm-confirm:focus { outline: none; }
+.arm-saved { font-size: var(--fs-sm); font-weight: 600; color: var(--ok-ink); }
+
+@media (max-width: 760px) {
+  .arm-zone { padding: var(--s4); }
+  .arm-name { font-size: var(--fs-lg); }
+  .arm-week { padding: var(--s1) 0 var(--s2); }
+  .arm-row { grid-template-columns: 2.25rem minmax(0, 1fr); }
+}
+
+/* ------------------------------------------------------------------------------------------------ rapports */
+/* Deux panneaux côte à côte en grand écran (documents, envoi automatique) ; un seul occupe toute la largeur. */
+.rep-grid { display: grid; gap: 20px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); }
+.rep-panel { container-type: inline-size; }
+.rep-box, .rep-mail, .rep-mail-form { display: grid; gap: var(--s5); min-width: 0; }
+.rep-mail-form { gap: var(--s4); }
+.rep-lead { color: var(--ink-2); max-width: 72ch; }
+
+.rep-period, .rep-docs { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); min-width: 0; }
+.rep-period h3, .rep-docs h3 { font-size: var(--fs-md); }
+.rep-presets { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+@container (max-width: 520px) {
+  .rep-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-self: stretch; }
+  .rep-presets button { min-width: 0; white-space: normal; justify-content: center; text-align: center; line-height: 1.2; }
+}
+.rep-fields { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); max-width: 720px; }
+.rep-fields input, .rep-fields select { min-width: 0; width: 100%; }
+.rep-period-summary { font-size: var(--fs-sm); color: var(--ink-2); }
+.rep-box .form-error:empty, .rep-mail .form-error:empty, .rep-period-summary:empty, .rep-status:empty, .rep-saved:empty { display: none; }
+
+/* Documents : quoi, pourquoi, puis le bouton. Côte à côte quand la place le permet. */
+.rep-outputs { display: grid; border-top: 1px solid var(--line); }
+.rep-output {
+  display: grid; gap: var(--s2) var(--s3); align-items: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: 'icon text' 'icon action';
+  padding: var(--s4) 0; border-bottom: 1px solid var(--line);
+}
+.rep-output-icon {
+  grid-area: icon; display: grid; place-items: center; width: 40px; height: 40px;
+  border-radius: 50%; border: 1.5px solid var(--tube); background: var(--sky); color: var(--brand-ink);
+}
+.rep-output.is-main .rep-output-icon { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.rep-output-text { grid-area: text; display: grid; gap: 2px; min-width: 0; }
+.rep-output-text h4 { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); font-size: var(--fs-md); color: var(--ink); }
+.rep-output-text p { font-size: var(--fs-sm); color: var(--ink-2); max-width: 68ch; }
+.rep-output-action { grid-area: action; justify-self: start; white-space: normal; text-align: left; }
+@container (min-width: 720px) {
+  .rep-output { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'icon text action'; align-items: center; }
+  .rep-output-action { justify-self: end; white-space: nowrap; }
+}
+.rep-status { font-size: var(--fs-sm); font-weight: 600; color: var(--ok-ink); }
+
+/* Envoi automatique */
+.rep-mail-notices { display: grid; gap: var(--s2); }
+.rep-mail-notices .notice > div { display: grid; gap: var(--s1); }
+.rep-tech { color: var(--ink-2); }
+.rep-freq { border: 0; padding: 0; gap: var(--s2); }
+.rep-freq legend { padding: 0; margin-bottom: var(--s2); font-size: var(--fs-sm); font-weight: 700; color: var(--ink); }
+.rep-freq .segmented { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+.rep-mail-when { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); max-width: 520px; }
+.rep-mail-form textarea { font-family: inherit; }
+.rep-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s1) var(--s4); margin: 0;
+  padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+  font-size: var(--fs-sm);
+}
+.rep-facts dt { font-weight: 700; color: var(--ink-2); }
+.rep-facts dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
+@container (max-width: 420px) {
+  .rep-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .rep-facts dd { margin-bottom: var(--s2); }
+}
+.rep-confirm-body { display: grid; gap: var(--s3); }
+.rep-confirm-body p { font-size: var(--fs-md); font-weight: 600; overflow-wrap: anywhere; }
+.rep-confirm:focus { outline: none; }
+.rep-saved { font-size: var(--fs-sm); font-weight: 600; color: var(--ok-ink); }
+.rep-error { display: grid; gap: var(--s2); justify-items: start; }
+
+/* Un seul bouton principal par zone : pendant la saisie du planning, c'est « Enregistrer le planning ». */
+.arm-zone.is-editing .arm-actions .btn-primary { --btn-bg: var(--surface); --btn-ink: var(--ink); --btn-line: var(--line-strong); }
+.arm-zone.is-editing .arm-actions .btn-primary:hover:not(:disabled) { --btn-bg: var(--surface); border-color: var(--brand); color: var(--ink); }
+/* Boutons discrets : en Nuit, --brand sur la carte sombre ne fait que 3,2:1. */
+.arm-zone .btn-ghost { --btn-ink: var(--brand-ink); }
+@media (max-width: 480px) {
+  .arm-day, .arm-remove, .arm-edit-toggle { min-height: 44px; }
+}

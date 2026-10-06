@@ -2,7 +2,7 @@
  * Étages (duplex, immeuble) : barre des étages avec l'état de chaque niveau, vue éclatée en perspective (tous les niveaux
  * empilés) et gestion des étages par l'administrateur.
  *
- * Sécurité : une alarme sur un étage que l'opérateur ne regarde pas reste visible (bouton rouge clignotant, avec le
+ * Sécurité : une alarme sur un étage que l'opérateur ne regarde pas reste visible (onglet dont le cadre clignote, avec le
  * nombre d'alarmes), et l'ouverture d'un incident amène l'écran sur l'étage concerné (voir app.js, onIncident).
  * Les boutons et plateaux sont mis à jour SUR PLACE à chaque message d'équipement : les recréer ferait perdre un clic
  * commencé (appui puis relâchement sur un nouvel élément) et le focus clavier, au pire moment (pendant une alarme).
@@ -12,6 +12,14 @@ const FIRING = new Set(['alarm', 'prealarm']);
 const DOWN = new Set(['offline', 'fault']);
 
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+
+/** État d'un étage en forme + icône + mot : la puce des onglets et des cartes de la vue éclatée. */
+const LEVEL_LOOK = {
+  normal: { pill: 'is-ok', icon: 'state-ok' },
+  alarm: { pill: 'is-solid-alarm', icon: 'state-alarm' },
+  prealarm: { pill: 'is-solid-warning', icon: 'state-warning' },
+  down: { pill: 'is-fault', icon: 'wrench' },
+};
 
 /** État d'un étage : ce qui y sonne, ce qui y est hors service, ce qui attend un acquittement. */
 export function floorSummary(floorId, devices, activeIncidents) {
@@ -47,10 +55,17 @@ export function stackGap(n) {
   return n <= 1 ? 150 : Math.max(24, Math.min(150, Math.round(420 / (n - 1))));
 }
 
-export function createFloorsUi({ h, api, toast }) {
+export function createFloorsUi({ h, api, toast, icon, dialogs }) {
+  /** Contenu d'une puce d'état (icône + mot), réécrit seulement quand le texte change. */
+  function fillState(el, level, text) {
+    if (el.dataset.text === `${level}|${text}`) return;
+    el.dataset.text = `${level}|${text}`;
+    el.replaceChildren(icon(LEVEL_LOOK[level]?.icon ?? 'state-unknown'), h('span', { text }));
+  }
+
   /**
-   * Barre des étages : un bouton par niveau (du plus bas au plus haut), puis la bascule vers la vue éclatée.
-   * Masquée s'il n'y a qu'un étage, sauf en édition (pour en ajouter un).
+   * Barre des étages : un onglet par niveau (du plus bas au plus haut, boutons segmentés avec leur puce d'état), puis la
+   * bascule vers la vue éclatée. Masquée s'il n'y a qu'un étage, sauf en édition (on y voit l'étage modifié).
    */
   function renderBar(bar, { floors, currentId, mode, devices, incidents, editMode, onSelect, onMode }) {
     const many = floors.length > 1;
@@ -66,15 +81,28 @@ export function createFloorsUi({ h, api, toast }) {
       const buttons = floors.map((f) =>
         h(
           'button',
-          { type: 'button', class: 'floor-tab', dataset: { floor: String(f.id) }, onclick: () => onSelect(f.id) },
+          { type: 'button', class: 'floor-tab', 'aria-pressed': 'false', dataset: { floor: String(f.id) }, onclick: () => onSelect(f.id) },
           h('span', { class: 'floor-name', text: f.name }),
+          // Lu « Étage : 1 alarme » et non « Étage 1 alarme » (le nom et l'état se suivent sans ponctuation à l'écran).
+          h('span', { class: 'sr-only floor-sep', text: ' : ' }),
           h('span', { class: 'floor-state' }),
         ),
       );
       const stack = many
-        ? h('button', { type: 'button', class: 'btn small stack-toggle', title: 'Tous les étages empilés en perspective, avec leur état', text: 'Vue éclatée', onclick: () => onMode(bar.dataset.mode === 'stack' ? 'floor' : 'stack') })
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn btn-sm stack-toggle',
+              'aria-pressed': 'false',
+              title: 'Tous les étages empilés en perspective, avec leur état',
+              onclick: () => onMode(bar.dataset.mode === 'stack' ? 'floor' : 'stack'),
+            },
+            icon('layers'),
+            h('span', { text: 'Vue éclatée' }),
+          )
         : null;
-      bar.replaceChildren(h('div', { class: 'floor-tabs', role: 'group', 'aria-label': 'Étages' }, ...buttons), stack);
+      bar.replaceChildren(h('div', { class: 'segmented floor-tabs', role: 'group', 'aria-label': 'Étages' }, ...buttons), ...(stack ? [stack] : []));
     }
     // Mise à jour sur place : classes, état, étage affiché.
     bar.dataset.mode = mode;
@@ -84,25 +112,23 @@ export function createFloorsUi({ h, api, toast }) {
       const s = floorSummary(f.id, devices, incidents);
       const current = mode === 'floor' && f.id === currentId;
       button.className = `floor-tab lvl-${s.level}${current ? ' current' : ''}`;
-      if (current) button.setAttribute('aria-current', 'true');
-      else button.removeAttribute('aria-current');
-      button.title = `${f.name} : ${s.text}${f.hasPlan ? '' : ' (pas encore de plan)'}`;
+      button.setAttribute('aria-pressed', String(current));
+      button.title = `${f.name} : ${s.text}${f.hasPlan ? '' : ' (pas encore de plan)'}${current ? '' : '. Touchez pour l’afficher.'}`;
       const state = button.querySelector('.floor-state');
-      state.hidden = s.level === 'normal';
+      const quiet = s.level === 'normal';
+      state.hidden = quiet;
+      button.querySelector('.floor-sep').hidden = quiet;
       state.className = `floor-state lvl-${s.level}`;
-      state.textContent = s.level === 'normal' ? '' : s.text;
+      if (!quiet) fillState(state, s.level, s.text);
     }
     const toggle = bar.querySelector('.stack-toggle');
-    if (toggle) {
-      toggle.classList.toggle('active', mode === 'stack');
-      toggle.setAttribute('aria-pressed', String(mode === 'stack'));
-    }
+    if (toggle) toggle.setAttribute('aria-pressed', String(mode === 'stack'));
   }
 
   /**
    * Vue éclatée : chaque étage est un plateau incliné, empilé au-dessus du précédent (le plus haut en haut). Les détecteurs
    * qui sonnent se dressent au-dessus de leur plateau ; les plateaux AU-DESSUS d'un étage en alarme deviennent
-   * transparents pour ne pas le cacher. Un clic sur un plateau (ou sur sa ligne dans la liste) l'ouvre à plat.
+   * transparents pour ne pas le cacher. Un clic sur un plateau (ou sur sa carte dans la liste) l'ouvre à plat.
    */
   function renderStack(view, { floors, devices, incidents, statusLabel, onOpen }) {
     const n = floors.length;
@@ -132,7 +158,7 @@ export function createFloorsUi({ h, api, toast }) {
         el.style.setProperty('--n', String(n));
         el.style.setProperty('--gap', `${gap}px`);
       }
-      // La liste dit la même chose en texte : lisible au lecteur d'écran, cliquable sans viser un plateau.
+      // La liste dit la même chose en texte : lisible au lecteur d'écran, et on touche une carte sans viser un plateau.
       const list = h(
         'ol',
         { class: 'stack-list', 'aria-label': 'État des étages, du plus haut au plus bas' },
@@ -142,16 +168,17 @@ export function createFloorsUi({ h, api, toast }) {
             { dataset: { floor: String(f.id) } },
             h(
               'button',
-              { type: 'button', class: 'stack-open', onclick: () => onOpen(f.id), title: `Ouvrir le plan de ${f.name}` },
-              h('strong', { text: f.name }),
-              h('span', { class: 'floor-state' }),
-              h('span', { class: 'firing-ids small' }),
-              h('span', { class: 'muted small counts' }),
+              { type: 'button', class: 'stack-open', onclick: () => onOpen(f.id), title: `Afficher le plan de ${f.name}` },
+              h('span', { class: 'stack-open-head' }, h('strong', { class: 'stack-open-name', text: f.name }), icon('chevron-right')),
+              h('span', { class: 'pill floor-pill' }),
+              h('span', { class: 'firing-ids' }),
+              h('span', { class: 'stack-counts' }),
             ),
           ),
         ),
       );
-      view.replaceChildren(scene, list);
+      const side = h('div', { class: 'stack-side' }, h('p', { class: 'hint', text: 'Touchez un étage pour l’afficher à plat.' }), list);
+      view.replaceChildren(scene, side);
     }
 
     // Mise à jour sur place : état des plateaux, pastilles, transparence au-dessus d'une alarme, liste.
@@ -185,13 +212,13 @@ export function createFloorsUi({ h, api, toast }) {
       if (!f) continue;
       const s = summaries.get(f.id);
       li.className = `lvl-${s.level}`;
-      const state = li.querySelector('.floor-state');
-      state.className = `floor-state lvl-${s.level}`;
-      state.textContent = s.text;
+      const pill = li.querySelector('.floor-pill');
+      pill.className = `pill floor-pill ${LEVEL_LOOK[s.level]?.pill ?? ''}`;
+      fillState(pill, s.level, s.text);
       const firing = li.querySelector('.firing-ids');
       firing.hidden = s.firing.length === 0;
-      firing.textContent = s.firing.length ? `En alarme : ${s.firing.join(', ')}` : '';
-      li.querySelector('.counts').textContent = `${plural(s.detectors, 'détecteur', 'détecteurs')}, ${plural(s.cameras, 'caméra', 'caméras')}${f.hasPlan ? '' : ' - pas de plan'}`;
+      firing.textContent = s.firing.length ? `${s.firing.length > 1 ? 'Détecteurs qui sonnent' : 'Détecteur qui sonne'} : ${s.firing.join(', ')}` : '';
+      li.querySelector('.stack-counts').textContent = `${plural(s.detectors, 'détecteur', 'détecteurs')} · ${plural(s.cameras, 'caméra', 'caméras')}${f.hasPlan ? '' : ' · pas de plan'}`;
     }
   }
 
@@ -201,9 +228,10 @@ export function createFloorsUi({ h, api, toast }) {
     const counts = floors.map((f) => devices.filter((d) => d.floorId === f.id).length);
     const key = JSON.stringify([floors.map((f) => [f.id, f.name, f.position, f.hasPlan]), counts, currentId]);
     if (box.dataset.key === key) return;
-    // Jamais pendant une saisie : un nom en cours de modification n'est pas écrasé par un rafraîchissement.
-    const typing = box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.value !== (document.activeElement.dataset.original ?? '');
-    if (typing) return;
+    // Jamais pendant une saisie : un nom modifié et pas encore enregistré (ou un nouvel étage commencé) n'est pas écrasé,
+    // que le champ ait encore le focus ou non (une alarme a pu emmener l'opérateur ailleurs entre-temps).
+    const dirty = [...box.querySelectorAll('input')].some((el) => el.value !== (el.dataset.original ?? ''));
+    if (dirty) return;
     box.dataset.key = key;
     const call = (path, init, okText) =>
       api(path, init)
@@ -217,8 +245,9 @@ export function createFloorsUi({ h, api, toast }) {
         });
     const rows = [...floors].reverse().map((f) => {
       const count = counts[floors.indexOf(f)];
+      // Rangée compacte : le champ est libellé pour les lecteurs d'écran (aria-label « Nom de l'étage … »), sans libellé visible répété par rangée.
       const name = h('input', { value: f.name, maxlength: '40', 'aria-label': `Nom de l'étage ${f.name}`, dataset: { original: f.name } });
-      const rename = h('button', { class: 'btn tiny', type: 'button', text: 'Renommer', disabled: true });
+      const rename = h('button', { class: 'btn btn-sm', type: 'button', disabled: true }, icon('pencil'), h('span', { text: 'Renommer' }));
       name.addEventListener('input', () => {
         rename.disabled = name.value.trim() === f.name;
         name.removeAttribute('aria-invalid');
@@ -228,10 +257,12 @@ export function createFloorsUi({ h, api, toast }) {
         if (!value) {
           name.setAttribute('aria-invalid', 'true');
           name.focus();
-          return toast("Le nom de l'étage ne peut pas être vide");
+          return toast("Le nom de l’étage ne peut pas être vide : écrivez un nom, ou remettez l'ancien");
         }
         if (value === f.name) return;
+        rename.classList.add('is-busy');
         call(`/api/floors/${f.id}`, { method: 'PATCH', body: { name: value } }, 'Étage renommé').then((ok) => {
+          rename.classList.remove('is-busy');
           if (!ok) return;
           name.dataset.original = name.value; // enregistré : la liste peut de nouveau se rafraîchir
           rerender();
@@ -242,61 +273,80 @@ export function createFloorsUi({ h, api, toast }) {
       const blocked = floors.length <= 1 ? 'seul étage : il en faut au moins un' : count > 0 ? 'à déplacer ou supprimer avant de supprimer l’étage' : '';
       return h(
         'div',
-        { class: `floor-row${f.id === currentId ? ' current' : ''}` },
+        { class: `floor-row actions${f.id === currentId ? ' current' : ''}` },
         name,
         rename,
-        h('button', {
-          class: 'btn tiny',
-          type: 'button',
-          text: '▲',
-          title: 'Monter d’un niveau',
-          'aria-label': `Monter ${f.name} d'un niveau`,
-          disabled: f.position >= floors.length - 1,
-          onclick: () => call(`/api/floors/${f.id}`, { method: 'PATCH', body: { position: f.position + 1 } }),
-        }),
-        h('button', {
-          class: 'btn tiny',
-          type: 'button',
-          text: '▼',
-          title: 'Descendre d’un niveau',
-          'aria-label': `Descendre ${f.name} d'un niveau`,
-          disabled: f.position === 0,
-          onclick: () => call(`/api/floors/${f.id}`, { method: 'PATCH', body: { position: f.position - 1 } }),
-        }),
+        h(
+          'button',
+          {
+            class: 'btn btn-sm btn-icon',
+            type: 'button',
+            title: 'Monter d’un niveau',
+            'aria-label': `Monter ${f.name} d’un niveau`,
+            disabled: f.position >= floors.length - 1,
+            onclick: () => call(`/api/floors/${f.id}`, { method: 'PATCH', body: { position: f.position + 1 } }),
+          },
+          icon('chevron-up'),
+        ),
+        h(
+          'button',
+          {
+            class: 'btn btn-sm btn-icon',
+            type: 'button',
+            title: 'Descendre d’un niveau',
+            'aria-label': `Descendre ${f.name} d’un niveau`,
+            disabled: f.position === 0,
+            onclick: () => call(`/api/floors/${f.id}`, { method: 'PATCH', body: { position: f.position - 1 } }),
+          },
+          icon('chevron-down'),
+        ),
         // La raison d'un refus est écrite, pas seulement au survol d'un bouton désactivé (tablette, clavier, lecteur d'écran).
-        h('span', { class: 'muted small', text: `${plural(count, 'équipement', 'équipements')}${f.hasPlan ? '' : ', pas de plan'}${blocked && count > 0 ? ` - ${blocked}` : ''}` }),
-        h('button', {
-          class: 'btn tiny danger',
-          type: 'button',
-          text: 'Supprimer',
-          disabled: Boolean(blocked),
-          'aria-label': blocked ? `Supprimer ${f.name} : impossible, ${blocked}` : `Supprimer ${f.name}`,
-          onclick: () => confirm(`Supprimer l'étage « ${f.name} » et son plan ?`) && call(`/api/floors/${f.id}`, { method: 'DELETE' }, 'Étage supprimé'),
-        }),
+        h('span', { class: 'muted small floor-row-note', text: `${plural(count, 'équipement', 'équipements')}${f.hasPlan ? '' : ', pas de plan'}${blocked ? ` - ${blocked}` : ''}` }),
+        // Geste grave : en contour, repoussé à l'écart (.actions > .btn-danger), confirmé en mots simples.
+        h(
+          'button',
+          {
+            class: 'btn btn-sm btn-danger',
+            type: 'button',
+            disabled: Boolean(blocked),
+            'aria-label': blocked ? `Supprimer ${f.name} : impossible, ${blocked}` : `Supprimer ${f.name}`,
+            onclick: async () => {
+              const ok = await dialogs.confirm({ heading: `Supprimer l’étage « ${f.name} » ?`, message: 'Son plan est supprimé avec lui. Cette action est définitive.', confirmLabel: 'Supprimer l’étage' });
+              if (ok) call(`/api/floors/${f.id}`, { method: 'DELETE' }, 'Étage supprimé');
+            },
+          },
+          icon('trash'),
+          h('span', { text: 'Supprimer' }),
+        ),
       );
     });
-    const newName = h('input', { placeholder: 'Nom du nouvel étage (ex. Étage)', maxlength: '40', 'aria-label': 'Nom du nouvel étage' });
+    const newName = h('input', { placeholder: 'ex. Étage 1', maxlength: '40' });
+    const addButton = h('button', { class: 'btn btn-sm', type: 'submit' }, icon('plus'), h('span', { text: 'Ajouter un étage' }));
     const add = h(
       'form',
       {
-        class: 'row wrap',
+        class: 'floor-add',
         onsubmit: (e) => {
           e.preventDefault();
           const value = newName.value.trim();
           if (!value) {
+            newName.setAttribute('aria-invalid', 'true');
             newName.focus();
-            return toast("Donnez un nom à l'étage");
+            return toast("Donnez un nom à l’étage avant de l'ajouter");
           }
+          addButton.classList.add('is-busy');
           call('/api/floors', { method: 'POST', body: { name: value } }, `Étage « ${value} » ajouté au-dessus des autres`).then((ok) => {
+            addButton.classList.remove('is-busy');
             if (!ok) return;
             newName.value = '';
             rerender();
           });
         },
       },
-      newName,
-      h('button', { class: 'btn small', type: 'submit', text: 'Ajouter un étage' }),
+      h('label', { class: 'field' }, h('span', { text: 'Nouvel étage' }), newName),
+      addButton,
     );
+    newName.addEventListener('input', () => newName.removeAttribute('aria-invalid'));
     box.replaceChildren(
       h('p', { class: 'small muted', text: 'Étages, du plus haut au plus bas. Chaque étage a son plan ; un équipement et une zone appartiennent à un seul étage.' }),
       ...rows,

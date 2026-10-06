@@ -19,6 +19,7 @@ import { createEngine } from '../../server/engine.ts';
 import { beginHistory, recordState } from '../../server/history.ts';
 import { buildSiteSummary } from '../../server/portal.ts';
 import type { SiteSummary } from '../../server/portal.ts';
+import { createRiskService } from '../../server/risk.ts';
 import { seedDemo } from '../../server/seed.ts';
 
 const root = resolve(import.meta.dirname, '..', '..');
@@ -46,6 +47,8 @@ interface Plan {
   silentFor?: number;
   /** Periode d'arret du PSIM : [il y a N heures, duree en minutes]. */
   blind?: [number, number][];
+  /** Evaluation du risque propre au site : probabilite de base par zone (null : zone non evaluee). */
+  riskP?: Record<string, number | null>;
 }
 
 function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSummary; at: number } {
@@ -54,6 +57,11 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
   seedDemo(db, mkdtempSync(join(tmpdir(), 'psim-demo-')), join(root, 'seed'));
   let clock = at - 36 * 24 * HOUR;
   const engine = createEngine(db, () => {}, () => clock, { silentTimeoutMs: 0 });
+  const risk = createRiskService(db, engine, { now: () => clock });
+  for (const [zone, p] of Object.entries(plan.riskP ?? {})) {
+    if (p === null) db.prepare('DELETE FROM risk_zone WHERE zone = ?').run(zone);
+    else db.prepare('UPDATE risk_zone SET probability = ? WHERE zone = ?').run(p, zone);
+  }
   beginHistory(db, clock, null, null);
   for (const id of plan.cameras ?? []) {
     db.prepare("INSERT INTO camera_source (device_id, kind, host, port) VALUES (?, 'rtsp', '192.0.2.10', 554)").run(id);
@@ -90,13 +98,15 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
     const restart = at - ago * HOUR + minutes * MIN;
     events.push({ t: restart, run: () => beginHistory(db, restart, restart - minutes * MIN, { from: restart - minutes * MIN, to: restart, clean: false }) });
   }
+  // Un point d'indice par jour, comme le PSIM (il le note au premier calcul de la journee) : la tendance du portail.
+  for (let t = at - 35 * 24 * HOUR; t <= at; t += 24 * HOUR) events.push({ t, run: () => void risk.recordHistory() });
   events.sort((a, b) => a.t - b.t);
   for (const e of events) {
     clock = e.t;
     e.run();
   }
   clock = at;
-  return { summary: buildSiteSummary(db, { siteId, version: '0.1.0', startedAt: at - 3 * 24 * HOUR, now: at }), at };
+  return { summary: buildSiteSummary(db, { siteId, version: '0.1.0', startedAt: at - 3 * 24 * HOUR, now: at, risk: () => risk.overview() }), at };
 }
 
 const dataDir = join(root, 'portal-demo-data');
@@ -117,17 +127,17 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number }
   },
   {
     org: 'Groupe Diallo', id: 'depot-matoto', name: 'Dépôt Matoto', seed: 22,
-    plan: { outages: [[500, 90, 'D-02', 'fault'], [250, 35, 'D-01', 'offline']], incidents: [[330, 'D-01', 'false_alarm']], now: { 'D-02': ['fault', 310] }, blind: [[120, 40]] },
+    plan: { outages: [[500, 90, 'D-02', 'fault'], [250, 35, 'D-01', 'offline']], incidents: [[330, 'D-01', 'false_alarm']], now: { 'D-02': ['fault', 310] }, blind: [[120, 40]], riskP: { Atelier: 2 } },
   },
   {
     org: 'Groupe Diallo', id: 'boutique-ratoma', name: 'Boutique Ratoma', seed: 33,
-    plan: { outages: [[600, 20, 'D-03', 'offline']], incidents: [[450, 'D-02', 'false_alarm']], now: { 'D-01': ['alarm', 12] } },
+    plan: { outages: [[600, 20, 'D-03', 'offline']], incidents: [[450, 'D-02', 'false_alarm']], now: { 'D-01': ['alarm', 12] }, riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1 } },
   },
   {
     org: 'Groupe Diallo', id: 'bureau-nord', name: 'Bureau Conakry Nord', seed: 44,
-    plan: { outages: [[300, 60, 'D-02', 'fault']], incidents: [], now: { 'D-04': ['prealarm', 20] }, silentFor: 190 },
+    plan: { outages: [[300, 60, 'D-02', 'fault']], incidents: [], now: { 'D-04': ['prealarm', 20] }, silentFor: 190, riskP: { Accueil: null, Bureaux: null, 'Salle serveurs': null, Couloir: null, Entrepot: null, Atelier: null, Stockage: null } },
   },
-  { org: 'Maison Camara', id: 'maison-camara', name: 'Résidence Camara', seed: 55, plan: { cameras: ['C-01', 'C-02', 'C-03', 'C-04'], outages: [[100, 8, 'D-01', 'offline']], incidents: [[200, 'D-02', 'false_alarm']], now: { 'C-03': ['offline', 45] } } },
+  { org: 'Maison Camara', id: 'maison-camara', name: 'Résidence Camara', seed: 55, plan: { cameras: ['C-01', 'C-02', 'C-03', 'C-04'], outages: [[100, 8, 'D-01', 'offline']], incidents: [[200, 'D-02', 'false_alarm']], now: { 'C-03': ['offline', 45] }, riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1, Stockage: 1 } } },
 ];
 for (const s of SITES) {
   addSite(db, s.org, s.id, s.name);

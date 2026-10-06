@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="t">
+  <title id="t">GAMR-DIGITALE PSIM — symbole</title>
+  <path fill="#5DA444" d="M8.18 51.75A27.5 27.5 0 0 1 13.57 17.59L19.04 24.11A19 19 0 0 0 15.55 47.5Z"/>
+  <path fill="#F5C400" d="M15.1 16.3A27.5 27.5 0 0 1 48.9 16.3L43.43 22.82A19 19 0 0 0 20.57 22.82Z"/>
+  <path fill="#E35235" d="M50.43 17.59A27.5 27.5 0 0 1 55.82 51.75L48.45 47.5A19 19 0 0 0 44.96 24.11Z"/>
+  <path fill="none" stroke="#244C87" stroke-width="3.8" stroke-linecap="round" d="M32 38L27.73 22.06"/>
+  <circle fill="#244C87" cx="32" cy="38" r="9.5"/>
+  <circle fill="#FFFFFF" cx="28" cy="35.5" r="2.7"/>
+</svg>

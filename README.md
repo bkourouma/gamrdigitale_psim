@@ -55,7 +55,7 @@ Scénarios (menu dans le terminal : taper le numéro, `r` pour tout remettre au 
 
 Options : `npm run demo -- --no-onvif` (toutes les caméras en RTSP direct), `--auto` (enchaîne les scénarios en boucle, pour une présentation), `--scenario=incendie-atelier` (lance un scénario au démarrage), `--speed=2` (deux fois plus vite), `--duration=120` (s'arrête seul après 120 s). `Ctrl+C` arrête tout proprement.
 
-> **Attention au son** : tant qu'un incident n'est pas acquitté, l'interface émet une alerte sonore. Fermez l'onglet ou utilisez le bouton « Son activé » avant de lancer une démo dans un lieu calme.
+> **Attention au son** : tant qu'un incident n'est pas acquitté, l'interface émet une alerte sonore. Fermez l'onglet ou utilisez le bouton « Son activé » (en bas du menu) avant de lancer une démo dans un lieu calme.
 
 ### Ce que valident les faux appareils ONVIF
 
@@ -71,7 +71,7 @@ Limite : ces appareils valident le dialogue tel que **nous** comprenons ONVIF, p
 
 ### Sans la démo complète
 
-- Depuis l'interface (compte admin) : panneau **Simulateur de détecteurs**, boutons Préalarme / Alarme / Défaut / Normal.
+- Depuis l'interface (compte admin) : menu **Administration → Simulateur**, boutons Préalarme / Alarme / Défaut / Normal.
 - Ou en ligne de commande, comme un vrai détecteur qui publie sur MQTT :
 
 ```bash
@@ -81,9 +81,18 @@ npm run sim -- D-04 normal
 
 Un incident ne peut être clôturé qu'une fois le détecteur revenu à la normale (comme un reset de centrale).
 
+## Se repérer dans l'interface
+
+- **Un menu par activité**, à gauche : *Surveillance*, *Alarmes*, *Caméras*, *Armement* (s'il existe des zones d'intrusion), *Risques*, *Rapports*, *Journal*. L'administrateur voit en plus le groupe **Administration** : *Équipements et plan*, *Personnes prévenues*, *Utilisateurs*, *Système* (et *Simulateur* quand il est actif).
+- **En alarme, le cadre de l'écran devient rouge et pulse**, jusqu'à ce que l'alarme soit acquittée.
+- **La jauge GAMR**, sous le menu, donne l'indice de sécurité du site, de 1 à 60 : *Faible* jusqu'à 8, *Modéré* jusqu'à 20, *Élevé* jusqu'à 36, *Critique* jusqu'à 60. Un clic ouvre *Risques*.
+- **Thème** : en bas du menu, le bouton passe de *Jour* à *Nuit* puis *Automatique* (suit le réglage de l'ordinateur). À côté : le son, *Mon compte* (clic sur son nom) et la déconnexion.
+- **Sur téléphone**, une barre d'onglets en bas donne *Surveillance*, *Alarmes*, *Caméras*, *Risques* ; *Menu* ouvre tout le reste.
+- **Logo et charte graphique** : dans [docs/marque/](docs/marque/).
+
 ## Comptes, accès et double authentification
 
-**Qui peut faire quoi.** Deux rôles : **opérateur** (supervise, acquitte, qualifie les incidents, consulte les risques) et **administrateur** (tout, plus la configuration). Un administrateur gère les comptes dans **Utilisateurs et accès** (panneau d'administration) : créer, changer le rôle, désactiver, réinitialiser un mot de passe ou la 2FA, supprimer.
+**Qui peut faire quoi.** Deux rôles : **opérateur** (supervise, acquitte, qualifie les incidents, consulte les risques) et **administrateur** (tout, plus la configuration). Un administrateur gère les comptes dans le menu **Administration → Utilisateurs** : créer, changer le rôle, désactiver, réinitialiser un mot de passe ou la 2FA, supprimer.
 
 **Garde-fous**
 - On ne peut **jamais retirer le dernier administrateur actif** (suppression, désactivation, rétrogradation), ni se désactiver ou se supprimer soi-même. Les modifications demandées ensemble sont appliquées en bloc ou pas du tout.
@@ -92,13 +101,13 @@ Un incident ne peut être clôturé qu'une fois le détecteur revenu à la norma
 - Mots de passe : 12 caractères minimum, ni de démonstration, ni contenant l'identifiant. Stockés avec scrypt.
 - Limitation des essais **par adresse et par compte** (5 échecs par minute), connexions refusées journalisées (jamais le mot de passe).
 
-**Double authentification (TOTP, RFC 6238)** : compatible Google Authenticator, Microsoft Authenticator, Aegis, FreeOTP, 1Password… Chaque utilisateur l'active dans **Mon compte** (clic sur son nom en haut) : QR code, saisie d'un premier code de vérification, puis **8 codes de secours à usage unique** à conserver.
+**Double authentification (TOTP, RFC 6238)** : compatible Google Authenticator, Microsoft Authenticator, Aegis, FreeOTP, 1Password… Chaque utilisateur l'active dans **Mon compte** (clic sur son nom, en bas du menu) : QR code, saisie d'un premier code de vérification, puis **8 codes de secours à usage unique** à conserver.
 - La connexion se fait **en deux étapes** : le mot de passe seul ne donne **aucune session**. Le code est valable 30 s (tolérance d'une fenêtre), **jamais rejouable** ; 5 essais maximum par connexion.
 - Le secret est **chiffré en base** ; les codes de secours ne sont stockés que sous forme d'empreinte.
 - **Téléphone perdu** : un code de secours, ou un administrateur qui **réinitialise la 2FA** du compte (ses sessions sont fermées).
 - **`PSIM_REQUIRE_2FA`** : `none`, `admin` ou `all`. **Par défaut : `admin` en production** (un administrateur doit l'activer avant de pouvoir faire quoi que ce soit), `none` ailleurs. Un compte soumis à cette règle ne peut pas la désactiver.
 
-**Destinataires de notification** : en administrateur, **Notifications** permet d'ajouter, de désactiver, de changer de niveau et de retirer des destinataires (e-mail, Telegram, webhook) **sans redémarrer** ; ils s'ajoutent à ceux du `.env`, affichés en lecture seule. Les adresses sont validées (injection d'en-tête e-mail refusée), l'adresse complète d'un webhook n'est jamais renvoyée à l'écran (elle peut contenir un jeton), et un canal dont le secret n'est pas dans le `.env` (SMTP, jeton Telegram) ne peut pas recevoir de destinataire.
+**Destinataires de notification** : en administrateur, le menu **Administration → Personnes prévenues** permet d'ajouter, de désactiver, de changer de niveau et de retirer des destinataires (e-mail, Telegram, webhook) **sans redémarrer** ; ils s'ajoutent à ceux du `.env`, affichés en lecture seule. Les adresses sont validées (injection d'en-tête e-mail refusée), l'adresse complète d'un webhook n'est jamais renvoyée à l'écran (elle peut contenir un jeton), et un canal dont le secret n'est pas dans le `.env` (SMTP, jeton Telegram) ne peut pas recevoir de destinataire.
 
 **Limites** : pas d'envoi de lien d'invitation ni de réinitialisation par e-mail (l'administrateur communique le mot de passe temporaire par un canal sûr) ; pas de SSO ni d'annuaire (LDAP, Active Directory) ; deux rôles seulement ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde).
 
@@ -134,7 +143,7 @@ Puis les notifications (voir plus haut) et, si des détecteurs distants publient
 
 Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`** démarre le PSIM au démarrage de la machine, sans session ouverte, et le **relance** automatiquement s'il s'arrête ; **`PSIM-healthcheck`** interroge `/healthz` chaque minute et, après 3 échecs consécutifs, arrête un PSIM *bloqué* (qui tourne mais ne fait plus rien) pour que la première tâche le relance. Pour un compte de service dédié : `-User DOMAINE\psim`. Linux : `deploy/psim.service` (systemd). Les journaux vont dans `data/logs/psim.log` (rotation 5 × 5 Mo).
 
-**5. Sauvegardes** : automatiques toutes les 24 h en production (`PSIM_BACKUP_EVERY_H`, 14 conservées, dossier `PSIM_BACKUP_DIR`), ou à la demande : `npm run backup`, ou **Système → Sauvegarder maintenant**. Une sauvegarde contient la base (copie cohérente faite à chaud), les plans et les images d'incident, avec l'empreinte SHA-256 de chaque fichier, vérifiée à la création et avant toute restauration.
+**5. Sauvegardes** : automatiques toutes les 24 h en production (`PSIM_BACKUP_EVERY_H`, 14 conservées, dossier `PSIM_BACKUP_DIR`), ou à la demande : `npm run backup`, ou menu **Administration → Système → Sauvegarder maintenant**. Une sauvegarde contient la base (copie cohérente faite à chaud), les plans et les images d'incident, avec l'empreinte SHA-256 de chaque fichier, vérifiée à la création et avant toute restauration.
 - **La clé de chiffrement des mots de passe de caméras (`data/secret.key`) n'est pas incluse** (la ranger avec la base annulerait l'intérêt de la chiffrer) : conservez-la dans un coffre. `--with-key` l'inclut si vous le décidez.
 - **Une sauvegarde sur le même disque ne protège pas d'une panne de disque** : copiez le dossier ailleurs (disque externe, réseau) ou pointez `PSIM_BACKUP_DIR` vers un autre volume.
 - **Restaurer** (PSIM arrêté) : `npm run restore -- backups/psim-AAAAMMJJ-HHMMSS` montre ce qui serait fait ; ajoutez `--yes` pour restaurer. L'ancien dossier de données est **mis de côté** (`data.before-restore-…`), jamais supprimé. **Essayez une restauration sur une machine de test avant d'en avoir besoin.**
@@ -144,7 +153,7 @@ Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`**
 
 **6. Comptes** : les mots de passe de `.env` ne servent qu'à créer les deux comptes initiaux au premier démarrage (et seulement si le contrôle de démarrage est passé). Ensuite, tout se fait dans l'interface (voir « Comptes, accès et double authentification »), ou en ligne de commande : **`npm run set-password -- operateur`** (saisie masquée, 12 caractères minimum ; ses sessions ouvertes sont fermées immédiatement). **En production, la 2FA est imposée aux administrateurs par défaut** : prévoyez une application d'authentification avant la première connexion.
 
-**7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, **Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
+**7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, le menu **Administration → Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
 
 **Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
 
@@ -175,7 +184,7 @@ Le PSIM a fait l'objet d'une **relecture de sécurité indépendante** (trois re
 
 ## Gestion des risques (indice par zone)
 
-Le bouton **Risques** (en haut de l'écran) ouvre une vue qui répond à : *où le risque est-il le plus élevé, pourquoi, et que faire en premier ?* Tout utilisateur connecté la consulte ; seul l'administrateur évalue les zones.
+Le menu **Risques** (ou un clic sur la jauge GAMR) ouvre une vue qui répond à : *où le risque est-il le plus élevé, pourquoi, et que faire en premier ?* Tout utilisateur connecté la consulte ; seul l'administrateur évalue les zones.
 
 **Indice de sécurité = Probabilité (1-3) × Vulnérabilité (1-4) × Répercussions (1-5), soit de 1 à 60**, calculé **par zone** (les zones sont celles des équipements du plan). Niveaux : Faible ≤ 8, Modéré ≤ 20, Élevé ≤ 36, Critique ≤ 60. L'indice du **site** est celui de sa **zone la plus exposée**.
 
@@ -217,9 +226,9 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 - **Aucun secret dans les journaux** : jeton Telegram et mot de passe SMTP sont masqués dans les erreurs ; un webhook n'est affiché que par son hôte (son adresse complète peut contenir un jeton) ; les adresses e-mail sont abrégées (`a***@domaine`).
 - Webhook : corps JSON, signé en HMAC SHA-256 dans l'en-tête `X-PSIM-Signature` si `PSIM_WEBHOOK_SECRET` est défini (vérifiez-le côté récepteur).
 
-**Configuration** (voir `.env.example`) : serveur SMTP (`PSIM_SMTP_*`), jeton Telegram (`PSIM_TELEGRAM_TOKEN`), destinataires par niveau (`PSIM_NOTIFY_EMAIL_L1/L2`, `PSIM_NOTIFY_TELEGRAM_L1/L2` = identifiants de conversation, `PSIM_NOTIFY_WEBHOOK_L1/L2`), `PSIM_PUBLIC_URL` (lien ajouté aux messages). En administrateur, **Notifications → Envoyer un message de test** vérifie chaque destinataire des deux niveaux et affiche le résultat par destinataire.
+**Configuration** (voir `.env.example`) : serveur SMTP (`PSIM_SMTP_*`), jeton Telegram (`PSIM_TELEGRAM_TOKEN`), destinataires par niveau (`PSIM_NOTIFY_EMAIL_L1/L2`, `PSIM_NOTIFY_TELEGRAM_L1/L2` = identifiants de conversation, `PSIM_NOTIFY_WEBHOOK_L1/L2`), `PSIM_PUBLIC_URL` (lien ajouté aux messages). En administrateur, **Administration → Personnes prévenues → Envoyer un message de test** vérifie chaque destinataire des deux niveaux et affiche le résultat par destinataire.
 
-**Limites** : pas de limitation de débit (un incendie qui se propage peut produire beaucoup de messages : c'est voulu, on ne perd pas d'alarme) ; pas de file persistante : si le PSIM s'arrête pendant un envoi, les tentatives en cours sont perdues (l'escalade, elle, repart de la base). Les destinataires ne sont pas encore modifiables depuis l'interface.
+**Limites** : pas de limitation de débit (un incendie qui se propage peut produire beaucoup de messages : c'est voulu, on ne perd pas d'alarme) ; pas de file persistante : si le PSIM s'arrête pendant un envoi, les tentatives en cours sont perdues (l'escalade, elle, repart de la base).
 
 **WhatsApp officiel (Meta)** : le canal à privilégier là où WhatsApp est la messagerie de tous les jours. Guide pas à pas : [docs/WHATSAPP.md](docs/WHATSAPP.md) (application Meta, modèle `psim_alerte` approuvé en catégorie *Utilitaire*, jeton permanent, numéro expéditeur). Chaque alerte part par ce **modèle** à 3 variables : titre, lieu (zone et étage), détails ; Meta refusant retours à la ligne et tabulations dans une variable, les lignes y deviennent « | ». Réglages : `PSIM_WHATSAPP_TOKEN`, `PSIM_WHATSAPP_PHONE_ID`, destinataires `PSIM_NOTIFY_WHATSAPP_L1/L2` (numéros internationaux, une entrée mal formée bloque le démarrage) ou ajoutés dans l'interface. Erreurs de Meta traduites en clair (modèle non approuvé, jeton expiré, numéro de test non autorisé…), jeton jamais affiché. « Accepté par Meta » n'est pas « lu » : la remise n'est pas suivie (accusés de Meta non branchés) ; pas d'image par WhatsApp. Coût : Meta facture chaque message (gratuit seulement dans les 24 h qui suivent un message du destinataire). Le numéro de production doit être **enregistré** une fois sur la Cloud API : `npm run whatsapp-register:prod -- <PIN à 6 chiffres>`. Vérification : `npm run commission -- --whatsapp-to +225…` ; sans l'option, rien n'est envoyé mais tout est contrôlé chez Meta (jeton, enregistrement du numéro, **modèle approuvé** en `fr` avec 3 variables : un modèle en attente est un échec). Des destinataires WhatsApp sans jeton, ou une adresse de service en `http://`, font refuser le démarrage en production. Un modèle mis en pause par Meta compte comme un échec d'envoi.
 
@@ -251,7 +260,7 @@ Chaque incident porte une étiquette :
 
 Trois règles, réglables (secondes ; `0` désactive la règle) :
 
-1. **Coïncidence** (`PSIM_CONFIRM_WINDOW_S`, 60) : un **détecteur voisin** est en préalarme ou en alarme, ou s'est déclenché dans cette fenêtre : les **deux** incidents sont confirmés. Sont voisins deux détecteurs de la **même zone**, ou qui partagent **au moins une caméra** (réglage *Caméras affichées* d'un détecteur : c'est donc l'administrateur qui définit le voisinage).
+1. **Coïncidence** (`PSIM_CONFIRM_WINDOW_S`, 60) : un **détecteur voisin** est en préalarme ou en alarme, ou s'est déclenché dans cette fenêtre : les **deux** incidents sont confirmés. Sont voisins deux détecteurs de la **même zone**, ou qui partagent **au moins une caméra** (section *Caméras liées* de l'éditeur d'un détecteur : c'est donc l'administrateur qui définit le voisinage).
 2. **Persistance** (`PSIM_CONFIRM_PERSIST_S`, 120) : un détecteur toujours en alarme ou préalarme après ce délai est confirmé. Les signaux de vie répétés ne remettent pas le compteur à zéro ; un retour à la normale, si.
 3. **Indice de fausse alarme** (`PSIM_FALSE_ALARM_HINT_S`, 30) : un détecteur **isolé** (sans voisin) revenu à la normale en moins de ce délai reçoit l'indice « probable fausse alarme ». Il disparaît si le détecteur se redéclenche ou si un voisin confirme ensuite.
 
@@ -299,7 +308,7 @@ curl -X POST http://serveur:3033/api/ingest/A-01 \
 
 Elle n'existe que si **`PSIM_INGEST_TOKEN`** est défini (24 caractères minimum, sinon le contrôle de démarrage le signale et l'entrée reste fermée). Jeton comparé en temps constant ; 5 échecs par minute bloquent l'adresse ; corps limité à 2 Ko ; le jeton n'apparaît jamais dans les journaux ni dans les réponses. Un seul jeton partagé : à placer derrière HTTPS dès que le réseau n'est pas isolé.
 
-**Réglages** (administrateur, *Édition du plan* → choisir le détecteur) : catégorie, unité, seuils, sens, et **supervision**. Les capteurs hors incendie ne sont **pas supervisés par défaut** : un contact de porte n'émet qu'aux changements, le déclarer « muet » après quelques minutes serait une fausse panne. Pour un capteur qui émet en continu (température), renseignez le délai attendu ; vide = délai général, `0` = non supervisé. **Conséquence à connaître** : un capteur non supervisé qui tombe en panne ne le dit pas.
+**Réglages** (administrateur, menu *Équipements et plan* → choisir le détecteur) : catégorie, unité, seuils, sens, et **supervision**. Les capteurs hors incendie ne sont **pas supervisés par défaut** : un contact de porte n'émet qu'aux changements, le déclarer « muet » après quelques minutes serait une fausse panne. Pour un capteur qui émet en continu (température), renseignez le délai attendu ; vide = délai général, `0` = non supervisé. **Conséquence à connaître** : un capteur non supervisé qui tombe en panne ne le dit pas.
 
 **Précisions de comportement**
 - La confirmation par un voisin ne joue qu'entre détecteurs **de même catégorie** (un détecteur de fumée ne corrobore pas un contact de porte). Deux détecteurs de mouvement voisins se confirment.
@@ -322,10 +331,10 @@ Un site peut avoir **plusieurs étages**, chacun avec **son plan** ; chaque équ
 - Les fiches d'incident, les **notifications** (e-mail, Telegram, webhook : champ `floor`), l'export **CSV** (colonne « Étage ») et la fiche imprimable citent l'étage dès qu'il y en a plusieurs : une « Chambre » peut exister à chaque niveau.
 - Un étage **sans plan** reste affiché (fond quadrillé) : ses équipements restent visibles et déplaçables.
 
-**Administration** (*Édition du plan et de l'inventaire*, mode édition)
+**Administration** (menu *Équipements et plan*)
 - Ajouter un étage (au-dessus des autres), le renommer, le monter ou le descendre, le supprimer. Refusé : supprimer le **dernier** étage, ou un étage qui porte encore des équipements (ils disparaîtraient du plan), raison écrite sur la ligne. 20 étages au plus, noms uniques (même écrits avec des accents codés autrement ; caractères invisibles et de contrôle refusés, comme pour les noms d'équipements).
 - **Une zone appartient à un seul étage** : une zone déjà utilisée à un autre étage est refusée (création, changement de zone ou d'étage), avec la marche à suivre. Deux « Chambre » sur deux niveaux formeraient une seule zone pour l'armement (désarmer l'une ferait ignorer les intrusions de l'autre), la confirmation par un voisin et le risque. Nommer par niveau : « Étage - Chambre 1 ».
-- *Remplacer le plan de « … »* et *Ajouter au centre de « … »* visent l'étage **écrit sur le bouton au moment du clic** (une alarme qui change l'étage affiché entre-temps ne détourne ni le plan ni l'équipement) ; le sélecteur **Étage** d'un équipement puis *Déplacer vers cet étage* le change d'étage (position en % conservée, l'écran suit).
+- *Remplacer le plan de « … »* et *Ajouter au centre du plan* (le texte sous le formulaire nomme l'étage) visent l'étage **indiqué à l'écran au moment du clic** (une alarme qui change l'étage affiché entre-temps ne détourne ni le plan ni l'équipement) ; le sélecteur **Étage** d'un équipement puis *Déplacer vers cet étage* le change d'étage (position en % conservée, l'écran suit).
 - Chaque changement est au journal (`floor_created`, `floor_updated`, `floor_deleted`, `plan_updated` avec le nom de l'étage, `device_updated` « déplacé vers l'étage … »).
 
 **Obtenir les plans** : une image par niveau (PNG, JPEG, WEBP ou SVG). Depuis **Sweet Home 3D** : *Plan > Exporter au format SVG*, un niveau à la fois. Depuis un **dossier d'architecte en PDF** : le PSIM n'accepte pas le PDF ; extraire la page « aménagement » de chaque niveau en image (de préférence en noir et blanc : des pièces colorées en vert, orange ou rouge gêneraient la lecture des pastilles d'état).
@@ -340,7 +349,7 @@ Un site peut avoir **plusieurs étages**, chacun avec **son plan** ; chaque équ
 
 Exemple type : **« mouvement devant le portail la nuit → prévenir le gardien par WhatsApp »**. Trois réglages, sans programmation :
 
-1. **Le mouvement vient de l'enregistreur.** Un enregistreur ou une caméra **Dahua** (XVR, NVR, caméra IP) détecte déjà les mouvements, et sur les modèles récents distingue **humains et véhicules** (SMD). Le PSIM s'abonne à ses événements (`/cgi-bin/eventManager.cgi?action=attach`, authentification Digest, signe de vie toutes les 5 s) avec les **identifiants déjà enregistrés pour la caméra**. Dans l'éditeur d'un **détecteur d'intrusion** (par exemple `I-PORTAIL`, zone `Portail`) : section *Source*, choisir la caméra, la **voie** (déduite du chemin RTSP `channel=N`), le type d'événement (humain, humain ou véhicule, tout mouvement, franchissement de ligne), puis **Tester (20 s)** : la liste montre ce que l'appareil émet réellement, voie par voie, en vert ce qui déclenchera **ce** détecteur (bonne voie **et** type suivi), avec un avertissement si rien de tel n'est arrivé. *Enregistrer la source* : le PSIM écoute en permanence. Le détecteur doit avoir une **zone**.
+1. **Le mouvement vient de l'enregistreur.** Un enregistreur ou une caméra **Dahua** (XVR, NVR, caméra IP) détecte déjà les mouvements, et sur les modèles récents distingue **humains et véhicules** (SMD). Le PSIM s'abonne à ses événements (`/cgi-bin/eventManager.cgi?action=attach`, authentification Digest, signe de vie toutes les 5 s) avec les **identifiants déjà enregistrés pour la caméra**. Dans l'éditeur d'un **détecteur d'intrusion** (par exemple `I-PORTAIL`, zone `Portail`) : section *Détection par l'enregistreur vidéo*, choisir la caméra, la **voie** (déduite du chemin RTSP `channel=N`), le type d'événement (humain, humain ou véhicule, tout mouvement, franchissement de ligne), puis **Écouter 20 secondes** : la liste montre ce que l'appareil émet réellement, voie par voie, en vert ce qui déclenchera **ce** détecteur (bonne voie **et** type suivi), avec un avertissement si rien de tel n'est arrivé. *Enregistrer la source* : le PSIM écoute en permanence. Le détecteur doit avoir une **zone**.
    - Début d'événement → **alarme** du détecteur ; fin → retour au calme ; un humain **et** un véhicule : le calme ne revient qu'à la fin des deux ; événement ponctuel (franchissement) : alarme puis calme après 10 s. Une alarme en cours n'est jamais bloquée : connexion coupée, source retirée ou réglage changé avant la fin → retour au calme (l'incident ouvert, lui, reste à traiter).
    - **Perte vidéo** de la voie (`VideoLoss`) : zone **armée** (la nuit) → **alarme de sabotage** (caméra du portail aveuglée : le gardien est prévenu) ; zone désarmée → simple **défaut** du détecteur (coupure de courant de la caméra en journée) ; une perte commencée le jour et toujours en cours quand la zone s'arme devient l'alarme de sabotage.
    - Une connexion par appareil, quel que soit le nombre de détecteurs. Tant qu'elle vit, les détecteurs reçoivent un signe de vie ; la source pose une **supervision d'au moins 120 s** (les signes de vie partent toutes les 30 s) : appareil éteint, câble coupé ou mot de passe changé → détecteur **« hors ligne »** et notification « détecteur muet ». L'appareil n'est « connecté » qu'à sa première partie lue (un simple « 200 » ou une page web ne suffit pas).
@@ -348,8 +357,8 @@ Exemple type : **« mouvement devant le portail la nuit → prévenir le gardien
    - Authentification **Digest** seulement (MD5, SHA-256) : un appareil qui demande **Basic** est refusé (le mot de passe passerait en clair sur le réseau). Nom d'utilisateur de la caméra en lettres simples (sans accent ni guillemet).
    - Identifiants refusés : nouvel essai après **5 minutes** seulement (un appareil Dahua bloque le compte après quelques échecs) ; reconnexion automatique sinon (2 s… 60 s).
    - Vérifié sur un vrai `DH-XVR5108HS-I3/T` : authentification acceptée, signes de vie, événements `SmartMotionHuman` et `VideoMotion` reçus voie par voie.
-2. **La nuit** : le planning d'armement de la zone (*Armement des zones*, par exemple 19:00 → 07:00). Zone désarmée : le mouvement est ignoré (noté au journal, une fois par minute au plus).
-3. **Le gardien** : dans *Notifications*, un destinataire peut être **limité à certaines zones** (*Zones…*). Il ne reçoit alors que les alarmes (et détecteurs muets) de ces zones, jamais les messages généraux (redémarrage, sécurité des comptes, journal). Les destinataires du `.env` reçoivent tout. Seules les zones **existantes** (celles des détecteurs) sont acceptées, ramenées à leur écriture exacte.
+2. **La nuit** : le planning d'armement de la zone (menu *Armement*, par exemple 19:00 → 07:00). Zone désarmée : le mouvement est ignoré (noté au journal, une fois par minute au plus).
+3. **Le gardien** : dans *Personnes prévenues* (menu Administration), un destinataire peut être **limité à certaines zones** (colonne *Alarmes reçues* → *Modifier* → « Seulement les alarmes de certaines zones »). Il ne reçoit alors que les alarmes (et détecteurs muets) de ces zones, jamais les messages généraux (redémarrage, sécurité des comptes, journal). Les destinataires du `.env` reçoivent tout. Seules les zones **existantes** (celles des détecteurs) sont acceptées, ramenées à leur écriture exacte.
    - **Une alarme notifie toujours** : si personne n'est désigné pour une zone (tous limités à d'autres zones), ou si aucun destinataire ne reçoit « toutes les alarmes », le message part à **tous** les destinataires du niveau plutôt qu'à personne. L'état des notifications le signale en rouge à l'avance, ainsi qu'un destinataire limité à une zone qui n'a plus de détecteur (zone renommée) ; `npm run commission` aussi.
 
 **Prérequis côté enregistreur** : la détection activée sur la voie (*Menu → Événement → Détection vidéo* ou *SMD*), et l'accès HTTP (port 80 par défaut) depuis le poste du PSIM.
@@ -358,10 +367,10 @@ Exemple type : **« mouvement devant le portail la nuit → prévenir le gardien
 
 ## Armement des zones d'intrusion
 
-Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Panneau **Armement des zones** (sous le plan, visible dès qu'il existe une telle zone).
+Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Menu **Armement** (visible dès qu'il existe une telle zone).
 
 **État effectif d'une zone**, du plus au moins prioritaire :
-1. une **dérogation manuelle** (« Désarmer 1 h / 4 h / 12 h », « Armer maintenant »), ouverte à l'opérateur comme à l'administrateur. Elle **expire toujours** (24 h maximum, durée obligatoire) : un désarmement oublié ne laisse jamais une zone sans surveillance indéfiniment ;
+1. une **dérogation manuelle** (« Désarmer pendant 1 h / 4 h / 12 h / 24 h », « Armer maintenant »), ouverte à l'opérateur comme à l'administrateur. Elle **expire toujours** (24 h maximum, durée obligatoire) : un désarmement oublié ne laisse jamais une zone sans surveillance indéfiniment ;
 2. le **planning hebdomadaire** de la zone, s'il y en a un (administrateur) : plages pendant lesquelles la zone est armée, en **heure locale du serveur**. Une plage de nuit (`19:00 → 07:00`, du lundi au vendredi) se termine le lendemain matin, donc la nuit du vendredi se prolonge le samedi matin ;
 3. sinon, **armée en permanence**. Rien ne change tant qu'on ne configure rien.
 
@@ -376,7 +385,7 @@ Un mouvement ignoré dans une zone désarmée est noté au journal (`Intrusion i
 
 ## Rapports et exports
 
-Panneau **Rapports et exports** (tout utilisateur connecté) : choisir une période (jours inclus, 366 maximum, 30 derniers jours par défaut) et éventuellement une catégorie.
+Menu **Rapports** (tout utilisateur connecté) : choisir une période (jours inclus, 366 maximum, 30 derniers jours par défaut) et éventuellement une catégorie.
 
 - **Rapport imprimable** : synthèse chiffrée (incidents, critiques, événements réels, **taux de fausses alarmes**, **délai d'acquittement** médian et maximal, durée de clôture, alertes envoyées ou en échec), répartition par catégorie, zones et détecteurs les plus sollicités, détail de chaque incident. Il s'ouvre dans un onglet ; **Imprimer, puis « Enregistrer au format PDF »** produit le PDF (le PSIM ne fabrique pas de PDF lui-même : pas de composant supplémentaire à installer ni à surveiller).
 - **Fiche d'incident** (lien « fiche » sur chaque incident clôturé, ou depuis le rapport) : chronologie complète du journal, alertes envoyées avec leur résultat, images des caméras. Pensée pour un assureur ou une enquête.
@@ -472,10 +481,10 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/secrets.ts` | Chiffrement AES-256-GCM des mots de passe des caméras |
 | `web/account.js`, `web/users.js` | Mon compte (mot de passe, 2FA), utilisateurs, destinataires |
 | `web/sources.js` | Catégories : libellés, simulateur, réglages d'un capteur (seuils, supervision) |
-| `web/arming.js` | Panneau d'armement des zones et éditeur de planning |
+| `web/arming.js` | Vue *Armement* : zones et éditeur de planning |
 | `web/floors.js` | Onglets d'étages avec leur état, vue éclatée en perspective, gestion des étages |
 | `web/detsource.js` | Source d'un détecteur : détection d'un enregistreur Dahua, essai de 20 s |
-| `web/reports.js`, `web/report.css` | Panneau d'exports ; style des pages de rapport imprimables |
+| `web/reports.js`, `web/report.css` | Vue *Rapports* (exports) ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |
 | `scripts/demo.ts`, `scripts/demo/` | Environnement de démonstration : caméras RTSP simulées, scénarios, orchestration |
@@ -497,19 +506,19 @@ Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équ
 ## Passer aux équipements réels
 
 - **Détecteurs** : publier sur le topic ci-dessus (directement ou via une passerelle vers MQTT). Rien d'autre à changer. Voir « Mise en service sur site » pour la recette, détecteur par détecteur.
-- **Plan** : en administrateur, *Édition du plan* → *Remplacer le plan* (PNG, JPEG, WEBP ou SVG), puis glisser les pastilles à leur emplacement réel. Plusieurs niveaux : voir « Étages ».
+- **Plan** : en administrateur, menu *Équipements et plan* → *Remplacer le plan* (PNG, JPEG, WEBP ou SVG), puis glisser les pastilles à leur emplacement réel. Plusieurs niveaux : voir « Étages ».
 - **Caméras** : voir la section suivante.
 
 ## Brancher une caméra ONVIF réelle
 
 Prérequis : `ffmpeg` installé (dans le `PATH`, ou chemin dans `PSIM_FFMPEG`) et une caméra joignable depuis le poste qui fait tourner le PSIM. Sur la caméra, créer un compte dédié en **lecture seule** et vérifier que son **heure est correcte** (ONVIF refuse les identifiants si l'horloge dérive).
 
-1. Se connecter en `admin` → *Édition du plan et de l'inventaire* → cocher *Mode édition*.
+1. Se connecter en `admin` → menu *Administration → Équipements et plan*.
 2. Cliquer sur la pastille de la caméra à remplacer (ou en ajouter une, puis la glisser à sa place).
-3. Dans *Source vidéo* : choisir **Caméra ONVIF**, puis *Rechercher sur le réseau* (ou saisir l'adresse IP à la main), renseigner utilisateur et mot de passe.
+3. Dans *Source vidéo* : choisir **Caméra réseau** (ONVIF), puis *Rechercher sur le réseau* (ou saisir l'adresse IP à la main), renseigner utilisateur et mot de passe.
 4. Cliquer **Enregistrer et tester** : le message indique le modèle de la caméra, le profil choisi et confirme qu'une image a été reçue.
 
-Si ONVIF ne fonctionne pas sur votre modèle, choisir **Flux RTSP direct** avec le chemin du flux (souvent indiqué dans la fiche du constructeur, par exemple `/Streaming/Channels/102`).
+Si ONVIF ne fonctionne pas sur votre modèle, choisir **Flux vidéo direct** (RTSP) avec le chemin du flux (souvent indiqué dans la fiche du constructeur, par exemple `/Streaming/Channels/102`).
 
 **Enregistreur (DVR/XVR/NVR)** : une seule adresse, une caméra du PSIM par voie. Dahua : port 554, chemin `/cam/realmonitor?channel=<voie>&subtype=1` (`subtype=1` = flux secondaire, léger), avec un compte de l'enregistreur en lecture seule. Vérifié sur la voie 1 d'un `DH-XVR5108HS-I3/T`. Si le poste du PSIM a un **VPN** qui annonce le même réseau (`192.168.1.0/24` par exemple), le trafic vers l'enregistreur part dans le tunnel : couper le VPN ou ajouter une route vers l'enregistreur.
 

@@ -1,0 +1,245 @@
+/* =====================================================================================================================
+   Équipe Équipements — écran Équipements et plan (equipment.js, sources.js, detsource.js, rangées d'étages de
+   floors.js) et Simulateur. Maquette : BUILD-SPEC section 7. Jetons et composants : base.css.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ mise en page */
+/* Grand écran : le plan (collant, shell.css) à gauche, les panneaux à droite ; l'inventaire, un tableau large, occupe
+   toute la largeur dessous. Plus étroit : le plan en premier sur toute la largeur (on y place les pastilles au doigt),
+   l'éditeur et les petits panneaux côte à côte dessous ; une seule colonne sur téléphone. */
+.equip-layout { display: grid; gap: 20px; align-items: start; grid-template-columns: minmax(0, 1fr) 440px; }
+.equip-panels { display: grid; gap: 20px; align-content: start; min-width: 0; }
+@media (max-width: 1279px) {
+  .equip-layout { grid-template-columns: minmax(0, 1fr); }
+  .equip-panels {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    grid-template-areas: 'editor add' 'editor floors';
+    grid-template-rows: auto 1fr;
+    align-items: start;
+  }
+  .equip-editor { grid-area: editor; }
+  .equip-add { grid-area: add; }
+  .equip-floors { grid-area: floors; }
+}
+@media (max-width: 760px) {
+  .equip-panels { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'editor' 'add' 'floors'; grid-template-rows: none; }
+}
+
+/* L'éditeur ramené à l'écran (choix dans l'inventaire) s'arrête sous la barre du haut, collante. */
+.equip-editor { scroll-margin-top: calc(var(--topbar-h, 68px) + var(--s4)); }
+@media (max-width: 760px) { .equip-editor { scroll-margin-top: 120px; } }
+
+/* ------------------------------------------------------------------------------------------------ formulaires */
+.eq-grid { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: start; }
+.eq-fieldset { gap: var(--s3); }
+input.input-narrow { max-width: 9rem; }
+.field > .hint, .field > .form-error { line-height: 1.4; }
+
+/* Message d'état d'une action (en cours, réussi, échec) : placé dans la rangée d'actions, il ne prend aucune place
+   tant qu'il est vide, mais reste dans la page (les lecteurs d'écran annoncent ce qu'on y écrit). */
+.form-status { display: flex; align-items: flex-start; gap: var(--s2); min-width: 0; font-size: var(--fs-sm); font-weight: 600; line-height: 1.4; color: var(--ink-2); }
+.actions > .form-status { flex: 1 1 220px; }
+.form-status .icon { margin-top: 1px; }
+.form-status.is-ok { color: var(--ok-ink); }
+.form-status.is-error { color: var(--alarm-ink); }
+.form-status.is-info { color: var(--info-ink); }
+.form-status.is-busy::before {
+  content: ''; flex: none; width: 14px; height: 14px; margin-top: 2px;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Bouton-fichier (plan) : l'entrée est masquée dans le libellé, le focus clavier se voit sur le bouton. */
+.file-btn { cursor: pointer; }
+.file-btn:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* Aide repliée (pour l'installateur) */
+.eq-details > summary {
+  display: inline-flex; align-items: center; min-height: var(--control-h-sm);
+  font-size: var(--fs-sm); font-weight: 700; color: var(--link); cursor: pointer;
+}
+.eq-details > summary:hover { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+.eq-details > p { margin-top: var(--s1); }
+.eq-details code { padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-2); border: 1px solid var(--line); overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------------------------------------------ pictogramme d'équipement */
+/* La forme de la pastille du plan (incendie rond, intrusion losange, accès carré à bas arrondi, environnement goutte,
+   caméra carré arrondi), en petit : type dans l'inventaire et le simulateur (neutre), en-tête de l'éditeur (couleur
+   d'état, barré pour un défaut ou une panne, comme sur le plan). */
+.eq-glyph { --eq-on-fill: var(--on-brand); --eq-on-warning: var(--on-warning); --g: 40px; position: relative; display: inline-grid; place-items: center; flex: none; width: var(--g); height: var(--g); }
+.eq-glyph.is-sm { --g: 24px; }
+.eq-shape {
+  display: grid; place-items: center; width: 100%; height: 100%;
+  border-radius: 50%; background: var(--ink-3); color: var(--surface);
+}
+.eq-shape .icon { width: calc(var(--g) * 0.5); height: calc(var(--g) * 0.5); }
+.eq-glyph.cat-intrusion .eq-shape { width: 78%; height: 78%; border-radius: 22%; rotate: 45deg; }
+.eq-glyph.cat-intrusion .eq-shape .icon { rotate: -45deg; width: calc(var(--g) * 0.46); height: calc(var(--g) * 0.46); }
+.eq-glyph.cat-access .eq-shape { border-radius: 22% 22% 50% 50%; }
+.eq-glyph.cat-environment .eq-shape { border-radius: 50% 0 50% 50%; rotate: -45deg; }
+.eq-glyph.cat-environment .eq-shape .icon { rotate: 45deg; }
+.eq-glyph.is-camera .eq-shape { border-radius: 26%; background: var(--camera); color: var(--eq-on-fill); }
+.eq-glyph.st-normal .eq-shape { background: var(--ok); color: var(--eq-on-fill); }
+.eq-glyph.st-prealarm .eq-shape { background: var(--warning); color: var(--eq-on-warning); }
+.eq-glyph.st-alarm .eq-shape { background: var(--alarm); color: var(--eq-on-fill); }
+.eq-glyph.st-fault .eq-shape { background: var(--fault); color: var(--eq-on-fill); }
+.eq-glyph.st-offline .eq-shape { background: var(--offline); color: var(--eq-on-fill); }
+.eq-glyph.st-fault::after, .eq-glyph.st-offline::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(135deg, transparent calc(50% - 1.5px), var(--eq-on-fill) calc(50% - 1.5px) calc(50% + 1.5px), transparent calc(50% + 1.5px));
+}
+
+/* Thème Nuit : les aplats d'état sont clairs, l'icône dessus est foncée. */
+:root[data-theme='night'] .eq-glyph { --eq-on-fill: var(--ground); --eq-on-warning: var(--on-warning); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme='day']) .eq-glyph { --eq-on-fill: var(--ground); --eq-on-warning: var(--on-warning); } }
+
+/* Avertissement de l'éditeur : un défaut et un hors ligne gardent leur couleur d'état. */
+.editor-advice.is-fault { background: var(--fault-soft); }
+.editor-advice.is-fault > .icon { color: var(--fault-ink); }
+.editor-advice.is-offline { background: var(--offline-soft); }
+.editor-advice.is-offline > .icon { color: var(--offline-ink); }
+
+/* ------------------------------------------------------------------------------------------------ éditeur */
+.device-editor { display: grid; gap: var(--s4); min-width: 0; }
+.editor-head { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.editor-glyph { display: contents; }
+.editor-id { flex: 1 1 auto; min-width: 0; }
+.editor-name { font-size: var(--fs-lg); line-height: 1.25; overflow-wrap: anywhere; }
+/* Reçoit le focus quand on ouvre un équipement depuis l'inventaire : ce n'est pas une commande, pas de contour. */
+.editor-name:focus { outline: none; }
+.editor-sub { margin-top: 2px; font-size: var(--fs-sm); color: var(--ink-2); }
+.editor-pill { flex: none; align-self: flex-start; margin-top: 2px; }
+.editor-facts { margin-top: calc(-1 * var(--s2)); }
+.editor-identity, .editor-move, .sensor-form, .source-form, .source-fields, .source-box, .eq-links { display: grid; gap: var(--s3); min-width: 0; }
+.editor-move { padding-top: var(--s3); border-top: 1px solid var(--line); }
+
+/* Sections repliables : réglages de mesure, détection Dahua, caméras liées, source vidéo. */
+.editor-section { border-top: 1px solid var(--line); }
+.editor-section > summary {
+  display: flex; align-items: center; gap: var(--s2);
+  min-height: var(--control-h); padding: var(--s2) 0;
+  list-style: none; cursor: pointer; color: var(--ink); font-weight: 700;
+}
+.editor-section > summary::-webkit-details-marker { display: none; }
+.editor-section > summary > .icon:first-child { color: var(--brand); }
+.editor-section > summary h4 { flex: 1 1 auto; font-size: var(--fs-md); color: inherit; }
+.editor-section > summary:hover { color: var(--link); }
+.editor-chevron { color: var(--ink-2); transition: rotate var(--t-fast) var(--ease-out); }
+.editor-section[open] > summary .editor-chevron { rotate: 180deg; }
+.editor-section-body { display: grid; gap: var(--s3); padding: var(--s1) 0 var(--s4); min-width: 0; }
+
+/* Caméras liées : une case par caméra, grande cible, la ligne cochée se voit. */
+.eq-checks { display: grid; gap: 2px; }
+.eq-checks .check { display: flex; align-items: center; gap: var(--s3); min-height: var(--control-h); padding: var(--s1) var(--s2); border-radius: var(--r-sm); }
+.eq-checks .check:hover { background: var(--surface-2); }
+.eq-checks .check:has(input:checked) { background: var(--brand-soft); }
+.eq-checks .check:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 1px; }
+.eq-checks input:focus-visible { outline: none; }
+.eq-check-text { min-width: 0; overflow-wrap: anywhere; }
+.eq-checks[aria-busy='true'] { opacity: 0.7; }
+
+/* Source vidéo : caméras trouvées sur le réseau */
+.found { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.found-item { height: auto; min-height: var(--control-h-sm); padding-top: var(--s1); padding-bottom: var(--s1); white-space: normal; text-align: left; }
+.found-name { font-weight: 400; color: var(--ink-2); }
+
+/* Détection Dahua : ce que l'appareil a émis pendant l'écoute */
+.source-events {
+  display: grid; gap: 2px; max-height: 220px; overflow: auto; margin: 0; padding: var(--s2);
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: var(--fs-xs);
+}
+.source-events li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); padding: 3px var(--s2); border-radius: var(--r-xs); color: var(--ink-2); }
+.source-events li.is-match { background: var(--ok-soft); color: var(--ink); }
+.source-events time { font-weight: 700; }
+
+/* Geste grave : isolé en bas, séparé du reste. */
+.editor-danger { display: grid; gap: var(--s2); padding-top: var(--s4); border-top: 1px solid var(--line); }
+
+/* ------------------------------------------------------------------------------------------------ ajout, étages et plans */
+.add-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); min-width: 0; }
+.add-form .btn { white-space: normal; text-align: left; height: auto; min-height: var(--control-h); }
+.add-form .actions { min-width: 0; }
+.floor-admin { display: grid; gap: var(--s2); min-width: 0; }
+.floor-row { flex-wrap: wrap; min-width: 0; }
+.floor-row > .btn { white-space: normal; }
+.floor-row { padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); }
+.floor-row.current { border-color: var(--brand); background: var(--brand-soft); }
+.floor-row > input { flex: 1 1 150px; width: auto; min-width: 0; min-height: var(--control-h-sm); padding-block: var(--s1); }
+.floor-row-note, .floor-row > .small { flex: 1 1 160px; min-width: 0; }
+.floor-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding-top: var(--s2); }
+.floor-add > .field { flex: 1 1 180px; }
+.plan-upload { display: grid; gap: var(--s2); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.plan-upload > h3 { font-size: var(--fs-md); }
+.file-btn.is-busy { min-width: 180px; }
+
+/* ------------------------------------------------------------------------------------------------ inventaire */
+.inv-count { margin-left: auto; font-size: var(--fs-sm); color: var(--ink-2); }
+.inv-search { max-width: 440px; }
+.search-box { position: relative; }
+.search-box > .icon { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--ink-3); pointer-events: none; }
+.search-box > input { padding-left: 42px; }
+.inventory-table tbody tr { cursor: pointer; }
+.inventory-table td { white-space: nowrap; }
+.inventory-table td.c-name { white-space: normal; min-width: 12ch; }
+.inv-type { display: inline-flex; align-items: center; gap: var(--s2); }
+/* L'identifiant : le bouton de la ligne pour le clavier et les lecteurs d'écran (la ligne entière se touche aussi). */
+.inv-open {
+  min-height: var(--control-h-sm); padding: 0 var(--s2); margin-left: calc(-1 * var(--s2));
+  border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer;
+  font: 700 var(--fs-sm) / 1.2 var(--font-ui); color: var(--link);
+  transition: background-color var(--t-fast) ease;
+}
+.inv-open:hover { background: var(--brand-soft); text-decoration: underline; text-underline-offset: 3px; }
+.inv-open { display: inline-flex; align-items: center; gap: var(--s1); }
+.inv-open[aria-pressed='true'] { color: var(--brand-ink); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+
+/* ------------------------------------------------------------------------------------------------ simulateur */
+.sim-table tbody th { background: none; color: var(--ink); font-size: var(--fs-sm); font-weight: 400; white-space: normal; }
+.sim-table td.c-state { white-space: nowrap; }
+.sim-dev { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.sim-dev strong { display: block; }
+.sim-dev-name { display: block; color: var(--ink-2); }
+.sim-reading { display: block; margin-top: var(--s1); font-size: var(--fs-xs); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.sim-controls { display: grid; gap: var(--s2); }
+.sim-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.sim-measure { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s2); }
+.sim-measure > label { font-size: var(--fs-sm); font-weight: 700; }
+.sim-measure > input.sim-value { width: 7rem; }
+.sim-measure > .hint { flex-basis: 100%; font-size: var(--fs-xs); }
+
+/* ------------------------------------------------------------------------------------------------ téléphone */
+/* Les tableaux deviennent des cartes : identifiant et état en haut, le reste en dessous, sans défilement de côté. */
+@media (max-width: 760px) {
+  .eq-cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .eq-cards, .eq-cards tbody { display: block; }
+  .eq-cards tbody { display: grid; gap: var(--s2); }
+  .eq-cards tr {
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2);
+    padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
+  }
+  /* Saut de ligne après l'identifiant, le nom et l'état. */
+  .eq-cards tr::after { content: ''; order: 4; flex-basis: 100%; height: 0; }
+  .eq-cards td, .eq-cards th, .eq-cards tbody td, .eq-cards tbody th { display: block; padding: 0; border: 0; white-space: normal; }
+  .eq-cards td[data-label]::before { content: attr(data-label) '\00a0: '; color: var(--ink-3); }
+
+  .inventory-table td.c-id { order: 1; }
+  .inventory-table td.c-name { order: 2; flex: 1 1 0; min-width: 0; font-weight: 600; }
+  .inventory-table td.c-state { order: 3; margin-left: auto; }
+  .inventory-table td.c-type, .inventory-table td.c-zone, .inventory-table td.c-floor { order: 5; font-size: var(--fs-sm); color: var(--ink-2); }
+  .inventory-table td.c-zone::before { content: '·\00a0Zone\00a0: '; }
+  .inventory-table td.c-floor::before { content: '·\00a0Étage\00a0: '; }
+  .inventory-table .inv-open { margin-left: calc(-1 * var(--s2)); }
+
+  .sim-table th.c-dev { order: 1; flex: 1 1 0; min-width: 0; }
+  .sim-table td.c-state { order: 2; margin-left: auto; text-align: right; }
+  .sim-table td.c-zone { order: 5; flex-basis: 100%; font-size: var(--fs-sm); color: var(--ink-2); }
+  .sim-table td.c-send { order: 6; flex-basis: 100%; padding-top: var(--s2); }
+  .equip-inventory .table-scroll, .view-simulateur .table-scroll { overflow: visible; margin: 0; padding: 0; }
+}
+
+/* Les colonnes des panneaux ne dépassent jamais leur cadre, quel que soit leur contenu. */
+.view-equipements .panel-body { grid-template-columns: minmax(0, 1fr); }
+.view-equipements .panel-body > * { min-width: 0; }
+.plan-upload { grid-template-columns: minmax(0, 1fr); }
+.plan-upload .actions { flex-wrap: wrap; min-width: 0; }
+.plan-upload .btn { white-space: normal; text-align: left; height: auto; min-height: var(--control-h); }

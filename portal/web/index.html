@@ -2,27 +2,101 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <title>Suivi de vos sites</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M9 17l5 5 9-11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css">
+  <title>Suivi des sites · GAMR-DIGITALE</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/baloo-2-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="portal.css">
+  <script src="theme.js"></script>
+  <script type="module" src="app.js"></script>
 </head>
 <body>
-  <a class="skip" href="#main">Aller au contenu</a>
-  <header class="topbar" id="topbar" hidden>
-    <a class="brand" href="#/" aria-label="Accueil : tous vos sites">
-      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M9 17l5 5 9-11" fill="none" stroke="var(--surface)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Suivi de vos sites</span>
-    </a>
-    <nav class="account" aria-label="Compte">
-      <span id="who"></span>
-      <button type="button" class="link" id="btn-password">Mot de passe</button>
-      <button type="button" class="link" id="btn-logout">Se déconnecter</button>
-    </nav>
-  </header>
-  <main id="main" tabindex="-1"></main>
-  <div id="tooltip" class="tooltip" role="status" hidden></div>
-  <script type="module" src="app.js"></script>
+  <a class="skip" id="skip" href="#main" hidden>Aller au contenu</a>
+
+  <!-- Connexion et changement de mot de passe : une feuille posée dans le cadre marine (comme le PSIM). -->
+  <div class="gate" id="gate" hidden>
+    <!-- Deux <main> dans la page : app.js n'en laisse jamais qu'un sans l'attribut hidden. -->
+    <main class="gate-sheet" id="gate-main" tabindex="-1" hidden>
+      <div class="gate-brand">
+        <svg class="gate-mark mark-day" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-light"/></svg>
+        <svg class="gate-mark mark-night" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-dark"/></svg>
+        <div class="brand-name">
+          <svg class="wordmark" role="img" aria-label="GAMR-DIGITALE" focusable="false"><use href="logo.svg#wordmark"/></svg>
+          <p class="brand-sub"><span class="psim-tag">PSIM</span><span>Suivi des sites</span></p>
+        </div>
+      </div>
+      <div class="gate-body" id="gate-body"></div>
+    </main>
+    <p class="gate-slogan">GAMR-DIGITALE, la sécurité de votre entreprise en un clic.</p>
+  </div>
+
+  <div class="app" id="app" hidden>
+    <!-- Le rail : sur grand écran à gauche, dans le cadre ; en dessous de 1024 px, un tiroir ouvert par le bouton Menu. -->
+    <aside class="rail" id="rail" aria-label="Menu">
+      <a class="rail-brand" id="rail-brand" href="#/">
+        <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-dark"/></svg>
+        <span class="brand-name">
+          <svg class="wordmark" role="img" aria-label="GAMR-DIGITALE" focusable="false"><use href="logo.svg#wordmark"/></svg>
+          <span class="brand-sub"><span class="psim-tag">PSIM</span><span>Suivi des sites</span></span>
+        </span>
+      </a>
+      <button type="button" class="btn btn-icon rail-close" id="rail-close" aria-label="Fermer le menu">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#close"/></svg>
+      </button>
+
+      <nav class="rail-nav" aria-label="Menu principal">
+        <a class="nav-item" id="nav-home" href="#/" data-key="nav-home">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#home"/></svg>
+          <span class="nav-label">Vue d’ensemble</span>
+        </a>
+        <p class="nav-group" id="nav-sites-title">Vos sites</p>
+        <div class="nav-sites" id="nav-sites"></div>
+      </nav>
+
+      <div class="rail-foot">
+        <p class="whoami">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#user"/></svg>
+          <span class="whoami-text"><span class="whoami-name" id="who-name"></span><span class="whoami-role" id="who-role"></span></span>
+        </p>
+        <button type="button" class="rail-btn" id="btn-password">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#key"/></svg>
+          <span>Mot de passe</span>
+        </button>
+        <button type="button" class="rail-btn" id="btn-theme">
+          <svg class="icon" aria-hidden="true" focusable="false"><use id="theme-icon" href="icons.svg#contrast"/></svg>
+          <span id="theme-label">Thème&nbsp;: Automatique</span>
+        </button>
+        <button type="button" class="rail-btn" id="btn-logout">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#logout"/></svg>
+          <span>Se déconnecter</span>
+        </button>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim" hidden></div>
+
+    <!-- La feuille : le travail, posé dans le cadre (barre du haut seulement sous 1024 px). -->
+    <div class="workspace" id="workspace">
+      <header class="topbar">
+        <button type="button" class="btn btn-icon menu-btn" id="menu-btn" aria-controls="rail" aria-expanded="false">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="icons.svg#menu"/></svg>
+          <span class="sr-only">Ouvrir le menu</span>
+        </button>
+        <a class="topbar-brand" id="topbar-brand" href="#/">
+          <svg class="topbar-mark mark-day" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-light"/></svg>
+          <svg class="topbar-mark mark-night" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-dark"/></svg>
+          <svg class="wordmark" role="img" aria-label="GAMR-DIGITALE" focusable="false"><use href="logo.svg#wordmark"/></svg>
+          <span class="topbar-sub">Suivi des sites</span>
+        </a>
+      </header>
+      <main class="sheet" id="main" tabindex="-1" hidden></main>
+    </div>
+  </div>
+
+  <!-- Bulle des graphiques : visuelle seulement. La valeur lue au clavier est annoncée une fois dans #chart-live. -->
+  <div id="tooltip" class="tooltip" aria-hidden="true" hidden></div>
+  <div id="chart-live" class="sr-only" role="status"></div>
 </body>
 </html>

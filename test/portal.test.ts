@@ -10,6 +10,7 @@ import { preflight } from '../server/preflight.ts';
 import type { PreflightInput } from '../server/preflight.ts';
 import { SIGNATURE_HEADER, SITE_HEADER, TIME_HEADER, buildSiteSummary, createPortalSender, sign, signatureMatches, validatePortalUrl } from '../server/portal.ts';
 import type { PortalStatus } from '../server/portal.ts';
+import { createRiskService } from '../server/risk.ts';
 import { seedDemo } from '../server/seed.ts';
 
 const T0 = new Date(2026, 5, 15, 12, 0, 0).getTime(); // midi, heure locale : le « jour » ne bascule pas pendant le test
@@ -101,6 +102,71 @@ describe('resume du site pour le portail', () => {
     insert.run('round', 'sent', T0 - HOUR);
     const s = buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0 });
     assert.deepEqual(s.notifications, { sent: 2, failed: 1 });
+  });
+});
+
+describe('indice de securite GAMR dans le resume', () => {
+  /** Le vrai service de risque, avec sa propre horloge (les points d'historique se datent du jour du calcul). */
+  function withRisk() {
+    const t = setup();
+    let now = T0;
+    const risk = createRiskService(t.db, t.engine, { now: () => now });
+    return { ...t, risk, at: (time: number) => void (now = time) };
+  }
+
+  it("envoie l'indice du site et de chaque zone, tels que la gestion des risques les calcule", () => {
+    const t = withRisk();
+    const s = buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0, risk: () => t.risk.overview() });
+    const expected = t.risk.overview();
+    assert.ok(s.risk, "l'indice part avec le resume");
+    assert.equal(s.risk.index, expected.site.index);
+    assert.equal(s.risk.worstZone, expected.site.worstZone);
+    assert.equal(s.risk.assessedZones, expected.site.assessedZones);
+    assert.equal(s.risk.totalZones, expected.site.totalZones);
+    assert.deepEqual(s.risk.zones, expected.zones.map((z) => ({ zone: z.zone, index: z.index, stale: z.stale })));
+  });
+
+  it("ne laisse sortir ni les notes d'evaluation ni le nom de l'evaluateur", () => {
+    const t = withRisk();
+    t.db.prepare("UPDATE risk_zone SET notes = 'NOTE-CONFIDENTIELLE-QRS', assessed_by = 'evaluateur.secret'").run();
+    const json = JSON.stringify(buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0, risk: () => t.risk.overview() }));
+    for (const secret of ['NOTE-CONFIDENTIELLE-QRS', 'evaluateur.secret']) assert.ok(!json.includes(secret), `« ${secret} » ne doit pas partir vers le portail`);
+  });
+
+  it("suit l'etat reel : un detecteur hors service fait monter l'indice envoye", () => {
+    const t = withRisk();
+    const before = buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0, risk: () => t.risk.overview() }).risk!;
+    const zone = before.zones.find((z) => z.zone === 'Accueil')!;
+    t.goTo(T0 - HOUR);
+    t.engine.handleDetectorMessage('D-01', { state: 'fault' }); // le detecteur incendie de l'accueil
+    const after = buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0, risk: () => t.risk.overview() }).risk!;
+    assert.ok(after.zones.find((z) => z.zone === 'Accueil')!.index! > zone.index!);
+  });
+
+  it("garde l'historique du site sur la fenetre du resume seulement", () => {
+    const t = withRisk();
+    for (const daysAgo of [40, 3, 0]) {
+      t.at(T0 - daysAgo * 24 * HOUR);
+      t.risk.recordHistory();
+    }
+    const s = buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0, risk: () => t.risk.overview() });
+    assert.deepEqual(s.risk!.history.map((p) => p.day), ['2026-06-12', '2026-06-15'], 'le point d il y a 40 jours sort de la fenetre de 35 jours');
+  });
+
+  it("sans calcul de risque, ou s'il echoue, le resume part quand meme, sans indice", () => {
+    const t = withRisk();
+    assert.equal(buildSiteSummary(t.db, { siteId: 'site-test', version: '1', startedAt: T0, now: T0 }).risk, undefined);
+    const failing = buildSiteSummary(t.db, {
+      siteId: 'site-test',
+      version: '1',
+      startedAt: T0,
+      now: T0,
+      risk: () => {
+        throw new Error('base verrouillee');
+      },
+    });
+    assert.equal(failing.risk, undefined);
+    assert.ok(failing.devices.length > 0, "l'etat du site part toujours");
   });
 });
 

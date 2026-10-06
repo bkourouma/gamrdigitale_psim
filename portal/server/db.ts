@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS site_day (
   unmonitored_s INTEGER NOT NULL,
   PRIMARY KEY (site_id, day)
 );
+-- Indice de securite GAMR du site, un point par jour (meme principe que site_day : le portail garde ce qui sort de la
+-- fenetre de l'instantane).
+CREATE TABLE IF NOT EXISTS site_risk_day (
+  site_id TEXT NOT NULL REFERENCES site(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  PRIMARY KEY (site_id, day)
+);
 CREATE TABLE IF NOT EXISTS outage (
   site_id TEXT NOT NULL REFERENCES site(id) ON DELETE CASCADE,
   device_id TEXT NOT NULL,
