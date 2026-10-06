@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { DEV_PASSWORDS, MIN_PASSWORD_LENGTH } from './preflight.ts';
 import type { Role } from './types.ts';
@@ -21,6 +21,36 @@ export interface Session {
 
 const sessions = new Map<string, Session>();
 const failures = new Map<string, number[]>();
+
+/**
+ * Sessions gardees aussi en base : un redemarrage du PSIM (mise a jour, plantage, coupure) ne deconnecte personne, et
+ * l'ecran d'un operateur revient seul. Seule l'EMPREINTE SHA-256 du jeton est stockee : le jeton n'existe que dans le
+ * cookie du navigateur, une copie de la base ou d'une sauvegarde ne permet pas de se connecter. Les memes controles
+ * s'appliquent a chaque requete (expiration 12 h, compte actif, identifiants inchanges : voir le validateur).
+ * Sans base (tests unitaires), les sessions restent en memoire seulement.
+ */
+let store: DatabaseSync | null = null;
+export function useSessionStore(db: DatabaseSync | null): void {
+  store = db;
+}
+const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
+
+function forget(token: string): void {
+  sessions.delete(token);
+  store?.prepare('DELETE FROM app_session WHERE token_hash = ?').run(tokenHash(token));
+}
+
+/** Session connue de la base mais pas de la memoire (le PSIM a redemarre depuis la connexion). */
+function loadStored(token: string): Session | null {
+  if (!store || !/^[0-9a-f]{64}$/.test(token)) return null;
+  const row = store.prepare('SELECT username, role, expires, epoch, restricted FROM app_session WHERE token_hash = ?').get(tokenHash(token)) as
+    | { username: string; role: Role; expires: number; epoch: number; restricted: string | null }
+    | undefined;
+  if (!row) return null;
+  const session: Session = { username: row.username, role: row.role, expires: row.expires, epoch: row.epoch, restricted: (row.restricted as Restriction) ?? null };
+  sessions.set(token, session);
+  return session;
+}
 
 /**
  * Controle applique a CHAQUE requete : le compte existe-t-il encore, est-il actif, ses identifiants ont-ils change ?
@@ -136,6 +166,7 @@ export const isKnownLoginIp = (username: string, ip: string): boolean => knownIp
 /** Libere la memoire : sessions expirees et echecs anciens (les cles de verrouillage viennent du client). */
 export function purgeExpired(now = Date.now()): void {
   for (const [token, s] of sessions) if (s.expires < now) sessions.delete(token);
+  store?.prepare('DELETE FROM app_session WHERE expires < ?').run(now);
   for (const [key, list] of failures) {
     const recent = list.filter((t) => now - t < 10 * 60_000);
     if (recent.length === 0) failures.delete(key);
@@ -145,29 +176,38 @@ export function purgeExpired(now = Date.now()): void {
 
 export function createSession(username: string, role: Role, epoch: number, restricted: Restriction = null, now = Date.now()): string {
   const token = randomBytes(32).toString('hex');
-  sessions.set(token, { username, role, expires: now + SESSION_TTL_MS, epoch, restricted });
+  const session: Session = { username, role, expires: now + SESSION_TTL_MS, epoch, restricted };
+  sessions.set(token, session);
+  store
+    ?.prepare('INSERT INTO app_session (token_hash, username, role, expires, epoch, restricted) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(tokenHash(token), username, role, session.expires, epoch, restricted);
   return token;
 }
 
 export function getSession(token: string | undefined, now = Date.now()): Session | null {
   if (!token) return null;
-  const session = sessions.get(token);
+  const session = sessions.get(token) ?? loadStored(token);
   if (!session) return null;
   if (session.expires < now) {
-    sessions.delete(token);
+    forget(token);
     return null;
   }
   if (!validator) return session;
   const fresh = validator(session);
   if (!fresh) {
-    sessions.delete(token); // compte supprime, desactive ou identifiants changes
+    forget(token); // compte supprime, desactive ou identifiants changes
     return null;
   }
   return fresh;
 }
 
+/** Oublie les sessions EN MEMOIRE seulement (comme apres un redemarrage) : celles de la base seront relues au besoin. */
+export function clearSessionCache(): void {
+  sessions.clear();
+}
+
 export function destroySession(token: string | undefined): void {
-  if (token) sessions.delete(token);
+  if (token) forget(token);
 }
 
 /** Ferme toutes les sessions d'un compte (en plus du controle d'epoch, pour liberer la memoire). */
@@ -179,6 +219,7 @@ export function destroyUserSessions(username: string): number {
       n++;
     }
   }
+  store?.prepare('DELETE FROM app_session WHERE username = ?').run(username);
   return n;
 }
 

@@ -176,6 +176,16 @@ CREATE TABLE IF NOT EXISTS notification_recipient (
   created_by TEXT NOT NULL,
   UNIQUE (channel, address, level)
 );
+-- Sessions de connexion (voir auth.ts) : seule l'empreinte SHA-256 du jeton est gardee, jamais le jeton lui-meme.
+-- En base pour qu'un redemarrage du PSIM ne deconnecte personne ; controlees a chaque requete (expiration, compte, epoch).
+CREATE TABLE IF NOT EXISTS app_session (
+  token_hash TEXT PRIMARY KEY,
+  username TEXT NOT NULL REFERENCES app_user(username) ON DELETE CASCADE ON UPDATE CASCADE,
+  role TEXT NOT NULL,
+  expires INTEGER NOT NULL,
+  epoch INTEGER NOT NULL,
+  restricted TEXT
+);
 -- Historique des etats des detecteurs (fin NULL = etat en cours) : base de la disponibilite et des temps d'arret (voir history.ts).
 CREATE TABLE IF NOT EXISTS device_state_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -13,6 +13,7 @@ import {
   rememberLoginIp,
   recordFailure,
   setSessionValidator,
+  useSessionStore,
 } from './auth.ts';
 import type { Session } from './auth.ts';
 import type { Arming } from './arming.ts';
@@ -83,6 +84,8 @@ export function createApp(deps: ApiDeps) {
   const { db, engine, users } = deps;
   // Controle a CHAQUE requete : compte supprime / desactive / identifiants changes = plus de session ; le role vient de la base.
   setSessionValidator(users.validateSession);
+  // Sessions gardees en base (empreinte du jeton) : un redemarrage du PSIM ne deconnecte personne.
+  useSessionStore(db);
   const app = express();
   app.disable('x-powered-by');
   if (deps.trustProxy) app.set('trust proxy', 1); // adresse reelle du client derriere un proxy (limitation des connexions)

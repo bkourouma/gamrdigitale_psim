@@ -96,6 +96,7 @@ Un incident ne peut être clôturé qu'une fois le détecteur revenu à la norma
 
 **Garde-fous**
 - On ne peut **jamais retirer le dernier administrateur actif** (suppression, désactivation, rétrogradation), ni se désactiver ou se supprimer soi-même. Les modifications demandées ensemble sont appliquées en bloc ou pas du tout.
+- **Un redémarrage du PSIM ne déconnecte personne** (mise à jour, plantage, coupure) : l'écran d'un opérateur revient seul. Les sessions (12 h) sont gardées en base sous forme d'**empreinte SHA-256** du jeton : le jeton n'existe que dans le cookie du navigateur, une copie de la base ou d'une sauvegarde ne permet pas de se connecter. Expiration, déconnexion et fermeture des sessions d'un compte effacent aussi l'empreinte.
 - **Tout changement coupe les sessions immédiatement** : mot de passe, rôle, désactivation, suppression. Le PSIM vérifie le compte à chaque requête ; le rôle vient de la base, jamais du jeton. Cela vaut aussi pour `npm run set-password`.
 - Un compte **créé** ou dont le mot de passe est **réinitialisé** par un administrateur doit changer son mot de passe à la première connexion : sa session est « restreinte » (rien d'autre n'est accessible, ni le temps réel, ni l'API).
 - Mots de passe : 12 caractères minimum, ni de démonstration, ni contenant l'identifiant. Stockés avec scrypt.
@@ -155,7 +156,7 @@ Cela crée deux tâches planifiées (sans logiciel supplémentaire) : **`PSIM`**
 
 **7. Surveiller le PSIM lui-même** : `GET /healthz` (sans authentification, volontairement minimal : `ok` ou `degraded` avec la raison, code 200 ou 503) pour un superviseur externe ; en administrateur, le menu **Administration → Système** affiche la santé, l'espace disque, les passerelles MQTT, la dernière sauvegarde et la liste des avertissements, et un badge rouge apparaît en haut de l'écran en cas d'alerte critique (sauvegarde en échec ou trop ancienne, disque presque plein, santé dégradée).
 
-**Limites** : un seul serveur (pas de haute disponibilité) ; les sessions sont en mémoire (un redémarrage déconnecte tout le monde) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
+**Limites** : un seul serveur (pas de haute disponibilité) ; une sauvegarde bloque très brièvement le PSIM (quelques centaines de ms pour une base de quelques dizaines de Mo) ; les scripts d'installation du service Windows ont été validés en simulation (`-WhatIf`) mais **pas installés réellement sur une machine** par l'auteur : essayez-les d'abord sur un poste de test.
 
 ## Sécurité : ce qui a été relu, corrigé, et ce qui reste
 
