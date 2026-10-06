@@ -541,7 +541,7 @@ function overviewPage(ov, sites) {
   const chips = h(
     'ul',
     { class: 'state-row', 'aria-label': 'Vos sites par état' },
-    ['alarm', 'unreachable', 'degraded', 'unknown', 'ok']
+    ['alarm', 'unreachable', 'degraded', 'recent', 'unknown', 'ok']
       .filter((level) => ov.counts[level] > 0)
       .map((level) => {
         const st = SITE_STATE[level];

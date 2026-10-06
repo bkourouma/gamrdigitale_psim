@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { createEngine } from '../../server/engine.ts';
 import type { SiteSummary } from '../../server/portal.ts';
 import { ago, availabilityOfDays, siteCards, incidentStats, riskOf, siteStatus } from '../../portal/server/views.ts';
 import { HOUR, NOW, makeSummary, provision, startPortal } from './helpers.ts';
@@ -46,6 +47,45 @@ describe('etat d un site, en une phrase', () => {
     assert.equal(siteStatus(critical, NOW, NOW, STALE).label, 'Alarme en cours');
     const warning = makeSummary('s', { mutate: (e, goTo) => (goTo(NOW - HOUR), e.handleDetectorMessage('D-01', { state: 'prealarm' })) });
     assert.equal(siteStatus(warning, NOW, NOW, STALE).label, 'Alerte en cours');
+  });
+
+  /** Intrusion sur I-01 il y a `hoursAgo` heures, prise en charge apres 40 s, close 3 min apres, qualifiee `q`. */
+  const handled = (hoursAgo: number, q: 'fire' | 'false_alarm' = 'fire', extra?: (e: ReturnType<typeof createEngine>, goTo: (t: number) => void) => void) =>
+    makeSummary('s', {
+      mutate: (e, goTo) => {
+        const t = NOW - hoursAgo * HOUR;
+        goTo(t);
+        e.handleDetectorMessage('I-01', { event: 'motion' });
+        const id = e.getSnapshot().incidents[0].id;
+        goTo(t + 40_000);
+        e.acknowledge(id, 'gardien');
+        e.handleDetectorMessage('I-01', { event: 'clear' });
+        goTo(t + 3 * 60_000);
+        e.close(id, 'gardien', q, null);
+        extra?.(e, goTo);
+      },
+    });
+
+  it("une intrusion traitee il y a 2 h : jamais « tout fonctionne », le titre dit quoi et quand", () => {
+    const st = siteStatus(handled(2), NOW, NOW, STALE);
+    assert.equal(st.level, 'recent');
+    assert.match(st.label, /^Intrusion aujourd’hui à \d\d:\d\d$/);
+    assert.match(st.detail, /Mouvement accueil/);
+    assert.match(st.detail, /prise en charge en 1 min/);
+    assert.match(st.detail, /clôturée à \d\d:\d\d/);
+    assert.match(st.detail, /Les équipements fonctionnent/);
+  });
+
+  it('une fausse alarme ne change pas le message ; un incident de plus de 24 h non plus', () => {
+    assert.equal(siteStatus(handled(2, 'false_alarm'), NOW, NOW, STALE).level, 'ok');
+    assert.equal(siteStatus(handled(30), NOW, NOW, STALE).level, 'ok');
+  });
+
+  it('un equipement hors service reste le plus urgent, et cite quand meme le dernier incident', () => {
+    const s = handled(2, 'fire', (e, goTo) => (goTo(NOW - HOUR), e.handleDetectorMessage('D-01', { state: 'fault' })));
+    const st = siteStatus(s, NOW, NOW, STALE);
+    assert.equal(st.level, 'degraded');
+    assert.match(st.detail, /Dernier incident : intrusion aujourd’hui à/);
   });
 
   it('un incident clos n est plus une alarme', () => {

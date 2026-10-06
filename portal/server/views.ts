@@ -10,7 +10,7 @@ import type { VisibleSite } from './accounts.ts';
 
 export const DAY_MS = 24 * 3_600_000;
 
-export type Level = 'unknown' | 'unreachable' | 'alarm' | 'degraded' | 'ok';
+export type Level = 'unknown' | 'unreachable' | 'alarm' | 'degraded' | 'recent' | 'ok';
 export interface Status {
   level: Level;
   label: string;
@@ -33,6 +33,50 @@ const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : 
  * L'etat d'un site en une phrase. « Injoignable » prime : si le portail n'entend plus le site, tout ce qu'il sait est
  * ancien, et il le dit (y compris la derniere alarme connue, qui peut etre toujours en cours).
  */
+/** Fenetre pendant laquelle un incident traite reste annonce en tete de page : « tout fonctionne » serait trompeur. */
+export const RECENT_INCIDENT_MS = 24 * 3_600_000;
+
+const INCIDENT_WORD: Record<string, string> = { intrusion: 'Intrusion', fire: 'Alarme incendie', access: 'Alerte contrôle d’accès', environment: 'Alerte environnement' };
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** « aujourd'hui à 05:32 », « hier à 23:10 » ou « le 4/10 à 18:00 », a l'heure LOCALE du site. */
+function whenLocal(t: number, now: number, offsetMin: number): string {
+  const local = new Date(t + offsetMin * 60_000);
+  const today = new Date(now + offsetMin * 60_000);
+  const day = (d: Date) => Math.floor(d.getTime() / 86_400_000);
+  const hm = `${pad2(local.getUTCHours())}:${pad2(local.getUTCMinutes())}`;
+  const gap = day(today) - day(local);
+  if (gap === 0) return `aujourd’hui à ${hm}`;
+  if (gap === 1) return `hier à ${hm}`;
+  return `le ${local.getUTCDate()}/${local.getUTCMonth() + 1} à ${hm}`;
+}
+
+/**
+ * Incidents REELS (ou pas encore qualifies) clos dans les dernieres 24 h, du plus recent au plus ancien. Une fausse alarme
+ * n'en fait pas partie : rien ne s'est passe sur le site.
+ */
+function recentIncidents(summary: SiteSummary, now: number) {
+  return summary.incidents
+    .filter((i) => i.status === 'closed' && i.qualification !== 'false_alarm' && now - (i.closedAt ?? i.openedAt) <= RECENT_INCIDENT_MS)
+    .sort((a, b) => b.openedAt - a.openedAt);
+}
+
+/** Une phrase sur le dernier incident traite : quoi, ou, quand, prise en charge et cloture. */
+function recentSentence(summary: SiteSummary, now: number): { title: string; detail: string } | null {
+  const list = recentIncidents(summary, now);
+  if (list.length === 0) return null;
+  const last = list[0];
+  const word = INCIDENT_WORD[last.category] ?? 'Alerte';
+  const off = summary.utcOffsetMin ?? 0;
+  const care = last.ackedAt !== null ? `prise en charge en ${ago(last.ackedAt - last.openedAt).replace("moins d'une minute", 'moins d’une minute')}` : 'clôturée sans prise en charge notée';
+  const closed = last.closedAt !== null ? `, clôturée ${whenLocal(last.closedAt, now, off).replace(/^aujourd’hui /, '')}` : '';
+  const others = list.length > 1 ? ` ${plural(list.length - 1, 'autre incident', 'autres incidents')} dans les dernières 24 h.` : '';
+  return {
+    title: `${word} ${whenLocal(last.openedAt, now, off)}`,
+    detail: `${last.deviceName}${last.zone ? ` (${last.zone})` : ''} : ${care}${closed}.${others}`,
+  };
+}
+
 export function siteStatus(summary: SiteSummary | null, receivedAt: number | null, now: number, staleAfterMs: number): Status {
   if (!summary || receivedAt === null) return { level: 'unknown', label: 'En attente de données', detail: "Ce site n'a encore rien envoyé au portail." };
   const open = summary.incidents.filter((i) => i.status !== 'closed');
@@ -50,13 +94,17 @@ export function siteStatus(summary: SiteSummary | null, receivedAt: number | nul
     const critical = open.some((i) => i.severity === 'critical');
     return { level: 'alarm', label: critical ? 'Alarme en cours' : 'Alerte en cours', detail: `${plural(open.length, 'incident ouvert', 'incidents ouverts')} : ${[...new Set(open.map((i) => i.zone || i.deviceName))].slice(0, 3).join(', ')}.` };
   }
+  const recent = recentSentence(summary, now);
   if (down.length > 0) {
-    return { level: 'degraded', label: `${plural(down.length, 'équipement hors service', 'équipements hors service')}`, detail: `${down.slice(0, 3).map((d) => d.name).join(', ')}${down.length > 3 ? '…' : ''} : cette partie du site n'est pas protégée.` };
+    const also = recent ? ` Dernier incident : ${recent.title.charAt(0).toLowerCase()}${recent.title.slice(1)}.` : '';
+    return { level: 'degraded', label: `${plural(down.length, 'équipement hors service', 'équipements hors service')}`, detail: `${down.slice(0, 3).map((d) => d.name).join(', ')}${down.length > 3 ? '…' : ''} : cette partie du site n'est pas protégée.${also}` };
   }
+  // Un incident vient d'avoir lieu : meme traite, il est annonce en tete (24 h), avant « tout fonctionne ».
+  if (recent) return { level: 'recent', label: recent.title, detail: `${recent.detail} Les équipements fonctionnent.` };
   return { level: 'ok', label: 'Tout fonctionne', detail: 'Tous les équipements surveillés répondent.' };
 }
 
-const SEVERITY_ORDER: Record<Level, number> = { alarm: 0, unreachable: 1, degraded: 2, unknown: 3, ok: 4 };
+const SEVERITY_ORDER: Record<Level, number> = { alarm: 0, unreachable: 1, degraded: 2, recent: 3, unknown: 4, ok: 5 };
 
 export interface RiskView {
   /** Indice de securite GAMR du site (1 a 60), `null` tant qu'aucune zone n'est evaluee. */
@@ -167,7 +215,7 @@ export function siteCards(db: DatabaseSync, sites: VisibleSite[], now: number, s
 /** Synthese de tous les sites visibles : le « coup d'oeil » du haut de page. */
 export function overview(db: DatabaseSync, sites: VisibleSite[], now: number, staleAfterMs: number) {
   const cards = siteCards(db, sites, now, staleAfterMs);
-  const counts: Record<Level, number> = { alarm: 0, unreachable: 0, degraded: 0, unknown: 0, ok: 0 };
+  const counts: Record<Level, number> = { alarm: 0, unreachable: 0, degraded: 0, recent: 0, unknown: 0, ok: 0 };
   for (const c of cards) counts[c.status.level]++;
   const all = sites.flatMap((s) => lastDays(db, s.id, 30));
   const rows = sites.flatMap((s) => incidentRows(db, s.id, now - 30 * DAY_MS).filter((r) => r.opened_at >= now - 30 * DAY_MS || r.status !== 'closed'));

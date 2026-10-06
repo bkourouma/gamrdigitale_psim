@@ -122,11 +122,13 @@ export const SITE_STATE = {
   alarm: { pill: 'is-solid-alarm', tone: 'alarm', icon: 'state-alarm', count: ['en alarme', 'en alarme'] },
   unreachable: { pill: 'is-offline', tone: 'offline', icon: 'state-offline', count: ['injoignable', 'injoignables'] },
   degraded: { pill: 'is-fault', tone: 'fault', icon: 'wrench', count: ['à surveiller', 'à surveiller'] },
+  // Incident traite dans les dernieres 24 h : les equipements vont bien, mais il s'est passe quelque chose.
+  recent: { pill: 'is-fault', tone: 'fault', icon: 'state-alarm', count: ['avec un incident récent', 'avec un incident récent'] },
   // « Sans mesure » vaut pour les deux cas de cet état : rien reçu, ou reçu sans aucun équipement mesuré.
   unknown: { pill: 'is-dashed is-unknown', tone: 'unknown', icon: 'state-unknown', count: ['sans mesure', 'sans mesure'] },
   ok: { pill: 'is-ok', tone: 'ok', icon: 'state-ok', count: ['en bon état', 'en bon état'] },
 };
-export const SITE_ORDER = { alarm: 0, unreachable: 1, degraded: 2, unknown: 3, ok: 4 };
+export const SITE_ORDER = { alarm: 0, unreachable: 1, degraded: 2, recent: 3, unknown: 4, ok: 5 };
 
 export const DEVICE_STATE = {
   normal: { pill: 'is-ok', icon: 'state-ok', word: 'En service', help: 'Fonctionne et surveille sa zone.' },
