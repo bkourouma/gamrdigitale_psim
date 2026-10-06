@@ -406,6 +406,15 @@ describe('controle de sante (healthcheck)', () => {
     assert.equal(nextState(99, false, 0).restart, false, '0 = jamais de redemarrage automatique');
   });
 
+  it('--start-task : le nom de la tache est controle, et seulement sous Windows', async () => {
+    const { startTaskName } = await import('../scripts/healthcheck.ts');
+    assert.equal(startTaskName(['--restart', '3', '--start-task', 'PSIM'], 'win32'), 'PSIM');
+    assert.equal(startTaskName(['--restart', '3', '--start-task', 'PSIM'], 'linux'), null, 'schtasks n existe pas ailleurs');
+    assert.equal(startTaskName(['--restart', '3'], 'win32'), null, 'option absente');
+    assert.equal(startTaskName(['--start-task'], 'win32'), null, 'nom manquant');
+    for (const bad of ['PSIM & calc', '../x', 'a b', '', 'x'.repeat(65), 'PSIM"; rm']) assert.equal(startTaskName(['--start-task', bad], 'win32'), null, `refuse : ${bad}`);
+  });
+
   it('interprete la reponse de /healthz : sain, degrade, muet, injoignable', async () => {
     const { probe } = await import('../scripts/healthcheck.ts');
     const { createServer: createHttp } = await import('node:http');

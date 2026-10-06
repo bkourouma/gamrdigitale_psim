@@ -4,10 +4,13 @@
  *   npm run healthcheck                  affiche l'etat, code de sortie 0 (sain) ou 1
  *   npm run healthcheck -- --restart 3   apres 3 echecs CONSECUTIFS, arrete le PSIM bloque :
  *                                        le superviseur (service, tache planifiee) le relance
+ *   ... --start-task PSIM                (Windows) s'il n'y a plus aucun PSIM a arreter apres ces 3 echecs, relance la
+ *                                        tache planifiee : filet de securite si le superviseur lui-meme a disparu
  *
  * Un PSIM qui plante est relance par le superviseur ; celui-ci traite le cas plus sournois d'un PSIM qui
  * tourne encore mais ne fait plus rien (boucle de controle bloquee, plus d'escalade ni de detection).
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -42,6 +45,13 @@ export function nextState(previousFailures: number, healthy: boolean, restartAft
   return { failures, restart: restartAfter > 0 && failures >= restartAfter };
 }
 
+/** Nom de la tache planifiee a relancer quand plus rien ne tourne (Windows seulement), ou null. Un nom suspect est refuse. */
+export function startTaskName(args: string[], platform = process.platform): string | null {
+  const i = args.indexOf('--start-task');
+  const name = i >= 0 ? args[i + 1] : undefined;
+  return platform === 'win32' && name !== undefined && /^[A-Za-z0-9._-]{1,64}$/.test(name) ? name : null;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
   const dataDir = resolve(import.meta.dirname, '..', config.dataDir);
   const args = process.argv.slice(2);
@@ -67,8 +77,16 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
     if (!result.ok) console.log(`Echec ${state.failures}/${restartAfter} avant redemarrage.`);
     if (state.restart) {
       const pid = lockHolder(dataDir);
-      if (pid === null) console.log("Aucun PSIM a arreter (le superviseur doit le demarrer).");
-      else {
+      if (pid === null) {
+        const task = startTaskName(args);
+        if (task) {
+          // Plus de PSIM, et trois sondes de suite sans reponse : le superviseur est probablement mort lui aussi. Si la tache tourne
+          // encore, Windows ignore cette demande (une seule instance) : sans risque.
+          const run = spawnSync('schtasks', ['/Run', '/TN', task], { encoding: 'utf8' });
+          console.log(run.status === 0 ? `Aucun PSIM en marche : tache ${task} relancee.` : `Aucun PSIM en marche ; relance de la tache ${task} impossible (${(run.stderr || run.stdout).trim().slice(0, 120)}).`);
+          writeFileSync(stateFile, '0');
+        } else console.log("Aucun PSIM a arreter (le superviseur doit le demarrer).");
+      } else {
         console.log(`PSIM bloque : arret du processus ${pid} (le superviseur le relancera).`);
         process.kill(pid);
         writeFileSync(stateFile, '0');
