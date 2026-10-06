@@ -71,9 +71,9 @@ PSIM_PORTAL_KEY=<clé propre à ce site>
 
 ## Ce qui part du site, ce qui n'en part jamais
 
-Part : équipements (nom, zone, étage, état), disponibilité et périodes d'arrêt, incidents (heures, gravité, qualification), nombre de notifications.
+Part : équipements (nom, zone, étage, état), disponibilité et périodes d'arrêt, incidents (heures, gravité, qualification), nombre de notifications, **indice de sécurité GAMR** (celui du site, celui de chaque zone, et un point par jour pour la tendance).
 
-Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et noms d'opérateurs, commentaires d'incident, journal, destinataires de notification. C'est vérifié par un test.
+Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et noms d'opérateurs, commentaires d'incident, journal, destinataires de notification, notes d'évaluation des risques et nom de l'évaluateur. C'est vérifié par des tests.
 
 ## Comment lire les chiffres
 
@@ -83,6 +83,7 @@ Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et n
 - Moyennes sur plusieurs jours **pondérées par le temps observé** ; délais en **médiane**.
 - Aucun jour manquant n'est inventé : un site récent affiche « mesures disponibles depuis le… ».
 - Le portail conserve les jours qui sortent de la fenêtre de 35 jours envoyée par le site : c'est lui qui garde l'historique long.
+- **Indice de sécurité GAMR** (de 1 à 60) : calculé par le PSIM du site (probabilité × vulnérabilité × répercussions, zone par zone ; l'indice du site est celui de sa zone la plus exposée), avec les mêmes seuils partout : Faible ≤ 8, Modéré ≤ 20, Élevé ≤ 36, Critique ≤ 60. Le portail ne recalcule rien : il affiche ce que le site envoie, daté. Une zone non évaluée est « à évaluer », sans note ; un site dont le PSIM est plus ancien n'envoie pas d'indice et le portail le dit (« non transmis ») ; un site injoignable garde son dernier indice connu, avec sa date. Le portail garde un point par jour au-delà des 35 jours envoyés.
 
 ## Sécurité
 

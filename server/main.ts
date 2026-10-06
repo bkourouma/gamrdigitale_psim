@@ -366,7 +366,7 @@ const portal = createPortalSender({
   siteId: config.portal.siteId,
   key: config.portal.key,
   everyMs: config.portal.everyS * 1000,
-  build: () => buildSiteSummary(db, { siteId: config.portal.siteId, version, startedAt }),
+  build: () => buildSiteSummary(db, { siteId: config.portal.siteId, version, startedAt, risk: () => risk.overview() }),
   onChange: (state, status) =>
     engine.audit('systeme', state === 'failing' ? 'portal_failing' : 'portal_recovered', {
       details: state === 'failing' ? `envoi vers le portail de suivi en echec (${status.lastError ?? 'erreur'})` : 'envoi vers le portail de suivi retabli',

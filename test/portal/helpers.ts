@@ -14,6 +14,7 @@ import { createEngine } from '../../server/engine.ts';
 import { beginHistory } from '../../server/history.ts';
 import { SIGNATURE_HEADER, SITE_HEADER, TIME_HEADER, buildSiteSummary, sign } from '../../server/portal.ts';
 import type { SiteSummary } from '../../server/portal.ts';
+import { createRiskService } from '../../server/risk.ts';
 import { seedDemo } from '../../server/seed.ts';
 
 export const NOW = new Date(2026, 5, 15, 12, 0, 0).getTime();
@@ -65,7 +66,7 @@ export function addUser(db: Portal['db'], user: NewUser, password = PASSWORD, mu
 }
 
 /** Un resume REEL : produit par le PSIM (moteur, historique, construction du resume), pas ecrit a la main. */
-export function makeSummary(siteId: string, opts: { at?: number; mutate?: (engine: ReturnType<typeof createEngine>, goTo: (t: number) => void) => void } = {}): SiteSummary {
+export function makeSummary(siteId: string, opts: { at?: number; risk?: boolean; mutate?: (engine: ReturnType<typeof createEngine>, goTo: (t: number) => void) => void } = {}): SiteSummary {
   const at = opts.at ?? NOW;
   const db = openDb(':memory:');
   seedDemo(db, mkdtempSync(join(tmpdir(), 'psim-')), join(import.meta.dirname, '..', '..', 'seed'));
@@ -73,7 +74,15 @@ export function makeSummary(siteId: string, opts: { at?: number; mutate?: (engin
   const engine = createEngine(db, () => {}, () => clock, { silentTimeoutMs: 0 });
   beginHistory(db, clock, null, null);
   opts.mutate?.(engine, (t) => void (clock = t));
-  return buildSiteSummary(db, { siteId, version: '9.9.9', startedAt: at - 1000, now: at });
+  // Avec `risk` : l'indice GAMR des evaluations de demonstration, et un point d'historique la veille et le jour meme.
+  const risk = opts.risk ? createRiskService(db, engine, { now: () => clock }) : null;
+  if (risk) {
+    clock = at - 24 * HOUR;
+    risk.recordHistory();
+    clock = at;
+    risk.recordHistory();
+  }
+  return buildSiteSummary(db, { siteId, version: '9.9.9', startedAt: at - 1000, now: at, ...(risk ? { risk: () => risk.overview() } : {}) });
 }
 
 export interface SignedPost {

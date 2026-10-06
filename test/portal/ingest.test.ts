@@ -121,6 +121,9 @@ describe('reception des resumes', () => {
       ['duree negative', (s) => (s.availability.overall.downS = -5), /downS/],
       ['jour mal forme', (s) => (s.availability.daily[0].day = "2026-01-01'; DROP TABLE site;--"), /day/],
       ['liste demesuree', (s) => (s.incidents = Array.from({ length: 2001 }, () => s.incidents[0] ?? {})), /incidents/],
+      ['indice hors de l echelle 1 a 60', (s) => (s.risk = { index: 61, worstZone: 'A', assessedZones: 1, totalZones: 1, zones: [], history: [] }), /risk.index/],
+      ['jour d indice mal forme', (s) => (s.risk = { index: 12, worstZone: 'A', assessedZones: 1, totalZones: 1, zones: [], history: [{ day: 'hier', index: 12 }] }), /risk.history/],
+      ['indice de zone qui n est pas un entier', (s) => (s.risk = { index: 12, worstZone: 'A', assessedZones: 1, totalZones: 1, zones: [{ zone: 'A', index: 12.5, stale: false }], history: [] }), /risk.zones/],
       ['corps qui n est pas un objet', () => {}, /corps/],
     ];
     const before = stored();
@@ -145,6 +148,35 @@ describe('reception des resumes', () => {
     assert.equal((await post(portal, { body: JSON.stringify(s) })).status, 200);
     const payload = (portal.db.prepare('SELECT payload FROM snapshot WHERE site_id = ?').get('site-a') as { payload: string }).payload;
     assert.ok(!payload.includes('SECRET-EN-TROP'));
+  });
+
+  it("l'indice GAMR transmis est enregistre, nomme par ses seuils et renvoye ; un site qui ne l'envoie pas n'en a pas", async () => {
+    const withRisk = makeSummary('site-a', { risk: true });
+    assert.ok(withRisk.risk && withRisk.risk.index !== null, 'le resume de demonstration porte un indice');
+    assert.equal((await post(portal, { body: json(withRisk) })).status, 200);
+    assert.equal((await post(portal, { body: json(makeSummary('site-b')), siteId: 'site-b', key: siteKey(MASTER, 'site-b', 1) })).status, 200);
+    const days = portal.db.prepare('SELECT day, idx FROM site_risk_day WHERE site_id = ? ORDER BY day').all('site-a') as { day: string; idx: number }[];
+    assert.deepEqual(days.map((d) => d.idx), withRisk.risk.history.map((p) => p.index), 'un point par jour, conserve par le portail');
+
+    addUser(portal.db, { username: 'directeur-risque', role: 'director', orgId: (portal.db.prepare("SELECT id FROM organization WHERE name = 'Client A'").get() as { id: number }).id });
+    const cookie = await login(portal, 'directeur-risque');
+    const detail = await get(portal, '/api/sites/site-a?days=30', cookie);
+    assert.equal(detail.json.risk.index, withRisk.risk.index);
+    const band = withRisk.risk.index! <= 8 ? 'Faible' : withRisk.risk.index! <= 20 ? 'Modéré' : withRisk.risk.index! <= 36 ? 'Élevé' : 'Critique';
+    assert.equal(detail.json.risk.levelLabel, band);
+    assert.equal(detail.json.risk.worstZone, withRisk.risk.worstZone);
+    assert.equal(detail.json.riskZones.length, withRisk.risk.zones.length);
+    assert.equal(detail.json.riskZones[0].index, Math.max(...withRisk.risk.zones.map((z) => z.index ?? -1)), 'la zone la plus exposee en tete');
+    assert.equal(detail.json.riskHistory.length, days.length);
+    const card = (await get(portal, '/api/sites', cookie)).json.find((c: { id: string }) => c.id === 'site-a');
+    assert.equal(card.risk.index, withRisk.risk.index);
+    const overview = (await get(portal, '/api/overview', cookie)).json;
+    assert.equal(overview.risk.worst.siteId, 'site-a');
+
+    addUser(portal.db, { username: 'directeur-b-risque', role: 'director', orgId: (portal.db.prepare("SELECT id FROM organization WHERE name = 'Client B'").get() as { id: number }).id });
+    const other = await get(portal, '/api/sites/site-b?days=30', await login(portal, 'directeur-b-risque'));
+    assert.equal(other.json.risk, null, 'pas transmis : aucun chiffre invente');
+    assert.deepEqual(other.json.riskZones, []);
   });
 
   it('un instantane plus ancien que celui deja recu est ignore ; rejouer le meme est sans effet', async () => {

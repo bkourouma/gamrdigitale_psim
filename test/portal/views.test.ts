@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SiteSummary } from '../../server/portal.ts';
-import { ago, availabilityOfDays, incidentStats, siteStatus } from '../../portal/server/views.ts';
-import { HOUR, NOW, makeSummary } from './helpers.ts';
+import { ago, availabilityOfDays, siteCards, incidentStats, riskOf, siteStatus } from '../../portal/server/views.ts';
+import { HOUR, NOW, makeSummary, provision, startPortal } from './helpers.ts';
 
 const STALE = 15 * 60_000;
 
@@ -122,5 +122,44 @@ describe('statistiques d incidents', () => {
     assert.equal(s.ackMedianS, 120);
     assert.equal(incidentStats([row({ status: 'open' })]).ackMedianS, null);
     assert.equal(incidentStats([]).closeMedianS, null);
+  });
+});
+
+describe('indice de securite GAMR', () => {
+  const withIndex = (index: number | null): SiteSummary => ({ ...makeSummary('s'), risk: { index, worstZone: index === null ? null : 'Atelier', assessedZones: index === null ? 0 : 1, totalZones: 1, zones: [], history: [] } });
+
+  it('nomme le niveau par les seuils du PSIM : faible <= 8, modere <= 20, eleve <= 36, critique au-dela', () => {
+    const label = (n: number) => riskOf(withIndex(n))!.levelLabel;
+    assert.deepEqual([1, 8, 9, 20, 21, 36, 37, 60].map(label), ['Faible', 'Faible', 'Modéré', 'Modéré', 'Élevé', 'Élevé', 'Critique', 'Critique']);
+    assert.equal(riskOf(withIndex(30))!.level, 'eleve');
+  });
+
+  it("aucune zone evaluee : pas de niveau ; aucun indice transmis : rien du tout (jamais un chiffre invente)", () => {
+    const none = riskOf(withIndex(null))!;
+    assert.equal(none.index, null);
+    assert.equal(none.level, null);
+    assert.equal(riskOf(makeSummary('s')), null);
+    assert.equal(riskOf(null), null);
+  });
+
+  it("date l'indice de son resume : un site injoignable montre son dernier indice connu, date", () => {
+    const s = withIndex(24);
+    assert.equal(riskOf(s)!.at, s.generatedAt);
+  });
+});
+
+describe('cartes de sites : disponibilite du mois', () => {
+  it('expose le temps d arret du mois, pour ne jamais afficher 100 % apres une panne', async () => {
+    const portal = await startPortal();
+    try {
+      provision(portal.db, 'Org', 'site-a', 'Site A');
+      portal.db.prepare('INSERT INTO site_day (site_id, day, pct, up_s, down_s, unmonitored_s) VALUES (?, ?, ?, ?, ?, ?)').run('site-a', '2026-06-14', 100, 86_399_000 - 1000, 1, 0);
+      const sites = [{ id: 'site-a', org_id: 1, name: 'Site A', key_version: 1, active: 1, last_received_at: null, org_name: 'Org' }] as any;
+      const [card] = siteCards(portal.db, sites, NOW, STALE);
+      assert.equal(card.availability30, 100);
+      assert.equal(card.availability30DownS, 1);
+    } finally {
+      await portal.close();
+    }
   });
 });
