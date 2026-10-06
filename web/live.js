@@ -1,6 +1,10 @@
 // Camera reelle : lit le flux multipart/JPEG du serveur (/api/cameras/<id>/stream) et le dessine
 // sur un canvas. Lire le flux avec fetch (plutot qu'une balise <img>) permet de detecter une coupure
 // ou un gel de l'image, et d'afficher la vraie cause renvoyee par le serveur.
+//
+// Onglet masque (autre onglet au premier plan, fenetre reduite) : le flux est FERME, puis rouvert au retour.
+// Un navigateur n'ouvre que 6 connexions a la fois vers un meme site, et chaque camera affichee en garde une
+// tant qu'elle est a l'ecran : deux onglets du PSIM ouverts suffisaient a laisser des cameras sur « Connexion… ».
 
 const W = 640;
 const H = 360;
@@ -34,9 +38,12 @@ export function startLiveCamera(canvas, { cameraId, onStatus }) {
   g.fillRect(0, 0, W, H);
 
   let stopped = false;
+  let paused = false;
   let controller = null;
   let retryTimer = null;
   let delay = RETRY_MIN_MS;
+  // Chaque lecture a son numero : une lecture interrompue (onglet masque) ne relance jamais rien apres coup.
+  let generation = 0;
 
   function draw(bitmap) {
     const scale = Math.min(W / bitmap.width, H / bitmap.height);
@@ -49,6 +56,7 @@ export function startLiveCamera(canvas, { cameraId, onStatus }) {
   }
 
   async function run() {
+    const gen = ++generation;
     controller = new AbortController();
     const { signal } = controller;
     let watchdog = setTimeout(() => controller.abort(new Error('stall')), STALL_MS + 15000);
@@ -95,7 +103,7 @@ export function startLiveCamera(canvas, { cameraId, onStatus }) {
         }
       }
     } catch (err) {
-      if (stopped) return;
+      if (stopped || paused || gen !== generation) return;
       const stalled = err?.message === 'stall' || signal.reason?.message === 'stall';
       // La cause, puis ce qui va se passer : le mur réessaie seul (wall.js reconnaît l'échec au mot « tentative »).
       const cause = stalled ? 'Plus d’image reçue de la caméra' : String(err?.message ?? 'Caméra injoignable').replace(/[.\s]+$/, '');
@@ -103,15 +111,33 @@ export function startLiveCamera(canvas, { cameraId, onStatus }) {
     } finally {
       clearTimeout(watchdog);
     }
-    if (stopped) return;
+    if (stopped || paused || gen !== generation) return;
     retryTimer = setTimeout(run, delay);
     delay = Math.min(delay * 2, RETRY_MAX_MS);
   }
 
-  run();
+  function onVisibility() {
+    if (stopped) return;
+    if (document.hidden) {
+      if (paused) return;
+      paused = true;
+      clearTimeout(retryTimer);
+      generation++;
+      controller?.abort(); // libere la connexion ; la derniere image reste affichee
+    } else if (paused) {
+      paused = false;
+      delay = RETRY_MIN_MS;
+      run();
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibility);
+
+  if (document.hidden) paused = true; // ouvert dans un onglet en arriere-plan : rien avant qu'il soit affiche
+  else run();
 
   return () => {
     stopped = true;
+    document.removeEventListener('visibilitychange', onVisibility);
     clearTimeout(retryTimer);
     controller?.abort();
   };
