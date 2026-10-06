@@ -1,0 +1,448 @@
+/* =====================================================================================================================
+   Équipe Surveillance — plan du site (scène sur verre, pastilles, liens, légende), onglets des étages, vue éclatée, mur
+   vidéo et écran Caméras ; formulaire d'ajout d'un étage (floors.js). Jetons et composants : base.css.
+   La grille de l'écran Surveillance (plan à gauche ; alarmes puis caméras à droite) est posée par shell.css (.surv-grid).
+   ===================================================================================================================== */
+
+/* Jetons de l'écran, dérivés de base.css. */
+/* Jetons propres à la surveillance : marine des puces de plan, gris-bleu du plateau sans plan (le plateau reste clair même en Nuit). */
+:root { --navy: #10264a; --plate-ink: #43597b; }
+:root {
+  --fault-solid: #6b3fc0;      /* violet plein sous texte blanc : --fault-ink de jour (6:1), gardé la nuit où il s'éclaircit */
+  --pin-neutral: #5b7193;      /* forme d'une catégorie dans la légende (--ink-3 de jour, pictogramme blanc à 4,9:1) */
+  --plate: #ffffff;            /* feuille du plan et plateaux de la vue éclatée : le papier du plan */
+  --plan-filter: none;         /* l'image du plan, claire par nature */
+}
+/* Nuit : le plan reste une feuille claire, légèrement atténuée pour ne pas éblouir le poste de garde. */
+:root[data-theme='night'] { --plate: #dbe5f1; --plan-filter: brightness(0.84) contrast(1.04); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='day']) { --plate: #dbe5f1; --plan-filter: brightness(0.84) contrast(1.04); }
+}
+
+/* ------------------------------------------------------------------------------------------------ panneau du plan */
+/* Le panneau est un conteneur : pastilles et vue éclatée suivent SA largeur (colonne de 340 à 1100 px selon l'écran,
+   et le même panneau est déplacé dans l'écran Équipements et plan). */
+.c-plan { container: plan / inline-size; }
+.c-plan > .panel-head { row-gap: var(--s2); }
+
+/* Onglets des étages : boutons segmentés, chacun avec sa puce d'état ; puis « Vue éclatée ». */
+.floor-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); margin-left: auto; min-width: 0; }
+.floor-tabs { max-width: 100%; }
+.floor-tab { position: relative; transition: color var(--t-fast) ease, background-color var(--t-fast) ease; }
+.floor-tab:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.floor-name { white-space: nowrap; }
+.floor-state {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 22px; padding: 0 8px 0 5px; border-radius: var(--r-pill);
+  font-size: var(--fs-xs); font-weight: 700; line-height: 1.2; white-space: nowrap;
+}
+.floor-state .icon { width: 14px; height: 14px; }
+.floor-state.lvl-alarm { background: var(--frame-alarm); color: #ffffff; }
+.floor-state.lvl-prealarm { background: var(--warning); color: var(--on-warning); }
+.floor-state.lvl-down { background: var(--fault-solid); color: #ffffff; }
+/* Alarme sur un étage qu'on ne regarde pas : le cadre de l'onglet clignote tant qu'on n'y va pas (le texte reste lisible ;
+   mouvement réduit : cadre rouge fixe). */
+.floor-tab.lvl-alarm:not(.current) { animation: tab-alert 1s steps(2) infinite; }
+.floor-tab.lvl-prealarm:not(.current) { box-shadow: inset 0 0 0 2px var(--warning); }
+@keyframes tab-alert { 0% { box-shadow: inset 0 0 0 2px var(--alarm); } 50% { box-shadow: inset 0 0 0 2px transparent; } }
+@media (prefers-reduced-motion: reduce) { .floor-tab.lvl-alarm:not(.current) { box-shadow: inset 0 0 0 2px var(--alarm); } }
+
+@container plan (max-width: 560px) {
+  .floor-bar { margin-left: 0; justify-content: flex-start; width: 100%; }
+}
+
+/* ------------------------------------------------------------------------------------------------ scène du plan */
+/* Le plan est posé sur le verre bleu ciel du thermomètre ; la marge de verre garde entières les pastilles du bord. */
+.plan-stage {
+  position: relative;
+  padding: 18px;
+  background: var(--sky);
+  border: 1px solid color-mix(in srgb, var(--tube) 60%, transparent);
+  border-radius: 12px;
+  user-select: none; -webkit-user-select: none;
+  transition: border-color var(--t-fast) ease;
+}
+/* Écran Équipements et plan : le verre se borde de pointillés, les pastilles s'y déplacent. */
+.plan-stage.is-editing { border: 1px dashed var(--brand); }
+.plan-sheet { position: relative; border-radius: var(--r-sm); background: var(--plate); box-shadow: var(--shadow-1); }
+.plan-sheet img { display: block; width: 100%; height: auto; border-radius: var(--r-sm); filter: var(--plan-filter); -webkit-user-drag: none; }
+.plan-stage.no-plan .plan-sheet {
+  aspect-ratio: 3 / 2;
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 5% 7.5%;
+}
+.plan-none { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--s4); pointer-events: none; }
+.plan-none-card {
+  display: grid; justify-items: center; gap: 4px; max-width: 380px;
+  padding: var(--s3) var(--s4); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: var(--shadow-1);
+  color: var(--ink-2); font-size: var(--fs-sm); text-align: center;
+}
+.plan-none-card > .icon { width: 28px; height: 28px; color: var(--ink-3); }
+.plan-none-card strong { color: var(--ink); font-size: var(--fs-md); }
+.plan-none[data-state='error'] .plan-none-card > .icon { color: var(--alarm-ink); }
+.plan-spinner {
+  width: 24px; height: 24px; margin-bottom: 2px;
+  border: 2.5px solid var(--brand); border-right-color: transparent; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.plan-links, .plan-pins { position: absolute; inset: 0; width: 100%; height: 100%; }
+.plan-links { pointer-events: none; overflow: visible; }
+
+/* Liens détecteur -> caméras : pointillés bleus, rouges pour un détecteur qui sonne. */
+.link { stroke: var(--camera); stroke-width: 2; stroke-dasharray: 6 5; stroke-linecap: round; vector-effect: non-scaling-stroke; opacity: 0.9; }
+.link.firing { stroke: var(--alarm); stroke-width: 2.5; opacity: 1; }
+
+/* ------------------------------------------------------------------------------------------------ pastilles */
+/* Grammaire : la couleur dit l'état, la forme et le pictogramme disent le type. Les mêmes règles dessinent les pastilles
+   du plan (.pin) et celles de la légende (.lg-pin) : la légende ne peut pas mentir.
+   Le centre de la forme tombe sur le point enregistré (x, y en % du plan) ; l'identifiant est dessous. */
+.pin {
+  --pin: 34px;
+  position: absolute; z-index: 1;
+  transform: translate(-50%, calc(var(--pin) / -2));
+  display: grid; justify-items: center; gap: 3px;
+  padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Ce qui sonne passe devant ses voisines : une alarme n'est jamais cachée sous une autre pastille. */
+.pin.prealarm, .pin.selected { z-index: 2; }
+.pin.alarm { z-index: 3; }
+.pin.unacked { z-index: 4; }
+.pin:hover, .pin:focus-visible { z-index: 5; }
+.pin.is-dragging { z-index: 6; }
+
+.pin-glyph {
+  --bar-angle: 45deg;
+  position: relative; display: grid; place-items: center;
+  width: var(--pin); height: var(--pin);
+  border: 2.5px solid #ffffff; border-radius: 50%;
+  background: var(--ok); color: #ffffff;
+  box-shadow: var(--shadow-1);
+  overflow: hidden; /* le trait « barré » reste dans la forme */
+  transition: scale var(--t-fast) var(--ease-out), box-shadow var(--t-fast) ease, opacity var(--t-fast) ease;
+}
+.pin-glyph .icon { width: 16px; height: 16px; }
+
+/* Forme par catégorie : incendie rond, intrusion losange arrondi, accès écusson (carré à bas arrondi), environnement
+   goutte, caméra carré arrondi bleu. Le trait « barré » garde à l'écran le sens du pictogramme hors service. */
+:is(.pin, .lg-pin).cat-intrusion .pin-glyph {
+  --bar-angle: 0deg;
+  width: calc(var(--pin) * 0.82); height: calc(var(--pin) * 0.82); margin: calc(var(--pin) * 0.09);
+  border-radius: calc(var(--pin) * 0.2); rotate: 45deg;
+}
+:is(.pin, .lg-pin).cat-intrusion .pin-glyph .icon { rotate: -45deg; }
+:is(.pin, .lg-pin).cat-access .pin-glyph { border-radius: calc(var(--pin) * 0.2) calc(var(--pin) * 0.2) 50% 50%; }
+:is(.pin, .lg-pin).cat-environment .pin-glyph { --bar-angle: 90deg; border-radius: 50% 0 50% 50%; rotate: -45deg; }
+:is(.pin, .lg-pin).cat-environment .pin-glyph .icon { rotate: 45deg; }
+:is(.pin, .lg-pin).camera .pin-glyph { border-radius: calc(var(--pin) * 0.26); background: var(--camera); }
+
+/* État : remplissage ; préalarme à pictogramme foncé ; défaut et hors ligne barrés ; zone désarmée en pointillé. */
+:is(.pin, .lg-pin).prealarm .pin-glyph { background: var(--warning); color: var(--on-warning); }
+:is(.pin, .lg-pin).alarm .pin-glyph { background: var(--alarm); }
+:is(.pin, .lg-pin).fault .pin-glyph { background: var(--fault); }
+:is(.pin, .lg-pin).offline .pin-glyph { background: var(--offline); }
+:is(.pin, .lg-pin):is(.fault, .offline) .pin-glyph::after {
+  content: ''; position: absolute; inset: -4px; pointer-events: none;
+  background: linear-gradient(var(--bar-angle), transparent calc(50% - 1.5px), #ffffff calc(50% - 1.5px) calc(50% + 1.5px), transparent calc(50% + 1.5px));
+}
+:is(.pin, .lg-pin).disarmed .pin-glyph { border-style: dashed; opacity: 0.6; }
+
+/* Anneaux : caméra affichée au mur (bleu pâle bordé de bleu), sélection (bleu de marque), alarme à acquitter (double
+   anneau rouge, et une onde tant que personne n'a acquitté). */
+:is(.pin, .lg-pin).on-wall .pin-glyph { box-shadow: 0 0 0 4px var(--brand-soft), 0 0 0 5px var(--camera), var(--shadow-1); }
+.pin.selected .pin-glyph { box-shadow: 0 0 0 3px var(--brand), var(--shadow-1); }
+/* Sélectionnée ET au mur : les deux anneaux se lisent (marque, puis bleu pâle bordé de bleu caméra). */
+.pin.selected.on-wall .pin-glyph { box-shadow: 0 0 0 3px var(--brand), 0 0 0 7px var(--brand-soft), 0 0 0 8px var(--camera), var(--shadow-1); }
+:is(.pin, .lg-pin).unacked .pin-glyph { box-shadow: 0 0 0 3px var(--alarm), 0 0 0 5px #ffffff, 0 0 0 7px var(--alarm), var(--shadow-1); }
+.pin.unacked::before {
+  content: ''; position: absolute; top: 0; left: 50%; width: var(--pin); height: var(--pin); translate: -50% 0;
+  border-radius: 50%; pointer-events: none;
+  animation: pulse-ring 1.2s ease-out infinite;
+}
+
+/* Identifiant sous la pastille : puce blanche ; rouge pour une alarme, ambre pour une préalarme, bleu pour la sélection. */
+.pin-label {
+  padding: 0 4px; border-radius: 5px;
+  background: #ffffff; color: var(--navy); box-shadow: var(--shadow-1);
+  font-size: var(--fs-xs); font-weight: 700; line-height: 1.35; white-space: nowrap; font-variant-numeric: tabular-nums;
+  transition: background-color var(--t-fast) ease, color var(--t-fast) ease;
+}
+.pin.prealarm .pin-label { background: var(--warning); color: var(--on-warning); }
+.pin.alarm .pin-label { background: var(--frame-alarm); color: #ffffff; }
+.pin.selected:not(.alarm):not(.prealarm) .pin-label { background: var(--brand); color: #ffffff; }
+
+/* Étiquette déplacée près du bord du plan (classe posée par plan.js) : à côté ou au-dessus de la pastille, hors du flux. */
+.pin:is(.lbl-left, .lbl-right, .lbl-top) .pin-label { position: absolute; }
+.pin.lbl-left .pin-label { right: calc(100% + 3px); top: calc(var(--pin) / 2); translate: 0 -50%; }
+.pin.lbl-right .pin-label { left: calc(100% + 3px); top: calc(var(--pin) / 2); translate: 0 -50%; }
+.pin.lbl-top .pin-label { bottom: calc(100% - var(--pin) + 3px); left: 50%; translate: -50% 0; }
+
+/* Survol, focus clavier. */
+.pin:hover .pin-glyph { scale: 1.1; }
+.pin:focus-visible { outline: none; }
+.pin:focus-visible .pin-glyph { outline: 3px solid var(--focus); outline-offset: 4px; }
+.pin:focus-visible .pin-label { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* Mode édition : la pastille se saisit (main), se soulève au glisser (ombre portée, anneau de marque). */
+/* Zone de toucher élargie (44 px)  autour du dessin, quelle que soit la taille de la pastille. */
+.pin::after { content: ''; position: absolute; top: calc(var(--pin) / 2 - 22px); left: 50%; width: max(44px, 100%); height: 44px; translate: -50% 0; }
+.pin.editable { cursor: grab; touch-action: none; }
+.pin.editable:active, .pin.is-dragging { cursor: grabbing; }
+.pin.is-dragging .pin-glyph { scale: 1.18; box-shadow: 0 0 0 3px var(--brand), var(--shadow-2); }
+.pin.is-dragging .pin-label { background: var(--brand); color: #ffffff; box-shadow: var(--shadow-2); }
+
+/* Plan étroit (tablette en colonne, téléphone) : pastilles plus petites pour garder le dessin lisible. */
+@container plan (max-width: 640px) {
+  .plan-stage { padding: 14px; }
+  .pin { --pin: 28px; }
+  .pin .pin-glyph { border-width: 2px; }
+  .pin .pin-glyph .icon { width: 14px; height: 14px; }
+  .pin-label { padding: 0 3px; }
+}
+/* Téléphone : l'identifiant ne s'écrit que sous les pastilles qui comptent (alarme, préalarme, sélection, glisser) : sinon les
+   puces voisines se chevauchent. L'identifiant reste dit aux lecteurs d'écran (le nom du bouton) et au toucher (info-bulle). */
+@container plan (max-width: 440px) {
+  .pin:not(.alarm, .prealarm, .selected, .is-dragging, .editable, :hover, :focus-visible) .pin-label { display: none; }
+  .plan-stage { padding: 12px; }
+  .pin { --pin: 24px; }
+  .pin .pin-glyph .icon { width: 12px; height: 12px; }
+  .pin.unacked .pin-glyph { box-shadow: 0 0 0 2px var(--alarm), 0 0 0 4px #ffffff, 0 0 0 6px var(--alarm), var(--shadow-1); }
+}
+
+/* Écran moyen (menu ouvert) : les alarmes restent EN TÊTE (pleine largeur, visibles sans faire défiler), puis le plan et
+   les caméras côte à côte (colonne de droite de 360 px, comme sur grand écran). */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .surv-grid { grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto; grid-template-areas: 'alarms alarms' 'plan video'; }
+}
+.floor-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+.floor-tab { flex: none; white-space: nowrap; }
+@media (pointer: coarse) {
+  .floor-tab, #wall-prev, #wall-next, #wall-auto { min-height: var(--control-h); }
+  #wall-prev, #wall-next { min-width: var(--control-h); }
+}
+
+/* ------------------------------------------------------------------------------------------------ légende */
+/* Deux lignes qui apprennent la grammaire : la couleur dit l'état, la forme dit le type. */
+.plan-legend { display: grid; gap: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--line); font-size: var(--fs-xs); color: var(--ink-2); }
+/* Contenu de formation, pas d'urgence : repliée par défaut sur téléphone (plan.js), le titre reste un bouton de 44 px. */
+.plan-legend > summary { display: flex; align-items: center; min-height: var(--control-h); padding: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.plan-legend[open] > summary { margin-bottom: calc(var(--s2) * -1); }
+.plan-legend:not([open]) { gap: 0; }
+.lg-row { display: grid; grid-template-columns: 124px minmax(0, 1fr); align-items: start; gap: var(--s2) var(--s3); }
+.lg-term { font-weight: 700; color: var(--ink); line-height: 26px; }
+.lg-items { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+.lg-items li { display: inline-flex; align-items: center; gap: var(--s2); min-height: 26px; }
+.lg-pin { --pin: 18px; display: inline-grid; place-items: center; width: 26px; height: 26px; flex: none; }
+/* Un liseré gris détache le bord blanc de la pastille sur un panneau blanc. */
+.lg-pin .pin-glyph { border-width: 1.5px; box-shadow: 0 0 0 1px var(--line-strong); }
+.lg-pin .pin-glyph .icon { width: 11px; height: 11px; }
+.lg-pin.is-neutral .pin-glyph { background: var(--pin-neutral); }
+.lg-pin.unacked .pin-glyph { box-shadow: 0 0 0 2px var(--alarm), 0 0 0 3.5px var(--surface), 0 0 0 5px var(--alarm); }
+.lg-pin.on-wall .pin-glyph { box-shadow: 0 0 0 3px var(--brand-soft), 0 0 0 4px var(--camera); }
+.lg-pin:is(.fault, .offline) .pin-glyph::after { background: linear-gradient(var(--bar-angle), transparent calc(50% - 1px), #ffffff calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)); }
+@container plan (max-width: 560px) {
+  .lg-row { grid-template-columns: minmax(0, 1fr); gap: var(--s1); }
+  .lg-term { line-height: 1.4; }
+}
+
+/* ------------------------------------------------------------------------------------------------ vue éclatée */
+.stack-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: var(--s4); align-items: center; }
+@container plan (max-width: 720px) { .stack-view { grid-template-columns: minmax(0, 1fr); } }
+@container plan (max-width: 440px) { .stack-scene { --gap: 90px; height: clamp(300px, calc(var(--n) * 90px + 220px), 520px); } }
+.stack-scene {
+  --gap: 150px;
+  height: clamp(320px, calc(var(--n) * 150px + 200px), 760px);
+  display: grid; place-items: center; overflow: hidden; perspective: 1500px;
+  background: var(--sky);
+  border: 1px solid color-mix(in srgb, var(--tube) 60%, transparent);
+  border-radius: 12px;
+}
+.stack { position: relative; width: min(74%, 520px); aspect-ratio: 3 / 2; transform-style: preserve-3d; transform: rotateX(57deg) rotateZ(-34deg); }
+/* Plateau d'un étage : feuille blanche bordée de verre, centrée sur l'empilement, montée de --gap par niveau
+   (ni overflow ni opacité ni filtre sur le plateau : ils aplatiraient la 3D ; le filtre de nuit va sur l'image seule). */
+.layer {
+  position: absolute; left: 0; width: 100%; top: 50%; aspect-ratio: var(--ratio, 3 / 2);
+  transform: translateY(-50%) translateZ(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap)));
+  transform-style: preserve-3d; cursor: pointer;
+  background: var(--plate); border: 2px solid var(--tube); border-radius: 4px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tube) 55%, transparent), var(--shadow-2);
+  transition: border-color var(--t-fast) ease;
+}
+.layer:hover { border-color: var(--brand); }
+/* Étage en alarme : double anneau (rouge puis rouge pâle), visible de loin sans halo flou. */
+.layer.lvl-alarm { border-color: var(--alarm); box-shadow: 0 0 0 3px var(--alarm), 0 0 0 8px var(--alarm-soft), var(--shadow-2); }
+.layer.lvl-prealarm { border-color: var(--warning); box-shadow: 0 0 0 3px var(--warning), var(--shadow-2); }
+.layer.lvl-down { border-color: var(--fault); }
+.layer-plan { position: absolute; inset: 0; width: 100%; height: 100%; display: block; filter: var(--plan-filter); }
+.layer-plan.none { display: grid; place-items: center; background: var(--plate); color: var(--plate-ink); font-size: var(--fs-xs); filter: none; }
+/* Plateaux au-dessus d'un étage en alarme : transparents, pour ne jamais cacher ses balises. */
+.layer.see-through { background: transparent; border-style: dashed; box-shadow: none; }
+.layer.see-through .layer-plan { opacity: 0.18; }
+.layer-dots { position: absolute; inset: 0; transform-style: preserve-3d; pointer-events: none; }
+/* Étiquette dressée face à l'observateur, au coin avant gauche du plateau : lisible même sous l'étage du dessus. */
+.layer-name {
+  position: absolute; left: 0; bottom: 0; padding: 1px 8px; border-radius: 4px; transform-origin: 0 100%;
+  transform: rotateZ(34deg) rotateX(-57deg) translateY(-4px);
+  background: var(--navy); color: #ffffff; font-size: 13px; font-weight: 700; white-space: nowrap;
+}
+.layer.lvl-alarm .layer-name { background: var(--frame-alarm); }
+.dot3 { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--ok); border: 1px solid #ffffff; transform-style: preserve-3d; }
+.dot3.camera { background: var(--camera); border-radius: 2px; }
+.dot3.prealarm { background: var(--warning); }
+.dot3.alarm { background: var(--alarm); }
+.dot3.fault { background: var(--fault); }
+.dot3.offline { background: var(--offline); }
+.dot3.firing { width: 14px; height: 14px; margin: -7px 0 0 -7px; animation: pulse-ring 1s ease-out infinite; }
+/* Balise dressée face à l'observateur (inverse de l'inclinaison de l'empilement). */
+.beacon {
+  position: absolute; left: 50%; bottom: 50%; transform-origin: 50% 100%;
+  transform: translateX(-50%) rotateZ(34deg) rotateX(-57deg);
+  padding: 1px 6px 14px; border-radius: 4px 4px 0 0; white-space: nowrap;
+  background: linear-gradient(var(--frame-alarm) 0 70%, transparent); color: #ffffff; font-size: var(--fs-xs); font-weight: 800;
+}
+.dot3.prealarm .beacon { background: linear-gradient(var(--warning) 0 70%, transparent); color: var(--on-warning); }
+
+/* Liste des étages : une carte par niveau, avec sa pastille d'état (forme + icône + mot). */
+.stack-side { display: grid; gap: var(--s2); align-content: start; min-width: 0; }
+.stack-list { display: grid; gap: var(--s2); }
+.stack-open {
+  width: 100%; display: grid; gap: 6px; justify-items: start; text-align: left;
+  padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); color: var(--ink); font: inherit; cursor: pointer;
+  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease;
+}
+.stack-open:hover { border-color: var(--brand); background: var(--surface-2); }
+.stack-open-head { display: flex; align-items: center; gap: var(--s2); width: 100%; }
+.stack-open-name { font-size: var(--fs-md); }
+.stack-open-head > .icon { margin-left: auto; color: var(--ink-3); transition: color var(--t-fast) ease, translate var(--t-fast) var(--ease-out); }
+.stack-open:hover .stack-open-head > .icon { color: var(--brand); translate: 2px 0; }
+.stack-open .pill { white-space: normal; text-align: left; }
+.stack-list .lvl-alarm .stack-open { border-color: color-mix(in srgb, var(--alarm) 55%, var(--line)); background: color-mix(in srgb, var(--alarm-soft) 55%, var(--surface)); }
+.stack-list .lvl-alarm .stack-open:hover { border-color: var(--alarm); }
+.firing-ids { color: var(--alarm-ink); font-size: var(--fs-sm); font-weight: 700; }
+.stack-counts { color: var(--ink-2); font-size: var(--fs-sm); }
+
+/* ------------------------------------------------------------------------------------------------ mur vidéo */
+/* D'où viennent les caméras affichées : alarme suivie (rouge), sélection manuelle (bleu), vue générale. */
+.wall-mode { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); min-width: 0; }
+.wall-mode:empty { display: none; }
+.wall-mode .icon { margin-top: 2px; }
+.wall-mode > span { overflow-wrap: anywhere; }
+.wall-mode.is-incident { color: var(--alarm-ink); }
+.wall-mode.is-manual { color: var(--brand-ink); }
+.wall-pager { display: inline-flex; align-items: center; gap: var(--s1); }
+.wall-page { min-width: 48px; text-align: center; font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+
+.wall { display: grid; gap: var(--s2); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.wall.n1 { grid-template-columns: minmax(0, 1fr); }
+.wall > .empty { grid-column: 1 / -1; }
+/* Vignette noire ; son contour (rouge en alarme, ambre en préalarme) est dessiné PAR-DESSUS l'image. */
+.tile { position: relative; overflow: hidden; border-radius: var(--r-md); background: #000000; isolation: isolate; }
+.tile[role='button'] { cursor: pointer; }
+.tile[role='button']:focus-visible { outline: 3px solid var(--focus-on-frame); outline-offset: -3px; }
+.wall.n1 .tile { min-height: 150px; }
+.tile::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
+.tile.alert::after { box-shadow: inset 0 0 0 3px var(--alarm); }
+.tile.warn::after { box-shadow: inset 0 0 0 3px var(--warning); }
+.tile-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+.tile-caption {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 10px 7px;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.82));
+  color: #ffffff; font-size: var(--fs-xs); font-weight: 600; line-height: 1.3;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+}
+.tile-alert { position: absolute; top: 8px; left: 8px; z-index: 1; min-height: 24px; padding: 2px 8px 2px 6px; font-size: var(--fs-xs); }
+.tile-alert .icon { width: 14px; height: 14px; }
+/* Flux réel : connexion en cours (cercle qui tourne) ou en échec (icône et cause, nouvelle tentative automatique). */
+.tile-status {
+  position: absolute; inset: 0 0 30px; display: grid; place-content: center; justify-items: center; gap: var(--s2);
+  padding: var(--s3); text-align: center; font-size: var(--fs-xs); line-height: 1.4; color: #ffffff; background: rgba(0, 0, 0, 0.62);
+}
+.tile-status-mark { width: 20px; height: 20px; border: 2px solid #ffffff; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+.tile-status .icon { display: none; width: 24px; height: 24px; color: #ffb4a8; }
+.tile-status.is-error .icon { display: block; }
+.tile-status.is-error .tile-status-mark { display: none; }
+
+/* Écran Caméras : le mur en grand (2 x 2), légendes plus lisibles. */
+.slot-video-large .wall { gap: var(--s3); }
+.slot-video-large .tile-caption { padding: 28px 12px 10px; font-size: var(--fs-sm); }
+.slot-video-large .tile-alert { top: 12px; left: 12px; font-size: var(--fs-xs); }
+
+/* ------------------------------------------------------------------------------------------------ choix des caméras */
+.cam-count { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.cam-count:empty { display: none; }
+.cam-picker { display: grid; gap: var(--s2); grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); }
+.cam-picker > .empty { grid-column: 1 / -1; }
+.cam-chip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3);
+  min-height: 60px; padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+.cam-chip:hover { border-color: var(--brand); background: var(--surface-2); }
+.cam-chip[aria-pressed='true'] { border-color: var(--brand); background: var(--brand-soft); box-shadow: inset 0 0 0 1px var(--brand); }
+.cam-chip.is-alert:not([aria-pressed='true']) { border-color: color-mix(in srgb, var(--alarm) 55%, var(--line-strong)); }
+.cam-chip-glyph { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 9px; background: var(--camera); color: #ffffff; }
+.cam-chip-glyph .icon { width: 20px; height: 20px; }
+.cam-chip-text { display: grid; flex: 1 1 140px; min-width: 0; line-height: 1.3; }
+.cam-chip-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cam-chip-text small { color: var(--ink-2); font-size: var(--fs-xs); }
+.cam-chip-alert {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  min-height: 24px; padding: 0 8px 0 6px; border-radius: var(--r-pill);
+  background: var(--frame-alarm); color: #ffffff; font-size: var(--fs-xs); font-weight: 700;
+}
+.cam-chip-alert.is-warning { background: var(--warning); color: var(--on-warning); }
+.cam-chip-on { display: none; align-items: center; gap: 4px; flex: none; font-size: var(--fs-xs); font-weight: 700; color: var(--brand-ink); }
+.cam-chip[aria-pressed='true'] .cam-chip-on { display: inline-flex; }
+
+/* ------------------------------------------------------------------------------------------------ étages (administration) */
+/* Formulaire « Nouvel étage » de floors.js (écran Équipements et plan) ; les rangées .floor-row sont dans equipment.css. */
+/* .floor-add : défini dans equipment.css (une seule définition) ; seul le plancher de hauteur des boutons reste ici. */
+.floor-add .btn { min-height: var(--control-h); }
+
+/* Téléphone : sur l'écran Caméras, le mur passe AVANT le sélecteur (toucher une puce montre aussitôt le résultat). */
+@media (max-width: 599px) { .view-cameras .slot-video-large { order: -1; } }
+
+/* Loupe d'image (alarmes) : voile sombre, donc le contour de focus prend le jaune du cadre (le bleu de jour n'y fait que 2,4:1). */
+.lightbox :focus-visible { outline-color: var(--focus-on-frame); }
+
+/* Mur de la Surveillance : vignettes plus hautes (4:3, image recadrée). */
+.slot-video:not(.slot-video-large) .tile-canvas { aspect-ratio: 4 / 3; object-fit: cover; }
+
+/* Téléphone et tablette en colonne : une alarme ouverte amène ses caméras juste sous la fiche, avant le plan. */
+@media (max-width: 1023px) {
+  .surv-grid:has(#no-incident[hidden]) { grid-template-areas: 'alarms' 'video' 'plan'; }
+}
+
+/* ------------------------------------------------------------------------------------------------ finitions (revue) */
+/* Goutte d'environnement au repos : décalée vers le haut et la droite, pour ne pas couvrir le nom de zone dessiné dans l'image
+   (pas en édition : la position affichée doit rester celle qu'on déplace). */
+.pin.cat-environment:not(.alarm, .prealarm, .selected, .editable, .is-dragging) { translate: 10px -12px; }
+/* Alarme : le nom de la zone est écrit sur l'étiquette (« D-04 · Couloir »), plaque lisible sous la pastille. */
+.pin.unacked .pin-label { padding: 1px 8px; border-radius: 6px; }
+.pin.unacked:not(.lbl-left, .lbl-right) .pin-label { margin-top: 2px; }
+
+/* Alarme ouverte, grand écran : les caméras de la zone (une bande de deux vignettes) passent au-dessus du plan, visibles sans
+   défiler à 1440 x 900 ; la fiche garde le haut de la colonne de droite, « Acquitter » reste à portée. */
+@media (min-width: 1280px) {
+  .surv-grid:has(#no-incident[hidden]) { grid-template-areas: 'video alarms' 'plan alarms'; }
+  .surv-grid:has(#no-incident[hidden]) .wall:not(.n1) { grid-template-columns: repeat(2, minmax(0, 240px)); }
+  .surv-grid:has(#no-incident[hidden]) .wall:not(.n1) > .tile:nth-child(n + 3) { display: none; }
+}
+
+/* Téléphone, état calme : la page est courte, on resserre les marges pour que le mur de caméras remonte. */
+@media (max-width: 599px) {
+  .surv-grid { gap: var(--s3); }
+  .surv-grid .c-plan .plan-stage { padding: 8px; }
+  .surv-grid .c-plan .panel-body { gap: var(--s2); }
+  .plan-legend { padding-top: 0; }
+  .plan-legend > summary { min-height: var(--control-h); }
+}
+/* Téléphone : le mur remonte avant le plan, comme sous une alarme ; le plan reste à un défilement. */
+@media (max-width: 599px) {
+  .surv-grid { grid-template-areas: 'alarms' 'video' 'plan'; }
+}

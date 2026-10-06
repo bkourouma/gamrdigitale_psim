@@ -11,7 +11,26 @@
         ],
         "createdAt": "2026-10-03T06:56:10.878Z",
         "reason": "Claude: plan-img has no src in HTML on purpose; app.js renderPlan() sets it at runtime from /api/plan, and the empty state is handled by #plan-empty"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "portal/web/index.html"
+        ],
+        "createdAt": "2026-10-05T18:46:00.866Z",
+        "reason": "Agent: border-top 6px var(--frame) sur .workspace au téléphone = le cadre marine de l'application réduit à une bande (contrat de direction « La jauge GAMR »), pas un accent de carte"
+      },
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          "portal/web/index.html"
+        ],
+        "createdAt": "2026-10-05T18:46:02.510Z",
+        "reason": "Agent: ombre d'élévation teintée encre (#10264a, décalée de 18px, étalement négatif) sous la feuille posée sur le cadre marine ; la nuit les ombres sont noires neutres. Pas un halo"
       }
     ]
-  }
+  },
+  "buildPath": "code"
 }

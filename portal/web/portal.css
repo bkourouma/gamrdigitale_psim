@@ -1,0 +1,534 @@
+/* =====================================================================================================================
+   Portail « Suivi de vos sites » : coquille et écrans. Frère du PSIM : même cadre marine, même rail, même feuille,
+   même jauge GAMR. Les jetons, composants et la jauge viennent de base.css (copie conforme de web/base.css) ;
+   ce fichier n'invente ni couleur, ni rayon, ni ombre : il les compose.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ jetons du portail */
+:root {
+  --rail-w: 248px;
+  --sheet-gap: 8px;      /* le cadre visible autour de la feuille */
+  --sheet-r: 18px;
+  --topbar-h: 60px;
+  /* Icônes d'état posées sur le cadre marine : les teintes « encre » du thème Nuit de base.css, pensées pour un fond
+     foncé (≥ 3:1 sur --frame comme sur --frame-2). Sur la feuille, on reprend les --*-ink habituels. */
+  --on-frame-ok: #6fd487;
+  --on-frame-warning: #f4c95a;
+  --on-frame-alarm: #ff9585;
+  --on-frame-fault: #c3aaf6;
+  --on-frame-offline: #aab6c8;
+  /* Étiquette PSIM : le jaune de l'affiche (--focus-on-frame) et le bleu nuit du texte, quel que soit le thème. */
+  --tag-bg: var(--focus-on-frame);
+  --tag-ink: #10264a;
+  /* Liens et boutons discrets sur la feuille. De nuit, --brand ne donne que 3,7:1 sur le fond : on prend l'encre bleue claire. */
+  --link: var(--brand);
+}
+:root[data-theme='night'] { --link: var(--info-ink); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='day']) { --link: var(--info-ink); }
+}
+.sheet a:where(:not(.btn, .site-link, .tabs a)), .sheet .btn-ghost { color: var(--link); --btn-ink: var(--link); }
+/* Le survol garde un contraste suffisant (base.css passe à --brand-2, 4,2:1 sur la feuille de nuit). */
+.sheet a:where(:not(.btn, .site-link, .tabs a)):hover { color: var(--link); }
+.skip:hover { color: var(--ink); }
+
+/* Bouton principal au survol : de nuit, --brand-2 (#4a80d4) ne donne que 3,9:1 avec le texte blanc. On fonce le bleu au lieu de l'éclaircir. */
+:root[data-theme='night'] .btn-primary:hover:not(:disabled) { --btn-bg: color-mix(in srgb, var(--brand) 78%, #000); border-color: var(--btn-bg); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='day']) .btn-primary:hover:not(:disabled) { --btn-bg: color-mix(in srgb, var(--brand) 78%, #000); border-color: var(--btn-bg); }
+}
+
+/* Le cadre est le fond de la page : il se voit autour de la feuille, et au-delà du défilement. */
+body { background: var(--frame); }
+
+/* Symbole du logo sur une surface claire : version « sur clair » de jour, « sur foncé » de nuit. */
+.mark-night { display: none; }
+:root[data-theme='night'] .mark-day { display: none; }
+:root[data-theme='night'] .mark-night { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='day']) .mark-day { display: none; }
+  :root:not([data-theme='day']) .mark-night { display: block; }
+}
+
+/* Le mot GAMR-DIGITALE vectorisé (logo.svg#wordmark, fill=currentColor) : sa couleur vient du texte qui l'entoure. */
+/* Symbole 712,8 × 64,3 : la hauteur est celle des capitales ; on garde ce rapport (11,09) partout. */
+.wordmark { display: block; flex: none; height: 14.8px; width: 164px; overflow: visible; }
+
+.psim-tag {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px 0; border-radius: var(--r-xs);
+  background: var(--tag-bg); color: var(--tag-ink);
+  font: 800 var(--fs-sm) / 1.4 var(--font-brand);
+}
+.brand-name { display: grid; gap: 5px; min-width: 0; }
+.brand-sub { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
+
+/* ------------------------------------------------------------------------------------------------ connexion */
+.gate {
+  min-height: 100vh; min-height: 100dvh;
+  display: grid; place-content: center; justify-items: center; gap: var(--s5);
+  padding: var(--s6) var(--s4);
+  background: var(--frame); color: var(--frame-ink);
+}
+.gate :focus-visible { outline-color: var(--focus-on-frame); }
+.gate-sheet {
+  width: min(460px, calc(100vw - 2 * var(--s4)));
+  /* Colonne bornée à la feuille : sans elle, un long bouton (white-space: nowrap) l'élargit et déborde à 390 px. */
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s5);
+  padding: var(--s6) var(--s6) var(--s5);
+  background: var(--surface); color: var(--ink);
+  border-radius: var(--r-xl); box-shadow: var(--shadow-2);
+}
+.gate-sheet :focus-visible { outline-color: var(--focus); }
+.gate-sheet:focus { outline: none; }
+.gate-brand { display: flex; align-items: center; gap: var(--s3); color: var(--wordmark); }
+.gate-mark { width: 56px; height: 56px; flex: none; }
+.gate .wordmark { height: 22.5px; width: 250px; }
+.gate .brand-sub { color: var(--ink-2); }
+/* Sur la feuille claire, l'étiquette passe en marine (comme sur la page de connexion du PSIM). */
+.gate .psim-tag { --tag-bg: var(--frame); --tag-ink: var(--frame-ink); }
+.gate-form { display: grid; gap: var(--s4); }
+.gate-form .btn { white-space: normal; text-align: center; }
+.gate-intro { display: grid; gap: var(--s2); }
+.gate-intro p { color: var(--ink-2); }
+.gate-alt { display: flex; justify-content: center; }
+.gate-slogan { max-width: 460px; text-align: center; font-style: italic; color: var(--frame-ink-2); }
+@media (max-width: 480px) {
+  .gate { padding: var(--s5) var(--s3); align-content: start; }
+  .gate-sheet { padding: var(--s5) var(--s4) var(--s4); }
+  .gate .wordmark { width: 216px; height: 19.5px; }
+}
+
+/* ------------------------------------------------------------------------------------------------ coquille */
+.app { min-height: 100vh; display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); background: var(--frame); }
+
+/* Rail : sur le cadre marine, collé en haut, pleine hauteur ; la liste des sites défile si elle est longue. */
+.rail {
+  position: sticky; top: 0; height: 100vh; height: 100dvh;
+  display: flex; flex-direction: column; gap: var(--s4);
+  padding: var(--s5) var(--s3) var(--s3);
+  background: var(--frame); color: var(--frame-ink);
+}
+.rail :focus-visible { outline-color: var(--focus-on-frame); }
+.rail-brand { display: flex; align-items: center; gap: 10px; padding: 0 var(--s1); color: var(--frame-ink); text-decoration: none; border-radius: var(--r-md); }
+.rail-brand:hover { color: var(--frame-ink); text-decoration: none; }
+.rail-brand .brand-mark { width: 40px; height: 40px; flex: none; }
+.rail-brand .brand-sub { color: var(--frame-ink-2); }
+.rail-close { display: none; }
+
+/* La liste défile (overflow) : 6 px de marge intérieure pour que le contour de focus (3 px, décalé de 2 px) ne soit pas rogné. */
+.rail-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 2px; padding: 6px; margin: -6px; }
+.nav-item {
+  display: flex; align-items: center; gap: var(--s3);
+  min-height: var(--control-h); padding: 0 var(--s3);
+  border-radius: var(--r-md);
+  color: var(--frame-ink); text-decoration: none;
+  font: 600 15px / 1.25 var(--font-ui);
+  transition: background-color var(--t-fast) ease, color var(--t-fast) ease;
+}
+.nav-item:hover { background: var(--frame-2); color: var(--frame-ink); text-decoration: none; }
+.nav-item > .icon { width: 22px; height: 22px; }
+/* L'écran ouvert est un morceau de la feuille, sorti du cadre. */
+.nav-item[aria-current='page'] { background: var(--surface); color: var(--brand-ink); }
+/* Le contour est dessiné hors de l'élément, donc sur le cadre : le jaune du cadre, comme le PSIM (6,4:1). */
+.nav-item[aria-current='page']:focus-visible { outline-color: var(--focus-on-frame); }
+/* De nuit, la feuille (--surface) et le cadre sont deux bleus proches (1,3:1) : un liseré clair détache l'écran ouvert. */
+:root[data-theme='night'] .nav-item[aria-current='page'] { box-shadow: inset 0 0 0 1.5px var(--frame-ink-2); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='day']) .nav-item[aria-current='page'] { box-shadow: inset 0 0 0 1.5px var(--frame-ink-2); }
+}
+.nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-group { margin: var(--s4) var(--s3) var(--s1); font-size: var(--fs-xs); font-weight: 700; line-height: 1.3; color: var(--frame-ink-2); }
+.nav-org { display: grid; gap: 2px; }
+.nav-org + .nav-org { margin-top: var(--s2); }
+.nav-org-title { margin: var(--s2) var(--s3) 0; font-size: var(--fs-xs); font-weight: 600; color: var(--frame-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-list { display: grid; gap: 2px; }
+
+/* L'état de chaque site, dans le rail : icône (sa forme) et couleur ; le mot est donné aux lecteurs d'écran et à l'infobulle. */
+.nav-state { display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none; }
+.nav-state .icon { width: 22px; height: 22px; }
+.nav-state.is-ok { color: var(--on-frame-ok); }
+.nav-state.is-alarm { color: var(--on-frame-alarm); }
+.nav-state.is-fault { color: var(--on-frame-fault); }
+.nav-state.is-offline, .nav-state.is-unknown { color: var(--on-frame-offline); }
+.nav-item[aria-current='page'] .nav-state.is-ok { color: var(--ok-ink); }
+.nav-item[aria-current='page'] .nav-state.is-alarm { color: var(--alarm-ink); }
+.nav-item[aria-current='page'] .nav-state.is-fault { color: var(--fault-ink); }
+.nav-item[aria-current='page'] .nav-state.is-offline,
+.nav-item[aria-current='page'] .nav-state.is-unknown { color: var(--offline-ink); }
+
+.rail-foot { display: grid; gap: 2px; padding-top: var(--s3); border-top: 1px solid var(--frame-3); }
+.whoami { display: flex; align-items: center; gap: var(--s3); padding: var(--s1) var(--s3) var(--s2); color: var(--frame-ink); }
+.whoami > .icon { color: var(--frame-ink-2); }
+.whoami-text { display: grid; min-width: 0; }
+.whoami-name { font-size: var(--fs-sm); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.whoami-role { font-size: var(--fs-xs); color: var(--frame-ink-2); }
+.rail-btn {
+  display: flex; align-items: center; gap: var(--s3); width: 100%;
+  min-height: var(--control-h-sm); padding: 0 var(--s3);
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--frame-ink);
+  font: 600 var(--fs-sm) / 1.2 var(--font-ui); text-align: left; cursor: pointer;
+  transition: background-color var(--t-fast) ease;
+}
+.rail-btn:hover { background: var(--frame-2); }
+.rail-btn .icon { color: var(--frame-ink-2); }
+@media (pointer: coarse) { .rail-btn { min-height: var(--control-h); } }
+
+/* La feuille, posée dans le cadre. */
+.workspace {
+  min-width: 0;
+  margin: var(--sheet-gap) var(--sheet-gap) var(--sheet-gap) 0;
+  min-height: calc(100vh - 2 * var(--sheet-gap));
+  display: flex; flex-direction: column;
+  background: var(--ground); color: var(--ink);
+  /* Même dessin que la feuille du PSIM (web/shell.css). */
+  border-radius: var(--sheet-r) var(--r-md) var(--r-md) var(--sheet-r);
+}
+.topbar { display: none; }
+.scrim { position: fixed; inset: 0; z-index: 39; background: rgba(8, 20, 40, 0.62); }
+
+/* Deux mesures de largeur (requêtes de conteneur) : la feuille, pour la mise en page (une ou deux colonnes), et chaque
+   panneau, pour son contenu (tableau en fiches, rangées de zones) : un demi-panneau est étroit même sur grand écran. */
+.sheet {
+  container: sheet / inline-size;
+  flex: 1; width: 100%; max-width: 1280px; margin: 0 auto;
+  padding: var(--s6) var(--s6) var(--s7);
+  display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s5);
+}
+.sheet:focus { outline: none; }
+.sheet.is-loading > * { opacity: 0.55; transition: opacity var(--t-fast) ease; }
+.sheet .panel { container: panel / inline-size; }
+
+/* Tablette et téléphone : le rail devient un tiroir, la feuille prend toute la largeur avec un liseré du cadre en haut. */
+@media (max-width: 1023px) {
+  .app { display: block; }
+  .rail {
+    position: fixed; inset: 0 auto 0 0; z-index: 40;
+    width: min(312px, 86vw); height: 100%;
+    padding-top: var(--s4);
+    box-shadow: var(--shadow-2);
+    transform: translateX(-102%); visibility: hidden;
+    transition: transform var(--t-med) var(--ease-out), visibility 0s linear var(--t-med);
+  }
+  .app.is-drawer-open .rail { transform: none; visibility: visible; transition: transform var(--t-med) var(--ease-out); }
+  .rail-brand { padding-right: 52px; }
+  .rail-close { display: inline-flex; position: absolute; top: var(--s3); right: var(--s3); --btn-bg: transparent; --btn-ink: var(--frame-ink); --btn-line: transparent; }
+  .rail-close:hover:not(:disabled) { --btn-bg: var(--frame-2); color: var(--frame-ink); border-color: transparent; }
+  .rail-btn { min-height: var(--control-h); }
+  .workspace { margin: 0; min-height: 100vh; border-radius: 0; }
+  /* Le liseré de 6 px à la couleur du cadre est porté par la barre collée en haut : il reste visible pendant le défilement. */
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    display: flex; align-items: center; gap: var(--s3);
+    min-height: var(--topbar-h); padding: 0 var(--s4) 0 var(--s3);
+    background: var(--surface); border-top: 6px solid var(--frame); border-bottom: 1px solid var(--line);
+  }
+  .menu-btn { --btn-line: transparent; flex: none; }
+  .menu-btn .icon { width: 24px; height: 24px; }
+  .topbar-brand { display: flex; align-items: center; gap: var(--s2); min-height: var(--control-h); min-width: 0; color: var(--wordmark); text-decoration: none; border-radius: var(--r-sm); }
+  .topbar-brand:hover { color: var(--wordmark); text-decoration: none; }
+  .topbar-mark { width: 32px; height: 32px; flex: none; }
+  .topbar .wordmark { height: 13.5px; width: 150px; }
+  .topbar-sub { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sheet { padding: var(--s5) var(--s5) var(--s7); }
+}
+@media (max-width: 760px) {
+  .sheet { padding: var(--s4) var(--s4) var(--s7); gap: var(--s4); }
+  .topbar-sub { display: none; }
+  .panel-head { padding: var(--s4) var(--s4) 0; }
+  .panel-body { padding: var(--s3) var(--s4) var(--s4); }
+}
+
+/* ------------------------------------------------------------------------------------------------ en-tête d'écran */
+.page-head { display: grid; gap: var(--s2); }
+.page-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+.page-title-row h1 { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+h1[tabindex='-1']:focus { outline: none; }
+.page-tools { display: flex; align-items: center; gap: var(--s2) var(--s3); flex-wrap: wrap; }
+/* --ink-2 sur le fond de la feuille : --ink-3 n'y donne que 4,45:1. */
+.updated { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--ink-2); }
+.page-sub { color: var(--ink-2); }
+.crumb {
+  justify-self: start; display: inline-flex; align-items: center; gap: 4px;
+  min-height: var(--control-h); margin: calc(-1 * var(--s3)) 0 calc(-1 * var(--s2)) calc(-1 * var(--s2));
+  padding: 0 var(--s3) 0 var(--s2); border-radius: var(--r-sm);
+  font-size: var(--fs-sm); font-weight: 700; text-decoration: none;
+}
+.crumb:hover { background: var(--brand-soft); text-decoration: none; }
+.state-row { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s1); }
+.pill.is-unknown { color: var(--ink-2); }
+.page-foot { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--ink-2); }
+.print-only { display: none; }
+.lead { color: var(--ink); }
+.with-icon { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.with-icon .icon { color: var(--ink-2); }
+.cell-sub { display: block; font-size: var(--fs-xs); font-weight: 400; color: var(--ink-2); }
+
+/* Deux colonnes quand la feuille est assez large (largeur de la feuille, pas de la fenêtre : le rail compte). */
+.grid-2 { display: grid; gap: var(--s5); grid-template-columns: minmax(0, 1fr); align-items: start; }
+@container sheet (min-width: 900px) {
+  .grid-2 { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); }
+  .grid-2.is-even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+.grid-2.is-stretch { align-items: stretch; }
+@container sheet (max-width: 520px) { .grid-2 { gap: var(--s4); } }
+
+/* ------------------------------------------------------------------------------------------------ tableaux */
+/* Les en-têtes de ligne (le nom d'un site, d'un équipement) se lisent comme des données, pas comme des titres de colonne. */
+table.data tbody th { font-size: var(--fs-sm); font-weight: 700; color: var(--ink); background: transparent; white-space: normal; }
+table.data td, table.data th { vertical-align: middle; }
+table.data td .pill { white-space: nowrap; }
+table.data tbody tr:last-child th { border-bottom: 0; }
+table.data time { white-space: nowrap; }
+/* Les en-têtes de colonne peuvent passer à la ligne : un tableau large ne déborde pas pour « Disponibilité (35 j) ». */
+table.data thead th { white-space: normal; }
+
+.sites-table th[scope='row'] { min-width: 10rem; }
+.site-link { font-size: var(--fs-md); font-weight: 700; color: var(--ink); text-decoration: none; }
+.site-link:hover { color: var(--link); text-decoration: underline; }
+.site-org { display: block; margin-top: 2px; font-size: var(--fs-xs); font-weight: 400; color: var(--ink-2); }
+table.data tr.is-clickable { cursor: pointer; }
+table.data tr.is-alarm { background: color-mix(in srgb, var(--alarm-soft) 65%, transparent); }
+table.data tr.is-alarm:hover { background: var(--alarm-soft); }
+.state-cell { display: grid; gap: 4px; justify-items: start; }
+.state-detail { max-width: 40ch; font-size: var(--fs-xs); color: var(--ink-2); }
+
+/* Jauge GAMR en ligne : tube + chiffre (Baloo) + niveau en mot. */
+.risk-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s3); }
+.risk-inline .tube { width: 96px; flex: none; }
+.risk-read { display: inline-flex; align-items: baseline; gap: var(--s2); white-space: nowrap; }
+.risk-read.is-none { color: var(--lvl-none-ink); font-size: var(--fs-sm); font-weight: 700; }
+.risk-num { font: 800 var(--fs-xl) / 1 var(--font-brand); color: var(--brand-ink); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.risk-num small { margin-left: 1px; font: 700 var(--fs-xs) / 1 var(--font-ui); color: var(--ink-2); letter-spacing: 0; }
+.risk-num.is-lg { font-size: var(--fs-3xl); }
+/* Dans un tableau, le chiffre est une donnée : Atkinson, comme le reste du tableau (Baloo jamais sur une donnée de tableau). */
+table.data .risk-num { font: 700 var(--fs-md) / 1 var(--font-ui); letter-spacing: 0; }
+.risk-stale { flex-basis: 100%; font-size: var(--fs-xs); color: var(--ink-2); }
+.lvl-text-none { color: var(--lvl-none-ink); }
+
+/* Panneau étroit (téléphone, ou demi-panneau) : chaque ligne de tableau devient une fiche (en-tête de ligne en premier,
+   puis « libellé : valeur »). Mesuré sur la largeur du panneau qui contient le tableau, et seulement à l'écran :
+   l'impression garde les tableaux. Seuil sous les 694 px d'un panneau pleine largeur à 1024 px avec barre de défilement. */
+@media screen {
+  /* Panneau moyen : cellules resserrées, pour que 5 ou 6 colonnes tiennent sans défilement horizontal. */
+  @container panel (max-width: 820px) {
+    table.data th, table.data td { padding: 9px var(--s2); }
+  }
+  @container panel (max-width: 600px) {
+    table.data.is-stacked thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    table.data.is-stacked, table.data.is-stacked tbody { display: block; }
+    table.data.is-stacked tr { display: flex; flex-direction: column; gap: 6px; padding: var(--s3) 0; border-bottom: 1px solid var(--line); }
+    table.data.is-stacked tbody tr:last-child { border-bottom: 0; }
+    table.data.is-stacked tbody tr:hover { background: transparent; }
+    table.data.is-stacked tr.is-alarm { margin: 0 calc(-1 * var(--s2)); padding: var(--s3) var(--s2); border-radius: var(--r-sm); background: var(--alarm-soft); }
+    table.data.is-stacked th, table.data.is-stacked td {
+      display: grid; grid-template-columns: minmax(7rem, 36%) minmax(0, 1fr); gap: var(--s3); align-items: start;
+      padding: 0; border: 0; background: transparent; text-align: left; white-space: normal;
+    }
+    table.data.is-stacked td::before { content: attr(data-label); padding-top: 3px; font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2); }
+    table.data.is-stacked tbody th[scope='row'] { order: -1; grid-template-columns: minmax(0, 1fr); font-size: var(--fs-md); }
+    table.data.is-stacked td.num { text-align: left; }
+    table.data.is-stacked .pill { white-space: normal; }
+    table.data.is-stacked td > :is(.pill, .tag, .with-icon, time, .state-cell, .risk-inline) { justify-self: start; }
+    .sites-table th[scope='row'] { min-width: 0; }
+  }
+  /* Tableau des sites sur une feuille moyenne (tablette, petit portable) : ses cinq colonnes ne tiennent pas ; chaque site
+     devient une fiche dont les faits se rangent côte à côte, libellé au-dessus de la valeur. */
+  @container panel (min-width: 601px) and (max-width: 900px) {
+    table.data.sites-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    table.data.sites-table, table.data.sites-table tbody { display: block; }
+    table.data.sites-table tr { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 0.9fr); gap: var(--s3) var(--s4); padding: var(--s4) 0; border-bottom: 1px solid var(--line); }
+    table.data.sites-table tbody tr:last-child { border-bottom: 0; }
+    /* Le fond teinté déborde de la ligne de --s2 au plus : la marge de la zone de défilement (base.css), pas davantage. */
+    table.data.sites-table tr.is-alarm { margin: 0 calc(-1 * var(--s2)); padding: var(--s4) var(--s2); border-radius: var(--r-md); }
+    table.data.sites-table th, table.data.sites-table td { display: grid; gap: 6px; align-content: start; padding: 0; border: 0; background: transparent; text-align: left; white-space: normal; }
+    table.data.sites-table td::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2); }
+    table.data.sites-table th[scope='row'] { grid-column: 1 / -1; min-width: 0; font-size: var(--fs-md); }
+    table.data.sites-table .pill { white-space: normal; }
+    table.data.sites-table td > * { justify-self: start; }
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------ vue d'ensemble */
+.lines { display: grid; gap: var(--s3); }
+.lines li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: var(--s3); align-items: start; }
+.lines li > .icon { margin-top: 1px; color: var(--brand); }
+.lines li.is-state-alarm > .icon { color: var(--alarm); }
+.lines li.is-state-ok > .icon { color: var(--ok); }
+.lines strong { font-variant-numeric: tabular-nums; }
+
+.exposure { display: flex; align-items: center; gap: var(--s4) var(--s5); }
+/* Graduations du thermomètre (opacité .85 dans base.css) : --ink-2 pour rester lisibles (--ink-3 tombait à 3,7:1). */
+.exposure-thermo { flex: none; padding-right: 22px; color: var(--ink-2); }
+.exposure-text { display: grid; gap: var(--s2); justify-items: start; min-width: 0; }
+.exposure-site { font-size: var(--fs-lg); font-weight: 700; overflow-wrap: anywhere; }
+.exposure-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); }
+
+/* ------------------------------------------------------------------------------------------------ page d'un site */
+.site-banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s5);
+  padding: var(--s4) var(--s5); border-radius: var(--r-lg);
+  border: 1px solid transparent; background: var(--surface);
+}
+.site-banner.is-ok { background: var(--ok-soft); }
+.site-banner.is-alarm { background: var(--alarm-soft); border-color: color-mix(in srgb, var(--alarm) 40%, transparent); }
+.site-banner.is-fault { background: var(--fault-soft); }
+.site-banner.is-offline { background: var(--offline-soft); }
+.site-banner.is-unknown { background: transparent; border: 1px dashed var(--line-strong); }
+.site-banner .state-block { flex: 1 1 320px; }
+.last-signal { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--ink-2); }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s4); }
+/* Onglets : liens (chaque onglet a son adresse), présentés en commande segmentée ; défilent sur téléphone. */
+.tabs {
+  display: flex; gap: 2px; max-width: 100%; padding: 3px;
+  overflow-x: auto; scrollbar-width: none;
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tabs a {
+  flex: none; display: inline-flex; align-items: center; gap: var(--s2);
+  min-height: var(--control-h); padding: 0 var(--s4);
+  border-radius: var(--r-sm); color: var(--ink-2);
+  font: 600 var(--fs-sm) / 1 var(--font-ui); text-decoration: none; white-space: nowrap;
+  transition: background-color var(--t-fast) ease, color var(--t-fast) ease;
+}
+.tabs a:hover { color: var(--ink); background: color-mix(in srgb, var(--surface) 55%, transparent); text-decoration: none; }
+.tabs a[aria-current='page'] { background: var(--surface); color: var(--brand-ink); box-shadow: var(--shadow-1); }
+.tabs a:focus-visible { outline-offset: -3px; }
+.tabs .icon { width: 18px; height: 18px; }
+.period { display: flex; align-items: center; gap: var(--s2) var(--s3); }
+.period-label { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.period .segmented button { min-height: 38px; padding: 0 var(--s3); }
+/* Téléphone : tous les onglets restent visibles (deux rangées) plutôt que cachés dans un défilement. */
+@media (max-width: 760px) {
+  .toolbar { gap: var(--s3); }
+  .tabs { flex-wrap: wrap; overflow: visible; width: 100%; }
+  .tabs a { flex: 1 1 auto; justify-content: center; padding: 0 var(--s3); }
+}
+
+.tab-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s5); }
+@container sheet (max-width: 520px) { .tab-body { gap: var(--s4); } }
+
+/* Faits clés : une liste lisible (libellé, valeur, phrase), pas des tuiles de gros chiffres. */
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--s4) var(--s5); margin: 0; }
+.fact { display: grid; gap: 2px; align-content: start; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.fact dt { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.fact dd { margin: 0; }
+.fact-value { font-size: var(--fs-lg); font-weight: 700; font-variant-numeric: tabular-nums; }
+.fact-note { font-size: var(--fs-sm); color: var(--ink-2); }
+
+/* Indice : anneau + niveau. */
+.level-big { font: 800 var(--fs-2xl) / 1.1 var(--font-brand); letter-spacing: -0.01em; }
+.risk-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s4) var(--s5); }
+.risk-summary .ring { flex: none; }
+.risk-summary-text { flex: 1 1 200px; display: grid; gap: var(--s2); justify-items: start; }
+.risk-summary-text .btn { margin-top: var(--s2); }
+
+.risk-hero { display: grid; }
+/* align-content : étiré à la hauteur du panneau voisin, l'anneau et le texte restent groupés au milieu. */
+.risk-hero-body { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; align-content: center; gap: var(--s5); padding: var(--s5); }
+.risk-hero-ring { display: grid; place-items: center; }
+.risk-hero-text { display: grid; gap: var(--s3); justify-items: start; min-width: 0; }
+.risk-hero-text .notice { justify-self: stretch; }
+.risk-at { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s2); font-size: var(--fs-sm); color: var(--ink-2); }
+@container panel (max-width: 560px) {
+  .risk-hero-body { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: var(--s4); }
+  .risk-hero-text { justify-items: stretch; width: 100%; }
+}
+
+/* L'échelle de 0 à 60 : grand tube à la valeur du site, seuils dessous, quatre niveaux à leur largeur réelle. */
+.scale { display: grid; gap: 6px; }
+.tube.is-lg { height: 22px; }
+.scale-ticks { position: relative; height: 14px; font: 700 var(--fs-xs) / 1 var(--font-ui); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.scale-ticks span { position: absolute; top: 0; transform: translateX(-50%); }
+.scale-ticks span:nth-child(1) { left: 0; transform: none; }
+.scale-ticks span:nth-child(2) { left: calc(8 / 60 * 100%); }
+.scale-ticks span:nth-child(3) { left: calc(20 / 60 * 100%); }
+.scale-ticks span:nth-child(4) { left: calc(36 / 60 * 100%); }
+.scale-ticks span:nth-child(5) { left: 100%; transform: translateX(-100%); }
+.scale-bands { display: grid; grid-template-columns: 8fr 12fr 16fr 24fr; margin: 0; }
+.scale-bands li { display: grid; gap: 3px; align-content: start; padding: 0 6px; font-size: var(--fs-xs); min-width: 0; }
+.scale-bands li:first-child { padding-left: 0; }
+.scale-bands li::before { content: ''; height: 6px; border-radius: var(--r-pill); margin-bottom: 3px; }
+.scale-bands .band-faible::before { background: var(--lvl-faible); }
+.scale-bands .band-modere::before { background: var(--lvl-modere); }
+.scale-bands .band-eleve::before { background: var(--lvl-eleve); }
+.scale-bands .band-critique::before { background: var(--lvl-critique); }
+.scale-range { color: var(--ink-2); }
+@container panel (max-width: 560px) {
+  .scale-bands { grid-template-columns: 1fr 1fr; gap: var(--s3) var(--s4); }
+  .scale-bands li { padding: 0; }
+}
+ul.formula { display: grid; gap: 4px; margin: 0; padding-left: 1.25em; list-style: disc; }
+ul.formula li::marker { color: var(--ink-3); }
+
+/* Risque par zone : nom, tube, chiffre + niveau, « à revoir ». */
+.zone-list { display: grid; }
+.zone-row {
+  display: grid; grid-template-columns: minmax(7.5rem, 1.25fr) minmax(96px, 1.25fr) 8.5rem 6rem; align-items: center; gap: var(--s2) var(--s3);
+  padding: var(--s3) 0; border-bottom: 1px solid var(--line);
+}
+.zone-row:last-child { border-bottom: 0; }
+.zone-name { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.zone-row .tag { justify-self: start; }
+@container panel (max-width: 640px) {
+  .zone-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .zone-row .tube { grid-column: 1 / -1; grid-row: 2; }
+  .zone-row .tag { grid-column: 1 / -1; grid-row: 3; }
+  .zone-tag-slot { display: none; }
+}
+
+/* ------------------------------------------------------------------------------------------------ graphiques */
+.chart-wrap { position: relative; min-height: 96px; }
+.chart-svg { display: block; width: 100%; height: auto; touch-action: pan-y; border-radius: var(--r-sm); }
+.chart-svg:focus-visible { outline-offset: 4px; }
+.chart-svg text { font: 600 12px var(--font-ui); fill: var(--ink-2); }
+.chart-svg .grid { stroke: var(--line); stroke-width: 1; }
+.chart-svg .base { stroke: var(--line-strong); stroke-width: 1; }
+.chart-svg .bar { fill: var(--brand); transition: fill var(--t-fast) ease; }
+.chart-svg .bar.hot { fill: var(--brand-ink); }
+.chart-svg .nodata { fill: var(--line-strong); }
+.chart-svg .cross { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
+.trend .band { opacity: 0.16; }
+.trend .band.faible { fill: var(--lvl-faible); }
+.trend .band.modere { fill: var(--lvl-modere); opacity: 0.22; }
+.trend .band.eleve { fill: var(--lvl-eleve); }
+.trend .band.critique { fill: var(--lvl-critique); }
+.trend .line { fill: none; stroke: var(--brand-ink); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.trend .dot { fill: var(--surface); stroke: var(--brand-ink); stroke-width: 2; }
+.trend .dot.hot { fill: var(--brand-ink); }
+.trend text.end-label { font: 800 15px var(--font-brand); fill: var(--brand-ink); }
+.trend-sentence { font-weight: 600; }
+.chart-empty {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s5) var(--s4); border: 1px dashed var(--line-strong); border-radius: var(--r-md);
+  color: var(--ink-2);
+}
+.chart-empty .icon { color: var(--ink-3); }
+
+.tooltip {
+  position: fixed; z-index: 45; max-width: 260px; pointer-events: none;
+  padding: var(--s2) var(--s3); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); box-shadow: var(--shadow-2);
+  font-size: var(--fs-sm);
+}
+.tooltip .t-date { margin-bottom: 2px; font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2); }
+.tooltip .t-value { font-weight: 700; }
+.tooltip .t-sub { color: var(--ink-2); }
+.tooltip .t-sub.level-word { font-weight: 800; }
+
+/* ------------------------------------------------------------------------------------------------ impression */
+/* Feuille claire (app.js passe en thème Jour le temps de l'impression), sans le cadre ni les commandes. */
+@media print {
+  body, .app { background: #fff; }
+  .app { display: block; }
+  .rail, .scrim, .topbar, .skip, .no-print, .tooltip, .updated, .crumb { display: none !important; }
+  .workspace { margin: 0; min-height: 0; border: 0; border-radius: 0; background: #fff; }
+  .sheet { max-width: none; padding: 0; gap: 14px; }
+  .panel, .site-banner, .fact, .zone-row, tr { break-inside: avoid; }
+  .panel { box-shadow: none; }
+  .print-only { display: block; font-size: var(--fs-sm); color: var(--ink-2); }
+  .table-scroll { overflow: visible; }
+  a { color: inherit; text-decoration: none; }
+}

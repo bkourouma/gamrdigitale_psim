@@ -1,0 +1,276 @@
+/* =====================================================================================================================
+   Équipe Incidents — fiche d'alarme (panneau « Alarmes en cours » de Surveillance), bloc « Tout est calme », écran
+   Alarmes, écran Journal. L'alarme prend la scène : la fiche suivie est dépliée en tête (attente qui se voit, trois
+   étapes), les autres sont des lignes compactes. Jetons et composants : base.css.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ panneau */
+.inc-count { margin-left: auto; font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.c-incidents.has-pending .inc-count { color: var(--alarm-ink); }
+.c-incidents.has-pending #incidents-title .icon { color: var(--alarm-ink); }
+
+/* ------------------------------------------------------------------------------------------------ calme */
+.calm { display: grid; gap: var(--s3); border-radius: var(--r-md); }
+.calm:focus:not(:focus-visible) { outline: none; }
+/* Résumé aligné sur le texte du bloc d'état (icône 32 px + écart 12 px). */
+.calm-facts { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); padding-left: 44px; color: var(--ink-2); font-size: var(--fs-sm); }
+.calm-facts:empty { display: none; }
+.calm-facts li { display: inline-flex; align-items: center; gap: 6px; }
+.calm-facts .icon { width: 16px; height: 16px; color: var(--ink-3); }
+.calm-down-text { display: grid; gap: var(--s1); min-width: 0; }
+.calm-down-list { display: grid; gap: 2px; padding-left: var(--s4); }
+
+/* ------------------------------------------------------------------------------------------------ liste des fiches */
+.incident-list { display: grid; gap: var(--s2); }
+.incident-list:empty { display: none; }
+.incident {
+  min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface);
+  transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+/* Fiche suivie : contour de marque de 2 px (sans décaler le contenu) et ombre portée, elle passe devant les autres. */
+.incident.is-followed { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand), var(--shadow-2); }
+
+/* ------------------------------------------------------------------------------------------------ ligne compacte */
+.inc-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: var(--s1) var(--s3);
+  width: 100%; min-height: 56px; padding: var(--s2) var(--s3);
+  border: 0; border-radius: calc(var(--r-md) - 1px); background: transparent;
+  color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+  transition: background-color var(--t-fast) ease;
+}
+.inc-row:hover { background: var(--surface-2); }
+.incident.is-compact:hover { border-color: var(--brand); }
+.incident.is-compact.is-open.is-critical { background: color-mix(in srgb, var(--alarm-soft) 60%, var(--surface)); }
+.incident.is-compact.is-open.is-warning { background: color-mix(in srgb, var(--warning-soft) 70%, var(--surface)); }
+.incident.is-compact.is-open .inc-row:hover { background: color-mix(in srgb, var(--surface) 35%, transparent); }
+.inc-row .pill { min-height: 24px; padding: 1px 8px 1px 6px; font-size: var(--fs-xs); }
+.inc-row .pill .icon { width: 14px; height: 14px; }
+.inc-row-main { display: grid; min-width: 0; }
+.inc-row-name, .inc-row-place { overflow-wrap: anywhere; }
+.inc-row-name { font-weight: 700; line-height: 1.3; }
+.inc-row-place { font-size: var(--fs-sm); color: var(--ink-2); }
+.inc-row-side { display: grid; justify-items: end; gap: 2px; font-size: var(--fs-sm); }
+.inc-row-state { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; max-width: 14em; text-align: right; font-weight: 700; color: var(--ink-2); }
+.inc-row-state.is-ready { color: var(--ok-ink); }
+.inc-row-state.is-blocked { color: var(--warning-ink); }
+.inc-row-state.is-down { color: var(--fault-ink); }
+.inc-row-state .icon { width: 16px; height: 16px; }
+.inc-row-state.is-open { color: var(--alarm-ink); }
+.inc-row-wait { color: var(--ink-2); white-space: nowrap; }
+.inc-row-go { width: 18px; height: 18px; color: var(--ink-2); }
+
+/* ------------------------------------------------------------------------------------------------ fiche dépliée */
+/* Bandeau du haut teinté à la couleur de l'état tant que personne n'a acquitté ; une feuille claire pour les étapes. */
+.inc-top {
+  display: grid; gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-radius: calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.incident.is-open.is-critical .inc-top { background: var(--alarm-soft); border-bottom-color: color-mix(in srgb, var(--alarm) 28%, transparent); }
+.incident.is-open.is-warning .inc-top { background: var(--warning-soft); border-bottom-color: color-mix(in srgb, var(--warning) 40%, transparent); }
+
+.inc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s2); }
+.inc-head .tag { min-height: 26px; background: var(--surface); }
+.inc-head .tag .icon { width: 14px; height: 14px; }
+/* Confirmée : plein (marine sur la feuille, jamais un second rouge à côté de la pastille). À confirmer : pointillé. */
+.inc-conf.is-confirmed { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.inc-conf.is-dashed { border-style: dashed; border-color: var(--ink-2); color: var(--ink-2); background: transparent; }
+.inc-num { margin-left: auto; font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+
+.inc-title { font-size: 20px; font-weight: 700; line-height: 1.25; color: var(--ink); overflow-wrap: anywhere; border-radius: var(--r-xs); }
+.inc-title:focus:not(:focus-visible) { outline: none; }
+.inc-meta { display: flex; flex-wrap: wrap; gap: 2px var(--s4); font-size: var(--fs-sm); color: var(--ink-2); }
+.inc-meta > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.inc-meta .icon { width: 16px; height: 16px; }
+.inc-place { font-weight: 700; color: var(--ink); }
+
+/* Attente qui se voit : le texte, puis un tube de 8 px qui se remplit en 5 minutes (un repère par minute). */
+.inc-wait { display: grid; gap: 6px; margin-top: 2px; }
+.inc-wait-line { font-weight: 700; color: var(--alarm-ink); }
+.incident.is-warning .inc-wait-line { color: var(--warning-ink); }
+.incident.is-overdue .inc-wait-line::after { content: ' \2014  plus de 5 minutes sans réponse'; }
+.incident.is-acked .inc-wait-line { color: var(--ink); font-weight: 600; font-size: var(--fs-sm); }
+.inc-wait-clock { font-size: var(--fs-lg); }
+.inc-bar {
+  --p: 0;
+  position: relative; display: block; height: 8px; overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--sky);
+  box-shadow: inset 0 0 0 1px var(--tube);
+}
+.inc-bar-fill { position: absolute; inset: 0 auto 0 0; width: calc(var(--p) * 100%); border-radius: inherit; background: var(--alarm); }
+.incident.is-warning .inc-bar-fill { background: var(--warning); }
+.incident.is-acked .inc-bar-fill { background: var(--brand); }
+.inc-bar::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(var(--tube), var(--tube)) 20% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--tube), var(--tube)) 40% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--tube), var(--tube)) 60% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--tube), var(--tube)) 80% 0 / 1px 100% no-repeat;
+}
+.inc-escalated { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+
+.inc-main { display: grid; gap: var(--s3); padding: var(--s3) var(--s4) var(--s4); min-width: 0; }
+.inc-conf-line { font-size: var(--fs-sm); color: var(--ink-2); }
+.incident.is-confirmed .inc-conf-line { color: var(--ink); font-weight: 600; }
+.inc-label { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); margin-bottom: 6px; }
+
+/* Images prises : vignettes 112 x 63, rayon 8, loupe au clic. */
+.shots { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.shot {
+  display: block; padding: 0; overflow: hidden; cursor: zoom-in;
+  border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: #000000;
+  transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+.shot img { width: 112px; height: 63px; object-fit: contain; }
+.shot:hover { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+.shots.mini { gap: var(--s1); }
+.shots.mini .shot { border-radius: var(--r-xs); }
+.shots.mini .shot img { width: 64px; height: 36px; }
+
+/* ------------------------------------------------------------------------------------------------ trois étapes */
+.steps { display: grid; gap: var(--s4); margin-top: var(--s1); }
+.step { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--s3); }
+/* Fil entre deux numéros : il se colore quand l'étape est faite. */
+.step:not(:last-child)::before {
+  content: ''; position: absolute; left: 13px; top: 32px; bottom: calc(-1 * var(--s4) + 4px);
+  width: 2px; border-radius: 2px; background: var(--line);
+}
+.step.is-done:not(:last-child)::before { background: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.step-num {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid var(--line-strong); background: var(--surface); color: var(--ink-2);
+  font: 800 15px / 1 var(--font-brand); font-variant-numeric: tabular-nums;
+  transition: background-color var(--t-med) var(--ease-out), border-color var(--t-med) var(--ease-out), color var(--t-med) var(--ease-out);
+}
+.step-digit { transform: translateY(1px); } /* Baloo : chiffre centré optiquement */
+.step-num .step-check { display: none; width: 16px; height: 16px; }
+.step.is-current .step-num { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.step.is-done .step-num { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+.step.is-done .step-digit { display: none; }
+.step.is-done .step-check { display: block; }
+.step-body { display: grid; gap: var(--s2); min-width: 0; padding-top: 3px; }
+.step-title { font-weight: 700; line-height: 1.35; color: var(--ink); border-radius: var(--r-xs); }
+.step-title:focus:not(:focus-visible) { outline: none; }
+.step.is-done .step-title { color: var(--ink-2); }
+.step:not(.is-current):not(.is-done) .step-title { color: var(--ink-2); }
+.step-detail { font-size: var(--fs-sm); color: var(--ink-2); }
+
+/* Étape 3 : ce que fait le détecteur, donc si l'on peut clôturer (mot + icône, jamais la couleur seule). */
+.step-reason { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.step-reason .icon { width: 16px; height: 16px; margin-top: 2px; }
+.step-reason.is-blocked { color: var(--warning-ink); }
+.step-reason.is-ready { color: var(--ok-ink); }
+.step-reason.is-down { color: var(--fault-ink); }
+.inc-comment textarea { min-height: 64px; }
+/* Les deux décisions : l'une sous l'autre, bien séparées au doigt ; désactivées, elles restent lisibles (pointillé). */
+.inc-close { display: grid; gap: var(--s5); justify-items: start; }
+.inc-close > .btn-danger { margin-left: 0; }
+.inc-close .btn:disabled { opacity: 0.65; border-style: dashed; }
+@media (max-width: 640px) { .inc-close { justify-items: stretch; } }
+
+/* Confirmation du geste grave : en ligne, à la place des boutons, en mots simples. */
+.inc-confirm {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s3); border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--alarm-ink) 45%, transparent);
+  background: var(--alarm-soft);
+}
+.inc-confirm > .icon { color: var(--alarm-ink); margin-top: 1px; }
+.inc-confirm-body { display: grid; gap: var(--s3); min-width: 0; font-size: var(--fs-sm); }
+/* Bouton de confirmation : plein (même rouge foncé de jour comme de nuit, blanc à 6:1). */
+.btn-danger.is-solid { --btn-bg: var(--frame-alarm); --btn-ink: #ffffff; --btn-line: var(--frame-alarm); }
+.btn-danger.is-solid:hover:not(:disabled) { --btn-bg: color-mix(in srgb, var(--frame-alarm) 85%, #000000); border-color: var(--frame-alarm); }
+
+/* ------------------------------------------------------------------------------------------------ écran Alarmes */
+.alarms-table td, .closed-table td { white-space: nowrap; }
+.cell-main strong { display: block; }
+.cell-sub { display: block; font-size: var(--fs-xs); color: var(--ink-2); font-weight: 400; margin-top: 2px; }
+.alarms-table .pill + .cell-sub { margin-top: 4px; }
+.alarms-table tr.is-open td { background: color-mix(in srgb, var(--alarm-soft) 40%, transparent); }
+.alarms-table tbody tr.is-open:hover td { background: color-mix(in srgb, var(--alarm-soft) 70%, transparent); }
+.cell-action { text-align: right; }
+.closed-table td.closed-comment { white-space: normal; min-width: 180px; max-width: 340px; color: var(--ink-2); }
+.closed-table .tag .icon { width: 14px; height: 14px; }
+
+/* Tablette paysage (rail ouvert) : le texte des cellules passe à la ligne pour que « Traiter » reste visible sans défilement latéral. */
+@media (min-width: 641px) and (max-width: 1100px) {
+  .alarms-table td { white-space: normal; }
+  table.data.alarms-table th, table.data.alarms-table td { padding-inline: var(--s2); }
+  .alarms-table td.cell-action, .alarms-table td.num { white-space: nowrap; }
+  .alarms-table td.cell-main { min-width: 120px; }
+  .closed-table td { white-space: normal; }
+  table.data.closed-table th, table.data.closed-table td { padding-inline: var(--s2); }
+  .closed-table td.num, .closed-table td.cell-action { white-space: nowrap; }
+  .closed-table td.cell-main { min-width: 120px; }
+  .closed-table td.closed-comment { min-width: 120px; }
+  .closed-table .shots.mini { flex-wrap: wrap; }
+}
+
+/* ------------------------------------------------------------------------------------------------ journal */
+.journal-table td.j-time { color: var(--ink-2); white-space: nowrap; }
+.j-action { font-weight: 600; }
+.j-action .icon { width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px; }
+.j-detail { color: var(--ink-2); min-width: 220px; overflow-wrap: anywhere; }
+.j-actor { color: var(--ink-2); white-space: nowrap; }
+.journal-table tr.is-grave td { background: color-mix(in srgb, var(--alarm-soft) 55%, transparent); }
+.journal-table tr.is-grave td, .journal-table tr.is-grave .j-detail, .journal-table tr.is-grave .j-time { color: var(--alarm-ink); }
+.journal-table tr.is-grave .j-action { font-weight: 700; }
+#journal-filter { flex-wrap: wrap; }
+.journal-empty-text { display: grid; gap: var(--s1); }
+.view-journal .panel-note { display: flex; align-items: flex-start; gap: 6px; }
+.view-journal .panel-note .icon { margin-top: 2px; color: var(--ink-3); }
+
+/* ------------------------------------------------------------------------------------------------ téléphone */
+/* Sous 640 px, les tableaux deviennent des fiches empilées : chaque cellule porte son intitulé (data-label). */
+@media (max-width: 640px) {
+  .alarms-table, .closed-table, .journal-table { display: block; }
+  .alarms-table thead, .closed-table thead, .journal-table thead { display: none; }
+  .alarms-table tbody, .closed-table tbody, .journal-table tbody { display: grid; gap: var(--s2); }
+  .alarms-table tr, .closed-table tr, .journal-table tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s1) var(--s3);
+    padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md);
+  }
+  table.data.alarms-table td, table.data.closed-table td, table.data.journal-table td { padding: 0; border: 0; white-space: normal; background: transparent; }
+  .alarms-table tr.is-open { background: color-mix(in srgb, var(--alarm-soft) 45%, transparent); }
+  .journal-table tr.is-grave { background: color-mix(in srgb, var(--alarm-soft) 55%, transparent); }
+  .alarms-table td[data-label='Zone']::before, .alarms-table td[data-label='Étage']::before, .alarms-table td[data-label='Depuis']::before,
+  .closed-table td[data-label='Clôturée']::before, .closed-table td[data-label='Par']::before {
+    content: attr(data-label) ' : '; color: var(--ink-2); font-weight: 600;
+  }
+  table.data.alarms-table td.num, table.data.closed-table td.num { text-align: left; }
+  /* Ordre de lecture : niveau ou qualification et n°, l'équipement, le reste, l'action en bas. */
+  .alarms-table td[data-label='Niveau'], .closed-table td[data-label='Qualification'] { order: 1; }
+  .alarms-table td[data-label='N°'], .closed-table td[data-label='N°'] { order: 2; justify-self: end; color: var(--ink-2); font-weight: 700; }
+  .alarms-table .cell-main, .closed-table .cell-main { order: 3; grid-column: 1 / -1; }
+  .alarms-table td[data-label='Zone'], .alarms-table td[data-label='Étage'] { order: 4; grid-column: 1 / -1; }
+  .alarms-table td[data-label='État'] { order: 5; }
+  .alarms-table td[data-label='Depuis'] { order: 6; justify-self: end; align-self: start; }
+  .closed-table td[data-label='Clôturée'] { order: 4; }
+  .closed-table td[data-label='Par'] { order: 5; justify-self: end; }
+  .closed-table td[data-label='Commentaire'] { order: 6; grid-column: 1 / -1; }
+  .closed-table td[data-label='Images'] { order: 7; grid-column: 1 / -1; }
+  .closed-table td.closed-shots:has(> .faint) { display: none; }
+  .cell-action { order: 9; grid-column: 1 / -1; text-align: left; margin-top: var(--s1); }
+  .alarms-table .cell-action .btn { width: 100%; min-height: var(--control-h); }
+  .closed-table td.closed-comment { max-width: none; min-width: 0; }
+  .closed-table td.closed-comment.is-empty { display: none; }
+  .view-alarmes .panel-note a { display: inline-flex; align-items: center; min-height: var(--control-h); }
+  /* Journal : heure et auteur en haut, action puis détail. */
+  .journal-table td.j-time { order: 1; }
+  .journal-table td.j-actor { order: 2; justify-self: end; }
+  .journal-table td.j-action { order: 3; grid-column: 1 / -1; }
+  .journal-table td.j-detail { order: 4; grid-column: 1 / -1; min-width: 0; }
+  #journal-filter { width: 100%; }
+  #journal-filter button { flex: 1 1 auto; justify-content: center; }
+}
+
+/* Cibles tactiles : les petits boutons de la fiche et des tableaux font 44 px sur téléphone et tablette. */
+@media (max-width: 1024px) {
+  .incident .btn-sm, .alarms-table .btn-sm, .closed-table .btn-sm { min-height: var(--control-h); }
+}

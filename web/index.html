@@ -2,175 +2,549 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GAMRdigitale PSIM</title>
-  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>GAMR-DIGITALE PSIM</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/baloo-2-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="surveillance.css">
+  <link rel="stylesheet" href="alarms.css">
+  <link rel="stylesheet" href="risk.css">
+  <link rel="stylesheet" href="prevention.css">
+  <link rel="stylesheet" href="admin.css">
+  <link rel="stylesheet" href="equipment.css">
 </head>
 <body>
-  <div id="toasts" aria-live="polite"></div>
+  <a class="skip" href="#main" hidden>Aller au contenu</a>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="dialog" class="dialog" hidden role="dialog" aria-modal="true" aria-labelledby="dialog-title">
     <div class="dialog-card"><h2 id="dialog-title"></h2><div id="dialog-body"></div></div>
   </div>
-  <div id="lightbox" class="lightbox" hidden role="dialog" aria-label="Image agrandie"><img id="lightbox-img" alt=""><p id="lightbox-caption"></p></div>
+  <div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Image agrandie" tabindex="-1">
+    <img id="lightbox-img" alt=""><p id="lightbox-caption"></p>
+    <button id="lightbox-close" class="btn" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#close"/></svg>Fermer</button>
+  </div>
 
+  <!-- ============================================================================================ connexion -->
   <section id="login" class="login" hidden>
-    <form id="login-form" class="card login-card">
-      <h1>GAMRdigitale PSIM</h1>
-      <p class="muted">Supervision incendie, sécurité et vidéosurveillance</p>
-      <div id="demo-accounts" class="demo-accounts" hidden>
-        <span class="small muted">Mode démonstration : cliquer pour remplir</span>
-        <div id="demo-buttons" class="row wrap"></div>
-      </div>
-      <label>Identifiant <input id="login-user" name="username" autocomplete="username" required></label>
-      <label>Mot de passe <input id="login-pass" name="password" type="password" autocomplete="current-password" required></label>
-      <div id="login-2fa" hidden>
-        <p class="small muted">Saisissez le code à 6 chiffres de votre application d'authentification, ou un code de secours.</p>
-        <label>Code <input id="login-code" autocomplete="one-time-code" maxlength="12" inputmode="text"></label>
-      </div>
-      <p id="login-error" class="error" role="alert"></p>
-      <button id="login-submit" class="btn primary" type="submit">Se connecter</button>
-      <button id="login-back" class="btn small" type="button" hidden>Retour</button>
-    </form>
+    <div class="login-stack">
+      <form id="login-form" class="login-sheet">
+        <h1 class="login-brand">
+          <svg class="login-mark" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-light"/></svg>
+          <span class="login-names">
+            <svg class="login-wordmark" role="img" aria-label="GAMR-DIGITALE" focusable="false"><use href="logo.svg#wordmark"/></svg>
+            <span class="psim-tag is-navy">PSIM</span>
+          </span>
+        </h1>
+        <p class="login-lead">Supervision incendie, sécurité et vidéosurveillance</p>
+        <div id="demo-accounts" class="demo-accounts" hidden>
+          <p class="hint">Mode démonstration : touchez un compte pour remplir les champs.</p>
+          <div id="demo-buttons" class="actions"></div>
+        </div>
+        <label class="field"><span>Identifiant</span><input id="login-user" name="username" autocomplete="username" required></label>
+        <label class="field"><span>Mot de passe</span><input id="login-pass" name="password" type="password" autocomplete="current-password" required></label>
+        <div id="login-2fa" class="login-2fa" hidden>
+          <p class="hint">Saisissez le code à 6 chiffres de votre application d'authentification, ou un code de secours.</p>
+          <label class="field"><span>Code</span><input id="login-code" autocomplete="one-time-code" maxlength="12" inputmode="text"></label>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button id="login-submit" class="btn btn-primary btn-lg btn-block" type="submit">Se connecter</button>
+        <button id="login-back" class="btn btn-ghost btn-block" type="button" hidden>Retour</button>
+      </form>
+      <p class="login-slogan">GAMR-DIGITALE, la sécurité de votre entreprise en un clic.</p>
+    </div>
   </section>
 
-  <div id="app" hidden>
-    <header class="topbar">
-      <div class="brand">
-        <strong>GAMRdigitale PSIM</strong>
-        <span id="site-name" class="muted"></span>
+  <!-- ============================================================================================ application -->
+  <div id="app" class="app" data-frame="calm" hidden>
+    <!-- Annonces aux lecteurs d'écran (étage affiché sur une alarme) : hors des écrans, toujours dans la page affichée -->
+    <p id="floor-announce" class="sr-only" aria-live="assertive"></p>
+
+    <!-- Rail : le cadre marine (tiroir sur tablette et téléphone) -->
+    <aside id="rail" class="rail" aria-label="Menu">
+      <div class="rail-brand">
+        <svg class="brand-mark" aria-hidden="true" focusable="false"><use href="logo.svg#mark-on-dark"/></svg>
+        <div class="brand-text">
+          <svg class="brand-wordmark" role="img" aria-label="GAMR-DIGITALE" focusable="false"><use href="logo.svg#wordmark"/></svg>
+          <span class="brand-sub"><span class="psim-tag">PSIM</span><span>Supervision</span></span>
+        </div>
+        <button id="drawer-close" class="rail-close" type="button" aria-label="Fermer le menu"><svg class="icon" aria-hidden="true"><use href="icons.svg#close"/></svg></button>
       </div>
-      <div class="topbar-right">
-        <span id="conn" class="conn offline"><i></i><span>Hors ligne</span></span>
-        <span id="alarm-counter" class="counter" hidden></span>
-        <span id="offline-counter" class="counter warn" hidden></span>
-        <span id="system-counter" class="counter" hidden></span>
-        <button id="nav-risk" class="btn small" type="button" aria-pressed="false" title="Indice de risque par zone et priorités d'action">Risques</button>
-        <button id="mute" class="btn small" type="button" title="Couper ou activer l'alerte sonore">Son activé</button>
-        <button id="whoami" class="btn small" type="button" title="Mon compte : mot de passe, double authentification"></button>
-        <button id="logout" class="btn small" type="button">Déconnexion</button>
+      <p class="rail-site"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#building"/></svg><span id="site-name"></span></p>
+
+      <nav class="rail-nav" aria-label="Menu principal">
+        <a class="nav-item" href="#/surveillance" data-view="surveillance"><svg class="icon" aria-hidden="true"><use href="icons.svg#eye"/></svg><span>Surveillance</span></a>
+        <a class="nav-item" href="#/alarmes" data-view="alarmes"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg><span>Alarmes</span><span id="nav-count-alarmes" class="nav-count is-alarm" hidden></span></a>
+        <a class="nav-item" href="#/cameras" data-view="cameras"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg><span>Caméras</span></a>
+        <a id="nav-armement" class="nav-item" href="#/armement" data-view="armement" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg><span>Armement</span></a>
+        <a class="nav-item" href="#/risques" data-view="risques"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg><span>Risques</span></a>
+        <a class="nav-item" href="#/rapports" data-view="rapports"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg><span>Rapports</span></a>
+        <a class="nav-item" href="#/journal" data-view="journal"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg><span>Journal</span></a>
+        <div id="nav-admin" class="nav-group" role="group" aria-labelledby="nav-admin-title" hidden>
+          <p id="nav-admin-title" class="nav-group-title">Administration</p>
+          <a class="nav-item" href="#/equipements" data-view="equipements"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg><span>Équipements et plan</span></a>
+          <a class="nav-item" href="#/notifications" data-view="notifications"><svg class="icon" aria-hidden="true"><use href="icons.svg#megaphone"/></svg><span>Personnes prévenues</span></a>
+          <a class="nav-item" href="#/utilisateurs" data-view="utilisateurs"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg><span>Utilisateurs</span></a>
+          <a class="nav-item" href="#/systeme" data-view="systeme"><svg class="icon" aria-hidden="true"><use href="icons.svg#server"/></svg><span>Système</span><span id="nav-count-systeme" class="nav-count is-warning" hidden></span></a>
+          <a id="nav-simulateur" class="nav-item" href="#/simulateur" data-view="simulateur" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#sliders"/></svg><span>Simulateur</span></a>
+        </div>
+      </nav>
+
+      <!-- Jauge du rail : l'indice de sécurité du site, toujours au même endroit (le thermomètre est ajouté par app.js) -->
+      <a id="rail-gauge" class="rail-gauge" href="#/risques" aria-label="Indice de sécurité. Ouvrir Risques.">
+        <span class="rail-gauge-text">
+          <span class="rail-gauge-label">Indice de sécurité</span>
+          <span class="rail-gauge-value"><span id="rail-index" class="rail-index">—</span><span id="rail-of" class="rail-of" hidden>/60</span></span>
+          <span id="rail-level" class="rail-level is-none">À évaluer</span>
+          <span id="rail-worst" class="rail-worst"></span>
+        </span>
+      </a>
+
+      <div class="rail-foot">
+        <button id="mute" class="rail-btn" type="button"></button>
+        <button id="theme" class="rail-btn" type="button"></button>
+        <button id="whoami" class="rail-btn rail-who" type="button" title="Mon compte : mot de passe, double authentification">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg>
+          <span class="who-text"><span id="who-name" class="who-name"></span><span id="who-role" class="who-role"></span></span>
+        </button>
+        <button id="logout" class="rail-btn" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#logout"/></svg><span>Se déconnecter</span></button>
       </div>
-    </header>
+    </aside>
+    <div id="scrim" class="scrim" hidden></div>
 
-    <main class="layout">
-      <div class="col-left">
-        <section class="card c-plan">
-          <div class="card-head">
-            <h2>Plan du site</h2>
-            <div class="legend">
-              <span class="lg detector normal"></span>Normal
-              <span class="lg detector prealarm"></span>Préalarme
-              <span class="lg detector alarm"></span>Alarme
-              <span class="lg detector fault"></span>Défaut
-              <span class="lg detector offline"></span>Hors ligne
-              <span class="lg camera"></span>Caméra
-              <span class="muted" title="Lettre de la pastille : D incendie, I intrusion, A contrôle d'accès, E environnement">D incendie · I intrusion · A accès · E environnement</span>
-            </div>
-          </div>
-          <div id="floor-bar" class="floor-bar" hidden></div>
-          <p id="floor-announce" class="sr-only" aria-live="assertive"></p>
-          <div id="plan-stage" class="plan-stage">
-            <img id="plan-img" alt="Plan du site" draggable="false">
-            <div id="plan-empty" class="plan-none" hidden></div>
-            <svg id="plan-links" class="plan-links" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
-            <div id="plan-pins"></div>
-          </div>
-          <div id="stack-view" class="stack-view" hidden></div>
-        </section>
+    <!-- Feuille de travail, posée dans le cadre -->
+    <div id="workspace" class="workspace">
+      <header class="topbar">
+        <button id="menu-btn" class="btn btn-icon btn-ghost topbar-menu" type="button" aria-label="Ouvrir le menu" aria-controls="rail" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="icons.svg#menu"/></svg></button>
+        <div class="topbar-title">
+          <h1 id="view-title" tabindex="-1">Surveillance</h1>
+          <p id="view-sub" class="topbar-sub"></p>
+        </div>
+        <div class="topbar-status">
+          <span id="conn" class="conn is-offline" role="status"><i aria-hidden="true"></i><span>Connexion…</span></span>
+          <a id="alarm-counter" class="pill is-ok is-calm counter" href="#/surveillance"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg><span class="counter-long"></span><span class="counter-short"></span></a>
+          <button id="offline-counter" class="pill is-fault counter" type="button" aria-haspopup="dialog" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#wrench"/></svg><span class="counter-long"></span><span class="counter-short"></span></button>
+          <a id="system-counter" class="pill is-warning counter" href="#/systeme" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#server"/></svg><span class="counter-long"></span><span class="counter-short"></span></a>
+        </div>
+      </header>
 
-        <section id="arming-card" class="card" hidden>
-          <div class="card-head"><h2>Armement des zones</h2><span class="muted small">Détecteurs d'intrusion</span></div>
-          <p class="muted small">Un mouvement dans une zone désarmée n'ouvre pas d'incident. Le sabotage et la panique alarment toujours, ainsi que l'incendie, les accès et l'environnement. Tout désarmement expire (24 h maximum).</p>
-          <div id="arming-list" class="arming-list"></div>
-        </section>
+      <main id="main" class="views" tabindex="-1">
 
-        <section class="card">
-          <details id="reports-details">
-            <summary>Rapports et exports</summary>
-            <div id="reports-box" class="reports"></div>
-          </details>
-        </section>
-
-        <section id="admin" class="card c-admin" hidden>
-          <details id="sim-box">
-            <summary>Simulateur de détecteurs</summary>
-            <p class="muted small">Chaque bouton publie un message MQTT, comme un vrai détecteur.</p>
-            <div id="sim-list" class="sim-list"></div>
-          </details>
-          <details id="sys-box">
-            <summary>Système (santé, sauvegardes)</summary>
-            <div id="sys-status" class="small muted">Chargement…</div>
-            <ul id="sys-warnings" class="notif-results"></ul>
-            <div class="row wrap"><button id="sys-backup" class="btn small" type="button">Sauvegarder maintenant</button>
-              <button id="sys-journal" class="btn small" type="button" title="Contrôle de la chaîne d'empreintes du journal">Vérifier le journal</button></div>
-          </details>
-          <details id="users-box">
-            <summary>Utilisateurs et accès</summary>
-            <div id="users-list" class="users-list"></div>
-            <div id="users-create"></div>
-          </details>
-          <details id="notif-box">
-            <summary>Notifications (e-mail, Telegram, webhook)</summary>
-            <div id="notif-status" class="small muted">Chargement…</div>
-            <div id="recipients-box" class="recipients"></div>
-            <div class="row wrap"><button id="notif-test" class="btn small" type="button">Envoyer un message de test</button></div>
-            <ul id="notif-results" class="notif-results"></ul>
-          </details>
-          <details id="edit-box">
-            <summary>Édition du plan et de l'inventaire</summary>
-            <label class="check"><input id="edit-mode" type="checkbox"> Mode édition (glisser les pastilles pour les placer)</label>
-            <div id="edit-tools" hidden>
-              <div id="floor-admin" class="floor-admin"></div>
-              <div class="row wrap">
-                <label class="btn small file"><span id="plan-file-text">Remplacer le plan</span>
-                  <input id="plan-file" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
-                </label>
-                <span class="muted small">PNG, JPEG, WEBP ou SVG, 10 Mo max. Sweet Home 3D : Plan &gt; Exporter au format SVG, un niveau à la fois.</span>
+        <!-- ================================================================================ Surveillance -->
+        <section class="view view-surveillance" id="view-surveillance" aria-labelledby="view-title">
+          <div class="surv-grid">
+            <section class="panel c-incidents" aria-labelledby="incidents-title">
+              <div class="panel-head">
+                <h2 id="incidents-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg>Alarmes en cours</h2>
+                <p id="incidents-count" class="inc-count num" hidden></p>
               </div>
-              <form id="add-form" class="row wrap">
-                <select id="add-kind" aria-label="Type"><option value="detector">Détecteur</option><option value="camera">Caméra</option></select>
-                <select id="add-category" aria-label="Catégorie du détecteur"></select>
-                <input id="add-id" placeholder="Identifiant (ex. D-08)" maxlength="32" required>
-                <input id="add-name" placeholder="Nom" maxlength="80" required>
-                <input id="add-zone" placeholder="Zone" maxlength="80">
-                <button id="add-submit" class="btn small" type="submit">Ajouter au centre du plan</button>
-              </form>
-              <div id="device-editor" class="device-editor" hidden></div>
+              <div class="panel-body">
+                <!-- Nouvelles alarmes et aggravations, dites aux lecteurs d'écran (incidents.js) -->
+                <p id="incidents-announce" class="sr-only" role="alert" aria-live="assertive"></p>
+                <!-- Reçoit le focus après la dernière clôture -->
+                <div id="no-incident" class="calm" tabindex="-1">
+                  <div class="state-block is-ok">
+                    <svg class="icon" aria-hidden="true"><use href="icons.svg#state-ok"/></svg>
+                    <div><p class="state-title">Tout est calme</p><p class="state-detail">Aucune alarme en cours.</p></div>
+                  </div>
+                  <ul id="calm-summary" class="calm-facts" aria-label="Résumé du site"></ul>
+                  <div id="calm-down" class="notice is-warning" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#wrench"/></svg><div class="calm-down-text"></div></div>
+                </div>
+                <div id="incidents" class="incident-list"></div>
+              </div>
+            </section>
+
+            <div id="plan-home" class="slot slot-plan">
+              <section class="panel c-plan" aria-labelledby="plan-title">
+                <div class="panel-head">
+                  <h2 id="plan-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg>Plan du site</h2>
+                  <div id="floor-bar" class="floor-bar" hidden></div>
+                </div>
+                <div class="panel-body">
+                  <p class="hint plan-edit-help"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#move"/></svg><span>Glissez une pastille pour la placer ; touchez-la pour la modifier. Au clavier : les flèches la déplacent (Maj pour aller plus vite).</span></p>
+                  <!-- Scène : le plan posé sur le verre bleu ciel. Pastilles et liens sont placés en % de la feuille du plan. -->
+                  <div id="plan-stage" class="plan-stage">
+                    <div id="plan-sheet" class="plan-sheet">
+                      <img id="plan-img" alt="Plan du site" draggable="false">
+                      <div id="plan-empty" class="plan-none" hidden></div>
+                      <svg id="plan-links" class="plan-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+                      <div id="plan-pins" class="plan-pins"></div>
+                    </div>
+                  </div>
+                  <div id="stack-view" class="stack-view" hidden></div>
+                  <!-- Légende : les mêmes pastilles que sur le plan, en petit. La couleur dit l'état, la forme dit le type. -->
+                  <details id="plan-legend" class="plan-legend">
+                    <summary>Comprendre les symboles</summary>
+                    <div class="lg-row">
+                      <p class="lg-term">Couleur : l’état</p>
+                      <ul class="lg-items">
+                        <li><span class="lg-pin detector normal" aria-hidden="true"><span class="pin-glyph"></span></span>Normal</li>
+                        <li><span class="lg-pin detector prealarm" aria-hidden="true"><span class="pin-glyph"></span></span>Préalarme</li>
+                        <li><span class="lg-pin detector alarm unacked" aria-hidden="true"><span class="pin-glyph"></span></span>Alarme (anneau : à acquitter)</li>
+                        <li><span class="lg-pin detector fault" aria-hidden="true"><span class="pin-glyph"></span></span>Défaut (barré)</li>
+                        <li><span class="lg-pin detector offline" aria-hidden="true"><span class="pin-glyph"></span></span>Hors ligne (barré)</li>
+                        <li><span class="lg-pin detector normal disarmed" aria-hidden="true"><span class="pin-glyph"></span></span>Zone désarmée (pointillé)</li>
+                      </ul>
+                    </div>
+                    <div class="lg-row">
+                      <p class="lg-term">Forme : le type</p>
+                      <ul class="lg-items">
+                        <li><span class="lg-pin detector is-neutral cat-fire" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#fire"/></svg></span></span>Incendie (rond)</li>
+                        <li><span class="lg-pin detector is-neutral cat-intrusion" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#intrusion"/></svg></span></span>Intrusion (losange)</li>
+                        <li><span class="lg-pin detector is-neutral cat-access" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#door"/></svg></span></span>Contrôle d'accès (écusson)</li>
+                        <li><span class="lg-pin detector is-neutral cat-environment" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#drop"/></svg></span></span>Environnement (goutte)</li>
+                        <li><span class="lg-pin camera" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg></span></span>Caméra (carré bleu)</li>
+                        <li><span class="lg-pin camera on-wall" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg></span></span>Caméra affichée au mur</li>
+                      </ul>
+                    </div>
+                  </details>
+                </div>
+              </section>
             </div>
-          </details>
-        </section>
-      </div>
 
-      <aside class="col-right">
-        <section class="card c-video">
-          <div class="card-head">
-            <h2>Vidéo</h2>
-            <span id="wall-mode" class="muted small"></span>
-            <span id="wall-pager" class="row" hidden>
-              <button id="wall-prev" class="btn tiny" type="button" aria-label="Caméras précédentes" title="Caméras précédentes">◀</button>
-              <button id="wall-next" class="btn tiny" type="button" aria-label="Caméras suivantes" title="Caméras suivantes">▶</button>
-            </span>
-            <button id="wall-auto" class="btn small" type="button" hidden>Retour automatique</button>
+            <div id="video-home" class="slot slot-video">
+              <section class="panel c-video" aria-labelledby="video-title">
+                <div class="panel-head">
+                  <h2 id="video-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg>Caméras</h2>
+                  <div class="actions">
+                    <span id="wall-pager" class="wall-pager" role="group" aria-label="Pages du mur vidéo" hidden>
+                      <button id="wall-prev" class="btn btn-sm btn-icon" type="button" aria-label="Caméras précédentes" title="Caméras précédentes"><svg class="icon" aria-hidden="true"><use href="icons.svg#chevron-left"/></svg></button>
+                      <span id="wall-page" class="wall-page num"></span>
+                      <button id="wall-next" class="btn btn-sm btn-icon" type="button" aria-label="Caméras suivantes" title="Caméras suivantes"><svg class="icon" aria-hidden="true"><use href="icons.svg#chevron-right"/></svg></button>
+                    </span>
+                    <button id="wall-auto" class="btn btn-sm" type="button" title="Rendre la main au choix automatique : les caméras de l'alarme suivie, sinon la vue générale" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"/></svg>Retour automatique</button>
+                  </div>
+                </div>
+                <div class="panel-body">
+                  <p id="wall-mode" class="wall-mode" aria-live="polite"></p>
+                  <div id="wall" class="wall"></div>
+                </div>
+              </section>
+            </div>
           </div>
-          <div id="wall" class="wall"></div>
         </section>
 
-        <section class="card c-incidents">
-          <div class="card-head"><h2>Incidents</h2></div>
-          <p id="no-incident" class="empty">Aucun incident en cours.</p>
-          <div id="incidents"></div>
-          <details id="closed-box">
-            <summary>Derniers incidents clôturés</summary>
-            <ul id="closed-list" class="closed-list"></ul>
-          </details>
+        <!-- ================================================================================ Alarmes -->
+        <section class="view view-alarmes" id="view-alarmes" aria-labelledby="view-title" hidden>
+          <section class="panel" aria-labelledby="alarms-active-title">
+            <div class="panel-head"><h2 id="alarms-active-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg>En cours</h2></div>
+            <div class="panel-body">
+              <div id="alarms-empty" class="state-block is-ok">
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#state-ok"/></svg>
+                <div><p class="state-title">Aucune alarme en cours.</p><p class="state-detail">Une nouvelle alarme ouvre automatiquement l'écran Surveillance, sur l'étage concerné.</p></div>
+              </div>
+              <div id="alarms-table" class="table-scroll" hidden>
+                <table class="data alarms-table">
+                  <thead><tr><th>Niveau</th><th class="num">N°</th><th>Équipement</th><th>Zone</th><th id="alarms-floor-col">Étage</th><th class="num">Depuis</th><th>État</th><th><span class="sr-only">Action</span></th></tr></thead>
+                  <tbody id="alarms-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+          <section class="panel" aria-labelledby="alarms-closed-title">
+            <div class="panel-head"><h2 id="alarms-closed-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#history"/></svg>Clôturées récemment</h2></div>
+            <div class="panel-body">
+              <div id="closed-empty" class="empty">
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#history"/></svg>
+                <strong>Aucune alarme clôturée pour l'instant.</strong>
+                <span>Chaque alarme traitée s'inscrit ici avec sa qualification (fausse alarme ou événement réel), le commentaire laissé et les images prises.</span>
+              </div>
+              <div id="closed-table" class="table-scroll" hidden>
+                <table class="data closed-table">
+                  <thead><tr><th class="num">N°</th><th>Équipement</th><th>Qualification</th><th class="num">Clôturée</th><th>Par</th><th>Commentaire</th><th>Images</th><th><span class="sr-only">Fiche</span></th></tr></thead>
+                  <tbody id="closed-rows"></tbody>
+                </table>
+              </div>
+              <p class="panel-note">Les 10 dernières alarmes clôturées. Pour l'historique complet et les rapports imprimables, ouvrez <a href="#/rapports">Rapports</a>.</p>
+            </div>
+          </section>
         </section>
 
-        <section class="card c-journal">
-          <div class="card-head"><h2>Journal</h2></div>
-          <ul id="journal" class="journal"></ul>
+        <!-- ================================================================================ Caméras -->
+        <section class="view view-cameras" id="view-cameras" aria-labelledby="view-title" hidden>
+          <section class="panel c-picker" aria-labelledby="picker-title">
+            <div class="panel-head">
+              <h2 id="picker-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#grid"/></svg>Choisir les caméras à afficher</h2>
+              <p id="camera-count" class="cam-count is-apart" aria-live="polite"></p>
+            </div>
+            <div class="panel-body">
+              <p class="hint">Touchez une caméra pour l'afficher sur le mur, touchez-la de nouveau pour la retirer (4 à la fois au plus : au-delà, la plus ancienne laisse sa place). Après un choix, le bouton « Retour automatique » (au-dessus du mur) rend la main aux caméras de l'alarme suivie.</p>
+              <div id="camera-picker" class="cam-picker"></div>
+            </div>
+          </section>
+          <div id="cameras-video-slot" class="slot slot-video-large"></div>
         </section>
-      </aside>
-    </main>
-    <main id="risk-view" class="risk-layout" hidden></main>
+
+        <!-- ================================================================================ Armement -->
+        <section class="view view-armement is-narrow" id="view-armement" aria-labelledby="view-title" hidden>
+          <div class="notice is-info arm-intro">
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#info"/></svg>
+            <div>
+              <p><strong>Armée</strong> : un mouvement dans la zone ouvre une alarme d'intrusion. <strong>Désarmée</strong> : les détecteurs d'intrusion de la zone n'ouvrent pas d'alarme, par exemple pendant les heures d'ouverture.</p>
+              <p>Le sabotage d'un détecteur et la panique alarment toujours, comme l'incendie, le contrôle d'accès et l'environnement. Un désarmement s'arrête tout seul, au plus tard au bout de 24 h.</p>
+            </div>
+          </div>
+          <p id="arming-loading" class="muted">Lecture de l'état des zones…</p>
+          <div id="arming-error" class="notice is-alarm arm-load-error" role="alert" hidden></div>
+          <div id="arming-empty" class="empty" hidden>
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>
+            <strong>Aucune zone d'intrusion pour l'instant.</strong>
+            <span>L'armement concerne les détecteurs d'intrusion (mouvement, bris de vitre). Dès qu'un administrateur en ajoute un dans « Équipements et plan », avec le nom de sa zone, la zone apparaît ici.</span>
+            <a id="arming-empty-link" class="btn btn-sm" href="#/equipements" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg>Ouvrir Équipements et plan</a>
+          </div>
+          <section id="arming-card" class="arm-zones" aria-labelledby="arming-title" hidden>
+            <div class="arm-zones-head">
+              <h2 id="arming-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Zones d'intrusion</h2>
+              <span id="arming-summary" class="arm-zones-summary"></span>
+            </div>
+            <p class="hint">Seules les zones équipées d'un détecteur d'intrusion apparaissent ici.</p>
+            <div id="arming-list" class="arm-list"></div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Risques -->
+        <section class="view view-risques" id="view-risques" aria-labelledby="view-title" hidden>
+          <div id="risk-view" class="risk-layout" hidden></div>
+        </section>
+
+        <!-- ================================================================================ Rapports -->
+        <section class="view view-rapports is-narrow" id="view-rapports" aria-labelledby="view-title" hidden>
+          <div class="rep-grid">
+            <section class="panel rep-panel" aria-labelledby="reports-title">
+              <div class="panel-head"><h2 id="reports-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg>Rapports et exports</h2></div>
+              <div class="panel-body"><div id="reports-box" class="rep-box"></div></div>
+            </section>
+            <section id="reports-mail-card" class="panel rep-panel" aria-labelledby="reports-mail-title" hidden>
+              <div class="panel-head">
+                <h2 id="reports-mail-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#send"/></svg>Rapport automatique par e-mail</h2>
+                <span id="reports-mail-state" class="is-apart"></span>
+              </div>
+              <div class="panel-body"><div id="reports-mail" class="rep-mail"></div></div>
+            </section>
+          </div>
+        </section>
+
+        <!-- ================================================================================ Journal -->
+        <section class="view view-journal" id="view-journal" aria-labelledby="view-title" hidden>
+          <section class="panel" aria-labelledby="journal-title">
+            <div class="panel-head">
+              <h2 id="journal-title">Dernières actions</h2>
+              <div id="journal-filter" class="segmented is-apart" role="group" aria-label="Filtrer le journal">
+                <button type="button" data-filter="all" aria-pressed="true">Tout</button>
+                <button type="button" data-filter="alarms" aria-pressed="false">Alarmes</button>
+                <button type="button" data-filter="equipment" aria-pressed="false">Équipements</button>
+                <button type="button" data-filter="accounts" aria-pressed="false">Comptes</button>
+                <button type="button" data-filter="system" aria-pressed="false">Système</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div id="journal-table" class="table-scroll">
+                <table class="data journal-table">
+                  <thead><tr><th class="num">Heure</th><th>Action</th><th>Détail</th><th>Par</th></tr></thead>
+                  <tbody id="journal"></tbody>
+                </table>
+              </div>
+              <div id="journal-empty" class="empty" hidden>
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg>
+                <div id="journal-empty-text" class="journal-empty-text"></div>
+              </div>
+              <p class="panel-note"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#lock"/></svg>Le journal est scellé : une ligne modifiée ou effacée serait détectée au contrôle. L'historique complet s'exporte depuis <a href="#/rapports">Rapports</a>.</p>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Équipements et plan -->
+        <section class="view view-equipements" id="view-equipements" aria-labelledby="view-title" hidden>
+          <!-- Plan (en édition) à gauche, panneaux à droite ; l'inventaire occupe toute la largeur dessous (equipment.css). -->
+          <div class="equip-layout">
+            <div id="equip-plan-slot" class="slot slot-equip-plan"></div>
+            <div class="equip-panels">
+              <section id="editor-panel" class="panel equip-editor" aria-labelledby="editor-title">
+                <div class="panel-head"><h2 id="editor-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#pencil"/></svg>Équipement sélectionné</h2></div>
+                <div class="panel-body">
+                  <div id="device-empty" class="empty" tabindex="-1">
+                    <svg class="icon" aria-hidden="true"><use href="icons.svg#pin"/></svg>
+                    <strong>Aucun équipement sélectionné</strong>
+                    <span>Touchez une pastille du plan ou une ligne de l'inventaire pour la modifier.</span>
+                  </div>
+                  <div id="device-editor" class="device-editor" hidden></div>
+                  <p id="editor-announce" class="sr-only" aria-live="polite"></p>
+                </div>
+              </section>
+
+              <section class="panel equip-add" aria-labelledby="add-title">
+                <div class="panel-head"><h2 id="add-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Ajouter un équipement</h2></div>
+                <div class="panel-body">
+                  <form id="add-form" class="add-form" novalidate>
+                    <div class="eq-grid">
+                      <div class="field"><label for="add-kind">Type</label><select id="add-kind"><option value="detector" selected>Détecteur</option><option value="camera">Caméra</option></select></div>
+                      <div id="add-category-field" class="field"><label for="add-category">Catégorie</label><select id="add-category" aria-describedby="add-category-hint"></select><span id="add-category-hint" class="hint">Décide des alarmes et de la forme de la pastille.</span></div>
+                      <div class="field"><label for="add-id">Identifiant</label><input id="add-id" maxlength="32" autocomplete="off" spellcheck="false" required aria-describedby="add-id-hint add-id-error"><span id="add-id-hint" class="hint">Nom court écrit sous la pastille : lettres, chiffres, - et _.</span><span id="add-id-error" class="form-error" hidden></span></div>
+                      <div class="field"><label for="add-name">Nom</label><input id="add-name" placeholder="ex. Couloir nord" maxlength="80" autocomplete="off" required aria-describedby="add-name-error"><span id="add-name-error" class="form-error" hidden></span></div>
+                      <div class="field"><label for="add-zone">Zone</label><input id="add-zone" list="eq-zones" placeholder="ex. Atelier" maxlength="80" autocomplete="off" aria-describedby="add-zone-hint add-zone-error"><span id="add-zone-hint" class="hint">Facultative. Reprenez une zone existante pour regrouper.</span><span id="add-zone-error" class="form-error" hidden></span></div>
+                    </div>
+                    <p id="add-where" class="hint">L'équipement apparaît au centre du plan : glissez-le ensuite à sa place.</p>
+                    <div class="actions"><button id="add-submit" class="btn btn-primary" type="submit"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg><span id="add-submit-text">Ajouter au centre du plan</span></button><p id="add-status" class="form-status" role="status"></p></div>
+                  </form>
+                  <datalist id="eq-zones"></datalist>
+                </div>
+              </section>
+
+              <section class="panel equip-floors" aria-labelledby="floors-title">
+                <div class="panel-head"><h2 id="floors-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#layers"/></svg>Étages et plans</h2></div>
+                <div class="panel-body">
+                  <div id="floor-admin" class="floor-admin"></div>
+                  <div class="plan-upload" role="group" aria-labelledby="plan-upload-title">
+                    <h3 id="plan-upload-title">Plan du site</h3>
+                    <p id="plan-state" class="hint"></p>
+                    <div class="actions">
+                      <label class="btn file-btn"><svg class="icon" aria-hidden="true"><use href="icons.svg#upload"/></svg><span id="plan-file-text">Choisir le plan</span><input id="plan-file" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" aria-describedby="plan-state plan-formats"></label>
+                      <p id="plan-status" class="form-status" role="status"></p>
+                    </div>
+                    <p id="plan-formats" class="hint">Formats acceptés : PNG, JPEG, WEBP ou SVG, 10 Mo au plus. Le SVG reste net quand on agrandit le plan. Depuis Sweet Home 3D : menu Plan, puis « Exporter au format SVG », un niveau à la fois.</p>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <section class="panel equip-inventory" aria-labelledby="inventory-title">
+            <div class="panel-head">
+              <h2 id="inventory-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg>Inventaire</h2>
+              <p id="inventory-count" class="inv-count" aria-live="polite"></p>
+            </div>
+            <div class="panel-body">
+              <div id="inventory-search-row" class="field inv-search">
+                <label for="inventory-search">Rechercher</label>
+                <div class="search-box"><svg class="icon" aria-hidden="true"><use href="icons.svg#search"/></svg><input id="inventory-search" type="search" placeholder="Identifiant, nom, zone ou état (ex. hors ligne)" autocomplete="off" spellcheck="false" aria-controls="inventory-rows"></div>
+              </div>
+              <div id="inventory-table" class="table-scroll">
+                <table class="data inventory-table eq-cards">
+                  <caption class="sr-only">Tous les équipements du site. Touchez une ligne pour l'ouvrir dans l'éditeur.</caption>
+                  <thead><tr><th scope="col">Type</th><th scope="col">Identifiant</th><th scope="col">Nom</th><th scope="col">Zone</th><th scope="col" id="inventory-floor-col">Étage</th><th scope="col">État</th></tr></thead>
+                  <tbody id="inventory-rows"></tbody>
+                </table>
+              </div>
+              <div id="inventory-empty" class="empty" hidden></div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Personnes prévenues -->
+        <section class="view view-notifications is-narrow" id="view-notifications" aria-labelledby="view-title" hidden>
+          <section class="panel" aria-labelledby="channels-title">
+            <div class="panel-head"><h2 id="channels-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#send"/></svg>État des envois</h2></div>
+            <div class="panel-body"><div id="notif-status" class="notif-status"><p class="muted">Chargement…</p></div></div>
+          </section>
+          <section class="panel" aria-labelledby="recipients-title">
+            <div class="panel-head"><h2 id="recipients-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg>Destinataires</h2></div>
+            <div class="panel-body"><div id="recipients-box" class="recipients"><p class="muted">Chargement…</p></div></div>
+          </section>
+          <section class="panel" aria-labelledby="recipient-add-title">
+            <div class="panel-head"><h2 id="recipient-add-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Ajouter un destinataire</h2></div>
+            <div class="panel-body"><div id="recipient-add"></div></div>
+          </section>
+          <section class="panel" aria-labelledby="notif-test-title">
+            <div class="panel-head"><h2 id="notif-test-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#megaphone"/></svg>Message de test</h2></div>
+            <div class="panel-body">
+              <p class="hint">Envoie tout de suite un message à chaque destinataire actif, des deux niveaux, pour vérifier qu'il le reçoit vraiment. Le message précise qu'aucune action n'est requise.</p>
+              <div class="actions"><button id="notif-test" class="btn btn-primary" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#send"/></svg>Envoyer un message de test</button></div>
+              <div id="notif-results" class="notif-results" aria-live="polite"></div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Utilisateurs -->
+        <section class="view view-utilisateurs is-narrow" id="view-utilisateurs" aria-labelledby="view-title" hidden>
+          <section class="panel" aria-labelledby="users-title">
+            <div class="panel-head"><h2 id="users-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg>Comptes</h2></div>
+            <div class="panel-body">
+              <div id="users-list" class="users-list"><p class="muted">Chargement…</p></div>
+              <p class="panel-note"><strong>Opérateur :</strong> surveille le site, traite les alarmes, arme ou désarme les zones, consulte les rapports et le journal. <strong>Administrateur :</strong> tout cela, plus les réglages (équipements et plan, personnes prévenues, comptes, système).</p>
+            </div>
+          </section>
+          <section class="panel" aria-labelledby="users-create-title">
+            <div class="panel-head"><h2 id="users-create-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Créer un compte</h2></div>
+            <div class="panel-body"><div id="users-create"></div></div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Système -->
+        <section class="view view-systeme is-narrow" id="view-systeme" aria-labelledby="view-title" hidden>
+          <div id="sys-warnings" class="sys-warnings"></div>
+          <section class="panel" aria-labelledby="sys-title">
+            <div class="panel-head">
+              <h2 id="sys-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#server"/></svg>État du PSIM</h2>
+              <div class="actions sys-refresh">
+                <span id="sys-updated" class="panel-note"></span>
+                <button id="sys-refresh" class="btn btn-sm btn-ghost" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"/></svg>Actualiser</button>
+              </div>
+            </div>
+            <div class="panel-body"><div id="sys-status" class="sys-status"><p class="muted">Chargement…</p></div></div>
+          </section>
+          <section class="panel" aria-labelledby="sys-care-title">
+            <div class="panel-head"><h2 id="sys-care-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Sauvegarde et journal</h2></div>
+            <div class="panel-body sys-tasks">
+              <div class="sys-task">
+                <div class="sys-task-text">
+                  <h3>Sauvegarde</h3>
+                  <p class="hint">Copie la base (alarmes, journal, réglages et comptes), les plans et les images des incidents dans le dossier des sauvegardes, sur le PC du PSIM. Chaque copie est vérifiée à sa création.</p>
+                  <p id="sys-backup-result" class="sys-result" role="status"></p>
+                </div>
+                <button id="sys-backup" class="btn" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#download"/></svg>Sauvegarder maintenant</button>
+              </div>
+              <div class="sys-task">
+                <div class="sys-task-text">
+                  <h3>Intégrité du journal</h3>
+                  <p class="hint">Chaque ligne du journal est scellée par une empreinte. La vérification prouve qu'aucune n'a été modifiée ni effacée depuis son écriture.</p>
+                  <p id="sys-journal-result" class="sys-result" role="status"></p>
+                </div>
+                <button id="sys-journal" class="btn" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Vérifier le journal</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Simulateur -->
+        <section class="view view-simulateur is-narrow" id="view-simulateur" aria-labelledby="view-title" hidden>
+          <div class="notice is-warning">
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#state-warning"/></svg>
+            <span>Réservé aux essais : chaque bouton envoie un message comme un vrai détecteur. Une alarme simulée ouvre un vrai incident (à acquitter puis clôturer), s'inscrit au journal et prévient les personnes inscrites.</span>
+          </div>
+          <section class="panel" aria-labelledby="sim-title">
+            <div class="panel-head"><h2 id="sim-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#sliders"/></svg>Détecteurs</h2></div>
+            <div class="panel-body">
+              <p class="hint">Incendie : choisissez l'état à envoyer (l'état actuel est enfoncé). Autres détecteurs : envoyez un événement, ou une mesure s'ils ont un seuil d'alarme.</p>
+              <div id="sim-table" class="table-scroll">
+                <table class="data sim-table eq-cards">
+                  <caption class="sr-only">Détecteurs du site et messages d'essai à envoyer</caption>
+                  <thead><tr><th scope="col">Détecteur</th><th scope="col">Zone</th><th scope="col">État</th><th scope="col">Envoyer</th></tr></thead>
+                  <tbody id="sim-list"></tbody>
+                </table>
+              </div>
+              <div id="sim-empty" class="empty" hidden>
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#sliders"/></svg>
+                <strong>Aucun détecteur à simuler</strong>
+                <span>Ajoutez des détecteurs dans <a href="#/equipements">Équipements et plan</a> : ils apparaissent ici.</span>
+              </div>
+            </div>
+          </section>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Téléphone : onglets d'accès rapide -->
+    <nav class="tabbar" aria-label="Accès rapide">
+      <a class="tab" href="#/surveillance" data-view="surveillance"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#eye"/></svg></span><span>Surveillance</span></a>
+      <a class="tab" href="#/alarmes" data-view="alarmes"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg><span id="tab-count-alarmes" class="nav-count is-alarm" hidden></span></span><span>Alarmes</span></a>
+      <a class="tab" href="#/cameras" data-view="cameras"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg></span><span>Caméras</span></a>
+      <a class="tab" href="#/risques" data-view="risques"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg></span><span>Risques</span></a>
+      <button id="tab-menu" class="tab" type="button" aria-controls="rail"><span class="tab-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#menu"/></svg></span><span>Menu</span></button>
+    </nav>
   </div>
 
   <script type="module" src="app.js"></script>

@@ -40,21 +40,21 @@ Les contrôles de `npm run commission` sont en lecture seule et n'envoient **auc
 ## 2. Comptes et sécurité
 
 - [ ] Se connecter en administrateur, **changer** le mot de passe temporaire si demandé.
-- [ ] Chaque administrateur active la **double authentification** (*Mon compte*) et **conserve ses codes de secours** hors de la machine. En production elle est imposée aux administrateurs.
-- [ ] Créer **un compte par opérateur** (*Utilisateurs et accès*) ; ne jamais partager un compte.
+- [ ] Chaque administrateur active la **double authentification** (*Mon compte* : clic sur son nom, en bas du menu) et **conserve ses codes de secours** hors de la machine. En production elle est imposée aux administrateurs.
+- [ ] Créer **un compte par opérateur** (menu *Administration → Utilisateurs*) ; ne jamais partager un compte.
 - [ ] Vérifier qu'un opérateur ne voit ni les comptes, ni les destinataires, ni le simulateur.
 
 ## 3. Plan, zones et inventaire
 
-- [ ] *Édition du plan* → remplacer le plan ; placer chaque pastille à son emplacement réel.
+- [ ] menu *Équipements et plan* → remplacer le plan ; placer chaque pastille à son emplacement réel.
 - [ ] Bâtiment à plusieurs niveaux : **ajouter les étages** (du bas vers le haut), importer le plan de chacun, ranger chaque équipement sur son étage (sélecteur *Étage*). Donner aux zones un nom **par niveau** (« Étage - Chambre 1 ») : `npm run commission` signale une zone présente sur deux étages et un étage sans plan.
 - [ ] Déclarer chaque **détecteur** avec un **identifiant exact** (lettres, chiffres, `-`, `_`, 32 caractères au plus), un nom parlant, sa **zone** et sa **catégorie** (incendie, intrusion, accès, environnement). Cet identifiant est celui que l'équipement ou sa passerelle publiera : une faute de frappe et ses messages seront ignorés.
 - [ ] Pour un capteur à mesure (température…) : unité, **seuils** de préalarme et d'alarme, sens. Pour un capteur qui n'émet qu'aux changements (contact de porte) : laisser la supervision à « non supervisé » ; pour un équipement qui émet en continu : régler son délai de signe de vie.
 - [ ] **Lier** chaque détecteur aux caméras qui voient sa zone : c'est ce qui donne une image à l'opérateur à l'ouverture de l'incident.
-- [ ] Zones d'intrusion : régler le **planning d'armement** (*Armement des zones*).
-- [ ] Enregistreur Dahua : pour chaque détecteur d'intrusion alimenté par une caméra, *Source* → caméra, voie, type d'événement → **Tester (20 s)** en passant devant la caméra, puis *Enregistrer la source*. L'état « Connecté à l'appareil » doit s'afficher.
-- [ ] Destinataires limités à une zone (gardien, voisin) : *Notifications* → *Zones…* ; vérifier qu'aucune zone n'est signalée « sans destinataire ».
-- [ ] Évaluer le **risque** de chaque zone (vue *Risques*).
+- [ ] Zones d'intrusion : régler le **planning d'armement** (menu *Armement*).
+- [ ] Enregistreur Dahua : pour chaque détecteur d'intrusion alimenté par une caméra, section *Détection par l'enregistreur vidéo* → caméra, voie, type d'événement → **Écouter 20 secondes** en passant devant la caméra, puis *Enregistrer la source*. L'état « Connecté à l'appareil » doit s'afficher.
+- [ ] Destinataires limités à une zone (gardien, voisin) : menu *Personnes prévenues* → colonne *Alarmes reçues* → *Modifier* (« Seulement les alarmes de certaines zones ») ; vérifier qu'aucune zone n'est signalée « sans destinataire ».
+- [ ] Évaluer le **risque** de chaque zone (menu *Risques*).
 
 Une zone sans détecteur de même catégorie à proximité ne bénéficie pas de la confirmation par un voisin : c'est voulu, mais à savoir.
 
@@ -93,8 +93,8 @@ Connexion : broker MQTT du PSIM (local par défaut ; `PSIM_MQTT_HOST=0.0.0.0` **
 
 ## 5. Caméras
 
-- [ ] Pour chaque caméra réelle : *Édition du plan* → sélectionner → **Source vidéo** : *Rechercher sur le réseau* (ONVIF) ou saisie manuelle (adresse, port, identifiant, mot de passe, ou chemin RTSP).
-- [ ] Bouton **Tester** : une image doit s'afficher. Sinon, le message indique la cause probable (identifiants refusés, mauvais port, flux non activé, caméra injoignable).
+- [ ] Pour chaque caméra réelle : menu *Équipements et plan* → sélectionner → **Source vidéo** : *Rechercher sur le réseau* (ONVIF) ou saisie manuelle (adresse, port, identifiant, mot de passe, ou chemin RTSP).
+- [ ] Bouton **Enregistrer et tester** : une image doit s'afficher. Sinon, le message indique la cause probable (identifiants refusés, mauvais port, flux non activé, caméra injoignable).
 - [ ] Vérifier la **fluidité** et la **latence** sur le mur vidéo ; préférer le flux secondaire (plus léger) pour l'affichage.
 - [ ] `npm run commission` teste aussi chaque caméra une à une (sans `--skip-cameras`).
 
@@ -103,10 +103,10 @@ La recherche ONVIF utilise la multidiffusion UDP : elle peut être bloquée par 
 ## 6. Notifications
 
 - [ ] `.env` : `PSIM_SMTP_*` (et/ou `PSIM_TELEGRAM_TOKEN`). `npm run commission` vérifie la connexion et l'authentification **sans envoyer** ; `--send-mail <adresse>` ou `--telegram-chat <id>` envoie un message de test.
-- [ ] *Notifications* → ajouter les **destinataires** (niveau 1 et niveau 2). Bouton **Envoyer un message de test** : chacun doit confirmer la réception.
+- [ ] menu *Personnes prévenues* → ajouter les **destinataires** (niveau 1 et niveau 2). Bouton **Envoyer un message de test** : chacun doit confirmer la réception.
 - [ ] Tester l'**escalade** : ouvrir un incident, ne pas l'acquitter, constater l'alerte de niveau 2 après le délai.
 - [ ] Expliquer aux destinataires **quoi faire** à la réception d'une alerte (qui acquitte, qui appelle qui).
-- [ ] Rapport automatique par e-mail : le régler (*Rapports et exports*) et **envoyer un test** (« Envoyer le dernier rapport maintenant »).
+- [ ] Rapport automatique par e-mail : le régler (menu *Rapports*) et **envoyer un test** (« Envoyer le dernier rapport maintenant »).
 
 ## 7. Reprise après panne et supervision externe
 
@@ -140,7 +140,7 @@ Faire **signer** la fiche par l'installateur et le responsable du site, et en co
 - [ ] Fiche de recette signée, `.env` sauvegardé **hors de la machine** (il contient des mots de passe : le protéger).
 - [ ] Clé `data/secret.key` (chiffre les mots de passe des caméras) sauvegardée avec le reste : sans elle, il faut ressaisir ces mots de passe.
 - [ ] Liste des comptes, des destinataires, de la personne de la supervision externe.
-- [ ] Procédures remises : que faire à une alerte, qui appeler, comment restaurer une sauvegarde, comment lire le panneau *Système*.
+- [ ] Procédures remises : que faire à une alerte, qui appeler, comment restaurer une sauvegarde, comment lire la vue *Système* (menu Administration).
 - [ ] Date de la **première revue** (un mois après) : contrôle du taux de fausses alarmes, des détecteurs jamais entendus, des sauvegardes, du rapport reçu.
 
 ---
@@ -151,7 +151,7 @@ Faire **signer** la fiche par l'installateur et le responsable du site, et en co
 |---|---|
 | `npm run commission` : « base d'une version antérieure » | Démarrer le PSIM (version actuelle) une fois : il migre la base sans rien perdre. |
 | Détecteur « jamais entendu » | `npm run commission -- watch` : l'identifiant, le topic, le format ; puis le réseau et l'alimentation. |
-| Aucune image de caméra | Bouton *Tester* : le message nomme la cause. ffmpeg doit être installé (`PSIM_FFMPEG`). |
+| Aucune image de caméra | Bouton *Enregistrer et tester* : le message nomme la cause. ffmpeg doit être installé (`PSIM_FFMPEG`). |
 | Alertes e-mail non reçues | `npm run commission -- --send-mail <adresse>` ; vérifier `PSIM_SMTP_FROM`, les indésirables, le port (587 STARTTLS, 465 `PSIM_SMTP_SECURE=1`). |
 | Le PSIM refuse de démarrer en production | Il l'explique ; `npm run check-config` donne le même verdict sans démarrer. |
 | Heure fausse, plannings décalés | Fuseau et synchronisation de la machine (le contrôle `Heure du serveur` mesure l'écart si la supervision externe est réglée). |

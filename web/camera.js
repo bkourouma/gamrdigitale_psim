@@ -108,28 +108,30 @@ export function startSimCamera(canvas, { label, zone, getFire }) {
     }
   }
 
+  // Incrustations en haut de l'image seulement : le bas de la vignette porte la légende du mur (nom, zone, étage),
+  // qui cacherait la mention « IMAGE SIMULÉE ».
   function overlay(now) {
     g.drawImage(scanlines, 0, 0);
-    g.fillStyle = 'rgba(0,0,0,0.45)';
-    g.fillRect(0, 0, W, 16);
-    g.fillRect(0, H - 14, W, 14);
+    g.fillStyle = 'rgba(0,0,0,0.5)';
+    g.fillRect(0, 0, W, 28);
     g.font = '10px monospace';
     g.textBaseline = 'middle';
     g.fillStyle = '#e8f0ec';
-    g.fillText(`${label} - ${zone}`.slice(0, 34), 6, 8);
+    g.fillText((zone ? `${label} - ${zone}` : label).slice(0, 34), 6, 8);
     g.textAlign = 'right';
-    g.fillText(new Date(now).toLocaleString('fr-FR'), W - 6, H - 7);
     if (Math.floor(now / 600) % 2 === 0) {
       g.fillStyle = '#ff4d4d';
       g.beginPath();
-      g.arc(W - 40, 8, 3, 0, Math.PI * 2);
+      g.arc(W - 31, 8, 3, 0, Math.PI * 2);
       g.fill();
     }
     g.fillStyle = '#e8f0ec';
-    g.fillText('REC', W - 8, 8);
+    g.fillText('REC', W - 6, 8);
+    g.fillStyle = 'rgba(232,240,236,0.75)';
+    g.fillText(new Date(now).toLocaleString('fr-FR'), W - 6, 20);
     g.textAlign = 'left';
-    g.fillStyle = 'rgba(232,240,236,0.6)';
-    g.fillText('IMAGE SIMULEE', 6, H - 7);
+    g.fillStyle = '#f4c95a';
+    g.fillText('IMAGE SIMULÉE', 6, 20);
   }
 
   function frame(now) {

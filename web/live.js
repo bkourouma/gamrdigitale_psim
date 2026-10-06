@@ -97,7 +97,9 @@ export function startLiveCamera(canvas, { cameraId, onStatus }) {
     } catch (err) {
       if (stopped) return;
       const stalled = err?.message === 'stall' || signal.reason?.message === 'stall';
-      onStatus(`${stalled ? 'Plus d\'image reçue' : err.message} - nouvelle tentative…`);
+      // La cause, puis ce qui va se passer : le mur réessaie seul (wall.js reconnaît l'échec au mot « tentative »).
+      const cause = stalled ? 'Plus d’image reçue de la caméra' : String(err?.message ?? 'Caméra injoignable').replace(/[.\s]+$/, '');
+      onStatus(`${cause}. Nouvelle tentative dans quelques secondes…`);
     } finally {
       clearTimeout(watchdog);
     }

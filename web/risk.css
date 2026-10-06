@@ -1,0 +1,234 @@
+/* =====================================================================================================================
+   Équipe Risques — écran Risques (risk.js) : indice du site en anneau avec sa tendance et l'échelle, risque par zone en
+   tubes (même échelle 0 à 60), priorités d'action par horizon, évaluation d'une zone (administrateur).
+   Jetons et composants : base.css. La mise en page suit la largeur de l'écran Risques lui-même (requêtes de conteneur) :
+   le rail du menu et le tiroir changent la place disponible, pas la largeur de la fenêtre.
+   ===================================================================================================================== */
+
+.risk-layout { container-type: inline-size; display: grid; gap: 20px; max-width: 1180px; min-width: 0; }
+
+/* Couleur d'un niveau : --c pour le texte (contraste garanti par les jetons *-ink), --fill pour les remplissages. */
+.risk-layout .lvl-faible { --c: var(--lvl-faible-ink); --fill: var(--lvl-faible); }
+.risk-layout .lvl-modere { --c: var(--lvl-modere-ink); --fill: var(--lvl-modere); }
+.risk-layout .lvl-eleve { --c: var(--lvl-eleve-ink); --fill: var(--lvl-eleve); }
+.risk-layout .lvl-critique { --c: var(--lvl-critique-ink); --fill: var(--lvl-critique); }
+
+/* ------------------------------------------------------------------------------------------------ chargement, échec */
+.risk-loading { display: flex; align-items: center; gap: var(--s3); padding: var(--s5); color: var(--ink-2); }
+.risk-loading::before {
+  content: ''; flex: none; width: 18px; height: 18px;
+  border: 2px solid var(--brand); border-right-color: transparent; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.risk-failed { padding: var(--s4); font-size: var(--fs-md); }
+.risk-failed > .icon { color: var(--alarm-ink); width: 24px; height: 24px; }
+.risk-failed-text { display: grid; gap: var(--s2); }
+.risk-status:empty { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; } /* vide : masqué à l'œil, mais la région reste exposée aux lecteurs d'écran */
+
+/* ------------------------------------------------------------------------------------------------ indice du site */
+/* Téléphone : l'anneau en tête, puis le niveau, la tendance, l'échelle. Plus large : l'anneau à gauche du texte ;
+   très large : la tendance à droite. Le texte vient d'abord dans le document (le titre est lu en premier). */
+.risk-site-body {
+  display: grid; gap: var(--s4) var(--s6); padding: var(--s5);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'ring' 'summary' 'trend' 'scale';
+}
+.risk-ring { grid-area: ring; justify-self: center; }
+.risk-site-summary { grid-area: summary; display: grid; gap: var(--s3); align-content: center; min-width: 0; }
+.risk-site-body > .risk-trend { grid-area: trend; }
+.risk-site-body > .risk-scale { grid-area: scale; }
+@container (max-width: 599px) {
+  .risk-site-body { padding: var(--s4); }
+  .risk-ring .ring { width: 168px; height: 168px; }
+}
+@container (min-width: 600px) {
+  .risk-site-body {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: 'ring summary' 'trend trend' 'scale scale';
+    align-items: center;
+  }
+}
+@container (min-width: 1000px) {
+  .risk-site-body {
+    grid-template-columns: auto minmax(0, 1fr) minmax(300px, 400px);
+    grid-template-areas: 'ring summary trend' 'scale scale scale';
+  }
+}
+
+.risk-site-title { font-size: var(--fs-lg); color: var(--ink); }
+/* Le niveau en grand : chiffre et mot de l'indice, en Baloo (comme sur l'affiche : « Niveau modéré »). */
+.risk-site-level { font: 800 var(--fs-3xl) / 1.05 var(--font-brand); color: var(--c, var(--brand-ink)); letter-spacing: -0.01em; }
+.risk-site-level.is-none { color: var(--lvl-none-ink); }
+.risk-site-lead { font-weight: 600; }
+.risk-facts { display: grid; gap: var(--s1); }
+.risk-facts li { display: flex; align-items: center; gap: var(--s2); color: var(--ink-2); }
+.risk-facts .icon { color: var(--ink-3); }
+.risk-facts strong { color: var(--ink); overflow-wrap: anywhere; }
+.risk-site-summary .actions { margin-top: var(--s1); }
+
+/* Échelle et formule, en pied du panneau. */
+.risk-scale { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s5); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.risk-bands { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.risk-band {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 10px 2px 6px;
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  font-size: var(--fs-sm); font-weight: 700; color: var(--c); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.risk-band i { width: 16px; height: 12px; border-radius: 4px; background: var(--fill); flex: none; }
+.risk-band.is-current { border-color: currentColor; background: var(--surface-2); }
+.risk-formula { flex: 1 1 320px; font-size: var(--fs-sm); color: var(--ink-2); }
+.risk-formula b { color: var(--ink); }
+
+/* ------------------------------------------------------------------------------------------------ tendance */
+.risk-trend { display: grid; gap: var(--s2); min-width: 0; align-self: stretch; align-content: start; padding: var(--s3) var(--s4) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.risk-trend.is-empty { align-content: center; }
+.risk-trend-title { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); font-weight: 700; color: var(--ink); }
+.risk-trend-title .icon { color: var(--ink-3); }
+.risk-trend-sum { font-size: var(--fs-sm); color: var(--ink-2); }
+
+.trend-chart { --plot-h: 140px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); row-gap: var(--s1); padding: var(--s3) var(--s2) 0 0; }
+.trend-chart.is-compact { --plot-h: 96px; max-width: 520px; }
+.trend-axis { position: relative; height: var(--plot-h); min-width: 2.2ch; font-size: var(--fs-xs); line-height: 1; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.trend-axis span { position: absolute; right: 0; top: var(--y); transform: translateY(-50%); }
+.trend-plot { position: relative; height: var(--plot-h); border-left: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+.trend-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.trend-band { opacity: 0.2; }
+.trend-band.faible { fill: var(--lvl-faible); }
+.trend-band.modere { fill: var(--lvl-modere); opacity: 0.28; }
+.trend-band.eleve { fill: var(--lvl-eleve); }
+.trend-band.critique { fill: var(--lvl-critique); }
+.trend-rule { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+.trend-line { fill: none; stroke: var(--brand-ink); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.trend-dot {
+  position: absolute; left: var(--x); top: var(--y); width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 50%; background: var(--fill, var(--brand)); border: 2px solid var(--surface); box-shadow: 0 0 0 1.5px var(--brand-ink);
+}
+/* Première valeur écrite à droite de son point, dernière à gauche : elles restent dans le graphique. */
+.trend-val {
+  position: absolute; left: var(--x); top: var(--y); padding: 1px 4px; border-radius: 4px;
+  background: var(--surface); color: var(--ink); font: 700 var(--fs-sm) / 1.2 var(--font-ui); font-variant-numeric: tabular-nums; white-space: nowrap;
+  transform: translate(2px, calc(-100% - 8px));
+}
+.trend-val.is-last { transform: translate(calc(-100% - 2px), calc(-100% - 8px)); }
+.trend-val.is-below { transform: translate(2px, 8px); }
+.trend-val.is-last.is-below { transform: translate(calc(-100% - 2px), 8px); }
+.trend-dates { grid-column: 2; display: flex; justify-content: space-between; gap: var(--s3); font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* ------------------------------------------------------------------------------------------------ risque par zone */
+/* Une ligne par zone : nom, tube, chiffre et niveau, puces P V R, actions. Les colonnes s'alignent d'une ligne à l'autre
+   sur grand écran ; plus étroit, la ligne se plie (nom et chiffre, puis le tube, puis les puces et les actions). */
+.risk-zone-list { display: grid; }
+.risk-zone + .risk-zone { border-top: 1px solid var(--line); }
+.risk-zone-row {
+  display: grid; align-items: center; gap: var(--s2) var(--s4); padding: var(--s3) 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'name score' 'tube tube' 'factors actions';
+}
+.risk-zone-cols { display: none; }
+@container (min-width: 940px) {
+  .risk-zone-row, .risk-zone-cols {
+    grid-template-columns: minmax(150px, 1.15fr) minmax(150px, 1.5fr) 116px minmax(136px, auto) minmax(250px, auto);
+    grid-template-areas: 'name tube score factors actions';
+  }
+  .risk-zone-cols {
+    display: grid; gap: var(--s2) var(--s4); padding-bottom: var(--s2); border-bottom: 1px solid var(--line);
+    font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2);
+  }
+}
+@container (max-width: 519px) {
+  .risk-zone-row { grid-template-areas: 'name score' 'tube tube' 'factors factors' 'actions actions'; }
+}
+
+.risk-zone-name { grid-area: name; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
+.risk-zone-name h3 { font-size: var(--fs-md); overflow-wrap: anywhere; }
+.risk-zone-row > .tube { grid-area: tube; }
+.risk-zone-score { grid-area: score; display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; color: var(--c, var(--lvl-none-ink)); }
+@container (min-width: 940px) { .risk-zone-score { justify-content: flex-start; } }
+.risk-zone-num { min-width: 2ch; text-align: right; font: 800 var(--fs-xl) / 1 var(--font-brand); font-variant-numeric: tabular-nums; }
+.risk-zone-level { font-size: var(--fs-sm); font-weight: 700; }
+.risk-zone-score.is-none .risk-zone-num { font-weight: 700; }
+
+.risk-factors { grid-area: factors; display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.risk-factor {
+  display: inline-flex; align-items: baseline; min-height: 28px; padding: 3px 8px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface);
+  font-size: var(--fs-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; cursor: help;
+}
+.risk-factor b { color: var(--ink); }
+.risk-zone-actions { grid-area: actions; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); }
+@container (max-width: 519px) { .risk-zone-actions { justify-content: flex-start; } }
+.risk-calc-btn .icon { transition: transform var(--t-fast) var(--ease-out); }
+.risk-calc-btn[aria-expanded='true'] .icon { transform: rotate(180deg); }
+
+/* Détecteur hors service dans la zone : clé et mot (jamais la couleur seule), à la couleur du défaut. */
+.tag.risk-down { color: var(--fault-ink); border-color: currentColor; }
+
+/* Détail du calcul */
+.risk-calc { display: grid; gap: var(--s3); margin: 0 0 var(--s3); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.risk-calc-cols { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.risk-calc-col { display: grid; gap: var(--s1); align-content: start; min-width: 0; }
+.risk-calc-col h4 { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s2); color: var(--ink); font-size: var(--fs-md); }
+.risk-calc-score { color: var(--brand-ink); }
+.risk-calc-word { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.risk-calc ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: var(--fs-sm); }
+.risk-calc-formula { font-weight: 700; font-variant-numeric: tabular-nums; }
+.risk-calc-formula strong { font: 800 var(--fs-xl) / 1 var(--font-brand); color: var(--c); }
+.risk-calc-notes { font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.risk-calc .risk-trend { background: var(--surface); }
+
+/* ------------------------------------------------------------------------------------------------ évaluation */
+/* Le formulaire s'ouvre sous la zone évaluée : contour de marque et ombre, comme une fiche suivie. */
+.risk-editor {
+  display: grid; gap: var(--s4); margin: 0 0 var(--s4); padding: var(--s4) var(--s5) var(--s5);
+  border: 2px solid var(--brand); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-2);
+  scroll-margin-top: calc(var(--topbar-h) + var(--s4));
+}
+@media (max-width: 760px) { .risk-editor { scroll-margin-top: 120px; padding: var(--s4); } }
+.risk-editor-head { display: grid; gap: var(--s1); }
+.risk-editor-head h4 { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-lg); color: var(--ink); overflow-wrap: anywhere; }
+.risk-editor-head h4 .icon { color: var(--brand); }
+.risk-form { display: grid; gap: var(--s4); }
+.risk-form-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 900px) { .risk-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } }
+.risk-form-col { display: grid; gap: var(--s4); min-width: 0; }
+.risk-checks { display: grid; gap: 2px; }
+.risk-checks .check { min-height: 40px; align-items: flex-start; padding: 9px var(--s2) 0; margin: 0 calc(-1 * var(--s2)); border-radius: var(--r-sm); transition: background-color var(--t-fast) ease; }
+.risk-checks .check:hover { background: var(--surface-2); }
+.risk-checks input[aria-invalid='true'] { outline: 2px solid var(--alarm-ink); outline-offset: 2px; }
+.risk-impacts select { width: 100%; }
+.risk-impacts { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.risk-form-error:empty { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+
+/* ------------------------------------------------------------------------------------------------ priorités d'action */
+/* Trois horizons côte à côte sur grand écran (une feuille de route), les uns sous les autres ailleurs. */
+.risk-horizons { display: grid; gap: var(--s5); }
+@container (min-width: 1000px) { .risk-horizons { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); align-items: start; } }
+.risk-horizon { display: grid; gap: var(--s3); align-content: start; min-width: 0; }
+.risk-horizon-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); padding-bottom: var(--s2); border-bottom: 1px solid var(--line-strong); }
+.risk-horizon-head .is-apart { margin-left: auto; }
+.risk-horizon-empty { padding: var(--s2) 0; }
+.prio-list { display: grid; gap: var(--s2); }
+.prio {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--s3);
+  padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+}
+.prio-gain {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 92px; min-height: 28px; padding: 2px 8px;
+  border-radius: var(--r-xs); font-size: var(--fs-sm); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.prio-gain.is-gain { background: var(--ok-soft); color: var(--ok-ink); border: 1px solid transparent; }
+.prio-gain.is-none { border: 1px dashed var(--line-strong); color: var(--ink-2); font-weight: 600; }
+.prio-text { display: grid; gap: 2px; justify-items: start; min-width: 0; }
+.prio-title { font-weight: 700; overflow-wrap: anywhere; }
+.prio-why { font-size: var(--fs-sm); color: var(--ink-2); }
+.prio-text .btn { margin-top: var(--s2); }
+@container (max-width: 399px) {
+  .prio { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+  .prio-gain { justify-self: start; }
+}
+
+@media (forced-colors: active) {
+  .trend-band { opacity: 1; fill: Canvas; }
+  .trend-line { stroke: CanvasText; }
+  .risk-band i, .trend-dot { background: CanvasText; }
+}

@@ -1,277 +1,374 @@
-import { startSimCamera } from './camera.js';
-import { startLiveCamera } from './live.js';
+/**
+ * Démarrage du PSIM : connexion (deux étapes), temps réel (WebSocket), routeur des écrans, état du cadre (calme,
+ * préalarme, alarme), alerte sonore, compteurs, thème, tiroir du menu et jauge du rail.
+ *
+ * Règles de sécurité tenues ici : une nouvelle alarme (ou une aggravation) ramène sur Surveillance et sur l'étage
+ * concerné ; le son continue tant qu'un incident n'est pas acquitté ; les écrans ne sont jamais détruits, seulement
+ * masqués (un formulaire commencé est retrouvé intact) ; un compte restreint ne voit que « Mon compte ».
+ */
 import { createAccountUi, createDialogs } from './account.js';
-import { createRiskView } from './risk.js';
-import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_LABEL, buildSensorForm, createSimControls, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { createArmingView } from './arming.js';
-import { createFloorsUi } from './floors.js';
-import { buildDetectorSource } from './detsource.js';
+import { createThermometer, levelOf } from './gauge.js';
 import { createReportsView } from './reports.js';
+import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
+import { $, h, icon, api, toast, S, on, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
+import { renderPlan } from './plan.js';
+import { renderWall, stopTiles } from './wall.js';
+import { renderIncidents, tickIncidents, ariaTable } from './incidents.js';
+import { renderJournal } from './journal.js';
+import { loadSystem } from './system.js';
+import { initNotifications, loadNotifStatus } from './notifications.js';
+import { renderAdmin } from './equipment.js';
 
-// ---------------------------------------------------------------- outils
+// ---------------------------------------------------------------- thème (Jour, Nuit, Automatique)
 
-const $ = (id) => document.getElementById(id);
-
-/** Cree un element DOM. Tout le texte passe par textContent : jamais d'HTML injecte. */
-function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key === 'class') el.className = value;
-    else if (key === 'text') el.textContent = value;
-    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-    else if (key === 'dataset') Object.assign(el.dataset, value);
-    else el.setAttribute(key, value === true ? '' : value);
-  }
-  for (const child of children.flat()) if (child) el.append(child);
-  return el;
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const time = (ts) => new Date(ts).toLocaleTimeString('fr-FR');
-const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
-
-function elapsed(ts) {
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  const mm = String(Math.floor(s / 60)).padStart(2, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return s >= 3600 ? `${Math.floor(s / 3600)} h ${mm} min` : `${mm}:${ss}`;
-}
-
-function toast(message, kind = 'error') {
-  const el = h('div', { class: `toast ${kind}`, role: 'status', text: message });
-  $('toasts').append(el);
-  setTimeout(() => el.remove(), 5000);
-}
-
-const STATUS_LABEL = { normal: 'Normal', prealarm: 'Préalarme', alarm: 'ALARME', fault: 'Défaut', offline: 'Hors ligne' };
-const ACTION_LABEL = {
-  device_state: 'Changement d\'état',
-  incident_opened: 'Incident ouvert',
-  incident_escalated: 'Incident aggravé',
-  incident_confirmed: 'Incident confirmé',
-  incident_hint: 'Indice : fausse alarme probable',
-  incident_acked: 'Incident acquitté',
-  incident_closed: 'Incident clôturé',
-  login: 'Connexion',
-  plan_updated: 'Plan remplacé',
-  floor_created: 'Étage ajouté',
-  floor_updated: 'Étage modifié',
-  floor_deleted: 'Étage supprimé',
-  device_created: 'Équipement ajouté',
-  device_updated: 'Équipement modifié',
-  device_deleted: 'Équipement supprimé',
-  links_updated: 'Caméras associées modifiées',
-  sim_trigger: 'Simulation',
-  detector_silent: 'Détecteur muet',
-  camera_offline: 'Caméra injoignable',
-  camera_online: 'Caméra de nouveau joignable',
-  supervision_gap: 'Période sans surveillance',
-  journal_integrity_failed: 'JOURNAL ALTÉRÉ',
-  journal_integrity_recovered: 'Journal de nouveau cohérent',
-  journal_verified: 'Journal vérifié',
-  heartbeat_failing: 'Supervision externe en échec',
-  heartbeat_recovered: 'Supervision externe rétablie',
-  zone_armed: 'Zone armée',
-  report_exported: 'Export / rapport',
-  report_schedule_updated: 'Rapport automatique réglé',
-  report_email_sent: 'Rapport envoyé par e-mail',
-  report_email_failed: "Échec d'envoi du rapport",
-  zone_disarmed: 'Zone désarmée',
-  arming_schedule: "Planning d'armement",
-  intrusion_ignored: 'Intrusion ignorée (zone désarmée)',
-  risk_assessed: 'Risque évalué',
-  snapshot_failed: 'Image non prise',
-  notification_failed: 'Notification en échec',
-  notification_escalated: 'Escalade (niveau 2 prévenu)',
-  notification_reminder: 'Rappel envoyé',
-  notification_test: 'Test de notification',
-  login_failed: 'Connexion refusée',
-  user_created: 'Compte créé',
-  user_updated: 'Compte modifié',
-  user_deleted: 'Compte supprimé',
-  password_changed: 'Mot de passe changé',
-  password_reset: 'Mot de passe réinitialisé',
-  totp_enabled: '2FA activée',
-  totp_disabled: '2FA désactivée',
-  totp_reset: '2FA réinitialisée',
-  recovery_regenerated: 'Codes de secours régénérés',
-  recovery_code_used: 'Code de secours utilisé',
-  recipient_added: 'Destinataire ajouté',
-  recipient_updated: 'Destinataire modifié',
-  recipient_removed: 'Destinataire retiré',
-  backup_failed: 'Sauvegarde en échec',
-  backup_manual: 'Sauvegarde manuelle',
-  camera_source_updated: 'Source vidéo modifiée',
-  detector_source_updated: 'Source du détecteur modifiée',
-  detector_source_removed: 'Source du détecteur retirée',
+const THEMES = {
+  auto: { label: 'Automatique', icon: 'contrast', next: 'day' },
+  day: { label: 'Jour', icon: 'sun', next: 'night' },
+  night: { label: 'Nuit', icon: 'moon', next: 'auto' },
 };
 
-async function api(path, { method = 'GET', body } = {}) {
-  const init = { method, credentials: 'same-origin', headers: {} };
-  if (body !== undefined) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
+function readTheme() {
+  try {
+    const saved = localStorage.getItem('psim.theme');
+    return saved === 'day' || saved === 'night' ? saved : 'auto';
+  } catch {
+    return 'auto'; // stockage indisponible : on suit le système
   }
-  const res = await fetch(path, init);
-  if (res.status === 401 && path !== '/api/login' && path !== '/api/login/2fa') {
-    showLogin();
-    throw new Error('Session expirée, reconnectez-vous');
-  }
-  const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if (res.status === 403 && data?.restricted && S.me && !S.me.restricted) {
-    S.me.restricted = data.restricted;
-    account.openAccount(); // une etape est requise sur le compte (mot de passe, 2FA)
-  }
-  if (!res.ok) {
-    const error = new Error(data?.error ?? `Erreur ${res.status}`);
-    error.data = data; // le detail (ex. defi expire) reste disponible pour l'appelant
-    throw error;
-  }
-  return data;
 }
 
-// ---------------------------------------------------------------- vues (supervision / risques)
-
-let riskView = null;
-
-function showView(name) {
-  const risk = name === 'risk';
-  riskView ??= createRiskView({ api, h, toast, getMe: () => S.me });
-  document.querySelector('.layout').hidden = risk;
-  $('nav-risk').setAttribute('aria-pressed', String(risk));
-  $('nav-risk').textContent = risk ? 'Supervision' : 'Risques';
-  if (risk) riskView.show();
-  else riskView.hide();
+function applyTheme(theme) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  const t = THEMES[theme];
+  $('theme').replaceChildren(icon(t.icon), h('span', { class: 'sr-only', text: 'Thème : ' }), h('span', { text: t.label }));
+  $('theme').title = `Thème : ${t.label}. Changer pour « ${THEMES[t.next].label} »`;
 }
 
-$('nav-risk').addEventListener('click', () => showView(riskView?.isOpen() ? 'supervision' : 'risk'));
+let theme = readTheme();
+applyTheme(theme);
+$('theme').addEventListener('click', () => {
+  theme = THEMES[theme].next;
+  try {
+    if (theme === 'auto') localStorage.removeItem('psim.theme');
+    else localStorage.setItem('psim.theme', theme);
+  } catch {
+    // stockage indisponible : le choix vaut pour cette page seulement
+  }
+  applyTheme(theme);
+});
 
-// ---------------------------------------------------------------- état
+// ---------------------------------------------------------------- modules d'écran
 
-const S = {
-  arming: {},
-  me: null,
-  site: { name: '', hasPlan: false, planVersion: 0 },
-  floors: [],
-  floorId: null, // etage affiche a plat
-  planMode: 'floor', // 'floor' (un etage a plat) ou 'stack' (vue eclatee)
-  devices: new Map(),
-  links: {},
-  incidents: new Map(),
-  audit: [],
-  selectedId: null,
-  focusIncidentId: null,
-  manualCams: [],
-  editMode: false,
-  dragging: false,
-  muted: false,
-  ws: null,
-  wsDelay: 1000,
+const dialogs = createDialogs({ h });
+const logout = async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  if ($('login').hidden) showLogin(); // une session déjà perdue a affiché la connexion (401) : on ne la réinitialise pas deux fois
+};
+const refreshMe = async () => {
+  S.me = await api('/api/me');
+};
+const reportsView = createReportsView({ h, getMe: () => S.me, api, toast });
+const armingView = createArmingView({ api, h, toast, getMe: () => S.me, onZones: showArmingEntry });
+const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
+const usersAdmin = createUsersAdmin({
+  api,
+  h,
+  toast,
+  dialogs,
+  getMe: () => S.me,
+  onRecipientsChanged: () => loadNotifStatus({ recipients: true }), // après un ajout, une modification : la liste est rechargée
+  getZones: () => [...new Set([...S.devices.values()].filter((d) => d.kind === 'detector' && d.zone).map((d) => d.zone))],
+});
+initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
+const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
+
+// Session perdue : l'écran de connexion. S'il est déjà affiché, un minuteur oublié ne doit pas l'effacer (mot de passe
+// tapé, étape du code de double authentification en cours).
+on('unauthorized', () => $('login').hidden && showLogin());
+on('restricted', () => account.openAccount());
+on('incident', (incident) => onIncident(incident));
+on('snapshot', (snap) => applySnapshot(snap));
+
+$('whoami').addEventListener('click', () => account.openAccount());
+$('logout').addEventListener('click', logout);
+
+/** Armement : l'entrée du menu n'existe que s'il y a des zones d'intrusion. */
+function showArmingEntry(count) {
+  S.armingZones = count;
+  $('nav-armement').hidden = count === 0;
+  $('arming-empty').hidden = count > 0;
+}
+
+// ---------------------------------------------------------------- routeur
+
+const ROUTES = {
+  surveillance: { title: 'Surveillance', sub: 'Plan du site, alarmes en cours et caméras' },
+  alarmes: { title: 'Alarmes', sub: 'Alarmes en cours et clôturées récemment' },
+  cameras: { title: 'Caméras', sub: 'Choisissez les caméras à afficher sur le mur' },
+  armement: { title: 'Armement', sub: "Zones d'intrusion : armement, désarmement et planning" },
+  risques: { title: 'Risques', sub: "Indice de sécurité GAMR par zone et priorités d'action" },
+  rapports: { title: 'Rapports', sub: 'Rapports imprimables, exports et envoi automatique' },
+  journal: { title: 'Journal', sub: 'Toutes les actions, des personnes et du système' },
+  equipements: { title: 'Équipements et plan', sub: 'Placer, régler et ajouter les détecteurs et les caméras', admin: true },
+  notifications: { title: 'Personnes prévenues', sub: "Qui reçoit les alarmes hors de l'écran, et par quel canal", admin: true },
+  utilisateurs: { title: 'Utilisateurs', sub: 'Comptes, rôles et accès', admin: true },
+  systeme: { title: 'Système', sub: 'Santé du PSIM, sauvegardes et intégrité du journal', admin: true },
+  simulateur: { title: 'Simulateur', sub: 'Essais : chaque bouton agit comme un vrai détecteur', admin: true, sim: true },
 };
 
-const devicesOf = (kind) => [...S.devices.values()].filter((d) => d.kind === kind);
-const isActive = (i) => i.status !== 'closed';
-const isFiring = (d) => d && (d.status === 'alarm' || d.status === 'prealarm');
+const planPanel = document.querySelector('.c-plan');
+const videoPanel = document.querySelector('.c-video');
 
-function activeIncidents() {
-  return [...S.incidents.values()]
-    .filter(isActive)
-    .sort(
-      (a, b) =>
-        (b.severity === 'critical') - (a.severity === 'critical') ||
-        (b.confirmedAt !== null) - (a.confirmedAt !== null) ||
-        b.openedAt - a.openedAt,
-    );
+function viewFromHash() {
+  const m = /^#\/([a-z]+)/.exec(location.hash);
+  return m && ROUTES[m[1]] ? m[1] : 'surveillance';
 }
 
-function focusedIncident() {
-  const chosen = S.incidents.get(S.focusIncidentId);
-  return chosen && isActive(chosen) ? chosen : (activeIncidents()[0] ?? null);
+/** Garde d'accès : écran d'administration pour un opérateur, Simulateur sans simulateur -> Surveillance. */
+function allowed(name) {
+  const r = ROUTES[name];
+  if (!r) return false;
+  if (r.admin && S.me?.role !== 'admin') return false;
+  if (r.sim && !S.me?.simEnabled) return false;
+  return true;
 }
 
-// Etage et vue choisis : simple confort par poste (le navigateur peut refuser le stockage : on s'en passe).
-function loadPlanPrefs() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('psim.plan') ?? 'null');
-    if (saved && typeof saved === 'object') {
-      if (Number.isInteger(saved.floorId)) S.floorId = saved.floorId;
-      if (saved.mode === 'stack' || saved.mode === 'floor') S.planMode = saved.mode;
-    }
-  } catch {
-    // stockage indisponible
+/** Sortie d'un écran : le plan et le mur reprennent leur place dans Surveillance. L'éditeur d'équipement n'est pas
+ *  vidé : une saisie interrompue (par une alarme, par exemple) est retrouvée au retour. */
+function leave(view) {
+  if (view === 'equipements') {
+    S.editMode = false;
+    // Une pastille en cours de glissement est abandonnée (rien n'est enregistré) : déplacer le panneau libère la capture
+    // du pointeur, son relâchement ne serait jamais reçu et le plan resterait figé (ni étage de l'alarme, ni pastilles).
+    S.dragging = false;
+    $('plan-home').append(planPanel);
+    renderPlan();
+    renderAdmin();
+  } else if (view === 'cameras') {
+    $('video-home').append(videoPanel);
+  } else if (view === 'risques') {
+    riskView.hide();
+    loadRailGauge(); // une évaluation vient peut-être de changer l'indice
   }
 }
-function savePlanPrefs() {
-  try {
-    localStorage.setItem('psim.plan', JSON.stringify({ floorId: S.floorId, mode: S.planMode }));
-  } catch {
-    // stockage indisponible
+
+/** Entrée dans un écran. Armement n'est pas rechargé ici : la liste reconstruite effacerait un planning modifié et pas
+ *  encore enregistré ; son état est relu à chaque changement publié par le serveur (applySnapshot). */
+function enter(view) {
+  if (view === 'equipements') {
+    S.editMode = true;
+    $('equip-plan-slot').append(planPanel);
+    renderPlan();
+    renderAdmin();
+  } else if (view === 'cameras') {
+    $('cameras-video-slot').append(videoPanel);
+    renderWall();
+  } else if (view === 'risques') {
+    // show() attend le serveur avant de lancer son rafraîchissement périodique : si l'écran a été quitté entre-temps
+    // (alarme, autre onglet touché), on l'arrête aussitôt.
+    riskView.show().then(() => S.view !== 'risques' && riskView.hide());
+    loadRailGauge();
+  } else if (view === 'utilisateurs') {
+    usersAdmin.loadUsers();
+  } else if (view === 'notifications') {
+    // L'état des canaux est relu à chaque entrée ; la liste des destinataires seulement si aucun formulaire n'y est
+    // commencé (elle est de toute façon rechargée après chaque ajout ou modification).
+    loadNotifStatus({ recipients: !hasUnsavedInput($('recipients-box')) });
+  } else if (view === 'systeme') {
+    loadSystem();
+  } else if (view === 'simulateur') {
+    renderAdmin();
+  } else if (view === 'alarmes') {
+    renderIncidents();
+  } else if (view === 'journal') {
+    renderJournal();
   }
 }
-loadPlanPrefs();
 
-const floorOf = (deviceId) => S.devices.get(deviceId)?.floorId ?? null;
-const floorName = (floorId) => S.floors.find((f) => f.id === floorId)?.name ?? '';
-
-/** Bascule vers l'etage d'une alarme (ouverture, aggravation, reconnexion), annoncee aux lecteurs d'ecran. */
-function followAlarm(incident) {
-  const floorId = floorOf(incident.detectorId);
-  if (floorId === null) return;
-  const moved = floorId !== S.floorId || S.planMode !== 'floor';
-  S.floorId = floorId;
-  S.planMode = 'floor';
-  if (moved && S.floors.length > 1) $('floor-announce').textContent = `Plan affiché : ${floorName(floorId)}, alarme ${incident.detectorName}.`;
+function route(requested) {
+  if (!S.me || S.me.restricted) return;
+  let name = requested;
+  if (!allowed(name)) {
+    name = 'surveillance';
+    history.replaceState(null, '', '#/surveillance');
+  }
+  closeDrawer(false);
+  const previous = S.view;
+  if (previous === name) return;
+  S.view = name;
+  if (previous) leave(previous);
+  $('lightbox').hidden = true; // l'image agrandie appartient à l'écran quitté (une alarme ne reste pas cachée dessous)
+  for (const section of document.querySelectorAll('.view')) section.hidden = section.id !== `view-${name}`;
+  for (const link of document.querySelectorAll('[data-view]')) {
+    if (link.dataset.view === name) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  $('view-title').textContent = ROUTES[name].title;
+  $('view-sub').textContent = ROUTES[name].sub;
+  enter(name);
+  updateAlarmState(); // titre du document
+  $('workspace').scrollTop = 0;
+  // Le focus ne reste pas dans un écran masqué : il revient au titre (annoncé par les lecteurs d'écran). Sauf si une
+  // fenêtre est ouverte (Mon compte, mot de passe demandé) : le focus y reste, la fenêtre est toujours là.
+  if (previous && $('dialog').hidden) $('view-title').focus({ preventScroll: true });
 }
+
+setRouter(route);
+// Seules les adresses « #/écran » sont des routes (le lien d'évitement « #main » n'en est pas une).
+window.addEventListener('hashchange', () => (location.hash === '' || location.hash.startsWith('#/')) && route(viewFromHash()));
+document.querySelector('.skip').addEventListener('click', (e) => {
+  e.preventDefault();
+  $('main').focus();
+});
+
+/** Remet les écrans à zéro (déconnexion) : le plan et le mur reprennent leur place. */
+function resetViews() {
+  if (S.view) leave(S.view);
+  S.view = null;
+}
+
+// ---------------------------------------------------------------- tiroir du menu (tablette, téléphone)
+
+const narrow = matchMedia('(max-width: 1023px)');
+const drawerOpen = () => $('app').classList.contains('drawer-open');
+let drawerOpener = null; // bouton qui a ouvert le tiroir (en haut, ou l'onglet Menu) : il retrouve le focus à la fermeture
+
+const modalOpen = () => !$('dialog').hidden || !$('lightbox').hidden;
+
+/**
+ * Le tiroir et les fenêtres (dialogue, image agrandie) sont modaux : derrière eux, le menu, la feuille et les onglets
+ * sortent de l'ordre de tabulation et de l'arbre d'accessibilité (inert), pas seulement du regard.
+ */
+function syncInert() {
+  const drawer = drawerOpen();
+  const modal = modalOpen();
+  $('workspace').inert = drawer || modal;
+  document.querySelector('.tabbar').inert = drawer || modal;
+  $('rail').inert = modal;
+}
+
+// La fenêtre rend le focus à sa commande d'origine pendant sa fermeture, alors que cette commande est encore inerte :
+// le focus serait perdu. On le rend ici, une fois l'inertie levée.
+let lastOutside = null;
+document.addEventListener('focusin', (e) => {
+  if (!e.target.closest?.('#dialog, #lightbox')) lastOutside = e.target;
+});
+const modalObserver = new MutationObserver(() => {
+  syncInert();
+  if (!modalOpen() && (!document.activeElement || document.activeElement === document.body) && lastOutside?.isConnected && !$('app').hidden) {
+    lastOutside.focus({ preventScroll: true });
+  }
+});
+for (const id of ['dialog', 'lightbox']) modalObserver.observe($(id), { attributes: true, attributeFilter: ['hidden'] });
+
+function setDrawer(open) {
+  $('app').classList.toggle('drawer-open', open);
+  $('scrim').hidden = !open;
+  syncInert();
+  for (const id of ['menu-btn', 'tab-menu']) $(id).setAttribute('aria-expanded', String(open));
+}
+
+function openDrawer(e) {
+  drawerOpener = e?.currentTarget ?? $('menu-btn');
+  setDrawer(true);
+  ($('rail').querySelector('[aria-current="page"]') ?? $('rail').querySelector('.nav-item'))?.focus();
+}
+
+function closeDrawer(restoreFocus = true) {
+  if (!drawerOpen()) return;
+  setDrawer(false);
+  if (restoreFocus) (drawerOpener ?? $('menu-btn')).focus();
+  drawerOpener = null;
+}
+
+$('menu-btn').addEventListener('click', openDrawer);
+$('tab-menu').addEventListener('click', openDrawer);
+$('drawer-close').addEventListener('click', () => closeDrawer());
+$('scrim').addEventListener('click', () => closeDrawer());
+// Choisir un écran ferme le tiroir, même l'écran déjà affiché : dans ce cas (aucun changement d'adresse, pas de
+// routeur), le focus va au titre plutôt que de rester sur un lien du tiroir refermé.
+for (const link of document.querySelectorAll('#rail a')) {
+  link.addEventListener('click', () => {
+    const same = drawerOpen() && link.getAttribute('href') === `#/${S.view}`;
+    closeDrawer(false);
+    if (same) $('view-title').focus({ preventScroll: true });
+  });
+}
+narrow.addEventListener('change', () => closeDrawer(false));
+// Échap ferme le tiroir, sauf si une fenêtre ou l'image agrandie est par-dessus : c'est elle qui se ferme. Écouté en
+// phase de capture, avant le gestionnaire de la fenêtre, pour lire son état AVANT qu'elle ne se referme.
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key === 'Escape' && drawerOpen() && $('dialog').hidden && $('lightbox').hidden) closeDrawer();
+  },
+  true,
+);
+
+// ---------------------------------------------------------------- temps réel
+
+/**
+ * Ramène la feuille en haut : si l'opérateur est déjà sur Surveillance, le routeur ne fait rien (même écran) et la fiche
+ * de l'alarme, ou son bouton Acquitter, resterait hors de l'écran, plus bas ou plus haut dans la feuille défilée.
+ */
+function showAlarmSheet() {
+  $('workspace').scrollTop = 0;
+}
+$('alarm-counter').addEventListener('click', showAlarmSheet);
 
 function applySnapshot(snap) {
   const before = S.incidents;
   S.site = snap.site;
   S.floors = snap.floors ?? [];
   if (!S.floors.some((f) => f.id === S.floorId)) S.floorId = S.floors[0]?.id ?? null;
-  // Plans de tous les etages charges d'avance : la bascule vers l'etage d'une alarme est immediate.
+  // Plans de tous les étages chargés d'avance : la bascule vers l'étage d'une alarme est immédiate.
   for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
   S.arming = snap.arming ?? {};
-  armingView.load(); // etat detaille des zones d'intrusion (planning, derogations)
+  armingView.load(); // état détaillé des zones d'intrusion (planning, dérogations)
   S.incidents = new Map(snap.incidents.map((i) => [i.id, i]));
   S.audit = snap.audit;
-  // Premier etat recu (connexion) : une alarme non acquittee impose son etage, quel que soit le dernier choisi.
-  // Reconnexion apres une coupure : une alarme ouverte (ou aggravee) pendant la coupure fait de meme.
+  // Premier état reçu (connexion) : une alarme non acquittée impose son étage, quel que soit le dernier choisi.
+  // Reconnexion après une coupure : une alarme ouverte (ou aggravée) pendant la coupure fait de même.
   const pending = activeIncidents().filter((i) => i.status === 'open');
   const fresh = S.loaded ? pending.filter((i) => !before.has(i.id) || before.get(i.id).status !== 'open' || before.get(i.id).severity !== i.severity) : pending;
   if (fresh.length) {
     if (S.loaded) {
       S.focusIncidentId = fresh[0].id;
       S.manualCams = [];
-      showView('supervision');
     }
+    // Surveillance d'abord : l'annonce de l'étage (followAlarm) part quand l'écran est déjà affiché. Jamais une alarme à
+    // acquitter cachée derrière un autre écran, même au rechargement.
+    go('surveillance');
     followAlarm(fresh[0]);
+    showAlarmSheet();
   }
   S.loaded = true;
   if (S.selectedId && !S.devices.has(S.selectedId)) S.selectedId = null;
+  if (S.editId && !S.devices.has(S.editId)) S.editId = null;
   S.manualCams = S.manualCams.filter((id) => S.devices.has(id));
   renderAll(true);
 }
 
 function onIncident(incident) {
   const previous = S.incidents.get(incident.id);
-  // Securite : une nouvelle alarme ramene l'operateur sur l'ecran de supervision, jamais cachee derriere une autre vue.
-  if (incident.status === 'open' && !previous) showView('supervision');
   S.incidents.set(incident.id, incident);
-  // Nouvelle alarme (ou aggravation) : l'operateur voit tout de suite les cameras concernees.
+  // Nouvelle alarme (ou aggravation) : l'opérateur voit tout de suite les caméras concernées, l'étage concerné à plat,
+  // et revient sur Surveillance depuis n'importe quel écran (une alarme n'est jamais cachée derrière une autre vue).
   if (incident.status === 'open' && (!previous || previous.status !== 'open' || previous.severity !== incident.severity)) {
     S.focusIncidentId = incident.id;
     S.manualCams = [];
-    // ... et l'etage concerne, a plat : une alarme ne reste jamais sur un etage qu'on ne regarde pas.
+    go('surveillance'); // d'abord l'écran, puis l'étage : l'annonce aux lecteurs d'écran part d'une page affichée
     followAlarm(incident);
+    showAlarmSheet();
   }
   renderPlan();
   renderWall();
   renderIncidents();
-  renderAdmin(); // les libelles d'edition (« Remplacer le plan de ... ») suivent l'etage affiche
+  renderAdmin(); // les libellés d'édition (« Remplacer le plan de ... ») suivent l'étage affiché
   updateAlarmState();
 }
 
@@ -302,8 +399,6 @@ function onMessage(msg) {
   }
 }
 
-// ---------------------------------------------------------------- connexion
-
 function connect() {
   clearTimeout(connect.timer);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -326,8 +421,10 @@ function connect() {
     try {
       await api('/api/me');
     } catch {
-      return; // session perdue : l'ecran de connexion est deja affiche
+      // Session perdue (401) : l'écran de connexion est déjà affiché, on s'arrête. Toute autre erreur (réseau coupé,
+      // serveur qui redémarre, 5xx) n'est pas une raison de renoncer : l'alarme doit pouvoir revenir sans recharger.
     }
+    if (!S.me) return;
     connect.timer = setTimeout(connect, S.wsDelay);
     S.wsDelay = Math.min(S.wsDelay * 2, 10000);
   };
@@ -335,30 +432,35 @@ function connect() {
 
 function setConn(online) {
   const el = $('conn');
-  el.className = `conn ${online ? 'online' : 'offline'}`;
-  el.querySelector('span').textContent = online ? 'Temps réel connecté' : 'Connexion perdue…';
+  el.className = `conn ${online ? 'is-online' : 'is-offline'}`;
+  el.querySelector('span').textContent = online ? 'Temps réel' : 'Hors ligne';
+  el.title = online ? 'Les alarmes arrivent en temps réel.' : "Le PSIM ne répond plus : nouvelle tentative en cours. Les alarmes n'arrivent plus sur cet écran.";
 }
 
-// ---------------------------------------------------------------- connexion utilisateur
+// ---------------------------------------------------------------- connexion utilisateur (deux étapes)
 
 async function loadDemoAccounts() {
   try {
     const res = await fetch('/api/demo-accounts', { credentials: 'same-origin' });
-    if (!res.ok) return; // mode demo desactive : la page reste inchangee
+    if (!res.ok) return; // mode démo désactivé : la page reste inchangée
     const accounts = await res.json();
     $('demo-buttons').replaceChildren(
       ...accounts.map((a) =>
-        h('button', {
-          class: 'btn small',
-          type: 'button',
-          text: `${a.label} (${a.username})`,
-          onclick: () => {
-            $('login-user').value = a.username;
-            $('login-pass').value = a.password;
-            $('login-error').textContent = '';
-            $('login-form').querySelector('button[type="submit"]').focus();
+        h(
+          'button',
+          {
+            class: 'btn btn-sm',
+            type: 'button',
+            onclick: () => {
+              $('login-user').value = a.username;
+              $('login-pass').value = a.password;
+              $('login-error').textContent = '';
+              $('login-submit').focus();
+            },
           },
-        }),
+          icon('user'),
+          `${a.label} (${a.username})`,
+        ),
       ),
     );
     $('demo-accounts').hidden = accounts.length === 0;
@@ -371,42 +473,39 @@ function showLogin() {
   S.me = null;
   S.loaded = false;
   S.incidents = new Map();
+  clearTimeout(connect.timer); // une reconnexion déjà planifiée n'ouvrirait qu'un canal inutile derrière l'écran de connexion
   S.ws?.close();
   stopTiles();
   dialogs.close();
+  closeDrawer(false);
+  resetViews();
+  clearAccountTraces();
   $('app').hidden = true;
+  document.querySelector('.skip').hidden = true; // « Aller au contenu » viserait la page masquée
   $('login').hidden = false;
   $('login-pass').value = '';
   resetLoginStep();
   loadDemoAccounts();
 }
 
-// ---------------------------------------------------------------- comptes (mot de passe, 2FA, utilisateurs)
-
-const dialogs = createDialogs({ h });
-const logout = async () => {
-  await api('/api/logout', { method: 'POST' }).catch(() => {});
-  showLogin();
-};
-const refreshMe = async () => {
-  S.me = await api('/api/me');
-};
-const reportsView = createReportsView({ h, getMe: () => S.me, api, toast });
-const armingView = createArmingView({ api, h, toast, getMe: () => S.me });
-const account = createAccountUi({ api, h, toast, dialogs, getMe: () => S.me, refreshMe, logout });
-const admin = createUsersAdmin({
-  api,
-  h,
-  toast,
-  dialogs,
-  getMe: () => S.me,
-  onRecipientsChanged: () => loadNotifStatus(),
-  getZones: () => [...new Set([...S.devices.values()].filter((d) => d.kind === 'detector' && d.zone).map((d) => d.zone))],
-});
-$('whoami').addEventListener('click', () => account.openAccount());
-$('users-box').addEventListener('toggle', () => $('users-box').open && admin.loadUsers());
-
-// ---------------------------------------------------------------- connexion en deux etapes
+/**
+ * Rien du compte précédent ne reste dans la page pour le suivant : compteur Système et contenu des écrans
+ * d'administration (masqués et gardés par le routeur, mais encore dans le document). Vider l'éditeur d'équipement
+ * arrête aussi le suivi de la source d'un détecteur (une requête toutes les 10 s tant que l'éditeur est dans la page).
+ */
+function clearAccountTraces() {
+  $('system-counter').hidden = true;
+  $('nav-count-systeme').hidden = true;
+  for (const id of ['users-list', 'notif-status', 'sys-status']) $(id).replaceChildren(h('p', { class: 'muted', text: 'Chargement…' }));
+  for (const id of ['recipients-box', 'notif-results', 'sys-warnings']) $(id).replaceChildren();
+  const editor = $('device-editor');
+  editor.replaceChildren();
+  delete editor.dataset.for;
+  S.selectedId = null;
+  S.editId = null;
+  S.focusIncidentId = null;
+  S.manualCams = [];
+}
 
 let challenge = null;
 
@@ -417,39 +516,23 @@ function resetLoginStep() {
   $('login-code').value = '';
   for (const id of ['login-user', 'login-pass']) $(id).closest('label').hidden = false;
   $('login-submit').textContent = 'Se connecter';
-  $('demo-accounts').style.display = '';
+  $('demo-accounts').classList.remove('is-off');
 }
 
 function showCodeStep(token) {
   challenge = token;
   for (const id of ['login-user', 'login-pass']) $(id).closest('label').hidden = true;
-  $('demo-accounts').style.display = 'none';
+  $('demo-accounts').classList.add('is-off');
   $('login-2fa').hidden = false;
   $('login-back').hidden = false;
   $('login-submit').textContent = 'Valider le code';
   $('login-code').focus();
 }
+
 $('login-back').addEventListener('click', () => {
   resetLoginStep();
   $('login-error').textContent = '';
 });
-
-function showApp() {
-  $('login').hidden = true;
-  if (S.me.restricted) {
-    // Une etape est requise (mot de passe a changer, 2FA a activer) : rien d'autre n'est accessible avant.
-    $('app').hidden = true;
-    account.openAccount();
-    return;
-  }
-  $('app').hidden = false;
-  loadSystem(false);
-  reportsView.draw();
-  $('whoami').textContent = `${S.me.displayName || S.me.username} (${S.me.role === 'admin' ? 'administrateur' : 'opérateur'})`;
-  $('admin').hidden = S.me.role !== 'admin';
-  $('sim-box').hidden = !S.me.simEnabled;
-  connect();
-}
 
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -465,556 +548,97 @@ $('login-form').addEventListener('submit', async (e) => {
     showApp();
   } catch (err) {
     $('login-error').textContent = err.message;
-    if (challenge && err.data?.expired) resetLoginStep(); // defi expire ou epuise : repartir du mot de passe ; sinon on peut reessayer
+    if (challenge && err.data?.expired) resetLoginStep(); // défi expiré ou épuisé : repartir du mot de passe ; sinon on peut réessayer
     else if (challenge) $('login-code').select();
   }
 });
 
-$('logout').addEventListener('click', logout);
-
-// ---------------------------------------------------------------- plan
-
-function pinClass(d) {
-  return `pin ${d.kind} ${d.kind === 'detector' ? `${d.status} cat-${d.category}${d.category === 'intrusion' && S.arming[d.zone] === false ? ' disarmed' : ''}` : ''}${S.selectedId === d.id ? ' selected' : ''}${
-    S.editMode ? ' editable' : ''
-  }${wallCameraIds().includes(d.id) ? ' on-wall' : ''}`;
-}
-
-const floorsUi = createFloorsUi({ h, api, toast });
-
-function currentFloor() {
-  return S.floors.find((f) => f.id === S.floorId) ?? S.floors[0] ?? null;
-}
-
-/** Affiche un etage a plat (onglet, plateau de la vue eclatee, incident). */
-function showFloor(floorId) {
-  S.floorId = floorId;
-  S.planMode = 'floor';
-  savePlanPrefs();
-  renderPlan();
-  renderWall(); // vue generale : les cameras de l'etage affiche
-  renderAdmin();
-}
-
-function setPlanMode(mode) {
-  S.planMode = mode;
-  savePlanPrefs();
-  renderPlan();
-  renderWall();
-}
-
-function renderPlan() {
-  if (S.dragging) return;
-  $('site-name').textContent = S.site.name;
-  const floor = currentFloor();
-  S.floorId = floor?.id ?? null;
-  const stack = S.planMode === 'stack' && S.floors.length > 1;
-  const devices = [...S.devices.values()];
-  const incidents = activeIncidents();
-  floorsUi.renderBar($('floor-bar'), {
-    floors: S.floors,
-    currentId: S.floorId,
-    mode: stack ? 'stack' : 'floor',
-    devices,
-    incidents,
-    editMode: S.editMode,
-    onSelect: showFloor,
-    onMode: setPlanMode,
-  });
-  $('stack-view').hidden = !stack;
-  $('plan-stage').hidden = stack;
-  if (stack) {
-    floorsUi.renderStack($('stack-view'), { floors: S.floors, devices, incidents, statusLabel: STATUS_LABEL, onOpen: showFloor });
+function showApp() {
+  $('login').hidden = true;
+  document.querySelector('.skip').hidden = Boolean(S.me.restricted); // compte restreint : seule la fenêtre Mon compte
+  if (S.me.restricted) {
+    // Une étape est requise (mot de passe à changer, double authentification à activer) : rien d'autre n'est accessible avant.
+    $('app').hidden = true;
+    account.openAccount();
     return;
   }
+  $('app').hidden = false;
+  const admin = S.me.role === 'admin';
+  $('nav-admin').hidden = !admin;
+  $('nav-simulateur').hidden = !S.me.simEnabled;
+  $('who-name').textContent = S.me.displayName || S.me.username;
+  $('who-role').textContent = admin ? 'Administrateur' : 'Opérateur';
+  loadSystem(false);
+  reportsView.draw();
+  loadRailGauge();
+  route(viewFromHash());
+  connect();
+}
 
-  // Un etage sans plan reste affiche (fond neutre) : ses equipements doivent rester visibles et deplacables.
-  // Pendant le chargement du plan d'un autre etage, fond neutre aussi : jamais les pastilles d'un etage sur le dessin d'un autre.
-  const img = $('plan-img');
-  const hasPlan = Boolean(floor?.hasPlan);
-  const src = floor ? `/api/floors/${floor.id}/plan?v=${floor.planVersion}` : '';
-  if (hasPlan && img.dataset.src !== src) {
-    img.dataset.src = src;
-    img.dataset.ready = '';
-    $('plan-empty').textContent = 'Chargement du plan…';
-    img.onload = () => {
-      if (img.dataset.src === src) {
-        img.dataset.ready = '1';
-        renderPlan();
-      }
-    };
-    img.onerror = () => {
-      if (img.dataset.src === src) $('plan-empty').textContent = 'Plan indisponible (réseau ?) : les équipements restent affichés.';
-    };
-    img.src = src;
-  }
-  const planShown = hasPlan && img.dataset.ready === '1';
-  $('plan-stage').classList.toggle('no-plan', !planShown);
-  $('plan-empty').hidden = planShown;
-  if (!planShown && !(hasPlan && /indisponible/.test($('plan-empty').textContent))) {
-    $('plan-empty').textContent = hasPlan
-      ? 'Chargement du plan…'
-      : `Pas encore de plan${S.floors.length > 1 && floor ? ` pour « ${floor.name} »` : ''}. Un administrateur peut en téléverser un (Édition du plan).`;
-  }
-  img.hidden = !planShown;
-  img.alt = floor ? `Plan : ${floor.name}` : 'Plan du site';
+// ---------------------------------------------------------------- état du cadre, compteurs, alerte sonore
 
-  const here = devices.filter((d) => d.floorId === S.floorId);
-  const pins = $('plan-pins');
-  pins.replaceChildren(
-    ...here.map((d) => {
-      const pin = h(
-        'button',
-        {
-          type: 'button',
-          class: pinClass(d),
-          title: `${d.name} - ${d.zone || 'sans zone'}${d.category === 'intrusion' && S.arming[d.zone] === false ? ' - zone DÉSARMÉE' : ''}${
-            d.kind === 'detector'
-              ? ` - ${CATEGORY_LABEL[d.category]}${d.lastValue !== null ? ` - ${formatValue(d.lastValue, d.valueUnit)}` : ''} - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage'}`
-              : ''
-          }`,
-          dataset: { id: d.id },
-        },
-        h('span', { class: 'pin-glyph', text: d.kind === 'detector' ? CATEGORY_GLYPH[d.category] : 'C' }),
-        h('span', { class: 'pin-label', text: d.id }),
-      );
-      pin.style.left = `${d.x}%`;
-      pin.style.top = `${d.y}%`;
-      pin.addEventListener('pointerdown', (ev) => onPinDown(ev, d.id, pin));
-      return pin;
-    }),
+const downDetectors = () => devicesOf('detector').filter((d) => d.status === 'offline' || d.status === 'fault');
+
+function updateAlarmState() {
+  const active = activeIncidents();
+  const unacked = active.filter((i) => i.status === 'open');
+  // Cadre : rouge tant qu'une alarme est ouverte (pulsation tant qu'elle n'est pas acquittée), ambre-brun pour une
+  // préalarme, marine au calme. La couleur n'est jamais seule : le compteur et les fiches disent la même chose en mots.
+  const app = $('app');
+  app.dataset.frame = active.some((i) => i.severity === 'critical') ? 'alarm' : active.length ? 'warning' : 'calm';
+  app.toggleAttribute('data-pending', unacked.length > 0);
+
+  const counter = $('alarm-counter');
+  counter.classList.toggle('is-calm', unacked.length === 0); // à 0 : neutre, et visible seulement sur téléphone
+  counter.classList.toggle('is-solid-alarm', unacked.length > 0);
+  counter.classList.toggle('is-ok', unacked.length === 0);
+  setCounterText(counter, `${unacked.length} à acquitter`);
+  for (const id of ['nav-count-alarmes', 'tab-count-alarmes']) {
+    $(id).hidden = unacked.length === 0;
+    $(id).textContent = String(unacked.length);
+  }
+  document.title = unacked.length ? `(${unacked.length}) ALARME - PSIM` : `${S.view ? `${ROUTES[S.view].title} - ` : ''}GAMR-DIGITALE PSIM`;
+
+  // Détecteurs hors service (muets, hors ligne ou en défaut) : jamais silencieux pour l'opérateur,
+  // un détecteur qui ne surveille plus laisse sa zone sans protection.
+  // Le compteur ouvre la liste en clair (touché au doigt ou au clavier : une infobulle ne s'y lit pas).
+  const down = downDetectors();
+  const badge = $('offline-counter');
+  badge.hidden = down.length === 0;
+  setCounterText(badge, `${down.length} détecteur${down.length > 1 ? 's' : ''} hors service`, `${down.length} hors service`);
+  badge.title = `${down.map((d) => `${d.id} ${d.name} : ${STATUS_LABEL[d.status]}`).join('\n')}\nTouchez pour la liste.`;
+}
+
+/** Liste des détecteurs hors service, lisible pendant un incident aussi (le bloc « Tout est calme » est alors masqué). */
+$('offline-counter').addEventListener('click', () => {
+  const opener = $('offline-counter');
+  const down = downDetectors();
+  const close = h('button', { class: 'btn btn-primary', type: 'button', text: 'Fermer', onclick: () => dialogs.close() });
+  dialogs.open(
+    down.length > 1 ? `${down.length} détecteurs hors service` : 'Détecteur hors service',
+    [
+      h('p', { text: down.length > 1 ? 'Leur zone n’est plus surveillée : prévenez le technicien.' : 'Sa zone n’est plus surveillée : prévenez le technicien.' }),
+      h(
+        'ul',
+        { class: 'down-list' },
+        ...down.map((d) => {
+          const floor = S.floors.length > 1 && floorName(d.floorId) ? `, ${floorName(d.floorId)}` : '';
+          return h('li', {}, h('strong', { text: `${d.id} ${d.name}` }), ` - ${d.zone || 'sans zone'}${floor} : ${STATUS_LABEL[d.status]}`);
+        }),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        close,
+        S.me?.role === 'admin' ? h('a', { class: 'btn', href: '#/equipements', onclick: () => dialogs.close() }, icon('plan'), 'Ouvrir l’inventaire') : null,
+      ),
+    ],
+    { onClose: () => opener.focus() },
   );
-
-  // Traits detecteur -> cameras associees (detecteur selectionne ou en incident), sur l'etage affiche seulement.
-  const svg = $('plan-links');
-  svg.replaceChildren();
-  const shown = new Set(incidents.map((i) => i.detectorId));
-  if (S.selectedId) shown.add(S.selectedId);
-  for (const detectorId of shown) {
-    const det = S.devices.get(detectorId);
-    if (det?.kind !== 'detector' || det.floorId !== S.floorId) continue;
-    for (const camId of S.links[detectorId] ?? []) {
-      const cam = S.devices.get(camId);
-      if (!cam || cam.floorId !== S.floorId) continue;
-      const line = document.createElementNS(SVG_NS, 'line');
-      line.setAttribute('x1', det.x);
-      line.setAttribute('y1', det.y);
-      line.setAttribute('x2', cam.x);
-      line.setAttribute('y2', cam.y);
-      line.setAttribute('class', `link ${isFiring(det) ? 'firing' : ''}`);
-      svg.append(line);
-    }
-  }
-}
-
-function onPinDown(ev, id, pin) {
-  ev.preventDefault();
-  const stage = $('plan-stage');
-  const startX = ev.clientX;
-  const startY = ev.clientY;
-  let moved = false;
-  pin.setPointerCapture(ev.pointerId);
-
-  const move = (e) => {
-    if (!S.editMode) return;
-    if (!moved && Math.hypot(e.clientX - startX, e.clientY - startY) < 4) return;
-    moved = true;
-    S.dragging = true;
-    const rect = stage.getBoundingClientRect();
-    pin.style.left = `${clamp(((e.clientX - rect.left) / rect.width) * 100, 0, 100)}%`;
-    pin.style.top = `${clamp(((e.clientY - rect.top) / rect.height) * 100, 0, 100)}%`;
-  };
-  const up = async () => {
-    pin.removeEventListener('pointermove', move);
-    pin.removeEventListener('pointerup', up);
-    pin.removeEventListener('pointercancel', up);
-    if (moved) {
-      const x = Math.round(parseFloat(pin.style.left) * 10) / 10;
-      const y = Math.round(parseFloat(pin.style.top) * 10) / 10;
-      S.dragging = false;
-      try {
-        await api(`/api/devices/${encodeURIComponent(id)}`, { method: 'PATCH', body: { x, y } });
-      } catch (err) {
-        toast(err.message);
-        renderPlan();
-      }
-    } else {
-      S.dragging = false;
-      onPinClick(id);
-    }
-  };
-  pin.addEventListener('pointermove', move);
-  pin.addEventListener('pointerup', up);
-  pin.addEventListener('pointercancel', up);
-}
-
-function onPinClick(id) {
-  const d = S.devices.get(id);
-  if (!d) return;
-  S.selectedId = S.selectedId === id && !S.editMode ? null : id;
-  if (d.kind === 'camera') {
-    // Ajoute la camera au mur video (4 max, la plus ancienne sort).
-    S.manualCams = S.manualCams.includes(id) ? S.manualCams.filter((c) => c !== id) : [...S.manualCams, id].slice(-4);
-  } else {
-    const incident = activeIncidents().find((i) => i.detectorId === id);
-    if (incident) {
-      S.focusIncidentId = incident.id;
-      S.manualCams = [];
-    }
-  }
-  renderPlan();
-  renderWall();
-  renderAdmin();
-}
-
-// ---------------------------------------------------------------- mur video
-
-const tiles = new Map(); // idCamera -> { el, stop }
-
-// `fireOnly` : la camera simulee ne dessine fumee et flammes que pour un detecteur d'incendie.
-function fireLevelFor(camera, fireOnly = false) {
-  let level = 0;
-  for (const d of devicesOf('detector')) {
-    if (!camera.zone || d.zone !== camera.zone) continue;
-    if (fireOnly && d.category !== 'fire') continue;
-    if (d.status === 'alarm') return 2;
-    if (d.status === 'prealarm') level = 1;
-  }
-  return level;
-}
-
-// Flux affiches a la fois : le serveur en sert 6 au plus, et il en faut de reste pour les images jointes aux incidents.
-const WALL_SIZE = 4;
-
-/** Cameras du mur : selection manuelle, cameras de l'incident suivi, ou vue generale (cameras de l'etage affiche). */
-function wallSource() {
-  if (S.manualCams.length) return { key: 'manual', ids: S.manualCams, label: 'Sélection manuelle' };
-  const incident = focusedIncident();
-  if (incident) return { key: `incident:${incident.id}`, ids: incident.cameraIds, label: `Incident n°${incident.id} - ${incident.detectorName}` };
-  const floor = S.floors.length > 1 && S.planMode === 'floor' ? currentFloor() : null;
-  const here = floor ? devicesOf('camera').filter((c) => c.floorId === floor.id) : [];
-  if (floor && here.length) return { key: `floor:${floor.id}`, ids: here.map((c) => c.id), label: `Vue générale - ${floor.name}` };
-  return { key: 'all', ids: devicesOf('camera').map((c) => c.id), label: floor ? `Vue générale (aucune caméra à « ${floor.name} »)` : 'Vue générale' };
-}
-
-/** Cameras de la page affichee ; on feuillette par 4 (boutons du mur), et on revient a la page 1 quand la source change. */
-function wallCameraIds() {
-  const source = wallSource();
-  if (S.wallKey !== source.key) {
-    S.wallKey = source.key;
-    S.wallPage = 0;
-  }
-  const ids = source.ids.filter((id) => S.devices.has(id));
-  S.wallPages = Math.max(1, Math.ceil(ids.length / WALL_SIZE));
-  S.wallPage = Math.min(Math.max(0, S.wallPage ?? 0), S.wallPages - 1);
-  return ids.slice(S.wallPage * WALL_SIZE, (S.wallPage + 1) * WALL_SIZE);
-}
-
-function makeTile(camera) {
-  const canvas = h('canvas', { class: 'tile-canvas' });
-  const caption = h('div', { class: 'tile-caption' });
-  const status = h('div', { class: 'tile-status', role: 'status' });
-  status.hidden = true;
-  const el = h('div', { class: 'tile' }, canvas, status, caption);
-  const live = camera.streamKind === 'onvif' || camera.streamKind === 'rtsp';
-  canvas.setAttribute('aria-label', `${live ? 'Flux vidéo' : 'Flux simulé'} ${camera.name}`);
-  const stop = live
-    ? startLiveCamera(canvas, {
-        cameraId: camera.id,
-        onStatus: (message) => {
-          status.hidden = !message;
-          status.textContent = message ?? '';
-        },
-      })
-    : startSimCamera(canvas, {
-        label: camera.id,
-        zone: camera.zone,
-        getFire: () => fireLevelFor(S.devices.get(camera.id) ?? camera, true),
-      });
-  return { el, stop, caption, kind: camera.streamKind };
-}
-
-function stopTiles() {
-  for (const t of tiles.values()) t.stop();
-  tiles.clear();
-  $('wall').replaceChildren();
-}
-
-function renderWall() {
-  const wall = $('wall');
-  const ids = wallCameraIds();
-  const pages = S.wallPages;
-  $('wall-mode').textContent = `${wallSource().label}${pages > 1 ? ` - caméras ${S.wallPage * WALL_SIZE + 1} à ${S.wallPage * WALL_SIZE + ids.length} (page ${S.wallPage + 1}/${pages})` : ''}`;
-  $('wall-pager').hidden = pages <= 1;
-  $('wall-prev').disabled = S.wallPage === 0;
-  $('wall-next').disabled = S.wallPage >= pages - 1;
-  $('wall-auto').hidden = S.manualCams.length === 0;
-
-  for (const [id, tile] of tiles) {
-    if (!ids.includes(id)) {
-      tile.stop();
-      tile.el.remove();
-      tiles.delete(id);
-    }
-  }
-  // Le message « aucune camera » d'un mur vide doit disparaitre des qu'une camera arrive.
-  if (ids.length > 0) for (const stale of [...wall.children]) if (stale.classList.contains('empty')) stale.remove();
-  ids.forEach((id, index) => {
-    const camera = S.devices.get(id);
-    let tile = tiles.get(id);
-    if (tile && tile.kind !== camera.streamKind) {
-      // La source de la camera a change (simulee <-> reelle) : on reconstruit la vignette.
-      tile.stop();
-      tile.el.remove();
-      tiles.delete(id);
-      tile = undefined;
-    }
-    if (!tile) {
-      tile = makeTile(camera);
-      tiles.set(id, tile);
-    }
-    // Plusieurs etages : la legende dit ou est la camera (elle peut filmer un autre etage que celui affiche).
-    tile.caption.textContent = `${camera.name}${camera.zone ? ` - ${camera.zone}` : ''}${S.floors.length > 1 && floorName(camera.floorId) ? ` (${floorName(camera.floorId)})` : ''}`;
-    tile.el.classList.toggle('alert', fireLevelFor(camera) > 0);
-    if (wall.children[index] !== tile.el) wall.insertBefore(tile.el, wall.children[index] ?? null);
-  });
-  wall.className = `wall n${Math.max(ids.length, 1)}`;
-  if (ids.length === 0) wall.replaceChildren(h('p', { class: 'empty', text: 'Aucune caméra configurée.' }));
-}
-
-$('wall-auto').addEventListener('click', () => {
-  S.manualCams = [];
-  renderPlan();
-  renderWall();
-});
-for (const [id, step] of [['wall-prev', -1], ['wall-next', 1]]) {
-  $(id).addEventListener('click', () => {
-    S.wallPage = (S.wallPage ?? 0) + step;
-    renderWall();
-    renderPlan(); // le liseré « à l'écran » des pastilles suit la page
-  });
-}
-
-// ---------------------------------------------------------------- incidents
-
-const cards = new Map(); // idIncident -> { el, refs }
-
-const SHOT_REASON = { opened: "à l'ouverture", escalated: "à l'aggravation", confirmed: 'à la confirmation' };
-
-function shotCaption(shot) {
-  const camera = S.devices.get(shot.cameraId);
-  return `${camera?.name ?? shot.cameraId} - ${SHOT_REASON[shot.reason] ?? shot.reason} - ${time(shot.takenAt)}`;
-}
-
-/** Miniatures des images prises au moment de l'incident (reconstruites seulement si la liste change). */
-function renderShots(container, incident, mini = false) {
-  const key = incident.snapshots.map((s) => s.id).join(',');
-  if (container.dataset.key === key) return;
-  container.dataset.key = key;
-  container.classList.toggle('mini', mini);
-  container.hidden = incident.snapshots.length === 0;
-  container.replaceChildren(
-    ...incident.snapshots.map((shot) => {
-      const img = h('img', { src: `/api/snapshots/${shot.id}?t=${shot.takenAt}`, alt: shotCaption(shot), draggable: 'false' });
-      return h('button', { type: 'button', class: 'shot', title: shotCaption(shot), onclick: () => openLightbox(shot) }, img);
-    }),
-  );
-}
-
-function openLightbox(shot) {
-  $('lightbox-img').src = `/api/snapshots/${shot.id}?t=${shot.takenAt}`;
-  $('lightbox-caption').textContent = shotCaption(shot);
-  $('lightbox').hidden = false;
-}
-$('lightbox').addEventListener('click', () => ($('lightbox').hidden = true));
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') $('lightbox').hidden = true;
+  close.focus();
 });
 
-function confirmationText(reason) {
-  if (reason?.startsWith('neighbor:')) {
-    const id = reason.slice('neighbor:'.length);
-    const d = S.devices.get(id);
-    return `détecteur voisin ${id}${d ? ` (${d.name})` : ''} déclenché`;
-  }
-  if (reason === 'persistence') return "l'alarme persiste";
-  return reason ?? '';
-}
-
-function hintText(details) {
-  const m = /en (\d+) s/.exec(details ?? '');
-  return m ? `revenu à la normale en ${m[1]} s, sans détecteur voisin.` : (details ?? '');
-}
-
-function whereText(incident) {
-  // Plusieurs etages : l'etage fait partie du « ou » (une meme zone peut exister a chaque niveau).
-  const floor = S.floors.length > 1 && incident.floor ? ` (${incident.floor})` : '';
-  return `${incident.zone || 'Zone non renseignée'}${floor} - ouvert à ${time(incident.openedAt)} - depuis ${elapsed(incident.openedAt)}`;
-}
-
-function buildCard(incident) {
-  const refs = {};
-  refs.badge = h('span', { class: 'badge' });
-  refs.chip = h('span', { class: 'chip' });
-  refs.conf = h('p', { class: 'small conf-line' });
-  refs.advice = h('p', { class: 'small advice' });
-  refs.shots = h('div', { class: 'shots' });
-  refs.status = h('p', { class: 'small' });
-  refs.ack = h('button', { class: 'btn small', type: 'button', text: 'Acquitter', onclick: () => act(() => api(`/api/incidents/${incident.id}/ack`, { method: 'POST' })) });
-  refs.cams = h('button', {
-    class: 'btn small',
-    type: 'button',
-    text: 'Voir les caméras',
-    onclick: () => {
-      S.focusIncidentId = incident.id;
-      S.manualCams = [];
-      followAlarm(incident);
-      renderPlan();
-      renderWall();
-      renderAdmin();
-    },
-  });
-  refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: 'Commentaire (facultatif)', 'aria-label': 'Commentaire' });
-  const close = (qualification) => () =>
-    act(() => api(`/api/incidents/${incident.id}/close`, { method: 'POST', body: { qualification, comment: refs.comment.value } }));
-  refs.fire = h('button', { class: 'btn small danger', type: 'button', text: realEventLabel(incident.category), onclick: close('fire') });
-  refs.type = h('span', { class: 'chip type' });
-  refs.false = h('button', { class: 'btn small', type: 'button', text: 'Fausse alarme', onclick: close('false_alarm') });
-  refs.hint = h('p', { class: 'small hint', text: 'Clôture possible quand le détecteur est revenu à la normale.' });
-
-  const el = h(
-    'article',
-    { class: 'incident' },
-    h('header', {}, refs.badge, refs.type, refs.chip, h('strong', { class: 'inc-title' }), h('span', { class: 'muted small inc-num', text: `n°${incident.id}` })),
-    h('p', { class: 'small inc-where' }),
-    refs.status,
-    refs.conf,
-    refs.advice,
-    refs.shots,
-    h('div', { class: 'row wrap' }, refs.cams, refs.ack),
-    refs.comment,
-    h('div', { class: 'row wrap' }, refs.fire, refs.false),
-    refs.hint,
-  );
-  return { el, refs };
-}
-
-function updateCard({ el, refs }, incident) {
-  const detector = S.devices.get(incident.detectorId);
-  const critical = incident.severity === 'critical';
-  const confirmed = incident.confirmedAt !== null;
-  el.className = `incident ${critical ? 'critical' : 'warning'} ${incident.status} ${confirmed ? 'confirmed' : 'unconfirmed'}${focusedIncident()?.id === incident.id ? ' focused' : ''}`;
-  refs.badge.textContent = critical ? 'ALARME' : 'PRÉALARME';
-  refs.type.textContent = CATEGORY_LABEL[incident.category];
-  refs.type.hidden = incident.category === 'fire'; // l'incendie reste le cas par défaut : on ne répète pas
-  refs.fire.textContent = realEventLabel(incident.category);
-  refs.chip.textContent = confirmed ? 'CONFIRMÉE' : 'À CONFIRMER';
-  refs.chip.className = `chip ${confirmed ? 'confirmed' : 'unconfirmed'}`;
-  // Une alarme « à confirmer » reste une alarme à traiter : on le dit pour qu'elle ne soit jamais prise a la legere.
-  refs.conf.textContent = confirmed
-    ? `Confirmée : ${confirmationText(incident.confirmationReason)}.`
-    : "À confirmer : rien ne la corrobore pour l'instant. Elle reste à traiter.";
-  renderShots(refs.shots, incident);
-  refs.advice.hidden = !incident.hint;
-  refs.advice.textContent = incident.hint ? `Probable fausse alarme : ${hintText(incident.hintDetails)} À vérifier : l'incident reste ouvert.` : '';
-  el.querySelector('.inc-title').textContent = incident.detectorName;
-  el.querySelector('.inc-where').textContent = whereText(incident) + (incident.lastValue !== null ? ` - mesure : ${formatValue(incident.lastValue, incident.valueUnit)}` : '');
-  refs.status.textContent =
-    incident.status === 'open'
-      ? 'Non acquitté'
-      : `Acquitté par ${incident.ackedBy} à ${time(incident.ackedAt)}`;
-  refs.status.classList.toggle('unacked', incident.status === 'open');
-  refs.ack.hidden = incident.status !== 'open';
-  const blocked = isFiring(detector);
-  refs.fire.disabled = blocked;
-  refs.false.disabled = blocked;
-  refs.hint.hidden = !blocked;
-}
-
-async function act(fn) {
-  try {
-    const result = await fn();
-    if (result?.id) onIncident(result);
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
-function renderIncidents() {
-  const list = activeIncidents();
-  $('no-incident').hidden = list.length > 0;
-  const container = $('incidents');
-
-  for (const [id, card] of cards) {
-    if (!list.some((i) => i.id === id)) {
-      card.el.remove();
-      cards.delete(id);
-    }
-  }
-  list.forEach((incident, index) => {
-    let card = cards.get(incident.id);
-    if (!card) {
-      card = buildCard(incident);
-      cards.set(incident.id, card);
-    }
-    updateCard(card, incident);
-    if (container.children[index] !== card.el) container.insertBefore(card.el, container.children[index] ?? null);
-  });
-
-  const closed = [...S.incidents.values()].filter((i) => !isActive(i)).sort((a, b) => b.closedAt - a.closedAt).slice(0, 10);
-  $('closed-list').replaceChildren(
-    ...closed.map((i) =>
-      h(
-        'li',
-        {},
-        h('strong', { text: `n°${i.id} ${i.detectorName}` }),
-        h('a', { class: 'small', href: `/api/reports/incidents/${i.id}`, target: '_blank', rel: 'noopener', text: 'fiche', title: "Fiche détaillée de l'incident (imprimable)" }),
-        h('span', { class: `tag ${i.qualification}`, text: qualificationLabel(i.category, i.qualification) }),
-        h('span', { class: 'muted small', text: `clôturé à ${time(i.closedAt)} par ${i.closedBy}${i.comment ? ` - ${i.comment}` : ''}` }),
-        i.snapshots.length ? (() => { const box = h('div', { class: 'shots mini' }); renderShots(box, i, true); return box; })() : null,
-      ),
-    ),
-  );
-}
-
-// ---------------------------------------------------------------- journal
-
-function describe(entry) {
-  const parts = [];
-  if (entry.deviceId) parts.push(S.devices.get(entry.deviceId)?.name ?? entry.deviceId);
-  if (entry.incidentId) parts.push(`incident n°${entry.incidentId}`);
-  if (entry.details) {
-    parts.push(
-      entry.action === 'detector_silent'
-        ? entry.details.replace(/etait : (\w+)/, (_, s) => `était : ${STATUS_LABEL[s] ?? s}`)
-        : entry.action === 'incident_confirmed'
-          ? `par ${confirmationText(entry.details)}`
-          : entry.action === 'incident_hint'
-            ? hintText(entry.details)
-            : entry.action === 'device_state'
-        ? entry.details.replace(/\w+/g, (w) => STATUS_LABEL[w] ?? w)
-        : entry.details === 'fire' || entry.details === 'false_alarm' ? qualificationLabel(S.devices.get(entry.deviceId)?.category, entry.details) : entry.details,
-    );
-  }
-  return parts.join(' - ');
-}
-
-function renderJournal() {
-  $('journal').replaceChildren(
-    ...S.audit.slice(0, 60).map((e) =>
-      h(
-        'li',
-        {},
-        h('time', { text: time(e.ts) }),
-        h('span', { class: 'j-action', text: ACTION_LABEL[e.action] ?? e.action }),
-        h('span', { class: 'muted', text: describe(e) }),
-        h('span', { class: 'muted small j-actor', text: e.actor }),
-      ),
-    ),
-  );
-}
-
-// ---------------------------------------------------------------- alerte sonore et compteur
+render.alarmState = updateAlarmState;
 
 let audio = null;
 function ensureAudio() {
@@ -1038,510 +662,64 @@ function beep(freq, duration) {
   osc.stop(audio.currentTime + duration);
 }
 
-function updateAlarmState() {
-  const unacked = activeIncidents().filter((i) => i.status === 'open');
-  const counter = $('alarm-counter');
-  counter.hidden = unacked.length === 0;
-  counter.textContent = `${unacked.length} à acquitter`;
-  document.title = unacked.length ? `(${unacked.length}) ALARME - PSIM` : 'GAMRdigitale PSIM';
-
-  // Detecteurs hors service (muets, hors ligne ou en defaut) : jamais silencieux pour l'operateur,
-  // un detecteur qui ne surveille plus laisse sa zone sans protection.
-  const down = devicesOf('detector').filter((d) => d.status === 'offline' || d.status === 'fault');
-  const badge = $('offline-counter');
-  badge.hidden = down.length === 0;
-  badge.textContent = `${down.length} détecteur${down.length > 1 ? 's' : ''} hors service`;
-  badge.title = down.map((d) => `${d.id} ${d.name} : ${STATUS_LABEL[d.status]}`).join('\n');
-}
-
 setInterval(() => {
   if (!S.me) return;
   const unacked = activeIncidents().filter((i) => i.status === 'open');
   if (unacked.length && !S.muted) {
     if (unacked.some((i) => i.severity === 'critical' && i.confirmedAt !== null)) {
-      beep(1175, 0.15); // alarme confirmee : double bip aigu
+      beep(1175, 0.15); // alarme confirmée : double bip aigu
       setTimeout(() => beep(1175, 0.15), 220);
     } else beep(unacked.some((i) => i.severity === 'critical') ? 880 : 520, 0.3);
   }
-  for (const [id, card] of cards) {
-    const incident = S.incidents.get(id);
-    if (incident) card.el.querySelector('.inc-where').textContent = whereText(incident);
-  }
+  tickIncidents();
 }, 1000);
 
+function showMute() {
+  $('mute').replaceChildren(icon(S.muted ? 'volume-off' : 'volume'), h('span', { text: S.muted ? 'Son coupé' : 'Son activé' }));
+  $('mute').title = S.muted ? "L'alerte sonore est coupée : touchez pour la rétablir." : "Couper l'alerte sonore (les alarmes restent affichées).";
+}
 $('mute').addEventListener('click', () => {
   S.muted = !S.muted;
-  $('mute').textContent = S.muted ? 'Son coupé' : 'Son activé';
+  showMute();
   ensureAudio();
 });
+showMute();
 document.addEventListener('click', ensureAudio);
 
-// ---------------------------------------------------------------- administration
+// ---------------------------------------------------------------- jauge du rail (indice de sécurité du site)
 
-const simRow = createSimControls({ api, h, toast });
+const thermo = createThermometer();
+$('rail-gauge').prepend(thermo.el);
 
-const fmtBytes = (n) => (n == null ? '—' : n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} Go` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} Mo` : `${Math.max(1, Math.round(n / 1024))} Ko`);
-const fmtDuration = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} j ${Math.floor((s % 86400) / 3600)} h` : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : `${Math.floor(s / 60)} min`);
-
-/** Etat du PSIM lui-meme (administrateur) : alimente le panneau « Systeme » et le badge d'alerte du haut. */
-// Continuité : dernière période sans surveillance, et état du signal de supervision externe.
-function journalText(sys) {
-  const j = sys.journal;
-  if (!j) return 'Journal : pas encore vérifié.';
-  const when = new Date(j.at).toLocaleString('fr-FR');
-  return j.ok ? `Journal : intégrité vérifiée le ${when} (${j.checked} entrées protégées).` : `JOURNAL ALTÉRÉ (vérifié le ${when}) : voir « Vérifier le journal » et npm run verify-journal.`;
-}
-
-function continuityText(sys) {
-  const gap = sys.continuity?.lastGap;
-  const hb = sys.heartbeat;
-  const parts = [];
-  parts.push(
-    gap
-      ? `Dernière période sans surveillance : ${fmtDuration(Math.round(gap.durationMs / 1000))} le ${new Date(gap.from).toLocaleString('fr-FR')} (${gap.clean ? 'arrêt volontaire' : 'arrêt INATTENDU'}).`
-      : 'Aucune période sans surveillance enregistrée.',
+function showRailGauge(site) {
+  const level = levelOf(site.index);
+  thermo.set(site.index);
+  $('rail-index').textContent = level ? String(site.index) : '—';
+  $('rail-of').hidden = !level;
+  const word = $('rail-level');
+  word.textContent = level ? (site.levelLabel ?? level.label) : 'À évaluer';
+  word.className = `rail-level ${level ? `lvl-${level.level}` : 'is-none'}`;
+  const worst = level && site.worstZone ? `Zone la plus exposée : ${site.worstZone}` : `${site.assessedZones} zone(s) évaluée(s) sur ${site.totalZones}`;
+  $('rail-worst').textContent = worst;
+  $('rail-worst').title = worst;
+  $('rail-gauge').setAttribute(
+    'aria-label',
+    level ? `Indice de sécurité : ${site.index} sur 60, niveau ${word.textContent.toLowerCase()}. Ouvrir Risques.` : 'Indice de sécurité : à évaluer. Ouvrir Risques.',
   );
-  parts.push(
-    hb?.configured
-      ? `Supervision externe : signal toutes les ${hb.everyS} s vers ${hb.host}${hb.consecutiveFailures > 0 ? ` - ${hb.consecutiveFailures} échec(s) (${hb.lastError})` : hb.lastOkAt ? `, dernier succès à ${time(hb.lastOkAt)}` : ''}.`
-      : "Supervision externe : non configurée (si le PSIM s'arrête, personne n'est prévenu).",
-  );
-  return parts.join(' ');
 }
 
-async function loadSystem(render = true) {
-  if (S.me?.role !== 'admin') return;
+async function loadRailGauge() {
+  if (!S.me || S.me.restricted) return;
   try {
-    const sys = await api('/api/system');
-    const badge = $('system-counter');
-    const critical = sys.warnings.filter((w) => w.level === 'critique').length;
-    badge.hidden = critical === 0;
-    badge.textContent = `Système : ${critical} alerte${critical > 1 ? 's' : ''}`;
-    badge.title = sys.warnings.filter((w) => w.level === 'critique').map((w) => w.message).join('\n');
-    if (!render) return;
-    const b = sys.backup;
-    $('sys-status').className = 'small';
-    $('sys-status').textContent =
-      `PSIM ${sys.version} (Node ${sys.node}) - en marche depuis ${fmtDuration(sys.uptimeS)} - santé : ${sys.health.ok ? 'bonne' : sys.health.reason}. ` +
-      `Base : ${fmtBytes(sys.database.bytes)} - images : ${fmtBytes(sys.snapshotsBytes)} - disque libre : ${fmtBytes(sys.disk?.freeBytes)} - ` +
-      `passerelles MQTT connectées : ${sys.brokerClients}. ` +
-      `Sauvegardes : ${b.everyH > 0 ? `automatiques toutes les ${b.everyH} h` : 'automatiques désactivées'}, ${b.count} conservée(s)` +
-      `${b.at ? `, dernière ${b.ok ? 'réussie' : 'EN ÉCHEC'} le ${new Date(b.at).toLocaleString('fr-FR')}` : ', aucune pour l\'instant'} (${b.dir}). ` +
-      continuityText(sys) +
-      ` ${journalText(sys)}`;
-    $('sys-warnings').replaceChildren(
-      ...(sys.warnings.length
-        ? sys.warnings.map((w) => h('li', { class: w.level === 'critique' ? 'bad' : 'warn', text: `${w.level === 'critique' ? 'CRITIQUE' : 'Attention'} : ${w.message}` }))
-        : [h('li', { class: 'good', text: 'Aucun avertissement.' })]),
-    );
-  } catch (err) {
-    if (render) $('sys-status').textContent = err.message;
+    showRailGauge((await api('/api/risk')).site);
+  } catch {
+    // indisponible : la jauge garde sa dernière valeur
   }
 }
+setInterval(loadRailGauge, 60000);
+on('risk', (d) => d?.site && S.me && !S.me.restricted && showRailGauge(d.site)); // une évaluation enregistrée met le rail à jour tout de suite
 
-$('sys-box').addEventListener('toggle', () => {
-  if ($('sys-box').open) loadSystem();
-});
-$('sys-journal').addEventListener('click', async () => {
-  $('sys-journal').disabled = true;
-  try {
-    const r = await api('/api/system/journal/verify', { method: 'POST' });
-    toast(r.ok ? `Journal intègre (${r.checked} entrées vérifiées)` : `JOURNAL ALTÉRÉ : ${r.problems.length} problème(s), première entrée n°${r.problems[0].id} (${r.problems[0].reason})`, r.ok ? 'ok' : 'error');
-    loadSystem();
-  } catch (err) {
-    toast(err.message);
-  } finally {
-    $('sys-journal').disabled = false;
-  }
-});
-$('sys-backup').addEventListener('click', async () => {
-  $('sys-backup').disabled = true;
-  try {
-    const result = await api('/api/system/backup', { method: 'POST' });
-    toast(result.ok ? `Sauvegarde ${result.name} réussie` : `Sauvegarde en échec : ${result.error}`, result.ok ? 'ok' : 'error');
-    loadSystem();
-  } catch (err) {
-    toast(err.message);
-  } finally {
-    $('sys-backup').disabled = false;
-  }
-});
-setInterval(() => {
-  if (S.me?.role === 'admin') loadSystem($('sys-box').open);
-}, 60000);
-
-const KIND_LABEL = { opened: 'ouverture', escalated: 'aggravation', confirmed: 'confirmation', unacked: 'escalade', reminder: 'rappel', silent: 'détecteur muet', restart: 'redémarrage', test: 'test' };
-
-async function loadNotifStatus() {
-  try {
-    const st = await api('/api/notifications/status');
-    const box = $('notif-status');
-    admin.loadRecipients();
-    if (st.activeChannels === 0) {
-      box.textContent = "Aucun canal configuré : les alarmes ne préviennent personne hors de cet écran. Voir .env.example (PSIM_SMTP_*, PSIM_TELEGRAM_TOKEN, PSIM_NOTIFY_*).";
-      box.className = 'small error';
-      return;
-    }
-    box.className = 'small muted';
-    box.textContent =
-      `${st.channels.map((c) => `${c.label} : ${c.level1} destinataire(s) niveau 1, ${c.level2} niveau 2`).join(' - ')}. ` +
-      `Escalade ${st.escalateAfterS > 0 ? `après ${st.escalateAfterS} s sans acquittement, puis rappel toutes les ${st.reminderS} s (${st.maxReminders} max)` : 'désactivée'}. ` +
-      `24 h : ${st.sentLast24h} envoyé(s), ${st.failedLast24h} en échec.`;
-    // Une zone dont tous les destinataires sont limites a d'autres zones : une alarme n'y previendrait personne.
-    // Personne n'est designe pour une zone : ses alarmes partent a tous (repli), pas a la bonne personne.
-    if (st.uncoveredZones?.length) {
-      box.className = 'small error';
-      box.textContent += ` ATTENTION : aucun destinataire de niveau 1 pour la zone ${st.uncoveredZones.join(', ')} : ses alarmes partiront à tous les destinataires.`;
-    }
-    if (st.generalFallback) {
-      box.className = 'small error';
-      box.textContent += ' ATTENTION : aucun destinataire « toutes les alarmes » : redémarrages, alertes de sécurité et détecteurs sans zone partiront à tous les destinataires.';
-    }
-    // Destinataire limite a une zone qui n'a plus de detecteur (zone renommee) : il ne recoit plus rien d'elle.
-    for (const o of st.orphanRecipientZones ?? []) {
-      box.className = 'small error';
-      box.textContent += ` ATTENTION : ${o.recipient} est limité à ${o.zones.join(', ')}, zone(s) sans détecteur : il n'en reçoit plus rien (zone renommée ?).`;
-    }
-  } catch (err) {
-    $('notif-status').textContent = err.message;
-  }
-}
-
-$('notif-box').addEventListener('toggle', () => {
-  if ($('notif-box').open) loadNotifStatus();
-});
-
-$('notif-test').addEventListener('click', async () => {
-  const list = $('notif-results');
-  list.replaceChildren(h('li', { class: 'muted', text: 'Envoi en cours…' }));
-  try {
-    const results = await api('/api/notifications/test', { method: 'POST' });
-    list.replaceChildren(
-      ...(results.length
-        ? results.map((r) => h('li', { class: r.ok ? 'good' : 'bad', text: `${r.ok ? 'OK ' : 'ÉCHEC'} ${r.channel} niveau ${r.level} - ${r.recipient}${r.error ? ` : ${r.error}` : ''}` }))
-        : [h('li', { class: 'bad', text: 'Aucun destinataire configuré.' })]),
-    );
-    loadNotifStatus();
-  } catch (err) {
-    list.replaceChildren(h('li', { class: 'bad', text: err.message }));
-  }
-});
-
-function renderAdmin(force = false) {
-  if (S.me?.role !== 'admin') return;
-  if (S.me.simEnabled) {
-    $('sim-list').replaceChildren(
-      ...devicesOf('detector').map(simRow),
-    );
-  }
-  $('edit-tools').hidden = !S.editMode;
-  if (S.editMode) {
-    const floor = currentFloor();
-    $('plan-file-text').textContent = S.floors.length > 1 && floor ? `Remplacer le plan de « ${floor.name} »` : 'Remplacer le plan';
-    $('add-submit').textContent = S.floors.length > 1 && floor ? `Ajouter au centre de « ${floor.name} »` : 'Ajouter au centre du plan';
-    // L'etage vise est celui ECRIT sur le bouton au moment du clic, pas celui affiche au moment de l'envoi.
-    $('plan-file').dataset.floor = floor ? String(floor.id) : '';
-    $('add-submit').dataset.floor = floor ? String(floor.id) : '';
-    floorsUi.renderAdmin($('floor-admin'), { floors: S.floors, devices: [...S.devices.values()], currentId: S.floorId, rerender: () => renderAdmin() });
-  }
-  renderDeviceEditor(force);
-}
-
-function renderDeviceEditor(force = false) {
-  const box = $('device-editor');
-  const d = S.selectedId ? S.devices.get(S.selectedId) : null;
-  box.hidden = !d || !S.editMode;
-  if (!d || !S.editMode) return;
-  // Meme equipement : on ne reconstruit que sur demande, et jamais pendant une saisie.
-  if (box.dataset.for === d.id && (!force || box.contains(document.activeElement))) return;
-
-  const name = h('input', { value: d.name, maxlength: '80', 'aria-label': 'Nom' });
-  const zone = h('input', { value: d.zone, maxlength: '80', 'aria-label': 'Zone' });
-  // Changer d'etage : l'equipement garde sa position (en % du plan) et l'ecran suit vers son nouvel etage.
-  const floorSelect = h('select', { 'aria-label': 'Étage' }, ...S.floors.map((f) => h('option', { value: String(f.id), text: f.name })));
-  floorSelect.value = String(d.floorId);
-  // Rien ne part au simple changement de choix (les fleches du clavier en declenchent un a chaque pas) : bouton explicite.
-  const moveButton = h('button', {
-    class: 'btn small',
-    type: 'button',
-    text: 'Déplacer vers cet étage',
-    disabled: true,
-    onclick: () => {
-      const floorId = Number(floorSelect.value);
-      api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { floorId } })
-        .then(() => {
-          toast(`${d.id} déplacé vers « ${floorName(floorId)} » : placez-le sur ce plan`, 'ok');
-          showFloor(floorId);
-        })
-        .catch((e) => toast(e.message));
-    },
-  });
-  floorSelect.addEventListener('change', () => (moveButton.disabled = Number(floorSelect.value) === d.floorId));
-  const children = [
-    h('strong', { text: `${d.id} (${d.kind === 'detector' ? `détecteur - ${CATEGORY_LABEL[d.category]}` : 'caméra'})` }),
-    h(
-      'div',
-      { class: 'row wrap' },
-      name,
-      zone,
-      h('button', {
-        class: 'btn small',
-        type: 'button',
-        text: 'Enregistrer',
-        onclick: () =>
-          api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { name: name.value, zone: zone.value } })
-            .then(() => toast('Enregistré', 'ok'))
-            .catch((e) => toast(e.message)),
-      }),
-      h('button', {
-        class: 'btn small danger',
-        type: 'button',
-        text: 'Supprimer',
-        onclick: () => {
-          if (!confirm(`Supprimer ${d.id} - ${d.name} ?`)) return;
-          S.selectedId = null;
-          api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' }).catch((e) => toast(e.message));
-        },
-      }),
-    ),
-  ];
-  if (S.floors.length > 1) children.push(h('div', { class: 'row wrap' }, h('label', { class: 'row' }, h('span', { class: 'small muted', text: 'Étage :' }), floorSelect), moveButton));
-  if (d.kind === 'camera') children.push(buildSourceForm(d));
-  if (d.kind === 'detector') {
-    const linked = new Set(S.links[d.id] ?? []);
-    children.push(
-      buildSensorForm(d, { api, h, toast }),
-      buildDetectorSource(d, { api, h, toast, cameras: () => devicesOf('camera') }),
-      h('p', { class: 'small muted', text: 'Caméras affichées quand ce détecteur déclenche :' }),
-      h(
-        'div',
-        { class: 'row wrap' },
-        ...devicesOf('camera').map((c) =>
-          h(
-            'label',
-            { class: 'check' },
-            h('input', {
-              type: 'checkbox',
-              checked: linked.has(c.id),
-              onchange: (e) => {
-                e.target.checked ? linked.add(c.id) : linked.delete(c.id);
-                api(`/api/devices/${encodeURIComponent(d.id)}/links`, { method: 'PUT', body: { cameraIds: [...linked] } }).catch((err) => toast(err.message));
-              },
-            }),
-            ` ${c.id} ${c.name}`,
-          ),
-        ),
-      ),
-    );
-  }
-  box.dataset.for = d.id;
-  box.replaceChildren(...children);
-}
-
-// ---- Source video d'une camera (ONVIF / RTSP) ----
-
-S.sourceMsg = {};
-
-function setSourceMsg(cameraId, text, kind = '') {
-  S.sourceMsg[cameraId] = { text, kind };
-  const el = document.getElementById('source-msg');
-  if (el && el.dataset.for === cameraId) {
-    el.textContent = text;
-    el.className = `small ${kind}`;
-  }
-}
-
-function buildSourceForm(d) {
-  const wrap = h('div', { class: 'source-form' }, h('p', { class: 'small muted', text: 'Chargement de la source vidéo…' }));
-  const url = `/api/cameras/${encodeURIComponent(d.id)}`;
-  api(`${url}/source`)
-    .then((src) => wrap.replaceChildren(...sourceFields(d, src, url)))
-    .catch((err) => wrap.replaceChildren(h('p', { class: 'error', text: err.message })));
-  return wrap;
-}
-
-function sourceFields(d, src, url) {
-  const kind = h(
-    'select',
-    { 'aria-label': 'Type de source vidéo' },
-    h('option', { value: 'simulated', text: 'Simulée (démonstration)' }),
-    h('option', { value: 'onvif', text: 'Caméra ONVIF' }),
-    h('option', { value: 'rtsp', text: 'Flux RTSP direct' }),
-  );
-  kind.value = src.kind;
-  const host = h('input', { value: src.host ?? '', placeholder: 'Adresse IP (ex. 192.168.1.64)', maxlength: '253', 'aria-label': 'Adresse de la caméra' });
-  const port = h('input', { value: src.port ?? '', type: 'number', min: '1', max: '65535', 'aria-label': 'Port', class: 'narrow' });
-  const path = h('input', { value: src.rtspPath ?? '', placeholder: 'Chemin RTSP (ex. /Streaming/Channels/102)', maxlength: '200', 'aria-label': 'Chemin RTSP' });
-  const user = h('input', { value: src.username ?? '', placeholder: 'Utilisateur', maxlength: '64', autocomplete: 'off', 'aria-label': 'Utilisateur de la caméra' });
-  const pass = h('input', {
-    type: 'password',
-    placeholder: src.hasPassword ? 'Mot de passe (vide = inchangé)' : 'Mot de passe',
-    maxlength: '128',
-    autocomplete: 'new-password',
-    'aria-label': 'Mot de passe de la caméra',
-  });
-  // Format de l'image : « Automatique » redresse les images d'enregistreur compressees en largeur (704x576, 1440x1620...).
-  const aspectHelp = h('p', {
-    id: `aspect-help-${d.id}`,
-    class: 'small muted',
-    text: 'Personnes trop minces sur l’image : choisissez 16:9. Trop larges ou trapues : choisissez 4:3 (ancienne caméra analogique).',
-  });
-  const aspect = h(
-    'select',
-    { 'aria-describedby': aspectHelp.id },
-    h('option', { value: 'auto', text: 'Automatique (recommandé)' }),
-    h('option', { value: '16:9', text: '16:9 (écran large)' }),
-    h('option', { value: '4:3', text: '4:3 (ancienne caméra, image plus carrée)' }),
-    h('option', { value: 'source', text: 'Tel que reçu (sans correction)' }),
-  );
-  aspect.value = src.aspect ?? 'auto';
-  const aspectField = h('label', { class: 'row' }, "Format de l'image", aspect);
-  const found = h('div', { class: 'found' });
-  const previous = S.sourceMsg[d.id];
-  const msg = h('p', { id: 'source-msg', class: `small ${previous?.kind ?? ''}`, role: 'status', dataset: { for: d.id }, text: previous?.text ?? '' });
-
-  const netFields = [host, port, user, pass, aspectField, aspectHelp];
-  const sync = () => {
-    const k = kind.value;
-    for (const el of netFields) el.hidden = k === 'simulated';
-    path.hidden = k !== 'rtsp';
-    discover.hidden = k !== 'onvif';
-    testBtn.hidden = k === 'simulated';
-    port.placeholder = k === 'rtsp' ? 'Port (554)' : 'Port (80)';
-    found.replaceChildren();
-  };
-
-  const save = async (thenTest) => {
-    setSourceMsg(d.id, 'Enregistrement…');
-    try {
-      await api(`${url}/source`, {
-        method: 'PUT',
-        body: {
-          kind: kind.value,
-          host: host.value.trim(),
-          port: port.value === '' ? undefined : Number(port.value),
-          rtspPath: path.value.trim(),
-          username: user.value,
-          password: pass.value,
-          aspect: aspect.value,
-        },
-      });
-      pass.value = '';
-      if (thenTest && kind.value !== 'simulated') {
-        setSourceMsg(d.id, "Test en cours (jusqu'à 15 secondes)…");
-        const result = await api(`${url}/test`, { method: 'POST' });
-        setSourceMsg(d.id, `Connexion réussie : ${result.message}`, 'ok');
-      } else {
-        setSourceMsg(d.id, 'Source enregistrée', 'ok');
-      }
-    } catch (err) {
-      setSourceMsg(d.id, err.message, 'error');
-    }
-  };
-
-  const discover = h('button', {
-    class: 'btn small',
-    type: 'button',
-    text: 'Rechercher sur le réseau',
-    onclick: async () => {
-      found.replaceChildren(h('span', { class: 'small muted', text: 'Recherche en cours (4 secondes)…' }));
-      try {
-        const cameras = await api('/api/onvif/discover');
-        found.replaceChildren(
-          ...(cameras.length
-            ? cameras.map((c) =>
-                h('button', {
-                  class: 'btn small',
-                  type: 'button',
-                  text: `${c.host}:${c.port}${c.name ? ` - ${c.name}` : ''}${c.hardware ? ` (${c.hardware})` : ''}`,
-                  onclick: () => {
-                    host.value = c.host;
-                    port.value = c.port;
-                    found.replaceChildren();
-                  },
-                }),
-              )
-            : [h('span', { class: 'small muted', text: 'Aucune caméra trouvée (pare-feu, ou caméra sur un autre réseau ?). Saisissez son adresse à la main.' })]),
-        );
-      } catch (err) {
-        found.replaceChildren(h('span', { class: 'small error', text: err.message }));
-      }
-    },
-  });
-  const testBtn = h('button', { class: 'btn small primary', type: 'button', text: 'Enregistrer et tester', onclick: () => save(true) });
-  const saveBtn = h('button', { class: 'btn small', type: 'button', text: 'Enregistrer', onclick: () => save(false) });
-
-  kind.addEventListener('change', sync);
-  sync();
-  return [
-    h('p', { class: 'small muted', text: 'Source vidéo de cette caméra :' }),
-    h('div', { class: 'row wrap' }, kind, discover),
-    found,
-    h('div', { class: 'row wrap' }, host, port),
-    path,
-    h('div', { class: 'row wrap' }, user, pass),
-    aspectField,
-    aspectHelp,
-    h('div', { class: 'row wrap' }, testBtn, saveBtn),
-    msg,
-  ];
-}
-
-$('edit-mode').addEventListener('change', (e) => {
-  S.editMode = e.target.checked;
-  $('device-editor').dataset.for = '';
-  renderPlan();
-  renderAdmin();
-});
-
-// Etage vise, fige au moment ou l'administrateur ouvre le choix du fichier (une alarme peut changer l'etage affiche entre-temps).
-let planTarget = null;
-$('plan-file').addEventListener('click', () => (planTarget = Number($('plan-file').dataset.floor) || null));
-$('plan-file').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
-  try {
-    const floor = S.floors.find((f) => f.id === planTarget);
-    if (!floor) throw new Error("L'étage visé n'existe plus");
-    const res = await fetch(`/api/floors/${floor.id}/plan`, { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': file.type }, body: file });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(data?.error ?? `Erreur ${res.status}`);
-    toast(S.floors.length > 1 ? `Plan de « ${floor.name} » remplacé` : 'Plan remplacé', 'ok');
-    const snap = await api('/api/state');
-    applySnapshot(snap);
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-for (const c of CATEGORIES) $('add-category').append(h('option', { value: c, text: CATEGORY_LABEL[c] }));
-$('add-kind').addEventListener('change', () => ($('add-category').hidden = $('add-kind').value !== 'detector'));
-
-$('add-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    const created = await api('/api/devices', {
-      method: 'POST',
-      body: {
-        kind: $('add-kind').value,
-        id: $('add-id').value.trim(),
-        name: $('add-name').value,
-        zone: $('add-zone').value,
-        ...($('add-submit').dataset.floor ? { floorId: Number($('add-submit').dataset.floor) } : {}),
-        ...($('add-kind').value === 'detector' ? { category: $('add-category').value } : {}),
-      },
-    });
-    S.selectedId = created.id;
-    $('add-id').value = '';
-    $('add-name').value = '';
-    toast(`${created.id} ajouté au centre du plan${S.floors.length > 1 ? ` de « ${floorName(created.floorId)} »` : ''} : glissez-le à sa place`, 'ok');
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-// ---------------------------------------------------------------- rendu global et demarrage
+// ---------------------------------------------------------------- rendu global et démarrage
 
 function renderAll(force = false) {
   renderPlan();
@@ -1557,6 +735,18 @@ function renderAll(force = false) {
     S.me = await api('/api/me');
     showApp();
   } catch {
-    showLogin();
+    if ($('login').hidden) showLogin(); // sans session, le 401 l'a déjà affichée ; ici : serveur injoignable
   }
 })();
+
+// Tableaux d'administration repliés en fiches sous 640 px : les rôles gardent leur sens de tableau pour les lecteurs d'écran.
+{
+  let queued = false;
+  const apply = () => {
+    queued = false;
+    for (const t of document.querySelectorAll('table.adm-stack:not([role])')) ariaTable(t);
+  };
+  new MutationObserver(() => {
+    if (!queued) { queued = true; setTimeout(apply, 50); }
+  }).observe(document.getElementById('main') ?? document.body, { childList: true, subtree: true });
+}
