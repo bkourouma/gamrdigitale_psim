@@ -16,7 +16,7 @@ import { loadSecretKey, seal, unseal } from '../server/secrets.ts';
 import { seedDemo } from '../server/seed.ts';
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { createJpegSplitter, createVideoService, displayRatio, explainFfmpeg, inputVideo, jpegSize, ratioLabel, scaleFilter, videoFilter } from '../server/video.ts';
+import { createJpegSplitter, createVideoService, displayRatio, sampleEvery, explainFfmpeg, inputVideo, jpegSize, ratioLabel, scaleFilter, videoFilter } from '../server/video.ts';
 import type { Aspect } from '../server/video.ts';
 import type { VideoService } from '../server/video.ts';
 import type { PsimEvent } from '../server/types.ts';
@@ -152,6 +152,21 @@ describe('configuration de la source video', () => {
   });
 });
 
+describe("echantillonnage d'une serie d'images", () => {
+  it("un flux fige (aucune image nouvelle) ne donne pas deux fois la meme image ; la fin du flux arrete la serie", async () => {
+    const frozen = Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]);
+    let ticks = 0;
+    const shots = await sampleEvery(() => frozen, 5, 10, 0, () => ++ticks >= 4);
+    assert.equal(shots.length, 1);
+  });
+
+  it('retient une image nouvelle a chaque tour', async () => {
+    let n = 0;
+    const shots = await sampleEvery(() => Buffer.from([0xff, 0xd8, n++, 0xff, 0xd9]), 3, 10, 0, () => false);
+    assert.equal(shots.length, 3);
+  });
+});
+
 describe('diffusion partagee (ffmpeg reel, mire de test)', () => {
   let server: Server;
   let url: string;
@@ -238,6 +253,15 @@ describe('diffusion partagee (ffmpeg reel, mire de test)', () => {
     assert.ok(image[0] === 0xff && image[1] === 0xd8 && image[image.length - 2] === 0xff && image[image.length - 1] === 0xd9, 'JPEG complet');
     await assert.rejects(ctx.video.snapshot('C-02'), isPsimError(404));
     await assert.rejects(ctx.video.snapshot('D-01'), isPsimError(404));
+  });
+
+  it('serie : plusieurs images differentes et espacees, sur une seule connexion ; refuse une camera simulee', async () => {
+    const shots = await ctx.video.snapshotSeries('C-01', 3, 400, 200);
+    assert.equal(shots.length, 3);
+    for (const s of shots) assert.ok(s.frame[0] === 0xff && s.frame[1] === 0xd8 && s.frame[s.frame.length - 1] === 0xd9, 'JPEG complet');
+    assert.ok(!shots[0].frame.equals(shots[1].frame) && !shots[1].frame.equals(shots[2].frame), 'des images differentes (la mire change a chaque image)');
+    assert.ok(shots[1].at - shots[0].at >= 350 && shots[2].at - shots[1].at >= 350, `espacees a l'heure reelle (${shots.map((s) => s.at - shots[0].at).join(', ')} ms)`);
+    await assert.rejects(ctx.video.snapshotSeries('C-02', 3), isPsimError(404));
   });
 
   it('le test de connexion renvoie une image et decrit la source', async () => {

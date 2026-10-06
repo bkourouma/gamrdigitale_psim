@@ -403,6 +403,22 @@ describe('canal Telegram (faux serveur)', () => {
     assert.ok(api.calls[1].body.includes(JPEG), 'les octets du JPEG sont envoyes');
   });
 
+  it('une serie d images part en un seul album (pas un message par photo)', async () => {
+    const api = await fakeHttp(() => ({ ok: true }));
+    const channel = telegramChannel({ token: 'TOKEN123456', apiBase: api.base }, [['42'], []])!;
+    const images = [1, 2, 3, 4, 5].map((n) => ({ caption: `Escalier - 16:26:2${n}`, data: JPEG }));
+    await channel.sendImages!(message, '42', images);
+    await api.close();
+    assert.equal(api.calls.length, 1, 'un seul appel');
+    assert.equal(api.calls[0].url, '/botTOKEN123456/sendMediaGroup');
+    const body = api.calls[0].body.toString('latin1');
+    const media = JSON.parse(/name="media"\r\n\r\n([^\r]+)/.exec(body)![1]) as { type: string; media: string; caption: string }[];
+    assert.deepEqual(media.map((m) => m.media), ['attach://photo0', 'attach://photo1', 'attach://photo2', 'attach://photo3', 'attach://photo4']);
+    assert.ok(media.every((m) => m.type === 'photo'));
+    assert.equal(media[4].caption, 'Escalier - 16:26:25', 'chaque photo garde son heure');
+    assert.equal(body.split('name="photo').length - 1, 5, 'les 5 fichiers sont joints');
+  });
+
   it("une erreur de l'API ou une panne reseau ne revele jamais le jeton", async () => {
     const api = await fakeHttp((_req, _body, status) => {
       status.code = 401;

@@ -16,6 +16,15 @@ const BOUNDARY = 'psimframe';
 const MAX_FEEDS = 6;
 const IDLE_STOP_MS = 5000;
 const FIRST_FRAME_TIMEOUT_MS = 15000;
+/** Serie d'images d'incident : une toutes les 1,5 s, apres 0,5 s de flux (voir `snapshotSeries`). */
+const SERIES_EVERY_MS = 1500;
+const SERIES_SETTLE_MS = 500;
+
+/** Une image d'une serie, avec l'heure REELLE a laquelle elle a ete retenue. */
+export interface TimedFrame {
+  frame: Buffer;
+  at: number;
+}
 const MAX_FRAME_BUFFER = 8 * 1024 * 1024;
 
 /**
@@ -183,6 +192,29 @@ function withCredentials(uri: string, username: string | null, password: string 
   if (username) url.username = username;
   if (password) url.password = password;
   return url.toString();
+}
+
+/**
+ * Retient l'image courante toutes les `everyMs` (la premiere apres `settleMs`), jusqu'a `count` images ou la fin du flux.
+ * Une image deja retenue (meme objet : rien de neuf n'est arrive) n'est pas reprise.
+ */
+export function sampleEvery(current: () => Buffer | null, count: number, everyMs: number, settleMs: number, over: () => boolean): Promise<TimedFrame[]> {
+  return new Promise((resolveFrames) => {
+    const shots: TimedFrame[] = [];
+    let previous: Buffer | null = null;
+    let timer: NodeJS.Timeout;
+    const take = () => {
+      const frame = current();
+      if (frame && frame !== previous) {
+        shots.push({ frame, at: Date.now() });
+        previous = frame;
+      }
+      if (shots.length >= count || over()) return resolveFrames(shots);
+      timer = setTimeout(take, everyMs);
+    };
+    timer = setTimeout(take, settleMs);
+    void timer;
+  });
 }
 
 /** `info` : journal au niveau info, prefixe par niveau (pour lire la taille du flux recu lors d'un test). */
@@ -536,7 +568,48 @@ export function createVideoService(opts: VideoOptions) {
     return (await grabFrame(url, aspect)).frame;
   }
 
-  return { view, setSource, test, snapshot, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };
+  /**
+   * Plusieurs images espacees dans le temps, sur UNE seule connexion : une personne qui traverse le champ en 3 ou 4 s
+   * echappe facilement a une image unique (la detection de l'enregistreur a deja 1 a 3 s de retard).
+   * Le debut d'un flux peut etre ancien (certains enregistreurs envoient d'abord les secondes gardees en memoire, d'un
+   * coup) : on attend `settleMs` apres la premiere image, puis on retient l'image la plus recente toutes les `everyMs`,
+   * a l'heure reelle (pas a l'horodatage du flux). Une image identique a la precedente (flux fige) n'est pas reprise.
+   * Flux deja regarde par un operateur : ses images sont deja actuelles, on les echantillonne sans nouvelle connexion.
+   */
+  async function snapshotSeries(cameraId: string, count: number, everyMs = SERIES_EVERY_MS, settleMs = SERIES_SETTLE_MS): Promise<TimedFrame[]> {
+    requireCamera(cameraId);
+    const live = feeds.get(cameraId);
+    if (live?.last) return sampleEvery(() => live.last, count, everyMs, 0, () => feeds.get(cameraId) !== live);
+    const { url, aspect } = await resolve(cameraId);
+    let last: Buffer | null = null;
+    let stderr = '';
+    let ended = false;
+    const proc = spawn(ffmpeg, argsFor(url, false, aspect, false), { stdio: ['ignore', 'pipe', 'pipe'] });
+    let timer: NodeJS.Timeout | undefined;
+    // Premiere image recue (le flux est la), ou l'echec : delai depasse, ffmpeg absent, flux termine sans image.
+    const started = new Promise<void>((resolveStart, rejectStart) => {
+      timer = setTimeout(() => rejectStart(new PsimError(504, 'Aucune image recue de la camera')), FIRST_FRAME_TIMEOUT_MS);
+      proc.on('error', () => rejectStart(new PsimError(500, "ffmpeg introuvable : l'installer ou renseigner PSIM_FFMPEG")));
+      proc.on('close', () => {
+        ended = true;
+        rejectStart(new PsimError(502, `Aucune image recue : ${explainFfmpeg(errorLines(stderr))}`));
+      });
+      proc.stdout.on('data', createJpegSplitter((f) => {
+        last = Buffer.from(f);
+        resolveStart();
+      }));
+    });
+    proc.stderr.on('data', (d: Buffer) => (stderr = (stderr + d.toString()).slice(-4000)));
+    try {
+      await started;
+      return await sampleEvery(() => last, count, everyMs, settleMs, () => ended);
+    } finally {
+      clearTimeout(timer);
+      proc.kill();
+    }
+  }
+
+  return { view, setSource, test, snapshot, snapshotSeries, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };
 }
 
 export type VideoService = ReturnType<typeof createVideoService>;

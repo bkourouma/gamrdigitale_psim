@@ -150,6 +150,8 @@ export const config = {
   // fausse alarme) sans jamais retarder, masquer ni fermer une alarme. Actives par defaut. 0 = desactivee.
   // Conservation des images d'incident (jours ; 0 = indefiniment).
   snapshotDays: seconds('PSIM_SNAPSHOT_DAYS', 30),
+  // Images prises a l'OUVERTURE d'un incident, par camera liee : une toutes les 1,5 s (1 = une seule image).
+  snapshotSeries: num('PSIM_SNAPSHOT_SERIES', 5, 1, 10),
   // Notifications : e-mail (SMTP), Telegram, webhook. Niveau 1 = prevenu a l'ouverture ; niveau 2 =
   // prevenu si personne n'acquitte. Les secrets (mot de passe SMTP, jeton Telegram) restent dans .env.
   notify: {

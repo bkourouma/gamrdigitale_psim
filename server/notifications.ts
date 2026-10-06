@@ -157,12 +157,20 @@ export function telegramChannel(cfg: { token: string; apiBase: string }, recipie
     mask: (chat) => chat,
     send: (message, chat) => call('sendMessage', JSON.stringify({ chat_id: chat, text: `${message.subject}\n\n${message.text}`.slice(0, 4000) })),
     async sendImages(_message, chat, images) {
-      for (const image of images) {
+      // Une serie (plusieurs images d'un incident) part en UN album : un seul message sur le telephone. 10 images au plus par album.
+      for (let i = 0; i < images.length; i += 10) {
+        const group = images.slice(i, i + 10);
         const form = new FormData();
         form.set('chat_id', chat);
-        form.set('caption', image.caption.slice(0, 900));
-        form.set('photo', new Blob([new Uint8Array(image.data)], { type: 'image/jpeg' }), 'camera.jpg');
-        await call('sendPhoto', form);
+        if (group.length === 1) {
+          form.set('caption', group[0].caption.slice(0, 900));
+          form.set('photo', new Blob([new Uint8Array(group[0].data)], { type: 'image/jpeg' }), 'camera.jpg');
+          await call('sendPhoto', form);
+          continue;
+        }
+        form.set('media', JSON.stringify(group.map((image, n) => ({ type: 'photo', media: `attach://photo${n}`, caption: image.caption.slice(0, 900) }))));
+        group.forEach((image, n) => form.set(`photo${n}`, new Blob([new Uint8Array(image.data)], { type: 'image/jpeg' }), `camera-${n + 1}.jpg`));
+        await call('sendMediaGroup', form);
       }
     },
   };

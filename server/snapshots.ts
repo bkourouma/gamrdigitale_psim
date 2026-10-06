@@ -5,6 +5,8 @@ import type { Engine } from './engine.ts';
 import type { Incident } from './types.ts';
 
 const CAPTURE_TIMEOUT_MS = 10_000;
+/** Serie a l'ouverture : connexion (jusqu'a 15 s) puis environ 7 s d'images. */
+const SERIES_TIMEOUT_MS = 30_000;
 
 export interface SnapshotDeps {
   db: DatabaseSync;
@@ -12,6 +14,13 @@ export interface SnapshotDeps {
   dataDir: string;
   /** Lit une image JPEG de la camera (leve une exception si elle n'a pas de source reelle). */
   grab: (cameraId: string) => Promise<Buffer>;
+  /**
+   * Plusieurs images espacees (une connexion), avec leur heure. Utilisee a l'OUVERTURE d'un incident : c'est la que la
+   * personne est encore dans le champ. Absente : une seule image, comme aux autres etapes.
+   */
+  grabSeries?: (cameraId: string, count: number) => Promise<{ frame: Buffer; at: number }[]>;
+  /** Nombre d'images de la serie d'ouverture (defaut 1 = pas de serie). */
+  seriesCount?: number;
   /** Plafond d'images par incident (evite de remplir le disque pendant un incident qui dure). */
   maxPerIncident?: number;
   publishIncident: (incidentId: number) => void;
@@ -33,6 +42,7 @@ export function createSnapshotService(deps: SnapshotDeps) {
   const { db, engine } = deps;
   const dir = resolve(deps.dataDir, 'snapshots');
   const max = deps.maxPerIncident ?? 12;
+  const seriesCount = deps.grabSeries ? Math.max(1, deps.seriesCount ?? 1) : 1;
   mkdirSync(dir, { recursive: true });
   const countFor = (incidentId: number) =>
     (db.prepare('SELECT COUNT(*) AS n FROM incident_snapshot WHERE incident_id = ?').get(incidentId) as { n: number }).n;
@@ -50,19 +60,24 @@ export function createSnapshotService(deps: SnapshotDeps) {
         const device = engine.getDevice(cameraId);
         if (device?.streamKind !== 'onvif' && device?.streamKind !== 'rtsp') return;
         try {
-          const image = await withTimeout(deps.grab(cameraId), CAPTURE_TIMEOUT_MS);
-          if (!isJpeg(image)) throw new Error('image invalide');
-          // Plafond reverifie ici : plusieurs cameras capturent en parallele et la lecture se fait apres l'attente.
-          if (countFor(incident.id) >= max) return;
-          const takenAt = Date.now();
-          const res = db
-            .prepare('INSERT INTO incident_snapshot (incident_id, camera_id, taken_at, reason, file) VALUES (?, ?, ?, ?, ?)')
-            .run(incident.id, cameraId, takenAt, reason, '');
-          const id = Number(res.lastInsertRowid);
-          const file = `${id}.jpg`; // nom derive du seul identifiant numerique : jamais d'entree externe dans un chemin
-          writeFileSync(join(dir, file), image);
-          db.prepare('UPDATE incident_snapshot SET file = ? WHERE id = ?').run(file, id);
-          saved++;
+          const series = reason === 'opened' && seriesCount > 1;
+          const shots = series
+            ? await withTimeout(deps.grabSeries!(cameraId, seriesCount), SERIES_TIMEOUT_MS)
+            : [{ frame: await withTimeout(deps.grab(cameraId), CAPTURE_TIMEOUT_MS), at: Date.now() }];
+          const valid = shots.filter((s) => isJpeg(s.frame));
+          if (valid.length === 0) throw new Error('image invalide');
+          for (const shot of valid) {
+            // Plafond reverifie ici : plusieurs cameras capturent en parallele et la lecture se fait apres l'attente.
+            if (countFor(incident.id) >= max) break;
+            const res = db
+              .prepare('INSERT INTO incident_snapshot (incident_id, camera_id, taken_at, reason, file) VALUES (?, ?, ?, ?, ?)')
+              .run(incident.id, cameraId, shot.at, reason, '');
+            const id = Number(res.lastInsertRowid);
+            const file = `${id}.jpg`; // nom derive du seul identifiant numerique : jamais d'entree externe dans un chemin
+            writeFileSync(join(dir, file), shot.frame);
+            db.prepare('UPDATE incident_snapshot SET file = ? WHERE id = ?').run(file, id);
+            saved++;
+          }
         } catch (err) {
           engine.audit('systeme', 'snapshot_failed', {
             incidentId: incident.id,

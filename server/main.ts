@@ -204,6 +204,9 @@ snapshots = createSnapshotService({
   engine,
   dataDir,
   grab: (cameraId) => video.snapshot(cameraId),
+  // A l'ouverture d'un incident : une serie d'images espacees, pour ne pas manquer une personne qui traverse le champ.
+  grabSeries: (cameraId, count) => video.snapshotSeries(cameraId, count),
+  seriesCount: config.snapshotSeries,
   publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
 });
 notifier = createNotifier({

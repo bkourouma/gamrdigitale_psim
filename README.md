@@ -244,7 +244,8 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 - La capture se fait **après** la publication de l'alarme, en tâche de fond : une caméra lente ou en panne ne retarde jamais l'alarme. Un échec est inscrit au journal (« Image non prise »).
 - Seules les caméras à **source réelle** (ONVIF ou RTSP) sont capturées : une caméra simulée dans le navigateur n'a pas d'image côté serveur.
 - Si la caméra est déjà affichée, la dernière image du flux est reprise (instantané) ; sinon le PSIM se connecte à la caméra pour en lire une.
-- Plafond de 12 images par incident. Conservation **30 jours** par défaut (`PSIM_SNAPSHOT_DAYS`, `0` = illimité) ; nettoyage au démarrage puis toutes les 6 heures.
+- **À l'ouverture**, une **série** de 5 images par caméra (`PSIM_SNAPSHOT_SERIES`, 1 à 10 ; `1` = une seule image), une toutes les 1,5 s, sur une seule connexion : une personne qui traverse le champ en 3 ou 4 s échappe facilement à une image unique, la détection de l'enregistreur ayant elle-même 1 à 3 s de retard. Les premières images d'un flux pouvant être anciennes (certains enregistreurs envoient d'abord les secondes gardées en mémoire), la série commence 0,5 s après la première image reçue ; une image identique à la précédente (flux figé) n'est pas reprise. Chaque image porte son heure réelle. Telegram reçoit la série en **un seul album** ; l'e-mail, en pièces jointes. Aggravation et confirmation : une image, comme avant.
+- Plafond de 12 images par incident (série comprise). Conservation **30 jours** par défaut (`PSIM_SNAPSHOT_DAYS`, `0` = illimité) ; nettoyage au démarrage puis toutes les 6 heures.
 - Les images sont dans `data/snapshots/` et ne sont servies qu'aux utilisateurs connectés. Elles font partie des données à sauvegarder avec la base.
 
 ## Règles anti-fausses alarmes

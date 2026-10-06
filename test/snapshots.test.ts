@@ -147,3 +147,74 @@ describe('lecture et conservation des images', () => {
     assert.equal(t.snapshots.purge(0), 0, '0 = conservation illimitee');
   });
 });
+
+describe("serie d'images a l'ouverture d'un incident", () => {
+  function setupSeries(opts: { seriesCount: number; max?: number; series?: (id: string, count: number) => Promise<{ frame: Buffer; at: number }[]> }) {
+    const db = openDb(':memory:');
+    const dataDir = mkdtempSync(join(tmpdir(), 'psim-snap-'));
+    seedDemo(db, dataDir, join(import.meta.dirname, '..', 'seed'));
+    db.prepare("UPDATE device SET stream_kind = 'rtsp' WHERE id IN ('C-04', 'C-05')").run();
+    const calls: string[] = [];
+    let snapshots: ReturnType<typeof createSnapshotService> | undefined;
+    const engine = createEngine(db, () => {}, Date.now, { confirmWindowMs: 0, onIncidentEvent: (incident: Incident, kind) => void snapshots?.capture(incident, kind) });
+    snapshots = createSnapshotService({
+      db,
+      engine,
+      dataDir,
+      maxPerIncident: opts.max,
+      seriesCount: opts.seriesCount,
+      grab: async (id) => (calls.push(`une:${id}`), JPEG),
+      grabSeries:
+        opts.series ??
+        (async (id, count) => {
+          calls.push(`serie:${id}:${count}`);
+          return Array.from({ length: count }, (_, n) => ({ frame: JPEG, at: 1_000_000 + n * 1500 }));
+        }),
+      publishIncident: () => {},
+    });
+    return { engine, calls, send: (id: string, state: string) => engine.handleDetectorMessage(id, { state }) };
+  }
+
+  it("a l'ouverture : une serie de 5 images par camera, chacune a son heure", async () => {
+    const t = setupSeries({ seriesCount: 5, max: 20 });
+    t.send('D-06', 'alarm'); // C-04 et C-05
+    await tick();
+    const shots = t.engine.getSnapshot().incidents[0].snapshots;
+    assert.deepEqual(t.calls.sort(), ['serie:C-04:5', 'serie:C-05:5']);
+    assert.equal(shots.length, 10);
+    assert.deepEqual([...new Set(shots.filter((s) => s.cameraId === 'C-04').map((s) => s.takenAt))].sort(), [1_000_000, 1_001_500, 1_003_000, 1_004_500, 1_006_000]);
+  });
+
+  it("l'aggravation reprend une seule image (la serie ne sert qu'a l'ouverture)", async () => {
+    const t = setupSeries({ seriesCount: 5, max: 20 });
+    t.send('D-06', 'prealarm');
+    await tick();
+    t.calls.length = 0;
+    t.send('D-06', 'alarm');
+    await tick();
+    assert.deepEqual(t.calls.sort(), ['une:C-04', 'une:C-05']);
+  });
+
+  it('le plafond par incident vaut aussi pour la serie', async () => {
+    const t = setupSeries({ seriesCount: 5, max: 3 });
+    t.send('D-06', 'alarm');
+    await tick();
+    assert.equal(t.engine.getSnapshot().incidents[0].snapshots.length, 3);
+  });
+
+  it('une serie incomplete (flux coupe) garde ce qui a ete pris ; une serie vide est journalisee', async () => {
+    const t = setupSeries({ seriesCount: 5, max: 20, series: async (id) => (id === 'C-04' ? [{ frame: JPEG, at: 1 }, { frame: JPEG, at: 2 }] : []) });
+    t.send('D-06', 'alarm');
+    await tick();
+    const incident = t.engine.getSnapshot().incidents[0];
+    assert.equal(incident.snapshots.length, 2);
+    assert.ok(t.engine.listAudit(50).some((a) => a.action === 'snapshot_failed' && a.deviceId === 'C-05'));
+  });
+
+  it('serie reglee a 1 : une seule image, comme avant', async () => {
+    const t = setupSeries({ seriesCount: 1 });
+    t.send('D-06', 'alarm');
+    await tick();
+    assert.deepEqual(t.calls.sort(), ['une:C-04', 'une:C-05']);
+  });
+});

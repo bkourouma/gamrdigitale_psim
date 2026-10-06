@@ -85,6 +85,12 @@ export async function startInbox(log: (line: string) => void, smtpPort = 0, tele
         const subject = (msg.text ?? '').split('\n')[0];
         received.push({ channel: 'telegram', to: String(msg.chat_id), subject, images: 0 });
         log(`[telegram]  -> chat ${msg.chat_id} : ${subject}`);
+      } else if (method === 'sendMediaGroup') {
+        const text = body.toString('latin1');
+        const chat = /name="chat_id"\r\n\r\n([^\r]+)/.exec(text)?.[1] ?? '?';
+        const media = JSON.parse(/name="media"\r\n\r\n([^\r]+)/.exec(text)?.[1] ?? '[]') as { caption?: string }[];
+        received.push({ channel: 'telegram', to: chat, subject: `album : ${media.map((m) => m.caption).join(', ')}`, images: media.length });
+        log(`[telegram]  -> chat ${chat} : (album de ${media.length} photos) ${media[0]?.caption ?? ''}`);
       } else if (method === 'sendPhoto') {
         const chat = /name="chat_id"\r\n\r\n([^\r]+)/.exec(body.toString('latin1'))?.[1] ?? '?';
         const caption = /name="caption"\r\n\r\n([^\r]+)/.exec(body.toString('latin1'))?.[1] ?? '';
