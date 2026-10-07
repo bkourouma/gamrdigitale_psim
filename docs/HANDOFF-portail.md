@@ -2,6 +2,8 @@
 
 Dernière mise à jour : 5 octobre 2026. Tout ce travail est commité (commit « Portail de suivi a distance »).
 
+Autre passation : [détecteurs de fumée WiFi Tuya / Smart Life](HANDOFF-tuya.md) (7 octobre 2026).
+
 ## Objectif du projet
 
 Un tableau de bord **pour le client**, sans vidéo en direct : équipements, temps d'arrêt, incidents, statistiques, **plusieurs sites**. Décisions prises avec l'utilisateur (Baba Kourouma, qui écrit en français) :
