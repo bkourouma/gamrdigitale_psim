@@ -27,6 +27,7 @@ import { PsimError } from './engine.ts';
 import { PLAN_TYPES } from './floors.ts';
 import type { Floors } from './floors.ts';
 import type { DahuaEvents } from './dahua.ts';
+import type { TuyaService } from './tuya.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
@@ -46,6 +47,7 @@ export interface ApiDeps {
   engine: Engine;
   floors: Floors;
   dahua: DahuaEvents;
+  tuya: TuyaService;
   video: VideoService;
   snapshots: SnapshotService;
   notifier: Notifier;
@@ -508,6 +510,29 @@ export function createApp(deps: ApiDeps) {
       res.json(await deps.dahua.test(String(req.params.id), port, 20));
     } finally {
       listening = false;
+    }
+  });
+  // ---- Detecteurs de fumee WiFi Tuya / Smart Life (lus dans le cloud Tuya) --------------------
+  app.get('/api/detectors/:id/tuya', adminOnly, (req, res) => {
+    if (engine.getDevice(String(req.params.id))?.kind !== 'detector') throw new PsimError(404, 'Detecteur introuvable');
+    res.json(deps.tuya.view(String(req.params.id)));
+  });
+  app.put('/api/detectors/:id/tuya', adminOnly, json, (req, res) => {
+    res.json(deps.tuya.setSource(actorOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.delete('/api/detectors/:id/tuya', adminOnly, (req, res) => {
+    deps.tuya.removeSource(actorOf(req), String(req.params.id));
+    res.status(204).end();
+  });
+  // Essai : lit l'appareil une fois dans le cloud Tuya (un essai a la fois ; chaque essai consomme un appel du forfait Tuya).
+  let tuyaTesting = false;
+  app.post('/api/tuya/test', adminOnly, json, async (req, res) => {
+    if (tuyaTesting) throw new PsimError(429, 'Un essai est deja en cours');
+    tuyaTesting = true;
+    try {
+      res.json(await deps.tuya.test(((req.body ?? {}) as { deviceId?: unknown }).deviceId));
+    } finally {
+      tuyaTesting = false;
     }
   });
   let discovering = false;

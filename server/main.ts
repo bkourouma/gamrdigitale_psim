@@ -27,6 +27,7 @@ import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.
 import { createArming } from './arming.ts';
 import { createFloors } from './floors.ts';
 import { createDahuaEvents } from './dahua.ts';
+import { createTuya } from './tuya.ts';
 import type { Arming } from './arming.ts';
 import { createReports } from './reports.ts';
 import { createReportMail } from './reportmail.ts';
@@ -192,11 +193,22 @@ const video = createVideoService({
 // Detection des appareils Dahua -> detecteurs d'intrusion. Relue a chaque changement de configuration (source, camera).
 const dahua = createDahuaEvents({ db, engine, key: secretKey, isArmed: (zone) => arming?.isArmed(zone) ?? true });
 dahua.reload();
-let dahuaReload: ReturnType<typeof setTimeout> | undefined;
+// Detecteurs de fumee WiFi Tuya / Smart Life -> detecteurs incendie, lus dans le cloud Tuya (docs/TUYA.md).
+const tuya = createTuya({
+  db,
+  engine,
+  account: config.tuya.accessId ? { accessId: config.tuya.accessId, accessSecret: config.tuya.accessSecret, baseUrl: config.tuya.baseUrl } : null,
+  pollS: config.tuya.pollS,
+});
+tuya.reload();
+let sourcesReload: ReturnType<typeof setTimeout> | undefined;
 bus.on('event', (event: PsimEvent) => {
   if (event.type !== 'config') return;
-  clearTimeout(dahuaReload);
-  dahuaReload = setTimeout(() => dahua.reload(), 1000);
+  clearTimeout(sourcesReload);
+  sourcesReload = setTimeout(() => {
+    dahua.reload();
+    tuya.reload();
+  }, 1000);
 });
 
 snapshots = createSnapshotService({
@@ -375,6 +387,10 @@ const portal = createPortalSender({
       details: state === 'failing' ? `envoi vers le portail de suivi en echec (${status.lastError ?? 'erreur'})` : 'envoi vers le portail de suivi retabli',
     }),
 });
+// Un incident qui change (ouvert, pris en charge, clos...) part aussitot, pas au prochain resume regulier.
+bus.on('event', (event: PsimEvent) => {
+  if (event.type === 'incident') portal.pushSoon();
+});
 
 // Le PSIM redemarre : si rien n'a ete surveille entre-temps, on le dit (journal) et on previent (niveau 1).
 if (startupGap) {
@@ -412,6 +428,7 @@ const app = createApp({
   engine,
   floors,
   dahua,
+  tuya,
   video,
   snapshots,
   notifier,
@@ -603,6 +620,7 @@ async function shutdown() {
   portal.stop();
   cameraHealth.stop();
   dahua.stop();
+  tuya.stop();
   video.shutdown();
   wss.close();
   server.close();

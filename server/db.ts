@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS detector_source (
   events TEXT NOT NULL,
   http_port INTEGER NOT NULL DEFAULT 80
 );
+-- Source d'un detecteur de fumee WiFi Tuya / Smart Life : l'identifiant de l'appareil dans le cloud Tuya (voir server/tuya.ts).
+-- Les cles du compte Tuya restent dans le .env, jamais en base.
+CREATE TABLE IF NOT EXISTS tuya_source (
+  device_id TEXT PRIMARY KEY REFERENCES device(id) ON DELETE CASCADE,
+  tuya_id TEXT NOT NULL UNIQUE
+);
 -- Source video reelle d'une camera. Pas de ligne = camera simulee.
 -- Le mot de passe est chiffre (AES-256-GCM, cle hors base) : voir server/secrets.ts.
 CREATE TABLE IF NOT EXISTS camera_source (

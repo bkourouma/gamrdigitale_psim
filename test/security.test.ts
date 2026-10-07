@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { createCipheriv, randomBytes } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { resetTwoFactor } from '../scripts/reset-2fa.ts';
-import { isKnownLoginIp, isRateLimited, purgeExpired, recordFailure, rememberLoginIp, validatePassword, createSession, createUser, getSession } from '../server/auth.ts';
+import { resetToTemporaryPassword } from '../scripts/set-password.ts';
+import { checkCredentials, isKnownLoginIp, isRateLimited, purgeExpired, recordFailure, rememberLoginIp, validatePassword, createSession, createUser, getSession } from '../server/auth.ts';
 import { verify } from '../server/auditchain.ts';
 import { openDb } from '../server/db.ts';
 import { seal, unseal } from '../server/secrets.ts';
@@ -162,5 +163,28 @@ describe('npm run reset-2fa (recours depuis la machine)', () => {
     const t = setup();
     assert.equal(resetTwoFactor(t.db, 'paul', T0), false);
     assert.equal(resetTwoFactor(t.db, 'fantome', T0), false);
+  });
+});
+
+describe('npm run set-password -- --temp (mot de passe provisoire depuis la machine)', () => {
+  it('genere un mot de passe valide, le rend utilisable, impose son changement, ferme les sessions et journalise', () => {
+    const t = setup();
+    const before = t.db.prepare("SELECT session_epoch FROM app_user WHERE username = 'paul'").get() as { session_epoch: number };
+    const password = resetToTemporaryPassword(t.db, 'paul', T0);
+    assert.ok(password);
+    assert.equal(validatePassword(password, 'paul'), null);
+    assert.equal(checkCredentials(t.db, 'paul', password), 'operator');
+    assert.equal(checkCredentials(t.db, 'paul', 'Mot-de-passe-operateur-2'), null, "l'ancien mot de passe ne marche plus");
+    assert.equal(t.users.get('paul').mustChangePassword, true);
+    assert.equal((t.db.prepare("SELECT session_epoch FROM app_user WHERE username = 'paul'").get() as { session_epoch: number }).session_epoch, before.session_epoch + 1, 'sessions invalidees');
+    const entry = t.db.prepare('SELECT actor, action FROM audit_log ORDER BY id DESC LIMIT 1').get() as { actor: string; action: string };
+    assert.deepEqual({ ...entry }, { actor: 'console', action: 'password_reset' });
+    assert.equal(verify(t.db).ok, true);
+  });
+
+  it('compte inconnu : rien, et deux tirages differents', () => {
+    const t = setup();
+    assert.equal(resetToTemporaryPassword(t.db, 'fantome', T0), null);
+    assert.notEqual(resetToTemporaryPassword(t.db, 'paul', T0), resetToTemporaryPassword(t.db, 'paul', T0));
   });
 });

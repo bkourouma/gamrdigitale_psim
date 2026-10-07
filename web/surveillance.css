@@ -250,10 +250,10 @@
 /* ------------------------------------------------------------------------------------------------ vue éclatée */
 .stack-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: var(--s4); align-items: center; }
 @container plan (max-width: 720px) { .stack-view { grid-template-columns: minmax(0, 1fr); } }
-@container plan (max-width: 440px) { .stack-scene { --gap: 90px; height: clamp(300px, calc(var(--n) * 90px + 220px), 520px); } }
+@container plan (max-width: 440px) { .stack-scene { --gap: 90px; height: clamp(340px, calc(var(--n) * 90px + 340px), 640px); } }
 .stack-scene {
   --gap: 150px;
-  height: clamp(320px, calc(var(--n) * 150px + 200px), 760px);
+  height: clamp(440px, calc(var(--n) * 150px + 320px), 880px);
   display: grid; place-items: center; overflow: hidden; perspective: 1500px;
   background: var(--sky);
   border: 1px solid color-mix(in srgb, var(--tube) 60%, transparent);

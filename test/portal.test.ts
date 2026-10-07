@@ -300,6 +300,38 @@ describe('envoi vers le portail', () => {
     assert.equal(calls, 1);
   });
 
+  it('pushSoon : un changement d incident part sans attendre l envoi regulier, les changements groupes en un seul envoi', async () => {
+    let calls = 0;
+    const s = createPortalSender({
+      url: 'https://suivi.exemple.com/x',
+      siteId: 'site-test',
+      key: KEY,
+      everyMs: 3_600_000,
+      settleMs: 20,
+      build: summary,
+      fetch: async () => {
+        calls++;
+        return { ok: true, status: 200 };
+      },
+    });
+    s.pushSoon();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(calls, 0, 'rien avant start() : le sender n est pas demarre');
+    s.start(); // premier envoi immediat
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(calls, 1);
+    s.pushSoon();
+    s.pushSoon();
+    s.pushSoon();
+    assert.equal(calls, 1, 'pas d envoi immediat : on laisse les changements se grouper');
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(calls, 2, 'trois changements rapproches, un seul envoi');
+    s.stop();
+    s.pushSoon();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(calls, 2, 'arrete : plus aucun envoi');
+  });
+
   it('une configuration incomplete ou fragile n envoie rien', async () => {
     for (const bad of [{ key: 'courte' }, { siteId: 'Mauvais Site' }, { siteId: '' }, { url: '' }, { url: 'http://suivi.exemple.com/x' }]) {
       const { s, calls } = sender([200], bad);

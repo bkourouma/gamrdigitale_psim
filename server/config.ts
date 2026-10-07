@@ -69,6 +69,17 @@ export function serviceUrls(notify: typeof config.notify): { name: string; url: 
   ];
 }
 
+/** Centres de donnees du cloud Tuya (le projet Tuya en choisit un a sa creation ; l'Afrique releve de « eu »). */
+export const TUYA_REGIONS: Record<string, string> = {
+  eu: 'https://openapi.tuyaeu.com', // Europe centrale (Afrique comprise)
+  'eu-w': 'https://openapi-weaz.tuyaeu.com', // Europe de l'Ouest
+  us: 'https://openapi.tuyaus.com', // Amerique de l'Ouest
+  'us-e': 'https://openapi-ueaz.tuyaus.com', // Amerique de l'Est
+  in: 'https://openapi.tuyain.com', // Inde
+  sg: 'https://openapi-sg.iotbing.com', // Singapour
+  cn: 'https://openapi.tuyacn.com', // Chine
+};
+
 export const config = {
   production,
   port: num('PSIM_PORT', 3033, 0, 65535),
@@ -193,6 +204,18 @@ export const config = {
   // Gestion des risques : periode (jours) de l'historique d'incendies, et age (mois) apres lequel une evaluation est « a revoir ».
   riskFireWindowDays: seconds('PSIM_RISK_FIRE_WINDOW_DAYS', 180),
   riskStaleMonths: seconds('PSIM_RISK_STALE_MONTHS', 12),
+  // Detecteurs de fumee WiFi Tuya / Smart Life, lus dans le cloud Tuya (voir server/tuya.ts et docs/TUYA.md).
+  // Vide = pas de detecteur Tuya. Les deux cles vont ensemble ; la region est celle du centre de donnees du projet Tuya.
+  tuya: ((): { accessId: string; accessSecret: string; baseUrl: string; region: string; pollS: number } => {
+    const accessId = (env.PSIM_TUYA_ACCESS_ID ?? '').trim();
+    const accessSecret = (env.PSIM_TUYA_ACCESS_SECRET ?? '').trim();
+    if (Boolean(accessId) !== Boolean(accessSecret)) throw new Error('PSIM_TUYA_ACCESS_ID et PSIM_TUYA_ACCESS_SECRET vont ensemble : renseigner les deux, ou aucun.');
+    const region = (env.PSIM_TUYA_REGION ?? 'eu').trim().toLowerCase() || 'eu';
+    const baseUrl = TUYA_REGIONS[region];
+    if (!baseUrl) throw new Error(`PSIM_TUYA_REGION="${env.PSIM_TUYA_REGION}" est invalide : ${Object.keys(TUYA_REGIONS).join(', ')}.`);
+    // Une lecture toutes les 60 s par defaut : l'essai gratuit du cloud Tuya plafonne le nombre d'appels par mois.
+    return { accessId, accessSecret, baseUrl, region, pollS: num('PSIM_TUYA_POLL_S', 60, 10, 120) };
+  })(),
   // Entree HTTP pour les systemes qui poussent leurs evenements (controle d'acces, passerelles IoT) : POST /api/ingest/<id>
   // avec « Authorization: Bearer <jeton> ». Desactivee si le jeton est vide. 24 caracteres minimum (verifie au demarrage).
   ingestToken: env.PSIM_INGEST_TOKEN ?? '',

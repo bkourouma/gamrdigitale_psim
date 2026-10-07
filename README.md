@@ -367,6 +367,12 @@ Exemple type : **« mouvement devant le portail la nuit → prévenir le gardien
 
 **Limites** : appareils Dahua seulement (Hikvision et ONVIF « events » non pris en charge) ; zones de détection et sensibilité se règlent sur l'enregistreur, pas dans le PSIM.
 
+## Détecteurs de fumée WiFi Tuya / Smart Life
+
+Les détecteurs de fumée WiFi de l'application **Smart Life** (plateforme Tuya) sont lus dans le **cloud Tuya** et deviennent des détecteurs **incendie** du PSIM (plan, incident, caméras liées, notifications). Le compte du projet Tuya (`PSIM_TUYA_ACCESS_ID`, `PSIM_TUYA_ACCESS_SECRET`, `PSIM_TUYA_REGION`) se règle une fois dans le `.env` ; dans l'éditeur du détecteur, section *Détecteur de fumée WiFi (Smart Life)*, on colle l'identifiant Tuya de l'appareil, on **teste la lecture**, puis on enregistre. Une seule requête groupée lit tous les détecteurs (toutes les 60 s par défaut) ; chaque lecture réussie vaut signe de vie, et si le cloud ou Internet se tait les détecteurs passent « Hors ligne » (supervision de 300 s). Pas à pas, états et dépannage : [docs/TUYA.md](docs/TUYA.md).
+
+**Limites** : la sirène du détecteur sonne seule, sur place ; le PSIM reçoit l'alarme avec le délai de lecture (60 s) et seulement si Internet fonctionne. Lecture seule : le PSIM ne pilote pas le détecteur. Protocole Tuya cloud implémenté d'après sa documentation et validé contre un faux cloud : à valider une première fois avec un vrai détecteur (bouton TEST).
+
 ## Armement des zones d'intrusion
 
 Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Menu **Armement** (visible dès qu'il existe une telle zone).
@@ -469,6 +475,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
 | `server/floors.ts` | Étages : migration du plan unique, ajout / ordre / suppression, plan de chaque étage |
 | `server/dahua.ts` | Événements des appareils Dahua (Digest, flux multipart) → alarmes des détecteurs d'intrusion, supervision de la connexion |
+| `server/tuya.ts` | Détecteurs de fumée WiFi Tuya / Smart Life : client du cloud Tuya (signature, jeton, lecture groupée) → états des détecteurs incendie |
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
 | `server/heartbeat.ts` | Signal de supervision externe (dead man's switch), adresse jamais exposée |
@@ -486,6 +493,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/arming.js` | Vue *Armement* : zones et éditeur de planning |
 | `web/floors.js` | Onglets d'étages avec leur état, vue éclatée en perspective, gestion des étages |
 | `web/detsource.js` | Source d'un détecteur : détection d'un enregistreur Dahua, essai de 20 s |
+| `web/tuyasource.js` | Source d'un détecteur incendie : détecteur de fumée Tuya (identifiant, test de lecture) |
 | `web/reports.js`, `web/report.css` | Vue *Rapports* (exports) ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |

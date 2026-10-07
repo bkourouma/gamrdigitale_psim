@@ -11,6 +11,7 @@
  * d'équipement avec des modifications en attente demande confirmation.
  */
 import { buildDetectorSource } from './detsource.js';
+import { buildTuyaSource } from './tuyasource.js';
 import {
   CATEGORIES,
   CATEGORY_LABEL,
@@ -239,6 +240,7 @@ function buildEditor(box, d, key) {
   if (d.kind === 'detector') {
     children.push(section('sensor', 'Réglages de mesure', 'sliders', buildSensorForm(d)));
     if (d.category === 'intrusion') children.push(section('dahua', "Détection par l’enregistreur vidéo", 'intrusion', buildDetectorSource(d, { cameras: () => devicesOf('camera') })));
+    if (d.category === 'fire') children.push(section('tuya', 'Détecteur de fumée WiFi (Smart Life)', 'fire', buildTuyaSource(d)));
     children.push(section('links', 'Caméras liées', 'camera', linksForm(d)));
   }
   children.push(dangerZone(d));

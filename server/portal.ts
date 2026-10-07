@@ -300,6 +300,8 @@ export interface PortalSenderOptions {
   fetch?: (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal; redirect: 'error' }) => Promise<{ ok: boolean; status: number }>;
   /** Premier echec apres des succes, ou reprise : jamais a chaque tentative. */
   onChange?: (state: 'failing' | 'recovered', status: PortalStatus) => void;
+  /** Delai entre un changement (`pushSoon`) et l'envoi : les changements rapproches partent ensemble. 3 s par defaut. */
+  settleMs?: number;
 }
 
 export function createPortalSender(options: PortalSenderOptions) {
@@ -367,6 +369,22 @@ export function createPortalSender(options: PortalSenderOptions) {
     return ok;
   }
 
+  /**
+   * Un incident vient de changer : on n'attend pas le prochain envoi regulier (jusqu'a `everyMs`), sinon le portail
+   * montrerait « en cours » un incident deja traite. Les changements rapproches partent dans un seul envoi ; l'envoi
+   * regulier reste le filet de securite. Sans effet avant `start()`.
+   */
+  let soon: NodeJS.Timeout | null = null;
+  function pushSoon(): void {
+    if (!configured || !timer || soon) return;
+    soon = setTimeout(() => {
+      soon = null;
+      if (inFlight) pushSoon(); // un envoi est en cours : il a pu partir avant ce changement, on repasse apres
+      else void push();
+    }, options.settleMs ?? 3000);
+    soon.unref();
+  }
+
   function start(): void {
     if (!configured || timer) return;
     void push();
@@ -376,9 +394,11 @@ export function createPortalSender(options: PortalSenderOptions) {
 
   function stop(): void {
     if (timer) clearInterval(timer);
+    if (soon) clearTimeout(soon);
     timer = null;
+    soon = null;
   }
 
-  return { push, start, stop, status: (): PortalStatus => ({ ...state }) };
+  return { push, pushSoon, start, stop, status: (): PortalStatus => ({ ...state }) };
 }
 

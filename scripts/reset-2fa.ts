@@ -33,7 +33,7 @@ export function resetTwoFactor(db: DatabaseSync, username: string, now = Date.no
   return had;
 }
 
-export function main(args: string[], dataDir = join(resolve(import.meta.dirname, '..'), config.dataDir)): number {
+export function main(args: string[], dataDir = resolve(import.meta.dirname, '..', config.dataDir)): number {
   const db = openDb(join(dataDir, 'psim.db'));
   try {
     const arg = args[0];

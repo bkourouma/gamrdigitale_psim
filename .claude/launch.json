@@ -1,0 +1,57 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "psim-preview-etages",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.tmp-plan/preview.env",
+        "server/index.ts"
+      ],
+      "port": 3044
+    },
+    {
+      "name": "portail-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "portal/scripts/demo.ts"
+      ],
+      "port": 4301
+    },
+    {
+      "name": "psim-refonte",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.tmp-refonte/.tmp-preview/preview.env",
+        ".tmp-refonte/server/index.ts"
+      ],
+      "port": 3045
+    },
+    {
+      "name": "portail-refonte",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.tmp-refonte/.tmp-preview/portal.env",
+        ".tmp-refonte/portal/scripts/demo.ts"
+      ],
+      "port": 4302
+    },
+    {
+      "name": "psim-refonte-etages",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.tmp-refonte/.tmp-preview/etages.env",
+        ".tmp-refonte/server/index.ts"
+      ],
+      "port": 3046
+    },
+    {
+      "name": "psim-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/demo.ts"
+      ],
+      "port": 3034
+    }
+  ]
+}
