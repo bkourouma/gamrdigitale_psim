@@ -282,10 +282,18 @@ function section(id, title, iconName, ...content) {
   return details;
 }
 
-/** Nom et zone. */
+/** Étage où se trouve déjà `zone` (un autre équipement la porte), ou null. Le serveur refuse une zone sur deux étages. */
+function zoneFloorOf(zone, exceptId) {
+  const z = zone.normalize('NFC');
+  if (!z) return null;
+  for (const o of S.devices.values()) if (o.id !== exceptId && o.zone === z) return o.floorId;
+  return null;
+}
+
+/** Nom et zone. Une zone d'un autre étage : on propose d'y déplacer l'équipement avec elle, en un seul enregistrement. */
 function identityForm(d) {
   const name = h('input', { value: d.name, maxlength: '80', autocomplete: 'off', required: true });
-  const zone = h('input', { value: d.zone, maxlength: '80', autocomplete: 'off', list: 'eq-zones' });
+  const zone = h('input', { class: 'editor-zone', value: d.zone, maxlength: '80', autocomplete: 'off', list: 'eq-zones' });
   const save = h('button', { class: 'btn', type: 'submit', text: 'Enregistrer' });
   const status = statusLine();
   const form = h(
@@ -303,13 +311,35 @@ function identityForm(d) {
       setFieldError(name, 'Donnez un nom à l’équipement (ex. Couloir nord).');
       return name.focus();
     }
+    const body = { name: name.value.trim(), zone: zone.value.trim() };
+    const current = S.devices.get(d.id) ?? d;
+    const target = S.floors.length > 1 ? zoneFloorOf(body.zone, d.id) : null;
+    if (target !== null && target !== current.floorId) {
+      const ok = await createDialogs({ h }).confirm({
+        heading: `« ${body.zone} » est à l’étage « ${floorName(target)} »`,
+        message: `Une zone appartient à un seul étage. Déplacer ${d.id} vers « ${floorName(target)} » avec la zone « ${body.zone} » ? Il garde sa place relative sur le plan : glissez-le ensuite dans la bonne pièce.`,
+        confirmLabel: `Déplacer vers « ${floorName(target)} »`,
+        danger: false,
+      });
+      if (!ok) return setStatus(status, 'error', `Non enregistré : choisissez une zone de l’étage « ${floorName(current.floorId)} », ou acceptez le déplacement.`);
+      body.floorId = target;
+    }
     setStatus(status, 'busy', 'Enregistrement…');
     try {
-      await withBusy(save, () => api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { name: name.value.trim(), zone: zone.value.trim() } }));
-      name.value = name.value.trim();
-      zone.value = zone.value.trim();
+      await withBusy(save, () => api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body }));
+      name.value = body.name;
+      zone.value = body.zone;
       markSaved(form);
-      setStatus(status, 'ok', 'Enregistré.');
+      if (body.floorId !== undefined) {
+        // Le choix d'étage de l'éditeur suit, enregistré lui aussi, et le plan montre le nouvel étage.
+        const floorSelect = form.parentElement?.querySelector('.editor-floor');
+        if (floorSelect) {
+          pick(floorSelect, String(body.floorId));
+          floorSelect.dispatchEvent(new Event('change'));
+        }
+        showFloor(body.floorId);
+      }
+      setStatus(status, 'ok', body.floorId !== undefined ? `Enregistré et déplacé vers « ${floorName(body.floorId)} » : placez-le sur ce plan.` : 'Enregistré.');
       document.dispatchEvent(new CustomEvent('psim:zone-saved', { detail: { id: d.id, zone: zone.value } }));
     } catch (err) {
       setStatus(status, 'error', err.message);
@@ -320,25 +350,46 @@ function identityForm(d) {
 
 /** Changer d'étage : l'équipement garde sa position (en % du plan) et l'écran suit vers son nouvel étage. */
 function moveForm(d) {
-  const floorSelect = h('select', {}, ...[...S.floors].reverse().map((f) => h('option', { value: String(f.id), text: f.name })));
+  const floorSelect = h('select', { class: 'editor-floor' }, ...[...S.floors].reverse().map((f) => h('option', { value: String(f.id), text: f.name })));
   pick(floorSelect, String(d.floorId));
-  let savedFloor = d.floorId;
+  // Étage enregistré : l'option marquée par pick() (le formulaire Nom et zone peut aussi déplacer l'équipement).
+  const savedFloor = () => Number(([...floorSelect.options].find((o) => o.defaultSelected) ?? floorSelect.options[0]).value);
   // Rien ne part au simple changement de choix (les flèches du clavier en déclenchent un à chaque pas) : bouton explicite.
   const move = h('button', { class: 'btn', type: 'button', disabled: true }, icon('layers'), 'Déplacer vers cet étage');
   const status = statusLine();
   floorSelect.addEventListener('change', () => {
-    move.disabled = Number(floorSelect.value) === savedFloor;
+    move.disabled = Number(floorSelect.value) === savedFloor();
     setStatus(status, '');
   });
   move.addEventListener('click', async () => {
     const floorId = Number(floorSelect.value);
+    const body = { floorId };
+    // Sa zone appartient à l'étage qu'il quitte (d'autres équipements y restent) : il part sans zone, après accord.
+    const zone = (S.devices.get(d.id) ?? d).zone;
+    const zoneFloor = zoneFloorOf(zone, d.id);
+    if (zoneFloor !== null && zoneFloor !== floorId) {
+      const ok = await createDialogs({ h }).confirm({
+        heading: `La zone « ${zone} » reste à l’étage « ${floorName(zoneFloor)} »`,
+        message: `Une zone appartient à un seul étage, et d’autres équipements gardent « ${zone} ». Déplacer ${d.id} vers « ${floorName(floorId)} » sans zone ? Donnez-lui ensuite une zone de ce nouvel étage.`,
+        confirmLabel: 'Déplacer sans zone',
+        danger: false,
+      });
+      if (!ok) return setStatus(status, '');
+      body.zone = '';
+    }
     setStatus(status, 'busy', 'Déplacement…');
     try {
-      await withBusy(move, () => api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body: { floorId } }));
+      await withBusy(move, () => api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'PATCH', body }));
       markSaved(floorSelect.parentElement);
-      savedFloor = floorId;
       move.disabled = true;
-      setStatus(status, 'ok', `Déplacé vers « ${floorName(floorId)} » : placez-le sur ce plan.`);
+      const editor = floorSelect.closest('#device-editor');
+      const identityStatus = editor?.querySelector('.editor-identity .form-status');
+      if (identityStatus) setStatus(identityStatus, ''); // un « Enregistré et déplacé… » précédent ne vaut plus
+      if (body.zone === '') {
+        const zoneInput = editor?.querySelector('.editor-zone');
+        if (zoneInput) zoneInput.value = zoneInput.defaultValue = '';
+      }
+      setStatus(status, 'ok', body.zone === '' ? `Déplacé vers « ${floorName(floorId)} », sans zone : donnez-lui une zone de cet étage et placez-le sur le plan.` : `Déplacé vers « ${floorName(floorId)} » : placez-le sur ce plan.`);
       showFloor(floorId);
     } catch (err) {
       setStatus(status, 'error', err.message);

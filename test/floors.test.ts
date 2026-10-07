@@ -269,6 +269,10 @@ describe('etages : corrections de la relecture', () => {
     expectError(() => t.engine.updateDevice('admin', 'D-01', { floorId: etage.id }), 409, /deja utilisee/);
     // Le seul equipement d'une zone peut changer d'etage avec elle ; une zone vide n'est pas concernee.
     assert.equal(t.engine.updateDevice('admin', 'D-02', { floorId: etage.id }).floorId, etage.id);
+    // Zone et etage changes ensemble (l'editeur le propose) : accepte ; sortir d'une zone partagee en la vidant aussi.
+    const both = t.engine.updateDevice('admin', 'I-20', { zone: 'Accueil', floorId: t.floors.list()[0].id });
+    assert.deepEqual([both.zone, both.floorId], ['Accueil', t.floors.list()[0].id]);
+    assert.equal(t.engine.updateDevice('admin', 'D-01', { zone: '', floorId: etage.id }).floorId, etage.id);
     assert.equal(t.engine.createDevice('admin', { id: 'C-20', kind: 'camera', name: 'Sans zone', floorId: etage.id }).zone, '');
     // Renommer sans changer de zone ni d'etage reste possible, meme sur une base anterieure qui melange deja.
     t.db.prepare("INSERT INTO device (id, kind, name, zone, floor_id) VALUES ('X-9', 'detector', 'Ancien', 'Accueil', ?)").run(etage.id);
