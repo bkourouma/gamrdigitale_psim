@@ -153,15 +153,42 @@ export function createTuyaClient(deps: TuyaClientDeps) {
     return token.value;
   }
 
+  async function listDevices(ids: string[]): Promise<TuyaDevice[]> {
+    const result = (await call('GET', '/v1.0/devices', { device_ids: ids.join(',') }, true)) as { devices?: unknown; list?: unknown } | unknown[] | null;
+    const list = Array.isArray(result) ? result : Array.isArray(result?.devices) ? result.devices : Array.isArray(result?.list) ? result.list : [];
+    return (list as TuyaDevice[]).filter((d) => d && typeof d.id === 'string');
+  }
+
+  /**
+   * Un groupe de lecture. Tuya refuse tout le groupe (« permission deny », 1106) des qu'un seul identifiant n'appartient plus
+   * au compte lie (appareil retire ou reappaire de Smart Life) : on relit alors un par un, pour qu'un appareil disparu ne
+   * prive pas les autres de surveillance. Si aucun n'est lisible, c'est un vrai refus de permission : on le signale tel quel.
+   */
+  async function chunkDevices(ids: string[]): Promise<TuyaDevice[]> {
+    try {
+      return await listDevices(ids);
+    } catch (err) {
+      if (!(err instanceof TuyaError) || err.code !== 1106 || ids.length < 2) throw err;
+      const out: TuyaDevice[] = [];
+      for (const id of ids) {
+        try {
+          out.push(...(await listDevices([id])));
+        } catch (e) {
+          if (!(e instanceof TuyaError) || e.code !== 1106) throw e;
+        }
+      }
+      if (out.length === 0) throw err;
+      return out;
+    }
+  }
+
   /** Etat de plusieurs appareils (par groupes de 20). Un appareil inconnu du compte est simplement absent du resultat. */
   async function devices(ids: string[]): Promise<TuyaDevice[]> {
     const out: TuyaDevice[] = [];
     for (let i = 0; i < ids.length; i += BATCH) {
       const chunk = ids.slice(i, i + BATCH);
       if (chunk.some((id) => !TUYA_ID.test(id))) throw new TuyaError('identifiant Tuya invalide');
-      const result = (await call('GET', '/v1.0/devices', { device_ids: chunk.join(',') }, true)) as { devices?: unknown; list?: unknown } | unknown[] | null;
-      const list = Array.isArray(result) ? result : Array.isArray(result?.devices) ? result.devices : Array.isArray(result?.list) ? result.list : [];
-      for (const d of list as TuyaDevice[]) if (d && typeof d.id === 'string') out.push(d);
+      for (const d of await chunkDevices(chunk)) out.push(d);
     }
     return out;
   }

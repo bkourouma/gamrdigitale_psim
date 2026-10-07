@@ -35,7 +35,7 @@ const smoke = (value: string, extra: { code: string; value: unknown }[] = []) =>
 /** Faux cloud : recalcule la signature selon la documentation Tuya (independamment du code teste). */
 function fakeCloud() {
   const devices = new Map<string, TuyaDevice>();
-  const state = { tokens: 0, lists: 0, badSignatures: 0, mode: 'ok' as 'ok' | 'down' | 'denied', batches: [] as number[] };
+  const state = { tokens: 0, lists: 0, badSignatures: 0, mode: 'ok' as 'ok' | 'down' | 'denied', batches: [] as number[], strict: false };
   const TOKEN = 'tok-0123456789';
   const server = createServer((req, res) => {
     const json = (body: unknown, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
@@ -62,6 +62,8 @@ function fakeCloud() {
     const ids = (url.searchParams.get('device_ids') ?? '').split(',').filter(Boolean);
     state.lists += 1;
     state.batches.push(ids.length);
+    // Comme le vrai cloud : un identifiant etranger au compte fait refuser tout le groupe.
+    if (state.strict && ids.some((id) => !devices.has(id))) return json({ success: false, code: 1106, msg: 'permission deny' });
     json({ success: true, result: { devices: ids.map((id) => devices.get(id)).filter(Boolean), total: ids.length }, t: Date.now() });
   });
   return {
@@ -196,6 +198,29 @@ describe('Tuya : cloud et detecteurs du PSIM', () => {
     cloud.devices.delete(DEV_A);
     await t.tuya.poll();
     assert.match(t.tuya.view('D-01').connection!.error!, /introuvable dans le compte Tuya/);
+    t.tuya.stop();
+  });
+
+  it("un appareil retire du compte Smart Life (le cloud refuse tout le groupe) ne prive pas les autres detecteurs de surveillance", async () => {
+    cloud.devices.set(DEV_A, { id: DEV_A, online: true, status: smoke('normal') });
+    cloud.devices.set(DEV_B, { id: DEV_B, online: true, status: smoke('normal') });
+    const t = setup();
+    t.tuya.setSource('admin', 'D-01', { deviceId: DEV_A });
+    t.tuya.setSource('admin', 'D-02', { deviceId: DEV_B });
+    await wait(50);
+    await t.tuya.poll();
+    assert.equal(t.tuya.view('D-02').connection?.state, 'connected');
+    cloud.state.strict = true;
+    cloud.devices.delete(DEV_B);
+    cloud.devices.set(DEV_A, { id: DEV_A, online: true, status: smoke('alarm') });
+    await t.tuya.poll();
+    assert.equal(t.tuya.view('D-01').connection?.state, 'connected', 'le detecteur restant est toujours lu');
+    assert.equal(t.engine.getDevice('D-01')!.status, 'alarm', 'et son alarme est vue');
+    assert.match(t.tuya.view('D-02').connection!.error!, /introuvable dans le compte Tuya/);
+    cloud.devices.delete(DEV_A);
+    await t.tuya.poll();
+    assert.match(t.tuya.view('D-01').connection!.error!, /permission refusee/, 'rien de lisible : le vrai refus est signale');
+    cloud.state.strict = false;
     t.tuya.stop();
   });
 
