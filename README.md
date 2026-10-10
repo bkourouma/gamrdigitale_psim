@@ -430,6 +430,12 @@ Les détecteurs de fumée WiFi de l'application **Smart Life** (plateforme Tuya)
 
 **Limites** : la sirène du détecteur sonne seule, sur place ; le PSIM reçoit l'alarme avec le délai de lecture (60 s) et seulement si Internet fonctionne. Lecture seule : le PSIM ne pilote pas le détecteur. Protocole Tuya cloud implémenté d'après sa documentation et validé contre un faux cloud : à valider une première fois avec un vrai détecteur (bouton TEST).
 
+**Autres capteurs Tuya (à qualifier)** : le même compte lit aussi les contacts de porte ou fenêtre, détecteurs de mouvement, fuite d'eau, température et humidité, gaz, monoxyde de carbone et boutons SOS (section *Capteur WiFi Tuya (Smart Life)* des détecteurs Intrusion, Contrôle d'accès, Environnement et Personnes ; type reconnu automatiquement ou choisi). Seule la fumée a été validée sur un vrai appareil ; lecture toutes les 60 s, donc un événement bref (porte ouverte puis refermée, appui SOS) peut passer inaperçu : pour ces usages, préférer Zigbee via la Passerelle GAMR. Un détecteur n'a qu'une source (Tuya, Dahua ou supervision réseau). Détails : [docs/TUYA.md](docs/TUYA.md).
+
+## Passerelle GAMR (Zigbee, Modbus, onduleurs, centrales SIA, LoRaWAN)
+
+Les équipements qui ne parlent ni MQTT ni HTTP passent par la **Passerelle GAMR** (dossier `gateway/`, livrée avec le PSIM) : un client MQTT du PSIM, avec un **compte par passerelle** limité à ses équipements (`PSIM_MQTT_GATEWAYS`), une **file d'envoi sur disque** (aucune alarme perdue pendant une coupure, renvoi dans l'ordre avec l'heure réelle et un `msgId` anti-doublon) et un service Windows (`scripts\gateway-service.ps1`). Six modules : `heartbeat` (signe de vie de la passerelle), `zigbee` (Zigbee2MQTT), `modbus` (Modbus TCP en lecture seule : contacts secs, 4-20 mA, compteurs), `ups` (onduleurs NUT ou SNMP), `sia` (centrales d'alarme en SIA DC-09 chiffré) et `lorawan` (ChirpStack v4). Mise en route : `npm run gateway:check-config`, puis `npm run gateway`. Installation, ordre conseillé, secrets (`{"$env": …}`, `{"$file": …}`), correspondance équipement du catalogue → module : [docs/PASSERELLE.md](docs/PASSERELLE.md) ; une page par module dans `gateway/docs/`. **Limites** : tous les modules ont été écrits d'après la documentation des protocoles et éprouvés contre des équipements simulés ; chaque modèle réel est à qualifier.
+
 ## Armement des zones d'intrusion
 
 Un détecteur de mouvement n'a de sens que lorsque la zone est vide : en journée, il déclencherait en permanence. Chaque zone qui contient un détecteur d'**intrusion** est donc **armée** ou **désarmée**. Menu **Armement** (visible dès qu'il existe une telle zone).
@@ -570,7 +576,7 @@ Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équ
 - **`npm run commission -- watch`** est la **recette des détecteurs** : écoute le broker et dit, message par message, ce que le PSIM comprend (`OK … -> ALARME`, `INCONNU` : identifiant absent de l'inventaire, `ILLISIBLE` : JSON, état, événement ou valeur invalides, message de plus de 1 Ko). Au bilan : détecteurs entendus, **silencieux**, inconnus, illisibles. Options : `--minutes`, `--until-all`, `--allow-missing`. Les messages reçus sont traités par le PSIM comme de vraies alarmes : prévenir les destinataires avant.
 - **`npm run commission -- sheet --out recette.html`** produit la **fiche de recette** imprimable : une ligne par équipement de l'inventaire (message reçu, alarme testée, image visible, retour à la normale), les essais de bout en bout (alarme, escalade, pannes, sécurité) et les signatures.
 
-**Limites** : ces outils vérifient ce qu'ils peuvent mesurer depuis le serveur ; ils ne remplacent pas la constatation sur place (le détecteur déclenche-t-il vraiment, la sirène retentit-elle, le destinataire a-t-il reçu l'alerte). Les équipements qui ne parlent pas MQTT/JSON demandent une **passerelle** de traduction, hors périmètre du PSIM.
+**Limites** : ces outils vérifient ce qu'ils peuvent mesurer depuis le serveur ; ils ne remplacent pas la constatation sur place (le détecteur déclenche-t-il vraiment, la sirène retentit-elle, le destinataire a-t-il reçu l'alerte). Les équipements qui ne parlent pas MQTT/JSON passent par la **Passerelle GAMR** (voir plus haut et [docs/PASSERELLE.md](docs/PASSERELLE.md)).
 
 ## Passer aux équipements réels
 
@@ -610,7 +616,7 @@ Limites :
 ## Tests
 
 ```bash
-npm test          # moteur, chiffrement, flux vidéo (ffmpeg réel), dialogue ONVIF simulé, scénarios de démo
+npm test          # moteur, chiffrement, flux vidéo (ffmpeg réel), dialogue ONVIF simulé, scénarios de démo, Passerelle GAMR (gateway/test, contre le vrai broker)
 npm run typecheck
 ```
 
@@ -619,6 +625,6 @@ npm run typecheck
 - Sessions gardées en mémoire : une déconnexion des utilisateurs a lieu à chaque redémarrage.
 - Un seul site (plusieurs étages possibles), une seule instance (pas de haute disponibilité).
 - Armement : seuls les détecteurs d'intrusion sont armables (voir plus haut). Pas de gestion de badges ni de portes, pas de commande des équipements : le PSIM écoute, il ne pilote rien.
-- Pas de prise en charge native des protocoles de terrain (BACnet, Modbus, OPC UA, Wiegand…) : passer par une passerelle vers MQTT ou HTTP.
+- Pas de prise en charge native des protocoles de terrain dans le PSIM : Zigbee, Modbus TCP, SIA DC-09, LoRaWAN et onduleurs passent par la Passerelle GAMR ; BACnet, OPC UA, Wiegand… restent à traiter par une passerelle vers MQTT ou HTTP.
 - Matériel réel : seule **une voie d'un enregistreur Dahua** (XVR, flux RTSP direct) a été affichée dans le PSIM ; détecteurs, autres caméras, SMTP et Telegram n'ont été validés qu'avec des équipements simulés.
 

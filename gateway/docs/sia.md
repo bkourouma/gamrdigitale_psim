@@ -82,7 +82,7 @@ Section `sia` de la configuration de la passerelle :
 | `supervisionS` | Silence maximal d'une centrale avant de passer ses équipements en défaut (0 = pas de supervision). Réglez-le à **2 à 3 fois** l'intervalle de test cyclique de la centrale. Peut être précisé par centrale. |
 | `forwardHeartbeat` | `true` par défaut : chaque signe de vie de la centrale (trame NULL, test cyclique, armement) est relayé au PSIM comme `heartbeat` pour tous ses équipements, au plus une fois toutes les 30 s. |
 | `accounts.<compte>` | Une entrée par centrale ; la clé est le numéro de compte saisi dans la centrale. |
-| `key` / `keyEnv` | Clé AES (hexadécimal, 32/48/64 caractères). **Préférez `keyEnv`** : nom d'une variable d'environnement qui contient la clé, pour qu'elle ne reste pas en clair dans le fichier. |
+| `key` / `keyEnv` | Clé AES (hexadécimal, 32/48/64 caractères). **Préférez `keyEnv`** : nom d'une variable d'environnement qui contient la clé, pour qu'elle ne reste pas en clair dans le fichier. Autre possibilité offerte par le socle : `"key": {"$file": "secrets/sia-0457.txt"}` ou `"key": {"$env": "NOM"}` (voir docs/PASSERELLE.md, « Secrets des modules »). |
 | `keyFormat` | `"hex"` (défaut) ou `"ascii"` (clé de 16/24/32 caractères texte). |
 | `requireEncryption` | Refuser toute trame non chiffrée de ce compte. **Vrai par défaut dès qu'une clé est donnée.** |
 | `allowMissingTimestamp` | Accepter les trames **en clair** sans horodatage (faux par défaut ; à n'utiliser que pour une centrale qui ne sait pas horodater ; la protection anti-rejeu est alors affaiblie). |

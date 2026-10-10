@@ -137,7 +137,7 @@ Section du module `ups` : une liste d'onduleurs. Toute clé inconnue est refusé
 | `host` | adresse IP ou nom de machine | obligatoire |
 | `port` | port TCP (NUT) ou UDP (SNMP) | 3493 / 161 |
 | `upsName` | NUT : nom de l'onduleur chez `upsd` | découvert si un seul |
-| `community` | SNMP : communauté en lecture | `public` |
+| `community` | SNMP : communauté en lecture ; à mettre hors du fichier avec `{"$env": "NOM"}` ou `{"$file": "secrets/..."}` (voir docs/PASSERELLE.md) | `public` |
 | `version` | SNMP : `"1"` ou `"2c"` (entre guillemets) | `"2c"` |
 | `line` | SNMP : numéro de ligne (phase) lu pour la tension d'entrée et la charge | 1 |
 | `pollMs` | délai entre deux lectures (100 à 3 600 000 ; conseillé : 5 000 à 30 000) | 15000 |

@@ -111,7 +111,16 @@ Exemple (`gateway\config.example.json`) :
 
 Les chemins relatifs sont relatifs au **dossier du fichier de configuration**. Toute clé inconnue est une erreur (une faute de frappe ne passe pas inaperçue) ; toutes les erreurs sont listées d'un coup.
 
-**Secrets des modules** : dans la section `config` d'un module, une valeur `{"$env": "NOM"}` est remplacée par la variable d'environnement `NOM`, et `{"$file": "secrets/zigbee.txt"}` par le contenu de ce fichier. Exemple : `"password": {"$file": "secrets/z2m-password.txt"}`.
+**Secrets des modules** : dans la section `config` d'un module, **n'importe quelle valeur** peut être remplacée par `{"$env": "NOM"}` (la variable d'environnement `NOM`, par exemple définie dans `gateway\.env`) ou par `{"$file": "secrets/fichier.txt"}` (le contenu de ce fichier, sur une ligne ; chemin relatif au dossier de la configuration). Le remplacement a lieu au chargement, avant que le module ne voie sa configuration : une variable absente ou un fichier illisible est une **erreur de configuration** (le nom de la variable ou le chemin est cité, jamais la valeur). Exemples vérifiés par les essais (`gateway/test/modules-load.test.ts`) :
+
+```json
+{ "name": "zigbee",  "config": { "broker": { "url": "mqtt://127.0.0.1:1883", "username": "gamr-lecture", "password": { "$file": "secrets/z2m.txt" } }, "devices": { "...": {} } } }
+{ "name": "lorawan", "config": { "broker": { "url": "mqtt://192.168.1.20:1883", "username": "gamr", "password": { "$env": "CHIRPSTACK_PASSWORD" } }, "devices": { "...": {} } } }
+{ "name": "sia",     "config": { "listen": { "host": "192.168.1.10", "port": 12300 }, "accounts": { "0457": { "key": { "$file": "secrets/sia-0457.txt" }, "defaultId": "centrale-entrepot" } } } }
+{ "name": "ups",     "config": { "ups": [{ "name": "baie-1", "transport": "snmp", "host": "192.168.10.50", "community": { "$env": "UPS_COMMUNITY" }, "ids": { "status": "ond-etat" } }] } }
+```
+
+Le module `sia` accepte aussi sa propre forme `"keyEnv": "SIA_KEY_0457"` (nom de la variable qui contient la clé). Ces secrets (clé AES SIA, communauté SNMP, mots de passe des brokers Zigbee2MQTT / ChirpStack, mot de passe du PSIM) n'apparaissent **ni** dans la sortie de `gateway:check-config`, **ni** dans le journal, **ni** dans `<dataDir>\status.json` (vérifié par les essais). Les fichiers de `secrets\` se protègent comme celui du mot de passe du PSIM (`icacls`, étape 2).
 
 ## 4. Les modules
 
@@ -119,10 +128,53 @@ Les chemins relatifs sont relatifs au **dossier du fichier de configuration**. T
 |---|---|---|
 | `heartbeat` | Signe de vie de la passerelle elle-même (voir ci-dessous) | ci-dessous |
 | `zigbee` | Capteurs Zigbee via Zigbee2MQTT (fumée, ouverture, mouvement, fuite, gaz…) | [gateway/docs/zigbee.md](../gateway/docs/zigbee.md) |
-| `modbus` | Automates et capteurs Modbus TCP/RTU | [gateway/docs/modbus.md](../gateway/docs/modbus.md) |
+| `modbus` | Automates, modules d'entrées et capteurs Modbus TCP (lecture seule ; RTU série via un convertisseur série-Ethernet) | [gateway/docs/modbus.md](../gateway/docs/modbus.md) |
 | `ups` | Onduleurs (coupure secteur, batterie) | [gateway/docs/ups.md](../gateway/docs/ups.md) |
 | `sia` | Centrales d'alarme intrusion/incendie (protocole SIA DC-09) | [gateway/docs/sia.md](../gateway/docs/sia.md) |
 | `lorawan` | Capteurs LoRaWAN via ChirpStack | [gateway/docs/lorawan.md](../gateway/docs/lorawan.md) |
+
+Chaque page de module donne la configuration complète, les équipements testés (ou « à qualifier ») et le dépannage. Les six modules sont chargés et vérifiés ensemble par les essais (`gateway/test/modules-load.test.ts`), avec les exemples de leur page ; un essai de bout en bout (`gateway/test/e2e-module-psim.test.ts`) suit une coupure secteur lue sur un automate Modbus jusqu'à l'incident « Coupure secteur » ouvert par le moteur du PSIM.
+
+### Ordre d'installation conseillé
+
+1. **PSIM à jour** (étape 2 au moins : `ts`, `msgId`, nouveaux événements `gas`, `co`, `power_loss`…, catégories Énergie et Personnes). Créer le compte de la passerelle (`PSIM_MQTT_GATEWAYS`) et **déclarer les équipements** dans le PSIM, avec la bonne catégorie.
+2. **Passerelle avec `heartbeat` seul** : `npm run gateway:check-config` puis `npm run gateway`. `GW-01` doit passer en ligne dans le PSIM : la chaîne compte MQTT → file disque → broker est validée.
+3. **Un module à la fois**, du plus simple au plus exposé, avec une recette par équipement (`npm run commission -- watch` côté PSIM) :
+   1. `ups` (onduleur du poste PSIM : une coupure se provoque sans risque) ;
+   2. `modbus` (contacts secs et 4-20 mA : alarmes techniques, cuves, groupe électrogène) ;
+   3. `zigbee` (Zigbee2MQTT installé et appairé d'abord) ;
+   4. `lorawan` (passerelle LoRaWAN et ChirpStack v4 en service d'abord) ;
+   5. `sia` en dernier : il **écoute sur le réseau** (port à ouvrir dans le pare-feu, uniquement depuis l'adresse de la centrale), et la centrale doit être programmée par son installateur (compte, clé AES, horodatage).
+4. **Service Windows** (`scripts\gateway-service.ps1 -Action Install`) une fois la configuration stable, puis `-Action Status`.
+5. Fiche de recette signée (`npm run commission -- sheet`).
+
+### Équipements du catalogue → module
+
+D'après le *Catalogue des équipements* (version du 9 octobre 2026). « Tuya (PSIM) » : lu directement par le PSIM dans le cloud Smart Life, **sans passerelle** (voir [docs/TUYA.md](TUYA.md)). Tout équipement reste « à qualifier » tant qu'il n'est pas passé par l'atelier.
+
+| Équipement du catalogue | Module | Remarques |
+|---|---|---|
+| Onduleur du socle, supervision de l'onduleur (USB ou carte SNMP) | `ups` | USB via NUT (`upsd`), carte réseau via SNMP UPS-MIB (v1/v2c). Coupure secteur, batterie faible, autonomie, charge. |
+| Détecteur de coupure du secteur (relais de présence de tension) | `modbus` | Contact sec sur un module d'entrées Modbus TCP : `onTrue` → `power_loss`, `onFalse` → `power_restored`. |
+| Compteur d'énergie Modbus, contrôle de groupe électrogène, kit solaire (tension batterie) | `modbus` | Registres (mesures, `value`) et contacts secs (démarrage, défaut). Lecture seule. |
+| Capteur de niveau de cuve | `modbus` ou `lorawan` | Sortie 4-20 mA (rupture de boucle détectée) ; en LoRa : profil `dragino-ldds75`. |
+| Barrière infrarouge, câble de clôture, détecteur extérieur, bris de vitre, boucle magnétique, câble de détection de fuite | `modbus` (ou `sia` via la centrale) | Sortie contact sec câblée sur un module d'entrées Modbus, ou sur une zone de la centrale d'alarme. |
+| Centrale d'alarme intrusion (Ajax, Paradox…) et ses détecteurs, claviers, télécommandes | `sia` | Transmission IP SIA DC-09 (SIA-DCS ou Contact ID), chiffrée AES. Une zone de la centrale = un équipement PSIM. Armement / désarmement : signe de vie de la centrale (le PSIM garde son propre armement). |
+| Centrale incendie certifiée, détecteurs adressables, déclencheurs manuels | `sia` ou `modbus` | Si la centrale transmet en SIA DC-09 ; sinon ses sorties relais (feu, dérangement) en contact sec. Le PSIM supervise, il ne remplace pas la centrale. |
+| Détecteur de mouvement intérieur, contact de porte et fenêtre (Zigbee) | `zigbee` | Types `motion`, `contact` (sabotage → `door_forced` / `tamper`). |
+| Contact de porte, mouvement (LoRa) | `lorawan` | Profils `milesight-ws301`, `dragino-lds03a`, `milesight-ws202`. |
+| Contact, mouvement, fuite, température, gaz, CO, bouton SOS (WiFi Smart Life) | Tuya (PSIM) | Aucun module de passerelle. |
+| Détecteur de fumée WiFi | Tuya (PSIM) | Validé sur un vrai détecteur. Fumée Zigbee : `zigbee` type `smoke`. |
+| Détecteur de gaz, détecteur de CO | `zigbee` (types `gas`, `co`), Tuya (PSIM), ou `modbus` | Modèles 230 V à relais : contact sec sur `modbus`. |
+| Capteur de température et d'humidité | `zigbee` (`temperature`), `lorawan` (`dragino-lht65`, `milesight-th`), Tuya (PSIM) | Seuils réglés dans le PSIM (catégorie Environnement). |
+| Capteur de fuite d'eau | `zigbee` (`leak`), `lorawan` (`dragino-lwl03a`), Tuya (PSIM) | |
+| Capteur de vibration | `zigbee` (`vibration`), `lorawan` (règle `mapping`) | |
+| Capteur de qualité de l'air, capteur acoustique (LoRa) | `lorawan` | Règles `mapping` sur les champs décodés par ChirpStack : à écrire et qualifier avec le capteur réel. |
+| Passerelle LoRaWAN (mât solaire ou intérieure) | `lorawan` | Via ChirpStack v4 (broker MQTT de ChirpStack). |
+| Bouton panique fixe ou portatif | `zigbee` (`panic`), `lorawan` (`milesight-ws101`, `bouton-sos`), `sia`, Tuya (PSIM) | Événement `panic` ou `sos`, jamais masqué par le désarmement. |
+| Signe de vie de la passerelle elle-même | `heartbeat` | À mettre sur toute passerelle. |
+
+Hors passerelle : caméras, enregistreurs Dahua, supervision réseau (le PSIM les lit lui-même) ; contrôle d'accès, drones, lecture de plaques, balises GPS, pièges photo, radars : **à développer** (catalogue, chapitre 6).
 
 **`heartbeat` — à mettre sur toute passerelle.** Il envoie un signe de vie (`heartbeat`) pour un équipement PSIM dédié (ex. `GW-01`, à déclarer dans le PSIM) toutes les `everyS` secondes. Si la passerelle s'arrête, perd le réseau ou que son poste s'éteint, le PSIM voit cet équipement passer **« Hors ligne »** (délai `PSIM_DETECTOR_TIMEOUT_S`, à régler à 3 ou 4 fois `everyS`) et prévient. C'est aussi le moyen le plus simple de **valider la mise en service** : sans aucun équipement branché, `GW-01` doit apparaître en ligne dans le PSIM.
 
@@ -150,4 +202,8 @@ Le journal est dans `<dataDir>\logs\gateway.log` (par défaut `gateway\data\logs
 
 Le contrat entre le socle et les modules est dans `gateway/src/module.ts` (à ne pas modifier sans accord). Un module est un dossier `gateway/src/modules/<nom>/index.ts` qui exporte `create(config)` ; il reçoit un contexte avec `emit(deviceId, message)` (ne lève jamais : le socle valide, date, numérote, met en file et renvoie), `openMqtt(url, identifiants)` (lecture d'un autre broker, reconnexion automatique, TLS en `mqtts://`), `log`, `config` et `now`. Exemple de référence : `gateway/src/modules/heartbeat/index.ts`. Un module qui échoue au démarrage est arrêté puis relancé plus tard, sans gêner les autres ; ses liaisons MQTT sont fermées automatiquement. Le nom d'un module est limité à des minuscules, chiffres, `-` et `_` : impossible de charger un fichier hors du dossier des modules.
 
-Essais : `npm test` (les essais de la passerelle sont dans `gateway/test/`, contre le vrai broker du PSIM) ; `npm run typecheck`.
+**Événements** : un module n'émet que des événements connus du PSIM (`EVENTS` de `server/sources.ts`) ; le socle en lit directement la liste (`gateway/src/validate.ts`), et l'essai `gateway/test/contract.test.ts` échoue si une table de traduction (ou un littéral `event: '…'` du code d'un module, ou des capteurs Tuya) cite un événement inconnu du PSIM.
+
+**`msgId`** : le PSIM n'accepte que 1 à 64 caractères parmi lettres, chiffres, `.`, `_`, `:` et `-`. Un module qui fabrique ses propres `msgId` (pour l'anti-doublon après un renvoi) utilise `makeMsgId(...morceaux)` de `gateway/src/msgid.ts` : accents et caractères interdits nettoyés, longueur bornée par une empreinte courte de l'original, résultat **déterministe** (même message, même `msgId`). Par sécurité, le socle nettoie de la même façon un `msgId` hors format (avec un avertissement dans le journal) au lieu de rejeter le message. Un `msgId` doit rester unique dans le temps : y mettre l'heure de l'événement, pas seulement un compteur qui peut repartir de zéro (compteur LoRaWAN après un nouveau `join`, séquence SIA…), sinon le PSIM prendrait le nouveau message pour un doublon pendant 7 jours.
+
+Essais : `npm test` (les essais de la passerelle sont dans `gateway/test/`, contre le vrai broker du PSIM) ; `npm run typecheck` (couvre `gateway/`).
