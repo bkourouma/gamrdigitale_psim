@@ -559,7 +559,8 @@ export function createApp(deps: ApiDeps) {
     if (tuyaTesting) throw new PsimError(429, 'Un essai est deja en cours');
     tuyaTesting = true;
     try {
-      res.json(await deps.tuya.test(((req.body ?? {}) as { deviceId?: unknown }).deviceId));
+      const body = (req.body ?? {}) as { deviceId?: unknown; sensorType?: unknown; detectorId?: unknown };
+      res.json(await deps.tuya.test(body.deviceId, body.sensorType, body.detectorId));
     } finally {
       tuyaTesting = false;
     }

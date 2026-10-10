@@ -746,10 +746,13 @@ export function createEngine(
         throw new PsimError(409, `Ce detecteur lit la detection d'un enregistreur Dahua : supervision d'au moins ${DAHUA_SUPERVISION_S} s`);
       }
     }
-    // Detecteur de fumee Tuya : il reste un detecteur incendie, supervise au moins aussi longtemps que deux lectures du cloud.
+    // Capteur Tuya (fumee, contact, mouvement, eau, temperature, gaz, CO, SOS) : il garde sa categorie (le type de capteur en depend),
+    // supervise au moins aussi longtemps que deux lectures du cloud.
     if (sensor && db.prepare('SELECT 1 AS x FROM tuya_source WHERE device_id = ?').get(id)) {
-      if (sensor.category !== 'fire') {
-        throw new PsimError(409, "Ce detecteur lit un detecteur de fumee Tuya : il reste un detecteur incendie (retirer d'abord sa source)");
+      if (sensor.category !== device.category) {
+        throw new PsimError(409, device.category === 'fire'
+          ? "Ce detecteur lit un detecteur de fumee Tuya : il reste un detecteur incendie (retirer d'abord sa source)"
+          : "Ce detecteur lit un capteur Tuya : il garde sa categorie (retirer d'abord sa source)");
       }
       if (!sensor.heartbeatS || sensor.heartbeatS < TUYA_SUPERVISION_S) {
         throw new PsimError(409, `Ce detecteur lit un detecteur de fumee Tuya : supervision d'au moins ${TUYA_SUPERVISION_S} s`);

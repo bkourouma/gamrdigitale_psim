@@ -226,7 +226,8 @@ describe('Tuya : cloud et detecteurs du PSIM', () => {
 
   it('regles : detecteur incendie seulement, un appareil Tuya = un detecteur, compte configure, identifiant valide ; categorie et supervision verrouillees', () => {
     const t = setup();
-    assert.throws(() => t.tuya.setSource('admin', 'I-01', { deviceId: DEV_A }), /INCENDIE/);
+    t.engine.updateDevice('admin', 'I-01', { category: 'energy' });
+    assert.throws(() => t.tuya.setSource('admin', 'I-01', { deviceId: DEV_A }), /alimente un detecteur incendie, intrusion/, 'energie : pas de capteur Tuya');
     assert.throws(() => t.tuya.setSource('admin', 'D-01', { deviceId: 'court' }), /invalide/);
     assert.throws(() => t.tuya.setSource('admin', 'C-01', { deviceId: DEV_A }), /introuvable/);
     t.tuya.setSource('admin', 'D-01', { deviceId: DEV_A });
@@ -261,7 +262,7 @@ describe('Tuya : cloud et detecteurs du PSIM', () => {
     assert.match(missing.message, /cet appareil n'y est pas/);
     const odd = (cloud.devices.set(DEV_B, { id: DEV_B, online: true, status: [{ code: 'switch_1', value: true }] }), await t.tuya.test(DEV_B));
     assert.equal(odd.ok, false);
-    assert.match(odd.message, /aucune donnee de fumee reconnue.*switch_1/);
+    assert.match(odd.message, /modele non pris en charge.*switch_1/);
     t.tuya.stop();
   });
 });

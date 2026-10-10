@@ -185,8 +185,8 @@ export const ACTION_LABEL = {
   camera_source_updated: 'Source vidéo modifiée',
   detector_source_updated: 'Source du détecteur modifiée',
   detector_source_removed: 'Source du détecteur retirée',
-  tuya_source_updated: 'Détecteur de fumée Tuya : source modifiée',
-  tuya_source_removed: 'Détecteur de fumée Tuya : source retirée',
+  tuya_source_updated: 'Capteur Tuya : source modifiée',
+  tuya_source_removed: 'Capteur Tuya : source retirée',
 };
 
 // ---------------------------------------------------------------- bus d'évènements

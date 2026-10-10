@@ -241,7 +241,7 @@ function buildEditor(box, d, key) {
   if (d.kind === 'detector') {
     children.push(section('sensor', 'Réglages de mesure', 'sliders', buildSensorForm(d)));
     if (d.category === 'intrusion') children.push(section('dahua', "Détection par l’enregistreur vidéo", 'intrusion', buildDetectorSource(d, { cameras: () => devicesOf('camera') })));
-    if (d.category === 'fire') children.push(section('tuya', 'Détecteur de fumée WiFi (Smart Life)', 'fire', buildTuyaSource(d)));
+    if (['fire', 'intrusion', 'access', 'environment', 'people'].includes(d.category)) children.push(section('tuya', d.category === 'fire' ? 'Détecteur de fumée WiFi (Smart Life)' : 'Capteur WiFi Tuya (Smart Life)', CATEGORY_ICON[d.category] ?? 'sliders', buildTuyaSource(d)));
     if (d.category === 'environment') children.push(section('network', 'Supervision réseau', 'server', buildNetworkTarget(d)));
     children.push(section('links', 'Caméras liées', 'camera', linksForm(d)));
   }
