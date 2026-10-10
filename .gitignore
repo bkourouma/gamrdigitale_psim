@@ -12,3 +12,5 @@ backups-prod/
 .tmp-*/
 backups/
 *.pem
+gateway/config.json
+gateway/secrets/

@@ -54,7 +54,7 @@ const AUTHENTICATED = 'S-1-5-11';
 const EVERYONE = 'S-1-1-0';
 const ADMINS = 'S-1-5-32-544';
 
-for (const script of ['windows-service.ps1', 'windows-harden-folder.ps1']) {
+for (const script of ['windows-service.ps1', 'windows-harden-folder.ps1', 'gateway-service.ps1']) {
   describe(`${script} : detection d'un dossier modifiable`, { skip: WINDOWS ? false : 'PowerShell/Windows requis' }, () => {
     it("la lecture seule du groupe « Utilisateurs » n'est PAS de l'ecriture (le defaut qui bloquait tout)", () => {
       assert.equal(flagged(script, [{ sid: USERS, rights: READ_EXECUTE }]).length, 0);
