@@ -35,6 +35,8 @@ export { parseConfig } from './config.ts';
 const HEARTBEAT_MIN_MS = 30_000;
 /** Un meme message de journal n'est repete qu'une fois par minute (le reste est compte). */
 const LOG_EVERY_MS = 60_000;
+/** Plafond global du journal SIA (lignes par minute), quelle que soit la cle. */
+const LOG_GLOBAL_MAX = 120;
 /** Taille maximale de la memoire anti-rejeu. */
 const MAX_SEEN = 20_000;
 /** Taille maximale des tables par adresse (compteurs de debit). */
@@ -106,6 +108,7 @@ export function create(config: Record<string, unknown>): SiaModule {
   /** Ids PSIM en alarme d'apres les evenements recus (non ecrases par un defaut ni par la supervision). */
   const alarmed = new Set<string>();
   const logged = new Map<string, { at: number; hidden: number }>();
+  const globalLog = { since: 0, count: 0, hidden: 0 };
   const unknownCodes = new Set<string>();
 
   const now = () => (ctx ? ctx.now() : Date.now());
@@ -118,7 +121,10 @@ export function create(config: Record<string, unknown>): SiaModule {
     }
   }
 
-  /** Journalise au plus une fois par minute pour une meme cle (pas de saturation des journaux par un attaquant). */
+  /**
+   * Journalise au plus une fois par minute pour une meme cle (pas de saturation des journaux par un attaquant), et au plus
+   * LOG_GLOBAL_MAX lignes par minute en tout : des adresses sources usurpees (UDP, IPv6) changent la cle a chaque trame.
+   */
   function logLimited(key: string, level: 'info' | 'warn' | 'error', text: string): void {
     const t = now();
     const prev = logged.get(key);
@@ -126,13 +132,30 @@ export function create(config: Record<string, unknown>): SiaModule {
       prev.hidden++;
       return;
     }
+    if (t - globalLog.since >= LOG_EVERY_MS) {
+      if (globalLog.hidden > 0) log('warn', `${globalLog.hidden} message(s) du journal SIA non affiche(s) la minute precedente (trop de messages)`);
+      globalLog.since = t;
+      globalLog.count = 0;
+      globalLog.hidden = 0;
+    }
+    if (globalLog.count >= LOG_GLOBAL_MAX) {
+      globalLog.hidden++;
+      return;
+    }
+    globalLog.count++;
     if (logged.size >= 1000) logged.clear();
     logged.set(key, { at: t, hidden: 0 });
     log(level, prev && prev.hidden > 0 ? `${text} (${prev.hidden} message(s) semblable(s) non affiche(s))` : text);
   }
 
+  /**
+   * Le socle ne leve jamais ; il renvoie `false` (au-dela du contrat `void`) quand le message n'est PAS en file (disque plein,
+   * passerelle en cours d'arret, equipement hors de psim.detectors). On leve alors : la trame n'est pas acquittee et la
+   * centrale la renverra, au lieu d'une alarme acquittee puis perdue.
+   */
   function emit(deviceId: string, msg: DeviceMessage): void {
-    (ctx as ModuleContext).emit(deviceId, msg);
+    const accepted: unknown = (ctx as ModuleContext).emit(deviceId, msg);
+    if (accepted === false) throw new Error('message non mis en file par la passerelle');
   }
 
   function panelIds(a: AccountConfig): string[] {

@@ -51,6 +51,20 @@ const STATES: ReadonlySet<string> = new Set(['normal', 'prealarm', 'alarm', 'fau
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/**
+ * Adresse « toutes les interfaces », quelle que soit son ecriture : 0.0.0.0, ::, ::0, 0:0:0:0:0:0:0:0, ::ffff:0.0.0.0...
+ * (comparer seulement les chaines « 0.0.0.0 » et « :: » laissait passer les autres formes).
+ */
+export function anyInterface(host: string): boolean {
+  if (isIP(host) === 4) return host.split('.').every((p) => Number(p) === 0);
+  try {
+    const h = new URL(`http://[${host}]/`).hostname;
+    return h === '[::]' || h === '[::ffff:0:0]';
+  } catch {
+    return false;
+  }
+}
+
 /** Affichage sur d'une valeur fournie par l'utilisateur dans un message d'erreur (jamais pour une cle). */
 const show = (v: unknown) => JSON.stringify(v)?.slice(0, 40) ?? String(v);
 
@@ -270,7 +284,7 @@ export function parseConfig(raw: Record<string, unknown>, env: NodeJS.ProcessEnv
     e.unknownKeys(l, ['host', 'port', 'protocols', 'allowAnyInterface'], 'listen');
     const any = e.bool(l.allowAnyInterface, 'listen.allowAnyInterface', false);
     if (typeof l.host !== 'string' || isIP(l.host) === 0) e.add("listen.host doit etre l'adresse IP de l'interface d'ecoute (ex. 192.168.1.10) ; aucune valeur par defaut");
-    else if ((l.host === '0.0.0.0' || l.host === '::') && !any) e.add(`listen.host ${l.host} ecoute sur TOUTES les interfaces : choisir l'adresse d'une interface, ou ajouter "allowAnyInterface": true en connaissance de cause`);
+    else if (anyInterface(l.host) && !any) e.add(`listen.host ${l.host} ecoute sur TOUTES les interfaces : choisir l'adresse d'une interface, ou ajouter "allowAnyInterface": true en connaissance de cause`);
     else host = l.host;
     if (typeof l.port !== 'number' || !Number.isInteger(l.port) || l.port < 0 || l.port > 65535) e.add('listen.port doit etre un numero de port (1 a 65535)');
     else port = l.port;

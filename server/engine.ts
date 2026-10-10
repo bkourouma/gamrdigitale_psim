@@ -755,7 +755,7 @@ export function createEngine(
           : "Ce detecteur lit un capteur Tuya : il garde sa categorie (retirer d'abord sa source)");
       }
       if (!sensor.heartbeatS || sensor.heartbeatS < TUYA_SUPERVISION_S) {
-        throw new PsimError(409, `Ce detecteur lit un detecteur de fumee Tuya : supervision d'au moins ${TUYA_SUPERVISION_S} s`);
+        throw new PsimError(409, `Ce detecteur lit un capteur Tuya : supervision d'au moins ${TUYA_SUPERVISION_S} s`);
       }
     }
     // Equipement d'infrastructure supervise par le reseau (networkhealth.ts) : il reste de categorie « Environnement » (les

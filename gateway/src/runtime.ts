@@ -61,7 +61,8 @@ export interface GatewayStatus {
 
 export interface GatewayRuntime {
   /** Meme comportement que `ctx.emit` (outils et essais). */
-  emit(deviceId: string, msg: DeviceMessage): void;
+  /** Vrai si le message est en file (donc sera livre) ; faux s'il est refuse ou perdu (la raison est journalisee). */
+  emit(deviceId: string, msg: DeviceMessage): boolean;
   status(): GatewayStatus;
   queue: DiskQueue;
   stop(): Promise<void>;
@@ -161,28 +162,35 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     logger.log('warn', text);
   };
 
-  function emitFrom(label: string, deviceId: string, msg: DeviceMessage): void {
+  /**
+   * Met le message en file. Ne leve jamais. Renvoie vrai s'il est ecrit dans la file, faux sinon : le contrat des modules
+   * (module.ts) type `emit` en `void`, mais un module qui peut faire renvoyer sa source (recepteur SIA : pas d'acquittement)
+   * lit ce booleen pour ne jamais acquitter un message perdu.
+   */
+  function emitFrom(label: string, deviceId: string, msg: DeviceMessage): boolean {
     try {
       const shownId = clean(deviceId, 40);
       if (closed) {
         logger.log('warn', `[${label}] message pour ${shownId} ignore : passerelle arretee`);
-        return;
+        return false;
       }
       const r = prepare(deviceId, msg, now(), newMsgId);
       if (!r.ok) {
         logger.log('error', `[${label}] message rejete pour ${shownId} : ${r.error}`);
-        return;
+        return false;
       }
       if (config.psim.detectors && !allows(config.psim.detectors, deviceId)) {
         logger.log('error', `[${label}] message rejete pour ${shownId} : equipement hors de psim.detectors (le PSIM le refuserait pour ce compte)`);
-        return;
+        return false;
       }
       for (const w of r.warnings) warnOnce(`${label}|${w}`, `[${label}] ${w}`);
       queue.push(deviceId, r.payload);
       link.kick();
+      return true;
     } catch (err) {
       // Disque plein ou illisible : rien ne doit remonter dans le module, mais la perte est signalee.
       logger.log('error', `[${label}] message pour ${clean(deviceId, 40)} PERDU : ecriture de la file impossible (${errText(err)})`);
+      return false;
     }
   }
 
@@ -223,9 +231,9 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       emit: (deviceId, msg) => {
         if (!alive.value) {
           warnOnce(`${label}|dead`, `[${label}] message emis par une instance arretee du module : ignore`);
-          return;
+          return false;
         }
-        emitFrom(label, deviceId, msg);
+        return emitFrom(label, deviceId, msg);
       },
       openMqtt: async (url, o) => {
         if (!alive.value) throw new Error('module arrete');

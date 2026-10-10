@@ -165,7 +165,14 @@ switch ($Action) {
             if ($code -ne 0) { Write-Warning "Le PSIM n'est pas joignable pour l'instant : la passerelle gardera les messages sur disque et les enverra des son retour." }
         }
         $configDir = Split-Path -Parent $ConfigPath
-        $writable = Get-WritableByOrdinaryUsers -Paths @($Root, (Join-Path $Root 'gateway'), (Join-Path $Root 'scripts'), (Join-Path $Root 'node_modules'), $configDir, $ConfigPath)
+        # Aussi : node.exe et son dossier (nvm-windows, Volta, scoop les placent souvent sous un dossier modifiable : remplacer
+        # node.exe = code execute par la tache), et le dossier de donnees (file d'envoi rechargee et publiee au PSIM, journaux
+        # renommes par la tache, gateway.lock dont le numero de processus est arrete a l'arret).
+        $nodeItem = Get-Item $node -ErrorAction SilentlyContinue
+        $nodeReal = if ($nodeItem -and $nodeItem.Target) { [string]@($nodeItem.Target)[0] } else { $node }
+        $watched = @($Root, (Join-Path $Root 'gateway'), (Join-Path $Root 'scripts'), (Join-Path $Root 'node_modules'), $configDir, $ConfigPath,
+            $node, (Split-Path -Parent $node), $nodeReal, (Split-Path -Parent $nodeReal), (Get-DataDir)) | Select-Object -Unique
+        $writable = Get-WritableByOrdinaryUsers -Paths $watched
         if ($writable.Count -gt 0 -and -not $AllowWritableTree) {
             throw ("Le dossier de la passerelle (ou sa configuration) est MODIFIABLE par des utilisateurs ordinaires :`n  " + ($writable -join "`n  ") + "`nUne passerelle lancee par une tache planifiee executerait leur code avec les droits du compte de service (et une configuration modifiee peut lui faire lire n'importe quel fichier). Corrigez les droits, par exemple (PowerShell administrateur ; ATTENTION : cela retire l'ecriture aux utilisateurs ordinaires, vous compris si vous n'etes pas administrateur) :`n  icacls `"$Root`" /inheritance:r /grant:r `"*S-1-5-18:(OI)(CI)F`" `"*S-1-5-32-544:(OI)(CI)F`" `"*S-1-5-32-545:(OI)(CI)RX`"`npuis donnez au compte de service le droit d'ECRIRE dans le seul dossier de donnees. (-AllowWritableTree pour passer outre, deconseille.)")
         }
@@ -201,7 +208,8 @@ switch ($Action) {
 
         # --- Controle : toutes les 5 minutes, relance la tache principale si elle ne tourne plus ---------------------
         $watchCmd = "if ((Get-ScheduledTask -TaskName '$MainTask').State -ne 'Running') { Start-ScheduledTask -TaskName '$MainTask' }"
-        $watchAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"$watchCmd`""
+        # Chemin complet : la tache tourne avec les droits du service, un powershell.exe place plus tot dans le PATH serait execute.
+        $watchAction = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"$watchCmd`""
         $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5)
         $watchSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 

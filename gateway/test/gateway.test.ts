@@ -141,7 +141,7 @@ describe('passerelle : envoi fiable vers le PSIM', () => {
     const rt = await startRuntime({ config: testConfig(dir, port), logger });
     cleanup.push(() => rt.stop());
     rt.emit('D-01', { event: 'x'.repeat(1500) });
-    rt.emit('../#', { state: 'alarm' });
+    assert.equal(rt.emit('../#', { state: 'alarm' }), false, 'refuse : emit renvoie faux (le module peut faire renvoyer sa source)');
     rt.emit('D-01/state', { state: 'alarm' });
     rt.emit('D-01', { state: 'alarm', ts: Math.floor(Date.now() / 1000) });
     rt.emit('D-01', null as never);
@@ -149,7 +149,7 @@ describe('passerelle : envoi fiable vers le PSIM', () => {
     assert.ok(logger.has(/trop gros/));
     assert.ok(logger.has(/identifiant d'equipement invalide/));
     assert.ok(logger.has(/ts en secondes/));
-    rt.emit('D-01', { state: 'alarm' });
+    assert.equal(rt.emit('D-01', { state: 'alarm' }), true, 'en file : emit renvoie vrai');
     await waitFor(() => received.length === 1, 10_000, 'message valide');
   });
 

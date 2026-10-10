@@ -91,7 +91,8 @@ export function parseConfig(raw: unknown): ZigbeeConfig {
   try {
     parsed = new URL(broker.url.trim());
   } catch {
-    throw new Error(`Zigbee broker : adresse invalide « ${broker.url} » (ex. mqtt://127.0.0.1:1883)`);
+    // Jamais l'adresse elle-meme : elle peut contenir un identifiant et un mot de passe (journal, status.json).
+    throw new Error('Zigbee broker : adresse invalide (ex. mqtt://127.0.0.1:1883)');
   }
   if (!BROKER_PROTOCOLS.has(parsed.protocol)) throw new Error(`Zigbee broker : protocole « ${parsed.protocol.replace(':', '')} » non pris en charge (mqtt, mqtts, tcp, tls, ws, wss)`);
   if (parsed.hostname === '') throw new Error('Zigbee broker : l\'adresse ne contient pas de machine');

@@ -480,6 +480,15 @@ describe('SIA : configuration', () => {
     bad({ ...baseConfig(), limits: { maxConnections: 0 } }, /limits\.maxConnections/);
   });
 
+  it("toutes les ecritures de « toutes les interfaces » sont refusees sans allowAnyInterface (::0, ::ffff:0.0.0.0...)", () => {
+    for (const host of ['0.0.0.0', '::', '::0', '0:0:0:0:0:0:0:0', '0000::', '::ffff:0.0.0.0']) {
+      assert.throws(() => parseConfig({ ...baseConfig(), listen: { host, port: 4000 } }), /TOUTES les interfaces/, host);
+    }
+    for (const host of ['127.0.0.1', '::1', '192.168.1.10', 'fe80::1']) {
+      assert.doesNotThrow(() => parseConfig({ ...baseConfig(), listen: { host, port: 4000 } }), host);
+    }
+  });
+
   it('accepte 0.0.0.0 seulement avec allowAnyInterface ; chiffrement exige par defaut quand une cle est donnee', () => {
     const c = parseConfig({ ...baseConfig(), listen: { host: '0.0.0.0', port: 4000, allowAnyInterface: true } });
     assert.equal(c.host, '0.0.0.0');
@@ -633,6 +642,17 @@ describe('SIA : reception TCP et UDP', () => {
     const frame = build({ seq: '0300', data: '#1234|NBA01' });
     assert.equal(await exchange(tcp, frame), null);
     f.failEmit.on = false;
+    assert.equal(token(readReply((await exchange(tcp, frame)) as string)), '"ACK"', 'le renvoi est traite (pas pris pour un rejeu)');
+    assert.equal(f.emitted.length, 1);
+  });
+
+  it("socle qui ne met pas le message en file (emit renvoie false : disque plein, arret) : pas d'ACK, la centrale renverra", async () => {
+    const { f, tcp } = await start();
+    const real = f.ctx.emit;
+    f.ctx.emit = (() => false) as unknown as ModuleContext['emit'];
+    const frame = build({ seq: '0301', data: '#1234|NBA01' });
+    assert.equal(await exchange(tcp, frame), null);
+    f.ctx.emit = real;
     assert.equal(token(readReply((await exchange(tcp, frame)) as string)), '"ACK"', 'le renvoi est traite (pas pris pour un rejeu)');
     assert.equal(f.emitted.length, 1);
   });
