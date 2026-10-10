@@ -125,7 +125,8 @@ describe('bout en bout : module -> socle -> broker du PSIM -> moteur -> incident
 
     plc.inputs[3] = true; // retour secteur
     await waitFor(() => device().status === 'normal', 10_000, 'retour a la normale vu par le moteur');
-    assert.equal(rt.status().queue.pending, 0, 'file de la passerelle videe');
+    // Le moteur traite le message avant que l'accuse de reception (PUBACK) ne revienne a la passerelle : on attend la file vide.
+    await waitFor(() => rt.status().queue.pending === 0, 10_000, 'file de la passerelle videe (accuses de reception recus)');
     assert.equal(logger.has(/rejete|refuse/), false, logger.lines.map((l) => l.text).join('\n'));
   });
 });
