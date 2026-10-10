@@ -84,7 +84,8 @@ export function beginHistory(db: DatabaseSync, now: number, previousAlive: numbe
       close.run(Math.max(end, row.started_at), row.id);
     }
     const insert = db.prepare('INSERT INTO device_state_history (device_id, state, started_at) VALUES (?, ?, ?)');
-    const devices = db.prepare("SELECT id, status, state_since FROM device WHERE kind = 'detector'").all() as { id: string; status: string; state_since: number | null }[];
+    // Un equipement reseau (network_target) est mesure comme une camera : son etat n'est pas `device.status` (voir plus bas).
+    const devices = db.prepare("SELECT id, status, state_since FROM device WHERE kind = 'detector' AND id NOT IN (SELECT device_id FROM network_target)").all() as { id: string; status: string; state_since: number | null }[];
     for (const d of devices) {
       // Un detecteur sans historique (premiere mise en route de cette fonction) est date de son dernier changement connu.
       const known = db.prepare('SELECT 1 AS x FROM device_state_history WHERE device_id = ? LIMIT 1').get(d.id);
@@ -93,7 +94,10 @@ export function beginHistory(db: DatabaseSync, now: number, previousAlive: numbe
     }
     // Camera reelle : son etat n'est pas dans `device.status` mais dans son dernier etat mesure, qui reprend ici. Jamais
     // mesuree : rien a reprendre, le premier test (quelques secondes apres le demarrage) le dira.
-    const cameras = db.prepare("SELECT d.id FROM device d JOIN camera_source c ON c.device_id = d.id WHERE d.kind = 'camera'").all() as { id: string }[];
+    // Meme regle pour un equipement reseau.
+    const cameras = db
+      .prepare("SELECT d.id FROM device d JOIN camera_source c ON c.device_id = d.id WHERE d.kind = 'camera' UNION SELECT d.id FROM device d JOIN network_target n ON n.device_id = d.id WHERE d.kind = 'detector'")
+      .all() as { id: string }[];
     for (const c of cameras) {
       const last = db.prepare('SELECT state FROM device_state_history WHERE device_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(c.id) as { state: string } | undefined;
       if (last) insert.run(c.id, last.state, now);

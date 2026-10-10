@@ -64,6 +64,14 @@ function camerasFact(c) {
   return { label, value: `${c.offline.length} sur ${c.measured} ne répondent plus`, state: 'warn', note: c.offline.join(', ') };
 }
 
+function networkFact(n) {
+  const label = 'Équipements réseau (test de connexion)';
+  if (!n?.enabled) return { label, value: 'Test désactivé' };
+  if (n.measured === 0) return { label, value: 'Aucun équipement réseau déclaré', note: 'Routeur, switch, passerelle… : à déclarer dans la fiche de l’équipement.' };
+  if (n.offline.length === 0) return { label, value: n.measured > 1 ? `Les ${n.measured} répondent` : 'L’équipement répond', state: 'ok' };
+  return { label, value: `${n.offline.length} sur ${n.measured} ne répondent plus`, state: 'warn', note: n.offline.join(', ') };
+}
+
 function factGroups(sys) {
   const b = sys.backup;
   const free = sys.disk?.freeBytes;
@@ -79,6 +87,7 @@ function factGroups(sys) {
         { label: 'Version', value: `PSIM ${sys.version}`, note: `Node ${sys.node}` },
         { label: 'Passerelles des détecteurs', value: sys.brokerClients === 0 ? 'Aucune connectée' : `${sys.brokerClients} connectée${sys.brokerClients > 1 ? 's' : ''}`, note: 'Relais (MQTT) entre les détecteurs et le PSIM.' },
         sys.cameras ? camerasFact(sys.cameras) : null,
+        sys.network ? networkFact(sys.network) : null,
       ],
     },
     {

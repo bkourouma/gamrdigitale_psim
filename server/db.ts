@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS camera_source (
   username TEXT,
   secret TEXT
 );
+-- Cible reseau d'un equipement d'infrastructure (routeur, switch...) : le PSIM teste que host:port repond (voir networkhealth.ts).
+CREATE TABLE IF NOT EXISTS network_target (
+  device_id TEXT PRIMARY KEY REFERENCES device(id) ON DELETE CASCADE,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535)
+);
 CREATE TABLE IF NOT EXISTS incident (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detector_id TEXT NOT NULL REFERENCES device(id),

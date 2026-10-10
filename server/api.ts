@@ -28,6 +28,7 @@ import { PLAN_TYPES } from './floors.ts';
 import type { Floors } from './floors.ts';
 import type { DahuaEvents } from './dahua.ts';
 import type { TuyaService } from './tuya.ts';
+import { createNetworkTargets } from './networkhealth.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { discoverOnvif } from './onvif.ts';
 import type { Notifier } from './notifications.ts';
@@ -502,6 +503,29 @@ export function createApp(deps: ApiDeps) {
   app.delete('/api/detectors/:id/source', adminOnly, (req, res) => {
     deps.dahua.removeSource(actorOf(req), String(req.params.id));
     res.status(204).end();
+  });
+  // ---- Supervision reseau d'un equipement d'infrastructure (routeur, switch...) : hote + port TCP ----
+  const network = createNetworkTargets({ db, audit: (actor, action, ref) => engine.audit(actor, action, ref) });
+  app.get('/api/devices/:id/network', adminOnly, (req, res) => {
+    res.json(network.view(String(req.params.id)));
+  });
+  app.put('/api/devices/:id/network', adminOnly, json, (req, res) => {
+    res.json(network.set(actorOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>));
+  });
+  app.delete('/api/devices/:id/network', adminOnly, (req, res) => {
+    network.remove(actorOf(req), String(req.params.id));
+    res.status(204).end();
+  });
+  // Essai avant enregistrement : une seule connexion, un essai a la fois (jamais une rafale vers une adresse choisie).
+  let networkTesting = false;
+  app.post('/api/network/test', adminOnly, json, async (req, res) => {
+    if (networkTesting) throw new PsimError(429, 'Un essai est deja en cours');
+    networkTesting = true;
+    try {
+      res.json(await network.test((req.body ?? {}) as Record<string, unknown>));
+    } finally {
+      networkTesting = false;
+    }
   });
   // Essai : ecoute l'appareil d'une camera 20 s et rapporte tout ce qu'il emet (un essai a la fois).
   let listening = false;

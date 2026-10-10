@@ -12,6 +12,7 @@
  */
 import { buildDetectorSource } from './detsource.js';
 import { buildTuyaSource } from './tuyasource.js';
+import { buildNetworkTarget } from './netsource.js';
 import {
   CATEGORIES,
   CATEGORY_LABEL,
@@ -241,6 +242,7 @@ function buildEditor(box, d, key) {
     children.push(section('sensor', 'Réglages de mesure', 'sliders', buildSensorForm(d)));
     if (d.category === 'intrusion') children.push(section('dahua', "Détection par l’enregistreur vidéo", 'intrusion', buildDetectorSource(d, { cameras: () => devicesOf('camera') })));
     if (d.category === 'fire') children.push(section('tuya', 'Détecteur de fumée WiFi (Smart Life)', 'fire', buildTuyaSource(d)));
+    if (d.category === 'environment') children.push(section('network', 'Supervision réseau', 'server', buildNetworkTarget(d)));
     children.push(section('links', 'Caméras liées', 'camera', linksForm(d)));
   }
   children.push(dangerZone(d));
