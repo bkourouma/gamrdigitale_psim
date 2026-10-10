@@ -183,6 +183,7 @@ export function createEngine(
       hint: (r.hint as Incident['hint']) ?? null,
       hintDetails: (r.hint_details as string | null) ?? null,
       receivedLateMs: r.received_at === null || r.received_at === undefined ? null : Math.max(0, (r.received_at as number) - (r.opened_at as number)),
+      event: (r.event as string | null) ?? null,
       snapshots: (
         db
           .prepare('SELECT id, camera_id, taken_at, reason FROM incident_snapshot WHERE incident_id = ? ORDER BY id')
@@ -361,11 +362,11 @@ export function createEngine(
     }
     // ORDRE : un message date plus ancien que l'etat deja applique ne l'ecrase pas (voir recordPastAlarm pour une alarme).
     if (meta.dated && at < stateReference(deviceId)) {
-      if (state === 'alarm' || state === 'prealarm') recordPastAlarm(device, state, meta);
+      if (state === 'alarm' || state === 'prealarm') recordPastAlarm(device, state, meta, reading.event);
       publishDevice(deviceId);
       return;
     }
-    applyState(device, state, meta);
+    applyState(device, state, meta, reading.event);
   }
 
   const fmtDate = (ms: number) => new Date(ms).toLocaleString('fr-FR');
@@ -385,8 +386,10 @@ export function createEngine(
    *  - un incident clos couvre deja ce moment (meme alarme renvoyee sans `msgId`) : rien, pas de doublon.
    * L'historique des etats n'est pas reecrit : il dit ce que le PSIM savait, quand il le savait (une alarme compte « en
    * service » comme l'etat normal : la disponibilite n'en depend pas).
+   * `event` : evenement nomme du message rejoue (gaz, sos...) ; il devient le motif de l'incident ouvert ou aggrave,
+   * comme pour une alarme recue en direct (voir applyState).
    */
-  function recordPastAlarm(device: Device, state: 'alarm' | 'prealarm', meta: MessageMeta): void {
+  function recordPastAlarm(device: Device, state: 'alarm' | 'prealarm', meta: MessageMeta, event: string | null = null): void {
     const deviceId = device.id;
     const at = meta.eventAt;
     const severity: Severity = state === 'alarm' ? 'critical' : 'warning';
@@ -399,13 +402,13 @@ export function createEngine(
         audit('systeme', 'alarm_late', { incidentId: open.id, deviceId, details: `${details} ; rattachee a l'incident en cours` });
         publishIncident(open.id);
       }
-      if (open.severity === 'warning' && severity === 'critical') escalate(open.id, deviceId);
+      if (open.severity === 'warning' && severity === 'critical') escalate(open.id, deviceId, event);
       return;
     }
     if (db.prepare('SELECT 1 AS x FROM incident WHERE detector_id = ? AND opened_at <= ? AND closed_at >= ? LIMIT 1').get(deviceId, at, at)) return;
     const res = db
-      .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at) VALUES (?, ?, ?, ?)')
-      .run(deviceId, severity, at, meta.receivedAt);
+      .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at, event) VALUES (?, ?, ?, ?, ?)')
+      .run(deviceId, severity, at, meta.receivedAt, event);
     const id = Number(res.lastInsertRowid);
     audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
     audit('systeme', 'alarm_late', { incidentId: id, deviceId, details });
@@ -461,18 +464,19 @@ export function createEngine(
     }
   }
 
-  function escalate(incidentId: number, deviceId: string): void {
+  /** `event` : evenement nomme qui aggrave l'incident ; il en devient le motif (sinon le motif d'origine est garde). */
+  function escalate(incidentId: number, deviceId: string, event: string | null = null): void {
     // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
     db.prepare(
-      "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
-    ).run(incidentId);
+      "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL, event = COALESCE(?, event) WHERE id = ?",
+    ).run(event, incidentId);
     audit('systeme', 'incident_escalated', { incidentId, deviceId, details: 'warning -> critical' });
     publishIncident(incidentId);
     emitHook(incidentId, 'escalated');
   }
 
-  /** `meta.eventAt` : heure reelle du changement (`ts` du message, sinon son arrivee). */
-  function applyState(device: Device, state: DetectorState, meta: MessageMeta): void {
+  /** `meta.eventAt` : heure reelle du changement (`ts` du message, sinon son arrivee). `event` : evenement nomme (motif de l'incident). */
+  function applyState(device: Device, state: DetectorState, meta: MessageMeta, event: string | null = null): void {
     const deviceId = device.id;
     const previous = device.status;
     const t = meta.eventAt;
@@ -495,15 +499,15 @@ export function createEngine(
       if (!open) {
         // Heure REELLE de l'alarme ; recue en differe (passerelle qui renvoie apres une coupure) : heure de reception notee.
         const res = db
-          .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at) VALUES (?, ?, ?, ?)')
-          .run(deviceId, severity, t, late ? meta.receivedAt : null);
+          .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at, event) VALUES (?, ?, ?, ?, ?)')
+          .run(deviceId, severity, t, late ? meta.receivedAt : null, event);
         const id = Number(res.lastInsertRowid);
         audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
         if (late) audit('systeme', 'alarm_late', { incidentId: id, deviceId, details: late });
         publishIncident(id);
         emitHook(id, 'opened');
       } else if (open.severity === 'warning' && severity === 'critical') {
-        escalate(open.id, deviceId);
+        escalate(open.id, deviceId, event);
       }
       if (open?.hint) {
         // Le detecteur se redeclenche : la suggestion « fausse alarme » ne tient plus.

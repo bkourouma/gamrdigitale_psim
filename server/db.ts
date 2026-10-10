@@ -248,6 +248,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'incident', column: 'hint_details', definition: 'TEXT' },
   // Alarme recue en differe (passerelle qui renvoie apres une coupure) : heure de reception ; NULL = recue en direct.
   { table: 'incident', column: 'received_at', definition: 'INTEGER' },
+  // Evenement nomme qui a ouvert (ou aggrave) l'incident : le motif en clair des notifications. NULL = etat ou mesure.
+  { table: 'incident', column: 'event', definition: 'TEXT' },
   // Destinataire limite a certaines zones (JSON) ; NULL = toutes les alarmes.
   { table: 'notification_recipient', column: 'zones', definition: 'TEXT' },
   // Format d'affichage de l'image d'une camera (voir video.ts, scaleFilter) : auto, 16:9, 4:3 ou source.

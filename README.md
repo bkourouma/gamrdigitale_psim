@@ -311,9 +311,9 @@ Un détecteur qui tombe en panne ou perd son réseau ne prévient pas : sans sur
 
 Réglage : **`PSIM_DETECTOR_TIMEOUT_S`**. Comptez 3 à 4 fois la période d'émission de vos détecteurs (période de 60 s : 180-240 s). `0` désactive. Valeur par défaut : **180 en exploitation** (`PSIM_SIM_ENABLED=0`), **désactivé en mode simulateur** : le simulateur et `npm run sim` n'envoient qu'un message ponctuel, sans signal de vie, et les détecteurs simulés passeraient sinon hors ligne au bout de 3 minutes. Le démarrage du PSIM affiche l'état de cette surveillance.
 
-## Autres sources d'alarme : intrusion, contrôle d'accès, environnement
+## Autres sources d'alarme : intrusion, contrôle d'accès, environnement, énergie, personnes
 
-Un détecteur a une **catégorie** : `fire` (incendie, par défaut), `intrusion`, `access` (contrôle d'accès) ou `environment` (température, fuite d'eau, humidité…). Toutes passent par **le même circuit** : incident, acquittement, clôture, journal, notifications avec escalade, images des caméras liées, confirmation par un voisin. Seul change ce que dit l'équipement et la façon de le lire.
+Un détecteur a une **catégorie** : `fire` (incendie, par défaut), `intrusion`, `access` (contrôle d'accès), `environment` (température, fuite d'eau, humidité, gaz, monoxyde de carbone…), `energy` (énergie : coupure secteur, onduleur) ou `people` (personnes : appel de détresse SOS, chute). Toutes passent par **le même circuit** : incident, acquittement, clôture, journal, notifications avec escalade, images des caméras liées, confirmation par un voisin. Seul change ce que dit l'équipement et la façon de le lire.
 
 **Ce qu'un équipement peut envoyer** (MQTT `psim/detectors/<id>/state`, ou HTTP, voir plus bas). Un message contient l'un des trois, dans cet ordre de priorité :
 
@@ -325,7 +325,9 @@ Un détecteur a une **catégorie** : `fire` (incendie, par défaut), `intrusion`
 
 `value` peut accompagner `state` ou `event` : la mesure est alors seulement mémorisée et affichée. Une mesure sans seuil réglé est affichée sans rien déclencher.
 
-Événements reconnus : **alarme** `intrusion`, `motion`, `glass_break`, `tamper`, `panic`, `door_forced`, `forced_entry`, `leak`, `flood`, `over_temperature` ; **préalarme** `door_held_open`, `badge_denied_repeated` ; **normal** `normal`, `clear`, `restored`, `door_closed`, `alarm_reset`, `dry` ; **défaut** `fault`, `low_battery` ; **simple signe de vie** `heartbeat`, `ping`, `badge_granted`, `badge_denied`, `door_opened`. Tout autre message est refusé (HTTP 400, ou ignoré en MQTT).
+Événements reconnus : **alarme** `intrusion`, `motion`, `glass_break`, `tamper`, `panic`, `door_forced`, `forced_entry`, `leak`, `flood`, `over_temperature`, `gas`, `co`, `power_loss`, `vibration`, `camera_masked`, `line_crossing`, `loitering`, `sos`, `fall` ; **préalarme** `door_held_open`, `badge_denied_repeated` ; **normal** `normal`, `clear`, `restored`, `door_closed`, `alarm_reset`, `dry`, `power_restored` ; **défaut** `fault`, `low_battery` ; **simple signe de vie** `heartbeat`, `ping`, `badge_granted`, `badge_denied`, `door_opened`. Tout autre message est refusé (HTTP 400, ou ignoré en MQTT).
+
+L'événement à l'origine d'une alarme est conservé avec l'incident et nommé en clair dans les notifications, l'écran Alarmes et le journal (« ALARME ENVIRONNEMENT : Gaz detecte », « ALARME ENERGIE : Coupure secteur ») ; un équipement qui n'envoie qu'un état ou une mesure reste annoncé « Alarme ». Les événements `tamper`, `panic`, `sos` et `fall` alarment toujours, zone armée ou non ; les catégories énergie et personnes ne dépendent d'aucun armement.
 
 Un badge refusé isolé est un fait courant, pas un incident : c'est à la passerelle d'envoyer `badge_denied_repeated` après plusieurs refus rapprochés.
 

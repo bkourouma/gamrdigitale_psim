@@ -1,7 +1,7 @@
 export type Role = 'operator' | 'admin';
 export type DeviceKind = 'detector' | 'camera';
 /** Ce que surveille un detecteur. Les incidents, notifications et confirmations suivent le meme circuit pour toutes. */
-export type DeviceCategory = 'fire' | 'intrusion' | 'access' | 'environment';
+export type DeviceCategory = 'fire' | 'intrusion' | 'access' | 'environment' | 'energy' | 'people';
 /** Sens du depassement d'un seuil : `above` = trop haut (chaleur), `below` = trop bas (gel, batterie). */
 export type Direction = 'above' | 'below';
 export type DetectorState = 'normal' | 'prealarm' | 'alarm' | 'fault' | 'offline';
@@ -70,6 +70,8 @@ export interface Incident {
    * (`openedAt`) et la reception. `null` ou absent : recue en direct.
    */
   receivedLateMs?: number | null;
+  /** Evenement nomme a l'origine de l'alarme (voir EVENT_LABEL), ou null : etat ou mesure sans evenement. */
+  event: string | null;
   /** Images des cameras liees prises au moment de l'incident (ordre chronologique). */
   snapshots: { id: number; cameraId: string; takenAt: number; reason: string }[];
 }

@@ -83,7 +83,7 @@ const AVAIL = (v: unknown, what: string) => {
   return { upS: int(o.upS, `${what}.upS`), downS: int(o.downS, `${what}.downS`), unmonitoredS: int(o.unmonitoredS, `${what}.unmonitoredS`), pct: pctOrNull(o.pct, `${what}.pct`) };
 };
 
-const CATEGORIES = ['fire', 'intrusion', 'access', 'environment'] as const;
+const CATEGORIES = ['fire', 'intrusion', 'access', 'environment', 'energy', 'people'] as const;
 const STATES = ['normal', 'prealarm', 'alarm', 'fault', 'offline'] as const;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 

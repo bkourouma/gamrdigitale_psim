@@ -12,7 +12,7 @@ import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import nodemailer from 'nodemailer';
 import type { Engine } from './engine.ts';
-import { CATEGORY_LABEL_PLAIN } from './sources.ts';
+import { CATEGORY_LABEL_PLAIN, eventLabelPlain } from './sources.ts';
 import type { Device, Incident } from './types.ts';
 
 export type Kind = 'opened' | 'escalated' | 'confirmed' | 'unacked' | 'reminder' | 'silent' | 'restart' | 'integrity' | 'security' | 'test';
@@ -460,7 +460,9 @@ export function createNotifier(deps: NotifierDeps) {
     const confirmed = incident.confirmedAt !== null;
     // Hors incendie, le type d'alarme figure dans le titre : « ALARME INTRUSION », « PREALARME CONTROLE D'ACCES »...
     const type = incident.category === 'fire' ? '' : ` ${CATEGORY_LABEL_PLAIN[incident.category].toUpperCase()}`;
-    const level = `${critical ? 'ALARME' : 'PREALARME'}${type}`;
+    // Le motif en clair (« Gaz detecte », « Coupure secteur ») quand l'equipement a envoye un evenement nomme.
+    const motive = eventLabelPlain(incident.event);
+    const level = `${critical ? 'ALARME' : 'PREALARME'}${type}${motive ? ` : ${motive}` : ''}`;
     let title: string;
     switch (kind) {
       case 'opened':
@@ -473,7 +475,7 @@ export function createNotifier(deps: NotifierDeps) {
         title = `RAPPEL - ${level} TOUJOURS NON ACQUITTEE depuis ${minutes(ageMs)}`;
         break;
       default:
-        title = `${KIND_TITLE[kind]}`;
+        title = `${KIND_TITLE[kind]}${motive ? ` : ${motive}` : ''}`;
     }
     const cameras = incident.cameraIds.map((id) => engine.getDevice(id)?.name ?? id);
     // Plusieurs etages (duplex) : l'etage dit OU intervenir, une meme zone pouvant exister a chaque niveau.
@@ -496,6 +498,7 @@ export function createNotifier(deps: NotifierDeps) {
       data: {
         severity: incident.severity,
         category: incident.category,
+        event: incident.event,
         value: incident.lastValue,
         confirmed,
         status: incident.status,

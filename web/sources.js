@@ -8,13 +8,15 @@
  */
 import { h, icon, api, toast } from './core.js';
 
-export const CATEGORIES = ['fire', 'intrusion', 'access', 'environment'];
+export const CATEGORIES = ['fire', 'intrusion', 'access', 'environment', 'energy', 'people'];
 
 export const CATEGORY_LABEL = {
   fire: 'Incendie',
   intrusion: 'Intrusion',
   access: "Contrôle d’accès",
   environment: 'Environnement',
+  energy: 'Énergie',
+  people: 'Personnes',
 };
 
 // La qualification « fire » est stockée telle quelle pour toutes les catégories : elle veut dire « événement réel ».
@@ -23,7 +25,51 @@ const REAL_LABEL = {
   intrusion: 'Intrusion avérée',
   access: 'Accès anormal avéré',
   environment: 'Incident avéré',
+  energy: 'Panne avérée',
+  people: 'Détresse avérée',
 };
+
+// Motif en clair de chaque événement nommé (même table que server/sources.ts, EVENT_LABEL : un test les compare).
+export const EVENT_LABEL = {
+  intrusion: 'Intrusion',
+  motion: 'Mouvement détecté',
+  glass_break: 'Bris de vitre',
+  tamper: 'Sabotage du détecteur',
+  panic: 'Alarme de panique',
+  door_forced: 'Porte forcée',
+  forced_entry: 'Effraction',
+  leak: "Fuite d'eau",
+  flood: 'Inondation',
+  over_temperature: 'Température excessive',
+  gas: 'Gaz détecté',
+  co: 'Monoxyde de carbone détecté',
+  power_loss: 'Coupure secteur',
+  vibration: 'Vibration détectée',
+  camera_masked: 'Caméra masquée',
+  line_crossing: 'Franchissement de ligne',
+  loitering: 'Rôdage suspect',
+  sos: 'Appel de détresse (SOS)',
+  fall: 'Chute détectée',
+  door_held_open: 'Porte restée ouverte',
+  badge_denied_repeated: 'Badge refusé à répétition',
+  normal: 'Retour à la normale',
+  clear: 'Retour au calme',
+  restored: 'Retour à la normale',
+  door_closed: 'Porte fermée',
+  alarm_reset: 'Alarme réarmée',
+  dry: 'Sol sec',
+  power_restored: 'Courant rétabli',
+  fault: 'Défaut',
+  low_battery: 'Batterie faible',
+  heartbeat: 'Signe de vie',
+  ping: 'Signe de vie',
+  badge_granted: 'Badge accepté',
+  badge_denied: 'Badge refusé',
+  door_opened: 'Porte ouverte',
+};
+
+/** Motif d'un incident (« Gaz détecté ») ; chaîne vide si l'équipement n'a envoyé qu'un état ou une mesure. */
+export const eventLabel = (event) => (event ? (Object.hasOwn(EVENT_LABEL, event) ? EVENT_LABEL[event] : event) : '');
 
 export function qualificationLabel(category, qualification) {
   if (qualification === 'false_alarm') return 'Fausse alarme';
@@ -139,6 +185,10 @@ const SIM_EVENTS = {
   intrusion: [
     ['motion', 'Mouvement'],
     ['tamper', 'Sabotage'],
+    ['vibration', 'Vibration'],
+    ['camera_masked', 'Caméra masquée'],
+    ['line_crossing', 'Franchissement'],
+    ['loitering', 'Rôdage'],
     ['clear', 'Calme'],
   ],
   access: [
@@ -148,7 +198,18 @@ const SIM_EVENTS = {
   ],
   environment: [
     ['leak', 'Fuite'],
+    ['gas', 'Gaz'],
+    ['co', 'Monoxyde (CO)'],
     ['dry', 'Sec'],
+  ],
+  energy: [
+    ['power_loss', 'Coupure secteur'],
+    ['power_restored', 'Courant rétabli'],
+  ],
+  people: [
+    ['sos', 'Appel SOS'],
+    ['fall', 'Chute'],
+    ['clear', 'Calme'],
   ],
 };
 
@@ -237,7 +298,9 @@ export const CATEGORY_HINT = {
   fire: 'Alarme à toute heure. Pastille ronde sur le plan.',
   intrusion: "Suit l’armement de sa zone (planning de nuit). Peut lire la détection d’un enregistreur vidéo Dahua.",
   access: 'Porte forcée ou restée ouverte : alarme à toute heure.',
-  environment: 'Fuite, température… : alarme à toute heure, avec des seuils si le capteur envoie une mesure.',
+  environment: 'Fuite, gaz, monoxyde, température… : alarme à toute heure, avec des seuils si le capteur envoie une mesure.',
+  energy: 'Coupure de courant, onduleur : alarme à toute heure ; « courant rétabli » remet le capteur à la normale.',
+  people: 'Appel de détresse (SOS), chute d’une personne : alarme à toute heure, jamais masquée par un désarmement.',
 };
 
 /**

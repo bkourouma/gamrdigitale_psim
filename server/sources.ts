@@ -11,13 +11,15 @@ import type { DetectorState, DeviceCategory, Direction } from './types.ts';
  * `value` peut accompagner `state` ou `event` : la mesure est alors seulement memorisee et affichee.
  */
 
-export const CATEGORIES: readonly DeviceCategory[] = ['fire', 'intrusion', 'access', 'environment'];
+export const CATEGORIES: readonly DeviceCategory[] = ['fire', 'intrusion', 'access', 'environment', 'energy', 'people'];
 
 export const CATEGORY_LABEL: Record<DeviceCategory, string> = {
   fire: 'Incendie',
   intrusion: 'Intrusion',
   access: "Contrôle d'accès",
   environment: 'Environnement',
+  energy: 'Énergie',
+  people: 'Personnes',
 };
 
 /** Sans accent (courriels, SMS, journaux) : meme style que le reste des notifications. */
@@ -26,13 +28,17 @@ export const CATEGORY_LABEL_PLAIN: Record<DeviceCategory, string> = {
   intrusion: 'Intrusion',
   access: "Controle d'acces",
   environment: 'Environnement',
+  energy: 'Energie',
+  people: 'Personnes',
 };
 
 /**
  * Evenements qu'un desarmement ne masque JAMAIS : le sabotage d'un detecteur et l'alarme de panique restent
- * actifs 24 h sur 24, zone armee ou non.
+ * actifs 24 h sur 24, zone armee ou non. Il en va de meme de l'appel de detresse (sos) et de la chute (fall) :
+ * une personne en danger n'est jamais « hors planning ». (Seule la categorie intrusion est armable : energie et
+ * personnes ne dependent d'aucun armement.)
  */
-export const ALWAYS_ACTIVE_EVENTS: ReadonlySet<string> = new Set(['tamper', 'panic']);
+export const ALWAYS_ACTIVE_EVENTS: ReadonlySet<string> = new Set(['tamper', 'panic', 'sos', 'fall']);
 
 export type EventEffect = DetectorState | 'alive';
 
@@ -55,6 +61,15 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   leak: 'alarm',
   flood: 'alarm',
   over_temperature: 'alarm',
+  gas: 'alarm',
+  co: 'alarm',
+  power_loss: 'alarm',
+  vibration: 'alarm',
+  camera_masked: 'alarm',
+  line_crossing: 'alarm',
+  loitering: 'alarm',
+  sos: 'alarm',
+  fall: 'alarm',
   // prealarmes
   door_held_open: 'prealarm',
   badge_denied_repeated: 'prealarm',
@@ -65,6 +80,7 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   door_closed: 'normal',
   alarm_reset: 'normal',
   dry: 'normal',
+  power_restored: 'normal',
   // defauts
   fault: 'fault',
   low_battery: 'fault',
@@ -76,7 +92,61 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   door_opened: 'alive',
 };
 
-export const DETECTOR_STATES: ReadonlySet<string> = new Set(['normal', 'prealarm', 'alarm', 'fault', 'offline']);
+/**
+ * Motif en clair de chaque evenement : c'est ce que lisent l'operateur et les personnes prevenues (« Gaz detecte »,
+ * « Coupure secteur »), a la place d'un simple « Alarme ». Chaque evenement de EVENTS doit figurer ici (test).
+ */
+export const EVENT_LABEL: Readonly<Record<string, string>> = {
+  intrusion: 'Intrusion',
+  motion: 'Mouvement détecté',
+  glass_break: 'Bris de vitre',
+  tamper: 'Sabotage du détecteur',
+  panic: 'Alarme de panique',
+  door_forced: 'Porte forcée',
+  forced_entry: 'Effraction',
+  leak: "Fuite d'eau",
+  flood: 'Inondation',
+  over_temperature: 'Température excessive',
+  gas: 'Gaz détecté',
+  co: 'Monoxyde de carbone détecté',
+  power_loss: 'Coupure secteur',
+  vibration: 'Vibration détectée',
+  camera_masked: 'Caméra masquée',
+  line_crossing: 'Franchissement de ligne',
+  loitering: 'Rôdage suspect',
+  sos: 'Appel de détresse (SOS)',
+  fall: 'Chute détectée',
+  door_held_open: 'Porte restée ouverte',
+  badge_denied_repeated: 'Badge refusé à répétition',
+  normal: 'Retour à la normale',
+  clear: 'Retour au calme',
+  restored: 'Retour à la normale',
+  door_closed: 'Porte fermée',
+  alarm_reset: 'Alarme réarmée',
+  dry: 'Sol sec',
+  power_restored: 'Courant rétabli',
+  fault: 'Défaut',
+  low_battery: 'Batterie faible',
+  heartbeat: 'Signe de vie',
+  ping: 'Signe de vie',
+  badge_granted: 'Badge accepté',
+  badge_denied: 'Badge refusé',
+  door_opened: 'Porte ouverte',
+};
+
+/** Motif d'un evenement ; l'evenement lui-meme s'il est inconnu (donnees anciennes), `null` si aucun. */
+export function eventLabel(event: string | null | undefined): string | null {
+  if (!event) return null;
+  return Object.hasOwn(EVENT_LABEL, event) ? EVENT_LABEL[event] : event;
+}
+
+/** Sans accent (courriels, SMS, journaux), comme CATEGORY_LABEL_PLAIN. */
+export function eventLabelPlain(event: string | null | undefined): string | null {
+  const label = eventLabel(event);
+  return label === null ? null : label.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+export const DETECTOR_STATES:ReadonlySet<string> = new Set(['normal', 'prealarm', 'alarm', 'fault', 'offline']);
 
 export interface SensorSettings {
   category: DeviceCategory;

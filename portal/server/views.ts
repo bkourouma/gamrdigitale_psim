@@ -36,7 +36,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : 
 /** Fenetre pendant laquelle un incident traite reste annonce en tete de page : « tout fonctionne » serait trompeur. */
 export const RECENT_INCIDENT_MS = 24 * 3_600_000;
 
-const INCIDENT_WORD: Record<string, string> = { intrusion: 'Intrusion', fire: 'Alarme incendie', access: 'Alerte contrôle d’accès', environment: 'Alerte environnement' };
+const INCIDENT_WORD: Record<string, string> = { intrusion: 'Intrusion', fire: 'Alarme incendie', access: 'Alerte contrôle d’accès', environment: 'Alerte environnement', energy: 'Alerte énergie', people: 'Alerte personne' };
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /** « aujourd'hui à 05:32 », « hier à 23:10 » ou « le 4/10 à 18:00 », a l'heure LOCALE du site. */
