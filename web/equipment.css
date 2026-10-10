@@ -78,6 +78,8 @@ input.input-narrow { max-width: 9rem; }
 .eq-glyph.cat-access .eq-shape { border-radius: 22% 22% 50% 50%; }
 .eq-glyph.cat-environment .eq-shape { border-radius: 50% 0 50% 50%; rotate: -45deg; }
 .eq-glyph.cat-environment .eq-shape .icon { rotate: 45deg; }
+.eq-glyph.cat-energy .eq-shape { border-radius: 50% 50% 18% 18%; }
+.eq-glyph.cat-people .eq-shape { border-radius: 50% / 38%; }
 .eq-glyph.is-camera .eq-shape { border-radius: 26%; background: var(--camera); color: var(--eq-on-fill); }
 .eq-glyph.st-normal .eq-shape { background: var(--ok); color: var(--eq-on-fill); }
 .eq-glyph.st-prealarm .eq-shape { background: var(--warning); color: var(--eq-on-warning); }

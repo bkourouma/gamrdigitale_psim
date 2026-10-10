@@ -14,7 +14,7 @@ import { wallCameraIds, toggleCamera } from './wall.js';
 export const floorsUi = createFloorsUi({ h, api, toast, icon, dialogs: createDialogs({ h }) });
 
 /** Pictogramme de la pastille : la catégorie du détecteur, ou la caméra. */
-export const CATEGORY_ICON = { fire: 'fire', intrusion: 'intrusion', access: 'door', environment: 'drop' };
+export const CATEGORY_ICON = { fire: 'fire', intrusion: 'intrusion', access: 'door', environment: 'drop', energy: 'bolt', people: 'user' };
 
 /** État lu par les lecteurs d'écran (le libellé STATUS_LABEL écrit « ALARME » en capitales pour l'œil). */
 const STATE_WORD = { normal: 'normal', prealarm: 'préalarme', alarm: 'alarme', fault: 'en défaut', offline: 'hors ligne' };

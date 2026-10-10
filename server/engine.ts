@@ -169,6 +169,7 @@ export function createEngine(
       confirmationReason: (r.confirmation_reason as string | null) ?? null,
       hint: (r.hint as Incident['hint']) ?? null,
       hintDetails: (r.hint_details as string | null) ?? null,
+      event: (r.event as string | null) ?? null,
       snapshots: (
         db
           .prepare('SELECT id, camera_id, taken_at, reason FROM incident_snapshot WHERE incident_id = ? ORDER BY id')
@@ -314,7 +315,7 @@ export function createEngine(
       publishDevice(deviceId);
       return { ok: true };
     }
-    applyState(device, state);
+    applyState(device, state, reading.event);
     return { ok: true };
   }
 
@@ -356,7 +357,7 @@ export function createEngine(
     }
   }
 
-  function applyState(device: Device, state: DetectorState): void {
+  function applyState(device: Device, state: DetectorState, event: string | null = null): void {
     const deviceId = device.id;
     const previous = device.status;
     const t = now();
@@ -377,8 +378,8 @@ export function createEngine(
 
       if (!open) {
         const res = db
-          .prepare('INSERT INTO incident (detector_id, severity, opened_at) VALUES (?, ?, ?)')
-          .run(deviceId, severity, now());
+          .prepare('INSERT INTO incident (detector_id, severity, opened_at, event) VALUES (?, ?, ?, ?)')
+          .run(deviceId, severity, now(), event);
         const id = Number(res.lastInsertRowid);
         audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
         publishIncident(id);
@@ -386,8 +387,8 @@ export function createEngine(
       } else if (open.severity === 'warning' && severity === 'critical') {
         // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
         db.prepare(
-          "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
-        ).run(open.id);
+          "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL, event = COALESCE(?, event) WHERE id = ?",
+        ).run(event, open.id);
         audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
         publishIncident(open.id);
         emitHook(open.id, 'escalated');

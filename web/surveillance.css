@@ -136,6 +136,8 @@
 :is(.pin, .lg-pin).cat-access .pin-glyph { border-radius: calc(var(--pin) * 0.2) calc(var(--pin) * 0.2) 50% 50%; }
 :is(.pin, .lg-pin).cat-environment .pin-glyph { --bar-angle: 90deg; border-radius: 50% 0 50% 50%; rotate: -45deg; }
 :is(.pin, .lg-pin).cat-environment .pin-glyph .icon { rotate: 45deg; }
+:is(.pin, .lg-pin).cat-energy .pin-glyph { border-radius: 50% 50% calc(var(--pin) * 0.2) calc(var(--pin) * 0.2); }
+:is(.pin, .lg-pin).cat-people .pin-glyph { border-radius: 50% / 38%; }
 :is(.pin, .lg-pin).camera .pin-glyph { border-radius: calc(var(--pin) * 0.26); background: var(--camera); }
 
 /* État : remplissage ; préalarme à pictogramme foncé ; défaut et hors ligne barrés ; zone désarmée en pointillé. */

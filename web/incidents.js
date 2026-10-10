@@ -9,7 +9,7 @@
  * sont mises à jour SUR PLACE, jamais recréées (l'attente l'est chaque seconde) : un commentaire en cours de saisie garde
  * son texte et son focus. Une fiche où l'on écrit reste dépliée quand une autre alarme prend la main.
  */
-import { CATEGORY_LABEL, formatValue, qualificationLabel, realEventLabel } from './sources.js';
+import { CATEGORY_LABEL, eventLabel, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { CATEGORY_ICON } from './plan.js';
 import { $, h, icon, api, toast, S, time, elapsed, emit, go, activeIncidents, focusedIncident, followAlarm, isActive, isFiring, devicesOf, STATUS_LABEL, render } from './core.js';
 
@@ -445,7 +445,7 @@ function updateCard(card, incident, followed) {
 
   // En-tête
   setLevel(refs.badge, critical);
-  fill(refs.type, incident.category, icon(CATEGORY_ICON[incident.category] ?? 'fire', 'icon-sm'), CATEGORY_LABEL[incident.category] ?? CATEGORY_LABEL.fire);
+  fill(refs.type, `${incident.category}:${incident.event ?? ''}`, icon(CATEGORY_ICON[incident.category] ?? 'fire', 'icon-sm'), `${CATEGORY_LABEL[incident.category] ?? CATEGORY_LABEL.fire}${incident.event ? ` · ${eventLabel(incident.event)}` : ''}`);
   refs.chip.textContent = confirmed ? 'Confirmée' : 'À confirmer';
   refs.chip.className = `tag inc-conf ${confirmed ? 'is-confirmed' : 'is-dashed'}`;
   refs.title.textContent = incident.detectorName;
@@ -496,7 +496,7 @@ function announce(list) {
     const fresh = list.filter((i) => i.status === 'open' && (!announced.has(i.id) || (announced.get(i.id) === 'warning' && i.severity === 'critical')));
     const region = $('incidents-announce');
     if (fresh.length && region) {
-      const message = fresh.map((i) => `${levelWord(i)} : ${i.detectorName}, ${placeText(i)}.`).join(' ');
+      const message = fresh.map((i) => `${levelWord(i)}${i.event ? ` (${eventLabel(i.event)})` : ''} : ${i.detectorName}, ${placeText(i)}.`).join(' ');
       region.textContent = ''; // vidée puis réécrite au tick suivant : une phrase identique est relue
       requestAnimationFrame(() => { region.textContent = message; });
     }

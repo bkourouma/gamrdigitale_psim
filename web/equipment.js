@@ -842,7 +842,7 @@ $('plan-file').addEventListener('change', async (e) => {
 
 // ---------------------------------------------------------------- ajout d'un équipement
 
-const PREFIX = { camera: 'C', fire: 'D', intrusion: 'I', access: 'A', environment: 'E' };
+const PREFIX = { camera: 'C', fire: 'D', intrusion: 'I', access: 'A', environment: 'E', energy: 'P', people: 'S' };
 
 /** Premier identifiant libre de la série du type choisi (D-08, C-06…) : proposé en exemple, jamais imposé. */
 function nextFreeId() {
