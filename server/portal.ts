@@ -141,16 +141,21 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
   const siteName = (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site';
   const floors = new Map((db.prepare('SELECT id, name FROM floor').all() as { id: number; name: string }[]).map((f) => [f.id, f.name]));
   const rows = db.prepare('SELECT * FROM device ORDER BY kind, id').all() as Record<string, unknown>[];
-  // L'etat d'une camera reelle est son etat MESURE (historique), pas `device.status` que la mesure ne modifie pas.
+  // L'etat d'une camera reelle, ou d'un equipement reseau (network_target), est son etat MESURE (historique), pas
+  // `device.status` que la mesure ne modifie pas. Pas encore teste : pas d'etat, donc `monitored: false` (jamais « normal »).
   const measuredCameras = new Map(
     (
       db
-        .prepare("SELECT h.device_id, h.state, h.started_at FROM device_state_history h JOIN camera_source c ON c.device_id = h.device_id WHERE h.ended_at IS NULL")
+        .prepare(
+          `SELECT h.device_id, h.state, h.started_at FROM device_state_history h
+           WHERE h.ended_at IS NULL AND (h.device_id IN (SELECT device_id FROM camera_source) OR h.device_id IN (SELECT device_id FROM network_target))`,
+        )
         .all() as { device_id: string; state: string; started_at: number }[]
     ).map((r) => [r.device_id, r]),
   );
+  const networkIds = new Set((db.prepare('SELECT device_id FROM network_target').all() as { device_id: string }[]).map((r) => r.device_id));
   const devices = rows.map((r) => {
-    const cam = r.kind === 'camera' ? measuredCameras.get(r.id as string) : undefined;
+    const cam = r.kind === 'camera' || networkIds.has(r.id as string) ? measuredCameras.get(r.id as string) : undefined;
     return {
       id: r.id as string,
       name: r.name as string,
@@ -161,7 +166,7 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
       status: cam ? cam.state : (r.status as string),
       since: cam ? cam.started_at : ((r.state_since as number | null) ?? null),
       lastSeen: (r.last_seen as number | null) ?? null,
-      monitored: r.kind === 'detector' || cam !== undefined,
+      monitored: (r.kind === 'detector' && !networkIds.has(r.id as string)) || cam !== undefined,
     };
   });
 

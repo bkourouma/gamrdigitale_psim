@@ -8,7 +8,7 @@ import { probeOnvif } from './onvif.ts';
 import { seal, unseal } from './secrets.ts';
 import type { PsimEvent } from './types.ts';
 
-const HOST_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+export const HOST_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
 const PATH_PATTERN = /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;

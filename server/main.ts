@@ -12,6 +12,7 @@ import { headOf } from './auditchain.ts';
 import { createContinuity } from './continuity.ts';
 import { openDb } from './db.ts';
 import { createCameraHealth } from './camerahealth.ts';
+import { createNetworkHealth } from './networkhealth.ts';
 import { createHeartbeat } from './heartbeat.ts';
 import { beginHistory, purgeHistory } from './history.ts';
 import { buildSiteSummary, createPortalSender } from './portal.ts';
@@ -321,6 +322,7 @@ const system = createSystemStatus({
   heartbeat: () => heartbeat.status(),
   portal: () => portal.status(),
   cameras: () => cameraHealth.status(),
+  network: () => networkHealth.status(),
 });
 
 // Journal infalsifiable : verification de la chaine d'empreintes au demarrage puis toutes les 6 h, ancre quotidienne.
@@ -361,6 +363,13 @@ const heartbeat = createHeartbeat({
 const cameraHealth = createCameraHealth({
   db,
   everyMs: config.cameraCheckS * 1000,
+  audit: (action, deviceId, details) => engine.audit('systeme', action, { deviceId, details }),
+});
+
+// Equipements d'infrastructure (routeur, switch...) : meme test de connexion, vers l'hote et le port declares (voir networkhealth.ts).
+const networkHealth = createNetworkHealth({
+  db,
+  everyMs: config.networkCheckS * 1000,
   audit: (action, deviceId, details) => engine.audit('systeme', action, { deviceId, details }),
 });
 
@@ -561,6 +570,12 @@ server.listen(config.port, config.host, () => {
   );
   cameraHealth.start();
   console.log(
+    config.networkCheckS > 0
+      ? `[psim] equipements reseau : test de connexion toutes les ${config.networkCheckS} s (${networkHealth.status().measured} equipement(s) declare(s))`
+      : '[psim] equipements reseau : non mesures (PSIM_NETWORK_CHECK_S=0)',
+  );
+  networkHealth.start();
+  console.log(
     config.detectorTimeoutS > 0
       ? `[psim] detecteurs muets : declares hors ligne apres ${config.detectorTimeoutS} s sans message`
       : '[psim] detecteurs muets : surveillance desactivee (PSIM_DETECTOR_TIMEOUT_S=0, ou mode simulateur)',
@@ -602,6 +617,7 @@ async function shutdown() {
   heartbeat.stop();
   portal.stop();
   cameraHealth.stop();
+  networkHealth.stop();
   dahua.stop();
   video.shutdown();
   wss.close();

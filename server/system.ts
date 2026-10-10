@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Gap } from './continuity.ts';
 import type { CameraHealthStatus } from './camerahealth.ts';
+import type { NetworkHealthStatus } from './networkhealth.ts';
 import type { HeartbeatStatus } from './heartbeat.ts';
 import type { PortalStatus } from './portal.ts';
 
@@ -37,6 +38,8 @@ export interface SystemDeps {
   heartbeat?: () => HeartbeatStatus;
   /** Mesure de l'etat des cameras reelles (test de connexion regulier). */
   cameras?: () => CameraHealthStatus;
+  /** Supervision reseau des equipements d'infrastructure (routeur, switch...), meme principe que les cameras. */
+  network?: () => NetworkHealthStatus;
   /** Envoi du resume vers le portail de suivi a distance. */
   portal?: () => PortalStatus;
   /** Derniere verification du journal (chaine d'empreintes). */
@@ -118,6 +121,12 @@ export function createSystemStatus(deps: SystemDeps) {
       const names = cameras.offline.slice(0, 5).join(', ') + (cameras.offline.length > 5 ? '...' : '');
       warnings.push({ level: 'attention', message: `${cameras.offline.length} camera(s) ne repondent plus sur le reseau : ${names}. Verifier l'alimentation et le cable de la camera ou de l'enregistreur.` });
     }
+    // Un seul message pour tous les equipements reseau hors ligne (un routeur qui tombe en entraine souvent d'autres).
+    const network = deps.network?.() ?? null;
+    if (network && network.offline.length > 0) {
+      const names = network.offline.slice(0, 5).join(', ') + (network.offline.length > 5 ? '...' : '');
+      warnings.push({ level: 'attention', message: `${network.offline.length} equipement(s) reseau ne repondent plus : ${names}. Verifier leur alimentation, leur cable et le routeur ou le switch en amont.` });
+    }
     const beat = deps.heartbeat?.() ?? null;
     if (beat?.configured && beat.consecutiveFailures >= 3) {
       warnings.push({ level: 'attention', message: `Supervision externe : ${beat.consecutiveFailures} signaux sans succes (${beat.lastError ?? 'erreur'}). Si le PSIM s'arrete, personne ne sera prevenu.` });
@@ -154,6 +163,7 @@ export function createSystemStatus(deps: SystemDeps) {
       heartbeat: beat,
       portal,
       cameras,
+      network,
       warnings,
     };
   }

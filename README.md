@@ -282,6 +282,15 @@ Un détecteur qui tombe en panne ou perd son réseau ne prévient pas : sans sur
 
 Réglage : **`PSIM_DETECTOR_TIMEOUT_S`**. Comptez 3 à 4 fois la période d'émission de vos détecteurs (période de 60 s : 180-240 s). `0` désactive. Valeur par défaut : **180 en exploitation** (`PSIM_SIM_ENABLED=0`), **désactivé en mode simulateur** : le simulateur et `npm run sim` n'envoient qu'un message ponctuel, sans signal de vie, et les détecteurs simulés passeraient sinon hors ligne au bout de 3 minutes. Le démarrage du PSIM affiche l'état de cette surveillance.
 
+## Supervision réseau des équipements d'infrastructure
+
+Un routeur 4G, un switch PoE, une passerelle, un point d'accès, un enregistreur ou un serveur n'envoient aucun message : s'ils tombent, rien ne le dit. Le PSIM peut donc les **tester lui-même** : il ouvre une connexion TCP (rien n'est envoyé, aucun identifiant) vers l'adresse et le port que vous indiquez, toutes les `PSIM_NETWORK_CHECK_S` secondes (60 par défaut, `0` coupe).
+
+- **Déclarer** : ajouter l'équipement comme un détecteur de catégorie **Environnement**, puis, dans sa fiche, section **Supervision réseau** : adresse (IPv4 ou nom de machine), port à tester (80, 443, 22, 161… : celui que l'équipement écoute vraiment, 1 à 65535) et bouton **Tester maintenant** avant d'enregistrer. Administrateur seulement (`GET/PUT/DELETE /api/devices/:id/network`, essai `POST /api/network/test`).
+- **Hors ligne** après 3 échecs de suite, daté du **premier** échec ; **de retour** au premier succès. Journal : `network_offline` / `network_online` (sans l'adresse). L'écran Système affiche **un seul avertissement** qui liste les équipements hors ligne.
+- **Jamais testé = aucun état** : l'équipement n'est pas affiché « normal » avant son premier test. Au portail, il apparaît comme les autres détecteurs (disponibilité, pannes) une fois mesuré, et « non mesuré » avant.
+- **Limites** : une réponse prouve que l'équipement accepte une connexion sur ce port, pas qu'il rend son service (un routeur 4G peut répondre sans signal). Comme pour les caméras, l'état affiché sur le plan n'est pas modifié ; seuls l'écran Système, le journal et le portail changent. Aucune alerte n'est envoyée par courriel ou message.
+
 ## Autres sources d'alarme : intrusion, contrôle d'accès, environnement
 
 Un détecteur a une **catégorie** : `fire` (incendie, par défaut), `intrusion`, `access` (contrôle d'accès) ou `environment` (température, fuite d'eau, humidité…). Toutes passent par **le même circuit** : incident, acquittement, clôture, journal, notifications avec escalade, images des caméras liées, confirmation par un voisin. Seul change ce que dit l'équipement et la façon de le lire.
@@ -468,6 +477,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `server/sources.ts` | Lecture des messages d'équipements : états, événements nommés, mesures et seuils (intrusion, accès, environnement) |
 | `server/arming.ts` | Armement des zones d'intrusion : planning hebdomadaire, dérogations qui expirent, journal |
 | `server/floors.ts` | Étages : migration du plan unique, ajout / ordre / suppression, plan de chaque étage |
+| `server/targethealth.ts`, `camerahealth.ts`, `networkhealth.ts` | Test de connexion TCP régulier (3 échecs de suite = hors ligne) : mécanique commune, caméras réelles, équipements réseau |
 | `server/dahua.ts` | Événements des appareils Dahua (Digest, flux multipart) → alarmes des détecteurs d'intrusion, supervision de la connexion |
 | `server/reports.ts` | Rapports et exports : statistiques d'incidents, CSV sûrs pour Excel, rapport imprimable, fiche d'incident |
 | `server/continuity.ts` | Signe de vie en base, période sans surveillance au redémarrage (arrêt propre ou inattendu) |
@@ -486,6 +496,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `web/arming.js` | Vue *Armement* : zones et éditeur de planning |
 | `web/floors.js` | Onglets d'étages avec leur état, vue éclatée en perspective, gestion des étages |
 | `web/detsource.js` | Source d'un détecteur : détection d'un enregistreur Dahua, essai de 20 s |
+| `web/netsource.js` | Supervision réseau d'un équipement d'infrastructure : adresse, port, essai immédiat |
 | `web/reports.js`, `web/report.css` | Vue *Rapports* (exports) ; style des pages de rapport imprimables |
 | `web/risk.js` | Vue « Risques » : indice du site, zones, priorités, évaluation |
 | `web/camera.js` | Caméra simulée dans le navigateur (démonstration rapide, sans RTSP) |

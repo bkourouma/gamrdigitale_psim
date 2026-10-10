@@ -95,6 +95,8 @@ export const config = {
   heartbeatEveryS: num('PSIM_HEARTBEAT_EVERY_S', 60),
   // Mesure de l'etat des cameras reelles : test de connexion toutes les N secondes (0 = coupe). Voir camerahealth.ts.
   cameraCheckS: num('PSIM_CAMERA_CHECK_S', 60, 0, 3_600),
+  // Supervision reseau des equipements d'infrastructure (routeur, switch...) : meme principe, toutes les N secondes (0 = coupe). Voir networkhealth.ts.
+  networkCheckS: num('PSIM_NETWORK_CHECK_S', 60, 0, 3_600),
   // Portail de suivi a distance : le site lui envoie un resume (voir portal.ts). Vide = pas de portail.
   portal: {
     url: env.PSIM_PORTAL_URL ?? '',
