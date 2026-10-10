@@ -145,10 +145,12 @@ export const CATEGORY = {
   intrusion: { label: 'Intrusion', icon: 'intrusion' },
   access: { label: 'Contrôle d’accès', icon: 'door' },
   environment: { label: 'Environnement', icon: 'drop' },
+  energy: { label: 'Énergie', icon: 'bolt' },
+  people: { label: 'Personnes', icon: 'user' },
 };
 
 /** La qualification « fire » veut dire « événement réel » pour toutes les catégories (mêmes mots que le PSIM). */
-const REAL_LABEL = { fire: 'Feu confirmé', intrusion: 'Intrusion avérée', access: 'Accès anormal avéré', environment: 'Incident avéré' };
+const REAL_LABEL = { fire: 'Feu confirmé', intrusion: 'Intrusion avérée', access: 'Accès anormal avéré', environment: 'Incident avéré', energy: 'Panne avérée', people: 'Détresse avérée' };
 export function qualificationLabel(category, qualification) {
   if (qualification === 'false_alarm') return 'Fausse alarme';
   if (qualification === 'fire') return REAL_LABEL[category] ?? REAL_LABEL.fire;

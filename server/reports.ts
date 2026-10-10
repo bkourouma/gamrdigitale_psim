@@ -173,7 +173,7 @@ const STATUS: Record<string, string> = { open: 'Non acquitté', acknowledged: 'A
 export function qualificationText(category: DeviceCategory, q: string | null): string {
   if (q === 'false_alarm') return 'Fausse alarme';
   if (q !== 'fire') return 'Non qualifié';
-  return { fire: 'Feu confirmé', intrusion: 'Intrusion avérée', access: 'Accès anormal avéré', environment: 'Incident avéré' }[category];
+  return { fire: 'Feu confirmé', intrusion: 'Intrusion avérée', access: 'Accès anormal avéré', environment: 'Incident avéré', energy: 'Panne avérée', people: 'Détresse avérée' }[category];
 }
 
 // Un seul formateur : `toLocaleString('fr-FR', ...)` en recree un a chaque appel (~0,15 ms), soit des secondes pour 50 000 lignes,
