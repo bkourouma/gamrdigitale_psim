@@ -26,7 +26,7 @@ let shownFollow = null; // alarme dépliée au dernier rendu (une pastille du pl
 
 // ---------------------------------------------------------------- images prises, loupe
 
-const SHOT_REASON = { opened: "à l’ouverture", escalated: "à l’aggravation", confirmed: 'à la confirmation' };
+const SHOT_REASON = { opened: "à l’ouverture", escalated: "à l’aggravation", confirmed: 'à la confirmation', device: 'envoyée par l’équipement' };
 
 export function shotCaption(shot) {
   const camera = S.devices.get(shot.cameraId);

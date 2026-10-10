@@ -175,7 +175,7 @@ Le PSIM a fait l'objet d'une **relecture de sécurité indépendante** (trois re
 
 **Limites connues, à connaître avant d'exposer le PSIM** :
 - **Mots de passe de caméras dans la ligne de commande de ffmpeg** (`rtsp://user:mot-de-passe@…`) : lisibles par tout processus local (`ps`, WMI). Machine dédiée, comptes locaux de confiance ; sous Linux `ProtectProc=invisible` (déjà dans l'unité fournie).
-- **Un seul jeton** pour l'entrée HTTP des équipements (`PSIM_INGEST_TOKEN`) et, sans `PSIM_MQTT_GATEWAYS`, un seul mot de passe MQTT : l'équipement compromis peut parler au nom des autres. Pas de limitation de débit à l'entrée (l'oscillation est seulement contenue dans le journal).
+- **Un seul jeton** pour l'entrée HTTP des équipements (`PSIM_INGEST_TOKEN`, sauf clés par équipement : `npm run device-key`) et, sans `PSIM_MQTT_GATEWAYS`, un seul mot de passe MQTT : l'équipement compromis peut parler au nom des autres. Pas de limitation de débit à l'entrée (l'oscillation est seulement contenue dans le journal).
 - **Administrateur de confiance** : un administrateur peut viser des adresses internes (webhooks, caméras) ; un **opérateur peut désarmer une zone d'intrusion jusqu'à 24 h** (décision d'exploitation à valider avec le client).
 - **Premier mot de passe** : pour un compte qui doit enrôler sa 2FA, le mot de passe seul suffit à l'enrôler ; l'action est notifiée, et `npm run reset-2fa` est le recours depuis la machine.
 - **Données au repos** : sauvegardes, journaux et images ne sont pas chiffrés ; seule la clé est protégée par ACL. Codes de secours : 40 bits, hachés sans sel (la limitation d'essais en ligne les protège, pas une copie volée de la base).
@@ -247,6 +247,35 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 - **À l'ouverture**, une **série** de 5 images par caméra (`PSIM_SNAPSHOT_SERIES`, 1 à 10 ; `1` = une seule image), une toutes les 1,5 s, sur une seule connexion : une personne qui traverse le champ en 3 ou 4 s échappe facilement à une image unique, la détection de l'enregistreur ayant elle-même 1 à 3 s de retard. Les premières images d'un flux pouvant être anciennes (certains enregistreurs envoient d'abord les secondes gardées en mémoire), la série commence 0,5 s après la première image reçue ; une image identique à la précédente (flux figé) n'est pas reprise. Chaque image porte son heure réelle. Telegram reçoit la série en **un seul album** ; l'e-mail, en pièces jointes. Aggravation et confirmation : une image, comme avant.
 - Plafond de 12 images par incident (série comprise). Conservation **30 jours** par défaut (`PSIM_SNAPSHOT_DAYS`, `0` = illimité) ; nettoyage au démarrage puis toutes les 6 heures.
 - Les images sont dans `data/snapshots/` et ne sont servies qu'aux utilisateurs connectés. Elles font partie des données à sauvegarder avec la base.
+- Chaque image est **scellée au journal** (empreinte SHA-256) ; la conservation ne supprime jamais les images d'un incident non clos (voir ci-dessous).
+
+## Images envoyées par les équipements (preuve scellée)
+
+Une caméra solaire 4G (ou tout capteur avec photo) peut envoyer **sa photo avec l'alerte**. L'image est jointe à l'incident du détecteur, affichée comme celles des caméras liées (« envoyée par l'équipement ») et **scellée au journal infalsifiable** : elle peut servir de preuve (assureur, police, banque).
+
+```bash
+curl -X POST "https://serveur:3033/api/ingest/I-01/image?event=motion" \
+  -H "Authorization: Bearer psk_3_…" -H "Content-Type: image/jpeg" \
+  --data-binary @photo.jpg
+```
+
+- **Corps** : l'image brute, `Content-Type: image/jpeg` ou `image/png` ; `event` (facultatif, 32 caractères) est noté au journal. Le type est vérifié sur les **octets** (structure JPEG/PNG complète, dimensions lues sans rien décompresser, 16 384 px de côté et 50 Mpx au plus) et doit correspondre au `Content-Type` ; rien n'est décodé ni transformé côté serveur ; le nom du fichier est un numéro choisi par le PSIM.
+- **Réponses** : `201` image rattachée à l'incident ouvert ; `202` aucun incident ouvert : l'image **attend** `PSIM_DEVICE_IMAGE_PENDING_S` secondes (300) et se rattache à l'incident qui s'ouvre (la photo part souvent juste avant l'alarme), sinon elle est supprimée (5 en attente au plus par équipement) ; `400` paramètre invalide ; `401` clé absente, inconnue, révoquée, ou jeton partagé ; `403` clé d'un autre équipement ; `404` détecteur inconnu ; `409` plafond par incident (`PSIM_DEVICE_IMAGE_PER_INCIDENT`, 20) ou pas d'incident et attente désactivée ; `413` trop gros (`PSIM_DEVICE_IMAGE_MAX_KB`, 2 048 Ko ; refusé sur `Content-Length` sans lire le corps, ou coupé en cours de lecture) ; `415` pas une image valide, type mensonger, dimensions absurdes ou contenu compressé ; `429` débit dépassé (`PSIM_DEVICE_IMAGE_PER_MIN` par équipement, 6 ; `PSIM_DEVICE_IMAGE_IP_PER_MIN` par adresse, 30 ; 5 échecs d'authentification par minute bloquent l'adresse) ; `503` trop d'envois simultanés ; `507` quota plein d'images d'incidents en cours.
+- **Quota global** des images d'équipement (`PSIM_DEVICE_IMAGE_QUOTA_MB`, 500 ; `PSIM_DEVICE_IMAGE_QUOTA_COUNT`, 5 000) : au-delà, les images en attente puis les plus anciennes images d'équipement d'incidents **clos** cèdent la place (suppression inscrite au journal) ; jamais une image d'incident en cours, jamais une image de caméra liée.
+- **Conservation** : `PSIM_SNAPSHOT_DAYS` (30 jours) pour toutes les images d'incident, **sauf celles d'un incident non clos**. Les images sont incluses dans les sauvegardes (pas celles en attente). Elles **ne partent jamais au portail** de suivi ni dans les résumés.
+
+**Clés par équipement** : chaque équipement (ou passerelle) a sa propre clé `psk_<n>_…`, limitée à **ses** détecteurs (identifiants exacts ou préfixes `D-*`, comme les passerelles MQTT). Le PSIM ne garde que son empreinte SHA-256 : la clé n'est affichée **qu'une fois**, à la création. La même clé vaut pour les messages d'état (`POST /api/ingest/<id>`) ; le jeton partagé `PSIM_INGEST_TOKEN` reste accepté pour les messages d'état mais **jamais pour les images**.
+
+```bash
+npm run device-key -- create --label "Caméra 4G portail" --devices I-01   # affiche la clé une seule fois
+npm run device-key -- list
+npm run device-key -- rotate 3 --grace 60   # nouvelle clé ; l'ancienne reste valable 60 min
+npm run device-key -- revoke 3
+```
+
+Même chose en API d'administration (session administrateur) : `GET /api/device-keys`, `POST /api/device-keys` `{"label", "devices": ["I-01"]}`, `POST /api/device-keys/<n>/rotate` `{"graceMinutes": 60}`, `DELETE /api/device-keys/<n>`. Création, rotation, révocation et refus sont inscrits au journal, sans jamais la clé.
+
+**Scellement** : toute image d'incident (caméra liée ou équipement) inscrit au journal une entrée « Image enregistrée et scellée » avec son empreinte SHA-256 et sa taille ; une image arrivée sans incident est scellée dès son arrivée (« en attente »), puis à son rattachement. `npm run verify-journal -- --images` recalcule l'empreinte de chaque fichier et signale toute image **modifiée**, **manquante**, supprimée hors purge, ou dont l'empreinte a été changée en base. Les images antérieures à cette version ne sont pas protégées (comptées à part).
 
 ## Règles anti-fausses alarmes
 
@@ -435,7 +464,7 @@ Sous Windows, le lancer à l'ouverture de la machine (tâche planifiée, voir `s
 Chaque entrée du journal contient l'**empreinte SHA-256 de la précédente** (chaîne, comme une blockchain sans réseau) : modifier, supprimer ou insérer une ligne après coup rompt la chaîne **à cet endroit**, et la vérification désigne l'entrée en cause.
 
 - **Vérification automatique** au démarrage puis toutes les 6 h, et à la demande (*Système → Vérifier le journal*). Une altération est inscrite au journal, affichée en **alerte critique**, et **notifiée** aux niveaux 1 et 2 (`JOURNAL ALTERE`). Une seule alerte par altération, et un message quand la chaîne redevient cohérente.
-- **Hors PSIM** : `npm run verify-journal` (lecture seule, sans démarrer le PSIM ; `--db <fichier>` pour une copie ou une sauvegarde). Code de sortie 0 (intègre), 1 (altéré), 2 (erreur d'usage).
+- **Hors PSIM** : `npm run verify-journal` (lecture seule, sans démarrer le PSIM ; `--db <fichier>` pour une copie ou une sauvegarde). Code de sortie 0 (intègre), 1 (altéré), 2 (erreur d'usage). `--images` recalcule aussi l'empreinte des images d'incident (dossier de la base, ou `--data <dossier>`).
 - **Ancres** : l'empreinte de la dernière entrée (`1234:ab12…`) est mémorisée chaque jour, **imprimée en pied des rapports et fiches d'incident**, et **enregistrée dans le manifeste de chaque sauvegarde**. Comparer à une ancre conservée ailleurs : `npm run verify-journal -- --anchor 1234:ab12…` ou `-- --manifest backups/<sauvegarde>/manifest.json`.
 
 **Ce que cela protège, et ce que cela ne protège pas** (à dire tel quel à un assureur ou un auditeur) :

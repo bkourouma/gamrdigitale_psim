@@ -54,6 +54,8 @@ export interface PreflightInput {
   serviceUrls?: { name: string; url: string }[];
   /** Canaux qui ont des destinataires mais pas de configuration (jeton, serveur) : ces destinataires ne recevraient rien. */
   orphanRecipients?: string[];
+  /** Images envoyees par les equipements : taille maximale, quota global (octets, nombre), plafond par incident. */
+  deviceImages?: { maxBytes: number; quotaBytes: number; quotaCount: number; maxPerIncident: number };
 }
 
 const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
@@ -130,6 +132,11 @@ export function preflight(c: PreflightInput): Finding[] {
     }
     if (url.protocol === 'http:' && !isLoopback(url.hostname)) add(strict, `${service.name} en http:// : le jeton ou la cle du service circuleraient en clair. Utilisez https://.`);
     else if (url.protocol !== 'https:' && url.protocol !== 'http:') add(strict, `${service.name} : protocole ${url.protocol} refuse (https:// attendu).`);
+  }
+  if (c.deviceImages) {
+    const d = c.deviceImages;
+    if (d.quotaBytes < d.maxBytes) add(strict, "PSIM_DEVICE_IMAGE_QUOTA_MB est plus petit qu'une seule image (PSIM_DEVICE_IMAGE_MAX_KB) : aucune image d'equipement ne serait acceptee.");
+    else if (d.quotaCount < d.maxPerIncident) add('warn', "PSIM_DEVICE_IMAGE_QUOTA_COUNT est inferieur au plafond par incident (PSIM_DEVICE_IMAGE_PER_INCIDENT) : un seul incident pourrait epuiser le quota des images d'equipement.");
   }
   for (const channel of c.orphanRecipients ?? []) {
     add(strict, `Destinataires ${channel} declares, mais canal non configure : ils ne recevraient AUCUNE alerte. Completez sa configuration (voir .env.example) ou retirez-les.`);

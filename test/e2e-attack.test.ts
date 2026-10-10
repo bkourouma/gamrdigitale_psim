@@ -77,7 +77,8 @@ interface Route {
 
 /** Routes declarees dans server/api.ts (analyse du texte : une route ajoutee demain est testee sans rien declarer ici). */
 function declaredRoutes(): Route[] {
-  const src = readFileSync(join(ROOT, 'server', 'api.ts'), 'utf8');
+  // + les routes montees par un module dedie (images et cles des equipements).
+  const src = ['api.ts', 'deviceimages.ts'].map((f) => readFileSync(join(ROOT, 'server', f), 'utf8')).join('\n');
   const out: Route[] = [];
   const re = /app\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*([A-Za-z_]+)/g;
   for (let m = re.exec(src); m; m = re.exec(src)) {
@@ -87,7 +88,7 @@ function declaredRoutes(): Route[] {
 }
 
 /** Routes volontairement SANS garde de session (authentifiees autrement, ou publiques). Toute autre route sans garde est un defaut. */
-const PUBLIC = new Set(['GET /healthz', 'GET /api/demo-accounts', 'POST /api/login', 'POST /api/login/2fa', 'POST /api/logout', 'POST /api/ingest/:id']);
+const PUBLIC = new Set(['GET /healthz', 'GET /api/demo-accounts', 'POST /api/login', 'POST /api/login/2fa', 'POST /api/logout', 'POST /api/ingest/:id', 'POST /api/ingest/:id/image']);
 
 const concrete = (path: string) => path.replace(/:zone/g, 'Accueil').replace(/:id/g, '1').replace(/:[A-Za-z]+/g, 'x');
 const key = (r: Route) => `${r.method} ${r.path}`;

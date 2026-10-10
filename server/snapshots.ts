@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Engine } from './engine.ts';
+import { IMAGE_FILE, deleteImages, sealImage } from './evidence.ts';
 import type { Incident } from './types.ts';
 
 const CAPTURE_TIMEOUT_MS = 10_000;
@@ -44,8 +45,10 @@ export function createSnapshotService(deps: SnapshotDeps) {
   const max = deps.maxPerIncident ?? 12;
   const seriesCount = deps.grabSeries ? Math.max(1, deps.seriesCount ?? 1) : 1;
   mkdirSync(dir, { recursive: true });
+  // Images des cameras liees seulement : celles envoyees par un equipement ont leur propre plafond (deviceimages.ts).
   const countFor = (incidentId: number) =>
-    (db.prepare('SELECT COUNT(*) AS n FROM incident_snapshot WHERE incident_id = ?').get(incidentId) as { n: number }).n;
+    (db.prepare("SELECT COUNT(*) AS n FROM incident_snapshot WHERE incident_id = ? AND source = 'camera'").get(incidentId) as { n: number }).n;
+  const audit = (actor: string, action: string, ref?: { incidentId?: number; deviceId?: string; details?: string }) => engine.audit(actor, action, ref);
 
   /**
    * Prend une image de chaque camera liee a l'incident. A lancer SANS attendre (tache de fond) :
@@ -69,13 +72,8 @@ export function createSnapshotService(deps: SnapshotDeps) {
           for (const shot of valid) {
             // Plafond reverifie ici : plusieurs cameras capturent en parallele et la lecture se fait apres l'attente.
             if (countFor(incident.id) >= max) break;
-            const res = db
-              .prepare('INSERT INTO incident_snapshot (incident_id, camera_id, taken_at, reason, file) VALUES (?, ?, ?, ?, ?)')
-              .run(incident.id, cameraId, shot.at, reason, '');
-            const id = Number(res.lastInsertRowid);
-            const file = `${id}.jpg`; // nom derive du seul identifiant numerique : jamais d'entree externe dans un chemin
-            writeFileSync(join(dir, file), shot.frame);
-            db.prepare('UPDATE incident_snapshot SET file = ? WHERE id = ?').run(file, id);
+            // Enregistrement ET scellement au journal (empreinte SHA-256) : meme point que les images des equipements.
+            sealImage(db, dir, audit, { incidentId: incident.id, deviceId: cameraId, takenAt: shot.at, reason, source: 'camera', data: shot.frame, type: 'jpg' });
             saved++;
           }
         } catch (err) {
@@ -91,30 +89,25 @@ export function createSnapshotService(deps: SnapshotDeps) {
     return saved;
   }
 
-  /** Contenu d'une image, ou null si elle n'existe pas. Le chemin vient uniquement de la base. */
+  /** Contenu d'une image, ou null si elle n'existe pas. Le chemin vient uniquement de la base (nom numerique verifie). */
   function read(snapshotId: number): Buffer | null {
     const row = db.prepare('SELECT file FROM incident_snapshot WHERE id = ?').get(snapshotId) as { file: string } | undefined;
-    if (!row || !/^\d+\.jpg$/.test(row.file)) return null;
+    if (!row || !IMAGE_FILE.test(row.file)) return null;
     const path = join(dir, row.file);
     return existsSync(path) ? readFileSync(path) : null;
   }
 
-  /** Supprime les images plus anciennes que `days` jours (0 = jamais) ; renvoie le nombre supprime. */
+  /**
+   * Supprime les images plus anciennes que `days` jours (0 = jamais), SAUF celles des incidents non clos (preuves d'un
+   * incident en cours) ; la suppression est inscrite au journal (voir evidence.ts). Renvoie le nombre supprime.
+   */
   function purge(days: number, now = Date.now()): number {
     if (days <= 0) return 0;
     const cutoff = now - days * 86_400_000;
-    const old = db.prepare('SELECT id, file FROM incident_snapshot WHERE taken_at < ?').all(cutoff) as { id: number; file: string }[];
-    for (const row of old) {
-      if (/^\d+\.jpg$/.test(row.file)) {
-        try {
-          unlinkSync(join(dir, row.file));
-        } catch {
-          // deja supprimee
-        }
-      }
-      db.prepare('DELETE FROM incident_snapshot WHERE id = ?').run(row.id);
-    }
-    return old.length;
+    const old = db
+      .prepare("SELECT s.id FROM incident_snapshot s JOIN incident i ON i.id = s.incident_id WHERE s.taken_at < ? AND i.status = 'closed' ORDER BY s.id")
+      .all(cutoff) as { id: number }[];
+    return deleteImages(db, dir, audit, old.map((r) => r.id), `conservation ${days} jours`);
   }
 
   /** Espace occupe (octets), pour information. */
