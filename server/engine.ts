@@ -755,6 +755,17 @@ export function createEngine(
         throw new PsimError(409, `Ce detecteur lit un detecteur de fumee Tuya : supervision d'au moins ${TUYA_SUPERVISION_S} s`);
       }
     }
+    // Equipement d'infrastructure supervise par le reseau (networkhealth.ts) : il reste de categorie « Environnement » (les
+    // categories energie et personnes n'y changent rien), et sans delai « aucun message » (il n'emet rien : il serait declare
+    // muet a tort, avec une alerte).
+    if (sensor && db.prepare('SELECT 1 AS x FROM network_target WHERE device_id = ?').get(id)) {
+      if (sensor.category !== 'environment') {
+        throw new PsimError(409, "Cet equipement est supervise par le reseau : il reste de categorie « Environnement » (retirer d'abord sa supervision reseau)");
+      }
+      if (sensor.heartbeatS !== 0) {
+        throw new PsimError(409, "Cet equipement est supervise par le reseau : sa supervision par messages reste desactivee (0)");
+      }
+    }
     db.prepare('UPDATE device SET name = ?, zone = ?, x = ?, y = ?, floor_id = ? WHERE id = ?').run(name, zone, x, y, floorId, id);
     if (sensor) {
       db.prepare('UPDATE device SET category = ?, value_unit = ?, warn_at = ?, alarm_at = ?, direction = ?, heartbeat_s = ? WHERE id = ?').run(

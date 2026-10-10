@@ -262,6 +262,10 @@ export function createDeviceImages(deps: DeviceImagesDeps) {
   /**
    * Un incident s'ouvre (ou change d'etape) : les images en attente de SON detecteur, recues dans la fenetre d'attente, lui
    * sont rattachees et scellees. Une image modifiee pendant l'attente (empreinte differente) est ecartee et signalee.
+   *
+   * Alarme recue en differe (passerelle qui renvoie ses messages apres une coupure, voir ingestmeta.ts) : l'incident est
+   * date de l'heure reelle de l'alarme, mais une image n'a pas d'heure propre (l'envoi d'image n'accepte pas `ts`) : elle
+   * garde son heure de RECEPTION, et la note dit qu'elle precede la reception de l'alarme, pas l'alarme elle-meme.
    */
   function attachPending(incident: Incident): number {
     const t = now();
@@ -281,6 +285,7 @@ export function createDeviceImages(deps: DeviceImagesDeps) {
         audit('systeme', 'image_refusee', { incidentId: incident.id, deviceId: r.device_id, details: `image en attente ${r.id} ${data ? 'MODIFIEE' : 'MANQUANTE'} pendant l'attente : non rattachee` });
       } else if (deviceCountFor(incident.id) < limits.maxPerIncident) {
         const when = new Date(r.received_at).toLocaleTimeString('fr-FR');
+        const before = incident.receivedLateMs ? "avant la reception de l'alarme (recue en differe)" : "avant l'ouverture de l'incident";
         sealImage(db, dir, audit, {
           incidentId: incident.id,
           deviceId: r.device_id,
@@ -289,7 +294,7 @@ export function createDeviceImages(deps: DeviceImagesDeps) {
           source: 'device',
           data,
           type,
-          note: `recue a ${when} avant l'ouverture de l'incident (attente n°${r.id})${r.event ? ` ; evenement ${r.event}` : ''}`,
+          note: `recue a ${when} ${before} (attente n°${r.id})${r.event ? ` ; evenement ${r.event}` : ''}`,
         });
         attached++;
       }

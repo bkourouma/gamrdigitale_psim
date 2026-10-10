@@ -12,6 +12,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 import { PsimError } from './errors.ts';
+import { releaseLinkLoss } from './gatewaylink.ts';
 import { recordState } from './history.ts';
 import { createTargetHealth, tcpProbe } from './targethealth.ts';
 import type { Probe, Target, TargetHealthStatus } from './targethealth.ts';
@@ -120,6 +121,8 @@ export function createNetworkTargets(options: NetworkTargetsOptions) {
       db.prepare('INSERT INTO network_target (device_id, host, port) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET host = excluded.host, port = excluded.port').run(id, host, port);
       // Sa supervision est le test reseau : le delai « aucun message » du moteur le declarerait muet a tort.
       db.prepare('UPDATE device SET heartbeat_s = 0 WHERE id = ?').run(id);
+      // Ni la liaison d'une passerelle MQTT (gatewaylink.ts) : s'il etait « non surveille » a cause d'elle, il reprend son etat.
+      releaseLinkLoss(db, id, now());
       if (!known) {
         // L'etat « normal » ecrit a la creation de l'equipement n'est pas une mesure : il disparait (jamais teste = aucun etat).
         // Un equipement qui avait un vrai historique (il a deja parle) le garde, clos a cet instant.

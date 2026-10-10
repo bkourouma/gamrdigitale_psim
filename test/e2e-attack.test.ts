@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { createConnection, createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -75,10 +75,14 @@ interface Route {
   guard: 'anyUser' | 'adminOnly' | 'none';
 }
 
-/** Routes declarees dans server/api.ts (analyse du texte : une route ajoutee demain est testee sans rien declarer ici). */
+/** Modules du serveur qui declarent des routes (tout server/*.ts : un module ajoute demain est analyse sans rien declarer ici). */
+const ROUTE_FILES = readdirSync(join(ROOT, 'server'))
+  .filter((f) => f.endsWith('.ts'))
+  .filter((f) => /\bapp\.(get|post|put|patch|delete)\(/.test(readFileSync(join(ROOT, 'server', f), 'utf8')));
+
+/** Routes declarees dans le serveur (analyse du texte : une route ajoutee demain est testee sans rien declarer ici). */
 function declaredRoutes(): Route[] {
-  // + les routes montees par un module dedie (images et cles des equipements).
-  const src = ['api.ts', 'deviceimages.ts'].map((f) => readFileSync(join(ROOT, 'server', f), 'utf8')).join('\n');
+  const src = ROUTE_FILES.map((f) => readFileSync(join(ROOT, 'server', f), 'utf8')).join('\n');
   const out: Route[] = [];
   const re = /app\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*([A-Za-z_]+)/g;
   for (let m = re.exec(src); m; m = re.exec(src)) {
@@ -151,6 +155,11 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
       assert.ok(routes.length >= 50, `${routes.length} routes analysees`);
       assert.ok(routes.some((r) => key(r) === 'DELETE /api/users/:username' && r.guard === 'adminOnly'));
       assert.ok(routes.some((r) => key(r) === 'GET /api/state' && r.guard === 'anyUser'));
+      // Modules de l'etape 2 : images et cles des equipements (deviceimages.ts), supervision reseau (api.ts).
+      assert.ok(ROUTE_FILES.includes('api.ts') && ROUTE_FILES.includes('deviceimages.ts'), `fichiers analyses : ${ROUTE_FILES.join(', ')}`);
+      assert.ok(routes.some((r) => key(r) === 'DELETE /api/device-keys/:id' && r.guard === 'adminOnly'));
+      assert.ok(routes.some((r) => key(r) === 'PUT /api/devices/:id/network' && r.guard === 'adminOnly'));
+      assert.ok(routes.some((r) => key(r) === 'POST /api/network/test' && r.guard === 'adminOnly'));
     });
 
     it("AUCUNE route n'est declaree sans garde de session, hors liste blanche (une route oubliee fait echouer ce test)", () => {

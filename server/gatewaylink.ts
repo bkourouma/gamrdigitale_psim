@@ -15,7 +15,8 @@
  *    fin d'un delai de grace (PSIM_GATEWAY_GRACE_S) : le temps de vider sa file d'attente.
  *
  * L'etat d'avant la coupure est garde en base (`device.link_lost_status`) : un redemarrage du PSIM pendant la coupure ne
- * perd rien. Les capteurs alimentes par le PSIM lui-meme (Dahua, Tuya) ne sont jamais concernes.
+ * perd rien. Les capteurs alimentes par le PSIM lui-meme (Dahua, Tuya) ne sont jamais concernes, ni les equipements
+ * reseau (network_target, voir networkhealth.ts) : le PSIM les teste lui-meme, ils n'emettent rien par une passerelle.
  */
 import type { DatabaseSync } from 'node:sqlite';
 import { recordState, UNMONITORED_STATE } from './history.ts';
@@ -71,19 +72,23 @@ export function createGatewayLink(options: GatewayLinkOptions) {
   const startedAt = now();
   const state = new Map(options.gateways.map((g) => [g.user, { clients: new Set<object>(), since: startedAt, down: false, connectedAt: null as number | null }]));
 
-  /** Detecteurs que la passerelle represente (hors sources lues par le PSIM lui-meme). */
+  /** Detecteurs que la passerelle represente (hors sources lues par le PSIM lui-meme, et hors equipements reseau). */
   function covered(user: string): string[] {
     const g = options.gateways.find((x) => x.user === user);
     if (!g) return [];
     const rows = db
-      .prepare("SELECT id FROM device WHERE kind = 'detector' AND id NOT IN (SELECT device_id FROM detector_source) AND id NOT IN (SELECT device_id FROM tuya_source)")
+      .prepare(
+        "SELECT id FROM device WHERE kind = 'detector' AND id NOT IN (SELECT device_id FROM detector_source) AND id NOT IN (SELECT device_id FROM tuya_source) AND id NOT IN (SELECT device_id FROM network_target)",
+      )
       .all() as { id: string }[];
     return rows.map((r) => r.id).filter((id) => allows(g.detectors, id));
   }
 
   const covering = (deviceId: string) => options.gateways.filter((g) => allows(g.detectors, deviceId));
   const fedByPsim = (deviceId: string) =>
-    db.prepare('SELECT 1 AS x FROM detector_source WHERE device_id = ? UNION ALL SELECT 1 AS x FROM tuya_source WHERE device_id = ?').get(deviceId, deviceId) !== undefined;
+    db
+      .prepare('SELECT 1 AS x FROM detector_source WHERE device_id = ? UNION ALL SELECT 1 AS x FROM tuya_source WHERE device_id = ? UNION ALL SELECT 1 AS x FROM network_target WHERE device_id = ?')
+      .get(deviceId, deviceId, deviceId) !== undefined;
   const isConnected = (user: string) => (state.get(user)?.clients.size ?? 0) > 0;
   const linkLost = (ids: string[]) =>
     ids.filter((id) => db.prepare('SELECT 1 AS x FROM device WHERE id = ? AND link_lost_at IS NOT NULL').get(id) !== undefined);
