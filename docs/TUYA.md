@@ -2,6 +2,8 @@
 
 Les détecteurs de fumée WiFi vendus avec l'application **Smart Life** (« Intelligent WiFi Strobe Smoke Detector », pile 9 V) fonctionnent sur la plateforme **Tuya**. Le PSIM lit leur état dans le **cloud Tuya** et l'affiche comme un détecteur incendie : pastille sur le plan, incident, caméras liées, notifications, escalade.
 
+> Les autres capteurs Tuya courants (contact de porte ou fenêtre, mouvement, fuite d'eau, température, gaz, monoxyde de carbone, bouton SOS) sont décrits plus bas, section « Autres capteurs Tuya / Smart Life (à qualifier) » : ils ne sont pas encore validés avec un appareil réel.
+
 ## Ce qu'il faut savoir avant de commencer
 
 - **La sirène du détecteur sonne seule, sur place**, que le PSIM l'entende ou non. Le PSIM ajoute l'incident et les notifications ; il ne remplace pas la sirène.
@@ -68,3 +70,51 @@ Données de fumée reconnues : `smoke_sensor_status`, `smoke_sensor_state`, `smo
 - **« appareil introuvable dans le compte Tuya »** : mauvais Device ID, ou compte Smart Life pas lié au projet.
 - **Abonnement d'essai expiré** : le renouveler dans la console Tuya (les essais gratuits ont une durée limitée).
 - **Un détecteur reste « Hors ligne »** : vérifier sa pile, son WiFi, et qu'il apparaît « En ligne » dans Smart Life.
+
+# Autres capteurs Tuya / Smart Life (à qualifier)
+
+Le même mécanisme (compte Tuya, lecture groupée toutes les 60 s, supervision de 300 s) lit aussi les capteurs courants « intrusion bon marché » des villas et appartements. **État de validation : seul le détecteur de fumée a été essayé avec un appareil réel. Tous les capteurs de cette section sont écrits d'après la documentation Tuya (« Standard Instruction Set ») et testés contre de fausses réponses du cloud : chaque modèle est À QUALIFIER avec un capteur réel avant tout usage en production.** L'essai (« Tester la lecture ») montre les données exactes que Tuya renvoie pour un modèle : c'est la première chose à faire.
+
+## Modèles pris en charge
+
+Le type de capteur se déduit de la **catégorie du produit Tuya** (champ `category` de l'appareil) ; à défaut, des fonctions présentes ; on peut aussi le **forcer** dans la liste « Type de capteur » de l'éditeur (cas d'un produit reconnu de travers). La section *Capteur WiFi Tuya (Smart Life)* de l'éditeur apparaît pour les détecteurs de catégorie Incendie, Intrusion, Contrôle d'accès, Environnement et Personnes.
+
+| Type | Catégorie Tuya | Fonction lue (DP code) | Catégorie PSIM | Événement envoyé au PSIM |
+|---|---|---|---|---|
+| Fumée (validé) | `ywbj` | `smoke_sensor_status`, `smoke_sensor_state`, `smoke_alarm` | Incendie | alarme / normal / défaut (inchangé) |
+| Contact de porte ou fenêtre | `mcs` | `doorcontact_state` (**vrai = ouvert**) | Intrusion | ouvert : `intrusion` (alarme si la zone est armée) ; fermé : `door_closed` |
+| | | | Contrôle d'accès | ouvert : `door_opened` (information, jamais d'incident) ; fermé : `door_closed` |
+| Mouvement (PIR) | `pir` | `pir` (`pir` = mouvement, `none` = calme) | Intrusion | `motion` / `clear` |
+| Fuite d'eau | `sj` | `watersensor_state` (`alarm` / `normal`) | Environnement | `leak` / `dry` |
+| Température et humidité | `wsdcg` | `va_temperature` ou `temp_current` ; `va_humidity` ou `humidity_value` | Environnement | mesure (`value`, en °C) ; **les seuils sont ceux du PSIM** |
+| Gaz | `rqbj` (`jwbj`) | `gas_sensor_status`, `gas_sensor_state` (`alarm` / `normal`) | Environnement | `gas` / retour à la normale |
+| Monoxyde de carbone | `cobj` | `co_status`, `co_state` (`alarm` / `normal`) | Environnement | `co` / retour à la normale |
+| Bouton SOS | `sos` | `sos_state` (vrai = appui) | Personnes | `sos` (toujours actif, même zone désarmée) / `alarm_reset` |
+
+Fonctions communes (tous les types sauf la fumée) : `tamper_alarm` ou `temper_alarm` vrai → événement `tamper` (sabotage, toujours actif, même zone désarmée) ; `battery_state` = `low`, ou `battery_percentage` / `residual_electricity` ≤ 15 % → **Défaut** « pile faible » (`low_battery`). Une alarme n'est jamais écrasée par une pile faible.
+
+**Codes dont la documentation n'est pas certaine** (à confirmer à la première lecture réelle) : `jwbj` comme catégorie « gaz méthane » ; `residual_electricity` comme niveau de pile de certains modèles ; les noms `co_state` / `gas_sensor_state` (variantes selon les fabricants) ; `temp_current` / `humidity_value` (anciens produits) ; l'existence d'une valeur de pré-chauffe pour les détecteurs de gaz (traitée en défaut). Si un produit publie un autre nom, il est signalé en défaut ; la liste est dans `server/tuyasensors.ts`.
+
+## Règles de sûreté (les mêmes que pour la fumée)
+
+- **Jamais « Normal » faute de savoir.** Un appareil dont aucune fonction n'est reconnue est en **Défaut « modèle non pris en charge »** avec les données reçues dans le message ; une valeur inattendue (par exemple `doorcontact_state` qui n'est pas un booléen, `pir` = `big_move`) est un défaut, pas un « fermé ».
+- **Le PSIM décide.** Le capteur ne donne qu'un fait. Un contact ouvert sur un détecteur d'intrusion n'ouvre un incident que si la zone est **armée** ; sur un détecteur de contrôle d'accès, c'est une information. Le sabotage, le SOS et la chute restent actifs même zone désarmée.
+- **Température** : Tuya renvoie un entier dont l'échelle dépend du produit (`scale` : 215 = 21,5 °C pour `scale` 1). Le PSIM lit cette échelle dans les **spécifications de l'appareil** (un appel supplémentaire par appareil, mis en mémoire 24 h) ; si elles ne sont pas lisibles, aucune mesure n'est inventée : **Défaut** « échelle inconnue », nouvel essai après 5 minutes. Une valeur hors de -40 à 125 °C est refusée comme incohérente. Réglez les seuils d'alerte et la direction dans « Réglages de mesure » du détecteur.
+- **Hors ligne** : un appareil déclaré hors ligne par Tuya (pile, WiFi) n'envoie rien, comme la fumée → « Hors ligne » après 5 minutes ; une alarme déjà lue reste prioritaire.
+- Lecture en **niveau** : le PSIM lit l'état courant du cloud, pas des impulsions. Les appuis ou mouvements plus courts que l'intervalle de lecture peuvent passer inaperçus (voir ci-dessous).
+
+## Limites du cloud Tuya gratuit
+
+- **Quota d'appels** : l'essai gratuit du projet Tuya limite les appels par mois (de l'ordre de 100 000 à vérifier dans la console). Une lecture groupée couvre 20 appareils par requête. Les capteurs de température coûtent **un appel de spécifications en plus, une fois par jour et par appareil** ; l'essai « Tester la lecture » coûte un à deux appels. À 60 s, la base reste d'environ 43 000 appels par mois jusqu'à 20 appareils ; au-delà de 20, une requête de plus par tranche de 20.
+- **Latence** : un événement met jusqu'à 60 s (intervalle de lecture) plus le délai de remontée de l'appareil au cloud. Un contact de porte ouvert puis refermé en moins d'une minute, un mouvement d'une seconde, un appui bref sur un bouton SOS **peuvent ne jamais apparaître** dans le PSIM. La lecture par événements poussés (messagerie Tuya) n'est pas utilisée.
+- **Dépendance à Internet et au cloud** : sans Internet, tous les capteurs passent « Hors ligne » au bout de 5 minutes (jamais « Normal » figé). Un capteur WiFi sur pile dort et peut mettre du temps à se réveiller.
+- **Ne remplace pas un système d'alarme** : capteurs grand public, sirène locale éventuelle indépendante du PSIM.
+
+**Recommandation : pour les sites à forte densité (au-delà d'une dizaine de capteurs), ou pour tout capteur de sécurité à événement bref (contact, PIR, SOS), préférez des capteurs Zigbee reliés à la Passerelle GAMR** : événements instantanés sans quota ni dépendance à Internet. Les capteurs Tuya WiFi conviennent à quelques points isolés d'une villa ou d'un appartement.
+
+## Recette d'un capteur (par modèle)
+
+1. Appairer le capteur dans Smart Life, le retrouver dans la console Tuya (Device ID).
+2. Créer le détecteur dans le PSIM (catégorie adaptée au type), coller le Device ID, **Tester la lecture** : vérifier le type reconnu et les données (`doorcontact_state`, `pir`…).
+3. Enregistrer, puis provoquer le fait réel (ouvrir la porte, passer devant le PIR, tremper la sonde…) : l'état doit changer dans la minute. Noter dans le dossier du site le modèle et la date de qualification.
+4. Retirer la pile ou débrancher le Wi-Fi : le détecteur doit passer « Hors ligne » au bout de 5 minutes.
