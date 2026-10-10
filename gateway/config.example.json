@@ -1,0 +1,17 @@
+{
+  "name": "passerelle-site-1",
+  "psim": {
+    "url": "mqtt://127.0.0.1:1883",
+    "username": "gw1",
+    "passwordFile": "secrets/psim-password.txt",
+    "detectors": ["GW-01", "Z-*", "M-*"]
+  },
+  "dataDir": "data",
+  "queue": { "maxMessages": 10000, "maxBytes": 20971520 },
+  "retry": { "minMs": 1000, "maxMs": 60000 },
+  "moduleRetry": { "minMs": 5000, "maxMs": 300000 },
+  "log": { "file": true, "level": "info" },
+  "modules": [
+    { "name": "heartbeat", "config": { "deviceId": "GW-01", "everyS": 60 } }
+  ]
+}
