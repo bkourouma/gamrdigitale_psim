@@ -3,10 +3,14 @@ import { appendSealed } from './auditchain.ts';
 import { DAHUA_SUPERVISION_S } from './dahua.ts';
 import { PsimError } from './errors.ts';
 import { defaultFloorId, listFloors } from './floors.ts';
+import { releaseLinkLoss } from './gatewaylink.ts';
 import { recordState } from './history.ts';
+import { alreadySeen, DEFAULT_MAX_AGE_MS, FUTURE_TOLERANCE_MS, LATE_AFTER_MS, purgeDedup, readMeta, remember, tooOld } from './ingestmeta.ts';
+import type { MessageMeta } from './ingestmeta.ts';
 import { hasForbiddenChar, normalizeName } from './text.ts';
 import { TUYA_SUPERVISION_S } from './tuya.ts';
 import { ALWAYS_ACTIVE_EVENTS, CATEGORIES, checkSensorSettings, interpret } from './sources.ts';
+import type { Reading } from './sources.ts';
 import type {
   AuditEntry,
   Device,
@@ -103,6 +107,13 @@ export interface EngineOptions {
   isArmed?: (zone: string) => boolean;
   /** Etat d'armement de chaque zone d'intrusion, pour l'interface. */
   armingState?: () => Record<string, boolean>;
+  /** Age maximal d'un message date (`ts`), et duree de memoire des `msgId` (voir ingestmeta.ts). 7 jours par defaut. */
+  ingestMaxAgeMs?: number;
+  /**
+   * Supervision par passerelle (voir gatewaylink.ts) : instant a partir duquel compter le silence d'un detecteur ;
+   * `Infinity` = sa passerelle est deconnectee, ne pas le juger seul ; `null` = rien a dire.
+   */
+  silenceReference?: (deviceId: string) => number | null;
 }
 
 function describeDuration(ms: number): string {
@@ -122,6 +133,7 @@ export function createEngine(
   const confirmWindowMs = options.confirmWindowMs ?? 0;
   const persistMs = options.persistMs ?? 0;
   const hintMs = options.hintMs ?? 0;
+  const ingestMaxAgeMs = options.ingestMaxAgeMs ?? DEFAULT_MAX_AGE_MS;
   // Un detecteur jamais entendu depuis le demarrage dispose du meme delai de grace, compte
   // a partir du demarrage : on ne le declare pas muet avant d'avoir pu l'entendre.
   const startedAt = now();
@@ -170,6 +182,7 @@ export function createEngine(
       confirmationReason: (r.confirmation_reason as string | null) ?? null,
       hint: (r.hint as Incident['hint']) ?? null,
       hintDetails: (r.hint_details as string | null) ?? null,
+      receivedLateMs: r.received_at === null || r.received_at === undefined ? null : Math.max(0, (r.received_at as number) - (r.opened_at as number)),
       snapshots: (
         db
           .prepare('SELECT id, camera_id, taken_at, reason FROM incident_snapshot WHERE incident_id = ? ORDER BY id')
@@ -276,14 +289,14 @@ export function createEngine(
     }
   }
 
-  /** Detecteur isole revenu a la normale tres vite : on SUGGERE une fausse alarme (l'operateur decide). */
-  function maybeHint(detectorId: string): void {
+  /** Detecteur isole revenu a la normale tres vite : on SUGGERE une fausse alarme (l'operateur decide). `at` : heure reelle du retour. */
+  function maybeHint(detectorId: string, at: number): void {
     if (hintMs <= 0) return;
     const incident = db
       .prepare("SELECT id, opened_at, hint FROM incident WHERE detector_id = ? AND status <> 'closed' AND confirmed_at IS NULL")
       .get(detectorId) as Row | undefined;
     if (!incident || incident.hint) return;
-    const duration = now() - (incident.opened_at as number);
+    const duration = at - (incident.opened_at as number);
     if (duration > hintMs || corroboratingNeighbor(detectorId)) return;
     const details = `retour a la normale en ${Math.round(duration / 1000)} s, sans detecteur voisin`;
     db.prepare("UPDATE incident SET hint = 'false_alarm_likely', hint_details = ? WHERE id = ?").run(details, incident.id as number);
@@ -294,29 +307,119 @@ export function createEngine(
   /**
    * Point d'entree des messages d'equipements (MQTT `psim/detectors/<id>/state`, HTTP `/api/ingest/<id>`).
    * Ne leve jamais d'exception ; renvoie `{ ok: false }` avec la raison et le code HTTP adaptes.
+   *
+   * Messages dates et rejouables (voir ingestmeta.ts) : un `msgId` deja traite est un succes sans effet (`duplicate`) ;
+   * `ts` est l'heure reelle de l'evenement (incident, etat, journal). Un message SANS `ts` est toujours « maintenant » :
+   * comportement d'avant, meme si l'horloge du PSIM recule.
    */
-  function ingest(deviceId: string, payload: unknown): { ok: true } | { ok: false; status: number; error: string } {
-    const device = getDevice(deviceId);
-    if (!device || device.kind !== 'detector') return { ok: false, status: 404, error: 'Detecteur introuvable' };
-    const reading = interpret(device, payload);
-    if (!reading.ok) return { ok: false, status: 400, error: reading.error };
-
+  function ingest(deviceId: string, payload: unknown): { ok: true; duplicate?: true } | { ok: false; status: number; error: string } {
+    const found = getDevice(deviceId);
+    if (!found || found.kind !== 'detector') return { ok: false, status: 404, error: 'Detecteur introuvable' };
     const t = now();
-    db.prepare('UPDATE device SET last_seen = ? WHERE id = ?').run(t, deviceId);
-    if (reading.value !== null) db.prepare('UPDATE device SET last_value = ? WHERE id = ?').run(reading.value, deviceId);
+    const read = readMeta(payload, t);
+    if (!read.ok) return { ok: false, status: 400, error: read.error };
+    const meta = read.meta;
+    // Renvoi d'un message deja traite (passerelle qui vide sa file apres une coupure) : succes, sans aucun effet. Avant le
+    // controle d'age : un renvoi tardif d'un message deja compte n'est pas une erreur.
+    if (meta.msgId !== null && alreadySeen(db, deviceId, meta.msgId)) return { ok: true, duplicate: true };
+    const old = tooOld(meta, ingestMaxAgeMs);
+    if (old) return { ok: false, status: 400, error: old };
+    const reading = interpret(found, payload);
+    if (!reading.ok) return { ok: false, status: 400, error: reading.error };
+    if (meta.aheadMs > FUTURE_TOLERANCE_MS) warnOnce(deviceId, `horodatage ${describeDuration(meta.aheadMs)} dans le futur, ramene a l'heure de reception (horloge de l'equipement ou de sa passerelle a regler)`);
+
+    // Le capteur parle : si sa passerelle avait ete declaree injoignable, il reprend d'abord son etat d'avant la coupure.
+    const device = releaseLinkLoss(db, deviceId, t) ? (getDevice(deviceId) as Device) : found;
+    applyReading(device, reading, meta);
+    if (meta.msgId !== null) remember(db, deviceId, meta.msgId, t);
+    return { ok: true };
+  }
+
+  /** Heure de l'etat deja applique : celle du dernier message qui l'a fixe, ou a defaut celle du dernier changement. */
+  function stateReference(deviceId: string): number {
+    const row = db.prepare('SELECT COALESCE(state_ts, state_since) AS r FROM device WHERE id = ?').get(deviceId) as { r: number | null } | undefined;
+    return row?.r ?? -Infinity;
+  }
+
+  function applyReading(device: Device, reading: Extract<Reading, { ok: true }>, meta: MessageMeta): void {
+    const deviceId = device.id;
+    const at = meta.eventAt;
+    // Dernier signe de vie = l'evenement le plus recent : un message rejoue ne rajeunit pas un capteur.
+    const newest = !meta.dated || at >= (device.lastSeen ?? -Infinity);
+    db.prepare('UPDATE device SET last_seen = ? WHERE id = ?').run(meta.dated ? Math.max(device.lastSeen ?? 0, at) : at, deviceId);
+    if (reading.value !== null && newest) db.prepare('UPDATE device SET last_value = ? WHERE id = ?').run(reading.value, deviceId);
     // Un equipement supervise qui donne signe de vie alors qu'on le croyait mort est de nouveau en ligne.
     const state = reading.state ?? (reading.alive && device.status === 'offline' ? 'normal' : null);
     if (state !== null && (state === 'alarm' || state === 'prealarm') && device.category === 'intrusion' && options.isArmed && !(reading.event && ALWAYS_ACTIVE_EVENTS.has(reading.event)) && !options.isArmed(device.zone)) {
       noteIgnored(device, reading.event ?? state);
       publishDevice(deviceId);
-      return { ok: true };
+      return;
     }
     if (state === null) {
       publishDevice(deviceId);
-      return { ok: true };
+      return;
     }
-    applyState(device, state);
-    return { ok: true };
+    // ORDRE : un message date plus ancien que l'etat deja applique ne l'ecrase pas (voir recordPastAlarm pour une alarme).
+    if (meta.dated && at < stateReference(deviceId)) {
+      if (state === 'alarm' || state === 'prealarm') recordPastAlarm(device, state, meta);
+      publishDevice(deviceId);
+      return;
+    }
+    applyState(device, state, meta);
+  }
+
+  const fmtDate = (ms: number) => new Date(ms).toLocaleString('fr-FR');
+  const lateText = (meta: MessageMeta) => `evenement du ${fmtDate(meta.eventAt)}, recu avec ${describeDuration(meta.lateMs)} de retard`;
+
+  /**
+   * (Pre)alarme DATEE plus ancienne que l'etat deja connu : renvoi d'une passerelle apres une coupure, ou messages arrives
+   * dans le desordre. Cas type : le detecteur a ete en alarme pendant la coupure, et un message plus recent (ou son retour)
+   * l'a deja dit revenu a la normale. Comportement retenu :
+   *  - l'etat ACTUEL n'est pas modifie : le message plus recent fait foi ;
+   *  - l'alarme n'est jamais perdue : si aucun incident ne couvre deja ce moment, un incident est ouvert A SA DATE REELLE,
+   *    marque « recu en differe » (journal `alarm_late`, `receivedLateMs`), et notifie comme toute ouverture. Il n'est PAS
+   *    clos automatiquement (une alarme que personne n'a vue est qualifiee par un operateur : feu reel ou fausse alarme),
+   *    mais il ne reste pas « en cours » a tort : le detecteur n'est pas en alarme, l'operateur peut le cloturer aussitot ;
+   *  - un incident non clos existe deja (un seul par detecteur) : l'alarme y est rattachee dans le journal, et l'aggrave
+   *    si elle est plus grave ;
+   *  - un incident clos couvre deja ce moment (meme alarme renvoyee sans `msgId`) : rien, pas de doublon.
+   * L'historique des etats n'est pas reecrit : il dit ce que le PSIM savait, quand il le savait (une alarme compte « en
+   * service » comme l'etat normal : la disponibilite n'en depend pas).
+   */
+  function recordPastAlarm(device: Device, state: 'alarm' | 'prealarm', meta: MessageMeta): void {
+    const deviceId = device.id;
+    const at = meta.eventAt;
+    const severity: Severity = state === 'alarm' ? 'critical' : 'warning';
+    const details = `${state === 'alarm' ? 'alarme' : 'prealarme'} anterieure a l'etat connu : ${lateText(meta)} ; etat actuel (${device.status}) inchange`;
+    const open = db
+      .prepare("SELECT id, severity, opened_at FROM incident WHERE detector_id = ? AND status <> 'closed'")
+      .get(deviceId) as { id: number; severity: Severity; opened_at: number } | undefined;
+    if (open) {
+      if (open.opened_at > at) {
+        audit('systeme', 'alarm_late', { incidentId: open.id, deviceId, details: `${details} ; rattachee a l'incident en cours` });
+        publishIncident(open.id);
+      }
+      if (open.severity === 'warning' && severity === 'critical') escalate(open.id, deviceId);
+      return;
+    }
+    if (db.prepare('SELECT 1 AS x FROM incident WHERE detector_id = ? AND opened_at <= ? AND closed_at >= ? LIMIT 1').get(deviceId, at, at)) return;
+    const res = db
+      .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at) VALUES (?, ?, ?, ?)')
+      .run(deviceId, severity, at, meta.receivedAt);
+    const id = Number(res.lastInsertRowid);
+    audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
+    audit('systeme', 'alarm_late', { incidentId: id, deviceId, details });
+    publishIncident(id);
+    emitHook(id, 'opened');
+  }
+
+  // Message refuse en MQTT (pas de reponse possible) : signale dans le journal technique, au plus une fois par minute et par equipement.
+  const lastWarned = new Map<string, number>();
+  function warnOnce(deviceId: string, text: string): void {
+    const t = Date.now();
+    if (t - (lastWarned.get(deviceId) ?? -Infinity) < 60_000) return;
+    lastWarned.set(deviceId, t);
+    console.warn(`[engine] ${deviceId} : ${text}`);
   }
 
   // Un detecteur de mouvement dans une zone desarmee parle souvent : on le note, mais pas a chaque message.
@@ -331,7 +434,8 @@ export function createEngine(
 
   function handleDetectorMessage(deviceId: string, payload: unknown): void {
     try {
-      ingest(deviceId, payload);
+      const result = ingest(deviceId, payload);
+      if (!result.ok && result.status === 400) warnOnce(deviceId, `message refuse : ${result.error}`);
     } catch (err) {
       console.error('[engine] message :', err);
     }
@@ -357,15 +461,27 @@ export function createEngine(
     }
   }
 
-  function applyState(device: Device, state: DetectorState): void {
+  function escalate(incidentId: number, deviceId: string): void {
+    // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
+    db.prepare(
+      "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
+    ).run(incidentId);
+    audit('systeme', 'incident_escalated', { incidentId, deviceId, details: 'warning -> critical' });
+    publishIncident(incidentId);
+    emitHook(incidentId, 'escalated');
+  }
+
+  /** `meta.eventAt` : heure reelle du changement (`ts` du message, sinon son arrivee). */
+  function applyState(device: Device, state: DetectorState, meta: MessageMeta): void {
     const deviceId = device.id;
     const previous = device.status;
-    const t = now();
-    db.prepare('UPDATE device SET status = ? WHERE id = ?').run(state, deviceId);
+    const t = meta.eventAt;
+    const late = meta.lateMs >= LATE_AFTER_MS ? lateText(meta) : null;
+    db.prepare('UPDATE device SET status = ?, state_ts = ? WHERE id = ?').run(state, t, deviceId);
     if (previous !== state) db.prepare('UPDATE device SET state_since = ? WHERE id = ?').run(t, deviceId);
     if (previous !== state) {
       recordState(db, deviceId, state, t); // historique complet, meme quand le journal cesse de noter un equipement qui oscille
-      noteStateChange(deviceId, `${previous} -> ${state}`);
+      noteStateChange(deviceId, `${previous} -> ${state}${late ? ` (${late})` : ''}`);
     }
     publishDevice(deviceId);
 
@@ -377,21 +493,17 @@ export function createEngine(
         .get(deviceId) as { id: number; severity: Severity; hint: string | null } | undefined;
 
       if (!open) {
+        // Heure REELLE de l'alarme ; recue en differe (passerelle qui renvoie apres une coupure) : heure de reception notee.
         const res = db
-          .prepare('INSERT INTO incident (detector_id, severity, opened_at) VALUES (?, ?, ?)')
-          .run(deviceId, severity, now());
+          .prepare('INSERT INTO incident (detector_id, severity, opened_at, received_at) VALUES (?, ?, ?, ?)')
+          .run(deviceId, severity, t, late ? meta.receivedAt : null);
         const id = Number(res.lastInsertRowid);
         audit('systeme', 'incident_opened', { incidentId: id, deviceId, details: severity });
+        if (late) audit('systeme', 'alarm_late', { incidentId: id, deviceId, details: late });
         publishIncident(id);
         emitHook(id, 'opened');
       } else if (open.severity === 'warning' && severity === 'critical') {
-        // Escalade : l'incident redevient "non acquitte" pour relancer l'alerte sonore.
-        db.prepare(
-          "UPDATE incident SET severity = 'critical', status = 'open', acked_at = NULL, acked_by = NULL WHERE id = ?",
-        ).run(open.id);
-        audit('systeme', 'incident_escalated', { incidentId: open.id, deviceId, details: 'warning -> critical' });
-        publishIncident(open.id);
-        emitHook(open.id, 'escalated');
+        escalate(open.id, deviceId);
       }
       if (open?.hint) {
         // Le detecteur se redeclenche : la suggestion « fausse alarme » ne tient plus.
@@ -399,15 +511,17 @@ export function createEngine(
         publishIncident(open.id);
       }
     } else if (s === 'normal' && (previous === 'alarm' || previous === 'prealarm')) {
-      maybeHint(deviceId);
+      maybeHint(deviceId, t);
     }
     evaluateConfirmations();
   }
 
   /** Controle periodique (une fois par seconde environ) : detecteurs muets, confirmation par persistance. */
+  let ticks = 0;
   function tick(): void {
     checkSilentDetectors();
     evaluateConfirmations();
+    if (++ticks % 60 === 0) purgeDedup(db, now() - ingestMaxAgeMs); // memoire des msgId : environ une fois par minute
   }
 
   /**
@@ -427,13 +541,14 @@ export function createEngine(
       const own = (row.heartbeat_s as number | null) ?? null;
       const timeoutMs = own === null ? silentTimeoutMs : own * 1000;
       if (timeoutMs <= 0) continue;
-      const reference = Math.max((row.last_seen as number | null) ?? 0, startedAt);
+      // Passerelle deconnectee (Infinity) ou revenue depuis peu : voir gatewaylink.ts.
+      const reference = Math.max((row.last_seen as number | null) ?? 0, startedAt, options.silenceReference?.(row.id as string) ?? -Infinity);
       const silence = t - reference;
       if (silence < timeoutMs) continue;
       const id = row.id as string;
       const res = db
-        .prepare("UPDATE device SET status = 'offline' WHERE id = ? AND status IN ('normal', 'fault')")
-        .run(id);
+        .prepare("UPDATE device SET status = 'offline', state_ts = ? WHERE id = ? AND status IN ('normal', 'fault')")
+        .run(t, id); // state_ts : un message rejoue, anterieur a ce constat, ne le ramene pas « en ligne »
       if (res.changes === 0) continue;
       recordState(db, id, 'offline', t);
       audit('systeme', 'detector_silent', {

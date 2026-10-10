@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Gap } from './continuity.ts';
 import type { CameraHealthStatus } from './camerahealth.ts';
+import type { GatewayLinkStatus } from './gatewaylink.ts';
 import type { HeartbeatStatus } from './heartbeat.ts';
 import type { PortalStatus } from './portal.ts';
 
@@ -37,6 +38,8 @@ export interface SystemDeps {
   heartbeat?: () => HeartbeatStatus;
   /** Mesure de l'etat des cameras reelles (test de connexion regulier). */
   cameras?: () => CameraHealthStatus;
+  /** Liaison des passerelles MQTT (voir gatewaylink.ts). */
+  gateways?: () => GatewayLinkStatus[];
   /** Envoi du resume vers le portail de suivi a distance. */
   portal?: () => PortalStatus;
   /** Derniere verification du journal (chaine d'empreintes). */
@@ -99,8 +102,14 @@ export function createSystemStatus(deps: SystemDeps) {
     if (d && d.freeBytes < LOW_FREE_BYTES) {
       warnings.push({ level: d.freeBytes < CRITICAL_FREE_BYTES ? 'critique' : 'attention', message: `Disque presque plein : ${(d.freeBytes / GB).toFixed(1)} Go libres. Sans espace, la base ne peut plus enregistrer les alarmes.` });
     }
-    const offline = (byStatus.offline ?? 0) + (byStatus.fault ?? 0);
+    // Capteurs d'une passerelle injoignable : UN avertissement pour la passerelle (ci-dessous), pas un par capteur.
+    const linkLost = (deps.db.prepare("SELECT COUNT(*) AS n FROM device WHERE kind = 'detector' AND link_lost_at IS NOT NULL").get() as { n: number }).n;
+    const offline = (byStatus.offline ?? 0) + (byStatus.fault ?? 0) - linkLost;
     if (offline > 0) warnings.push({ level: 'attention', message: `${offline} detecteur(s) hors service : leurs zones ne sont pas surveillees.` });
+    const gateways = deps.gateways?.() ?? [];
+    for (const g of gateways.filter((x) => x.down)) {
+      warnings.push({ level: 'attention', message: `Passerelle ${g.user} injoignable depuis ${new Date(g.since).toLocaleString('fr-FR')} : ${g.unmonitored} capteur(s) non surveille(s). Verifier son alimentation et sa liaison (4G, reseau) ; les alertes datees qu'elle a gardees seront prises a son retour.` });
+    }
     if (notif.channels === 0) warnings.push({ level: 'attention', message: "Aucun canal de notification configure : une alarme ne previent personne hors de l'ecran." });
     if (notif.failedLast24h > 0) warnings.push({ level: 'attention', message: `${notif.failedLast24h} notification(s) en echec sur 24 h.` });
     const journal = deps.journal?.() ?? null;
@@ -154,6 +163,7 @@ export function createSystemStatus(deps: SystemDeps) {
       heartbeat: beat,
       portal,
       cameras,
+      gateways,
       warnings,
     };
   }

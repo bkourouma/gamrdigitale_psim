@@ -341,6 +341,21 @@ Elle n'existe que si **`PSIM_INGEST_TOKEN`** est défini (24 caractères minimum
 
 **Réglages** (administrateur, menu *Équipements et plan* → choisir le détecteur) : catégorie, unité, seuils, sens, et **supervision**. Les capteurs hors incendie ne sont **pas supervisés par défaut** : un contact de porte n'émet qu'aux changements, le déclarer « muet » après quelques minutes serait une fausse panne. Pour un capteur qui émet en continu (température), renseignez le délai attendu ; vide = délai général, `0` = non supervisé. **Conséquence à connaître** : un capteur non supervisé qui tombe en panne ne le dit pas.
 
+**Messages datés et rejouables (passerelle sur liaison instable, 4G…)** — deux champs **facultatifs**, à ajouter à n'importe quel message ci-dessus (MQTT ou HTTP) ; sans eux, rien ne change :
+
+| Champ | Format | Effet |
+|---|---|---|
+| `ts` | heure réelle de l'événement, en **millisecondes** depuis le 1er janvier 1970 UTC, nombre entier (comme `Date.now()`) | L'incident, l'état et le journal gardent l'heure **réelle**, pas l'heure d'arrivée. Une valeur en secondes est refusée avec un message qui le dit. |
+| `msgId` | identifiant unique du message **pour cet équipement**, 1 à 64 caractères : lettres, chiffres, `.` `_` `:` `-` (un UUID, « gw1-000123 ») | Un message déjà traité renvoyé avec le même `msgId` est un **succès sans effet** (HTTP 200 `{"ok":true,"duplicate":true}`, au lieu de 204) : jamais deux fois le même incident. |
+
+```json
+{"state": "alarm", "ts": 1760090400000, "msgId": "gw1-000123"}
+```
+
+- `ts` **dans le futur** : ramené à l'heure de réception, jamais refusé (une alarme n'est pas perdue pour une horloge en avance, et une date future ne peut pas bloquer les messages suivants) ; au-delà de 2 min d'avance, le journal technique le signale. `ts` **plus vieux que `PSIM_INGEST_MAX_AGE_S`** (7 jours par défaut) : refusé (HTTP 400, ignoré en MQTT). Les `msgId` sont retenus pendant la même durée (purge automatique, taille bornée).
+- **Ordre** : un message daté plus ancien que l'état déjà connu (renvoyé après un message plus récent) ne change pas l'état actuel. S'il porte une alarme ou une préalarme, elle n'est **pas perdue** : un incident est ouvert **à sa date réelle**, marqué « Alarme reçue en différé » dans le journal, et notifié ; il n'est pas clos tout seul (un opérateur le qualifie), mais le détecteur n'est pas affiché en alarme et l'incident peut être clôturé aussitôt. Une alarme déjà couverte par un incident n'en crée pas un second. Toute alarme reçue avec plus d'une minute de retard est marquée de la même façon.
+- **Passerelle coupée** (comptes `PSIM_MQTT_GATEWAYS`) : tant que la passerelle est déconnectée du broker, ses capteurs ne sont **pas** déclarés muets un par un. Au-delà de `PSIM_GATEWAY_TIMEOUT_S` (120 s), ses capteurs « normal » ou « défaut » sont affichés **hors ligne** (jamais « normal » : leur état n'est pas connu), avec **un seul** avertissement (journal « Passerelle injoignable » et écran *Système*) ; ce temps est compté **non surveillé** dans la disponibilité (ni disponible ni indisponible), comme un arrêt du PSIM. Un capteur en alarme garde son état. Au retour de la passerelle, chaque capteur reprend son état d'avant la coupure, ses messages datés le mettent à jour, et son silence n'est jugé qu'après `PSIM_GATEWAY_GRACE_S` (120 s).
+
 **Précisions de comportement**
 - La confirmation par un voisin ne joue qu'entre détecteurs **de même catégorie** (un détecteur de fumée ne corrobore pas un contact de porte). Deux détecteurs de mouvement voisins se confirment.
 - L'**indice de risque incendie** ne compte que les détecteurs et incidents d'incendie.

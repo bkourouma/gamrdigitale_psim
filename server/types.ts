@@ -65,6 +65,11 @@ export interface Incident {
   /** Suggestion pour l'operateur ; ne ferme jamais l'incident. */
   hint: 'false_alarm_likely' | null;
   hintDetails: string | null;
+  /**
+   * Alarme recue en differe (passerelle qui renvoie ses messages apres une coupure) : retard en ms entre l'heure reelle
+   * (`openedAt`) et la reception. `null` ou absent : recue en direct.
+   */
+  receivedLateMs?: number | null;
   /** Images des cameras liees prises au moment de l'incident (ordre chronologique). */
   snapshots: { id: number; cameraId: string; takenAt: number; reason: string }[];
 }

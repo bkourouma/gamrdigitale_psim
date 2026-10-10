@@ -598,6 +598,8 @@ export function createApp(deps: ApiDeps) {
     }, ingestJson, (req, res) => {
       const result = engine.ingest(String(req.params.id), req.body);
       if (!result.ok) throw new PsimError(result.status, result.error);
+      // msgId deja traite (renvoi apres une coupure) : succes sans effet, dit comme tel pour que la passerelle l'oublie.
+      if (result.duplicate) return void res.status(200).json({ ok: true, duplicate: true });
       res.status(204).end();
     });
   }
