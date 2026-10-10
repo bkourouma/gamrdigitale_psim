@@ -3,28 +3,27 @@
  * plutot que de bloquer la file ou de partir en silence (voir server/mqtt.ts, server/sources.ts et server/ingestmeta.ts).
  */
 import { randomUUID } from 'node:crypto';
+// Source unique : la liste des evenements et le format des msgId sont ceux du PSIM lui-meme (la passerelle est livree avec
+// lui, dossier gateway\). Ces deux fichiers n'importent que des types : rien du serveur n'est charge a l'execution.
+import { MSG_ID_PATTERN } from '../../server/ingestmeta.ts';
+import { EVENTS } from '../../server/sources.ts';
+import { normalizeMsgId } from './msgid.ts';
 
 /** Identifiant d'equipement PSIM (topic psim/detectors/<id>/state). */
 export const DEVICE_ID = /^[A-Za-z0-9_-]{1,32}$/;
 /** Identifiant de message : 1 a 64 caracteres parmi lettres, chiffres, `.`, `_`, `:` et `-` (comme le PSIM). */
-export const MSG_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+export const MSG_ID: RegExp = MSG_ID_PATTERN;
 /** Taille maximale du message JSON accepte par le broker du PSIM. */
 export const MAX_PAYLOAD_BYTES = 1024;
 export const STATES: ReadonlySet<string> = new Set(['normal', 'prealarm', 'alarm', 'fault', 'offline']);
 /** Format d'un nom d'evenement (minuscules, chiffres, souligne). */
 const EVENT_FORMAT = /^[a-z][a-z0-9_]{0,31}$/;
 /**
- * Evenements connus du PSIM (server/sources.ts, EVENTS). Un evenement absent de cette liste part quand meme (le PSIM peut
- * etre plus recent que la passerelle), mais un avertissement est journalise une fois : le PSIM l'ignorera s'il ne le connait pas.
+ * Evenements connus du PSIM : EXACTEMENT ceux de server/sources.ts (EVENTS). Un evenement absent de cette liste part quand
+ * meme, mais un avertissement est journalise : le PSIM l'ignorera. Les tables des modules sont verifiees contre cette liste
+ * par les essais (gateway/test/contract.test.ts).
  */
-export const KNOWN_EVENTS: ReadonlySet<string> = new Set([
-  'intrusion', 'motion', 'glass_break', 'tamper', 'panic', 'door_forced', 'forced_entry', 'leak', 'flood', 'over_temperature',
-  'door_held_open', 'badge_denied_repeated',
-  'normal', 'clear', 'restored', 'door_closed', 'alarm_reset', 'dry',
-  'fault', 'low_battery',
-  'heartbeat', 'ping', 'badge_granted', 'badge_denied', 'door_opened',
-  'gas', 'co', 'power_loss', 'power_restored', 'vibration', 'camera_masked', 'line_crossing', 'loitering', 'sos', 'fall',
-]);
+export const KNOWN_EVENTS: ReadonlySet<string> = new Set(Object.keys(EVENTS));
 
 /** Mesure acceptee par le PSIM (server/sources.ts). */
 const MAX_ABS_VALUE = 1e9;
@@ -95,8 +94,14 @@ export function prepare(deviceId: unknown, msg: unknown, now: number, makeId: ()
     payload.ts = Math.trunc(now);
   }
   if (m.msgId !== undefined) {
-    if (typeof m.msgId !== 'string' || !MSG_ID.test(m.msgId)) return { ok: false, error: 'msgId invalide (1 a 64 caracteres : lettres, chiffres, . _ : -)' };
-    payload.msgId = m.msgId;
+    if (typeof m.msgId !== 'string' || m.msgId.length === 0 || m.msgId.length > 1024) return { ok: false, error: 'msgId invalide (texte de 1 a 64 caracteres : lettres, chiffres, . _ : -)' };
+    if (MSG_ID.test(m.msgId)) payload.msgId = m.msgId;
+    else {
+      // Jamais de message perdu pour un msgId mal forme (nom d'equipement accentue, trop long...) : il est nettoye de facon
+      // deterministe (meme entree, meme msgId : l'anti-doublon du PSIM reste juste) et le module est signale.
+      payload.msgId = normalizeMsgId(m.msgId);
+      warnings.push('msgId hors format (1 a 64 caracteres : lettres, chiffres, . _ : -) : nettoye');
+    }
   } else {
     payload.msgId = makeId();
   }

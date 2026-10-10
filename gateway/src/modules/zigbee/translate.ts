@@ -10,6 +10,7 @@
  */
 
 import type { DeviceMessage } from '../../module.ts';
+import { makeMsgId } from '../../msgid.ts';
 import type { DeviceSpec } from './config.ts';
 
 /** Un message a envoyer, avec la mise a jour d'etat a appliquer une fois l'envoi accepte. */
@@ -51,11 +52,6 @@ function asNum(v: unknown, range: readonly [number, number]): number | undefined
   return typeof v === 'number' && Number.isFinite(v) && v >= range[0] && v <= range[1] ? v : undefined;
 }
 
-/** Nettoie un texte pour l'inclure dans un msgId (caracteres sans risque uniquement). */
-function safe(s: string, max: number): string {
-  return s.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, max);
-}
-
 /**
  * Horodatage du message Zigbee2MQTT (`last_seen`), en ms epoch entier, ou undefined s'il est absent ou
  * invraisemblable. Zigbee2MQTT sait l'ecrire en ISO 8601, ISO local, ou en epoch (ms).
@@ -87,7 +83,9 @@ export function translate(spec: DeviceSpec, t: TrackerState, payload: Record<str
   const withTs = (m: DeviceMessage, field: string, value: string | number): DeviceMessage => {
     if (ts !== undefined) {
       m.ts = ts;
-      m.msgId = `${safe(spec.key, 60)}-${ts}-${field}-${typeof value === 'number' ? value : safe(String(value), 16)}`;
+      // Nom Zigbee2MQTT libre (espaces, accents, « / », 100 caracteres...) : makeMsgId le nettoie et le borne a 64
+      // caracteres (empreinte de l'original si besoin), sans perdre le determinisme qui sert a l'anti-doublon du PSIM.
+      m.msgId = makeMsgId(spec.key, ts, field, value);
     }
     return m;
   };

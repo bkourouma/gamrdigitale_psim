@@ -191,7 +191,7 @@ describe('lorawan : profils predefinis (charges ChirpStack v4)', () => {
     h.up(EUI, { fCnt: 1, object: { DOOR_OPEN_STATUS: 0, DOOR_OPEN_TIMES: 3, LAST_DOOR_OPEN_DURATION: 12, BAT_V: 3.0, ALARM: 0 } });
     h.up(EUI, { fCnt: 2, object: { DOOR_OPEN_STATUS: 1, DOOR_OPEN_TIMES: 4, LAST_DOOR_OPEN_DURATION: 0, BAT_V: 3.0, ALARM: 0 } });
     assert.deepEqual(h.emitted.map((e) => e.msg.event), ['door_closed', 'intrusion']);
-    assert.equal(h.last()!.msg.msgId, `${EUI}-2-porte`);
+    assert.equal(h.last()!.msg.msgId, `${EUI}-2-${T0}-porte`);
   });
 
   it("Dragino LWL03A : WATER_LEAK_STATUS 1 = leak, 0 = dry", async () => {
@@ -297,7 +297,7 @@ describe('lorawan : traduction personnalisee (mapping)', () => {
     assert.deepEqual(h.emitted.map((e) => e.msg.event), ['heartbeat']);
     h.up(EUI, { fCnt: 2, object: { closed: false, mode: 2 } });
     assert.deepEqual(h.emitted.slice(1).map((e) => e.msg.event), ['intrusion', 'tamper']);
-    assert.deepEqual(h.emitted.slice(1).map((e) => e.msg.msgId), [`${EUI}-2-ferme`, `${EUI}-2-mode`]);
+    assert.deepEqual(h.emitted.slice(1).map((e) => e.msg.msgId), [`${EUI}-2-${T0}-ferme`, `${EUI}-2-${T0}-mode`]);
   });
 
   it("overrides : corrige le nom de champ d'un profil sans code", async () => {
@@ -409,7 +409,7 @@ describe('lorawan : anti-doublons, horodatage', () => {
     h.up(EUI, { object: { DOOR_OPEN_STATUS: 1 } });
     h.up(EUI, { object: { DOOR_OPEN_STATUS: 1 } });
     assert.equal(h.emitted.length, 1);
-    assert.equal(h.emitted[0]!.msg.msgId, `${EUI}-0-porte`);
+    assert.equal(h.emitted[0]!.msg.msgId, `${EUI}-0-${T0}-porte`);
   });
 
   it("les compteurs de deux capteurs sont independants", async () => {
@@ -454,10 +454,10 @@ describe('lorawan : anti-doublons, horodatage', () => {
     assert.equal(h.last()!.msg.ts, T0);
   });
 
-  it('msgId deterministe <devEui>-<fCnt>-<champ>, en minuscules', async () => {
+  it('msgId deterministe <devEui>-<fCnt>-<heure>-<champ>, en minuscules', async () => {
     const h = await started({ [EUI.toUpperCase()]: { id: 'p', kind: 'dragino-lwl03a' } });
     h.up(EUI, { fCnt: 42, object: { WATER_LEAK_STATUS: 1, BAT_V: 2.0 } });
-    assert.deepEqual(h.emitted.map((e) => e.msg.msgId), [`${EUI}-42-fuite`, `${EUI}-42-batterie`]);
+    assert.deepEqual(h.emitted.map((e) => e.msg.msgId), [`${EUI}-42-${T0}-fuite`, `${EUI}-42-${T0}-batterie`]);
   });
 
   it("staleAfterS : une trame trop ancienne (rattrapage) est ignoree ; reste active si le reglage est a 0", async () => {
@@ -624,5 +624,33 @@ describe('lorawan : arret et robustesse', () => {
     h.up(EUI, { fCnt: 2, object: { DOOR_OPEN_STATUS: 0 } });
     assert.equal(n, 2);
     assert.ok(h.logs.some((l) => l.level === 'error'));
+  });
+});
+
+describe('lorawan : msgId', () => {
+  const MSG_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+
+  it('cle de regle de 40 caracteres et fCnt maximal : msgId borne a 64 caracteres, deterministe', async () => {
+    const key = 'k'.repeat(40);
+    const dev = { id: 'p', mapping: [{ key, from: 'object.a', type: 'bool', emit: { event: 'leak' }, emitElse: { event: 'dry' } }] };
+    const h = await started({ [EUI]: dev });
+    const h2 = await started({ [EUI]: dev });
+    h.up(EUI, { fCnt: 0xffffffff, object: { a: true } });
+    h2.up(EUI, { fCnt: 0xffffffff, object: { a: true } });
+    const id = h.last()!.msg.msgId!;
+    assert.match(id, MSG_ID);
+    assert.equal(h2.last()!.msg.msgId, id);
+  });
+
+  it("apres une nouvelle session (fCnt repart de 0), les trames ne reprennent pas les msgId de l'ancienne (sinon le PSIM les ignorerait comme doublons)", async () => {
+    const h = await started({ [EUI]: { id: 'p', kind: 'milesight-ws202' } });
+    h.up(EUI, { fCnt: 1, object: { pir: 'trigger' } });
+    h.up(EUI, { fCnt: 2, object: { pir: 'normal' } });
+    h.advance(600);
+    h.publish(`application/${APP}/device/${EUI}/event/join`, { time: new Date(T0 + 600_000).toISOString(), deviceInfo: { devEui: EUI }, devAddr: '0a0b0c0d' });
+    h.up(EUI, { fCnt: 1, object: { pir: 'trigger' } });
+    const motions = h.emitted.filter((e) => e.msg.event === 'motion').map((e) => e.msg.msgId);
+    assert.equal(motions.length, 2);
+    assert.notEqual(motions[0], motions[1]);
   });
 });

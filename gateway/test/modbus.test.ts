@@ -279,7 +279,7 @@ describe('modbus : configuration', () => {
 
   it('les exemples de la documentation sont des configurations valides', () => {
     const texte = readFileSync(resolve(import.meta.dirname, '../docs/modbus.md'), 'utf8');
-    const blocs = [...texte.matchAll(/```json\n([\s\S]*?)```/g)].map((m) => m[1]);
+    const blocs = [...texte.matchAll(/```json\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
     assert.ok(blocs.length >= 5, 'format + 4 exemples');
     for (const b of blocs) assert.doesNotThrow(() => parseConfig(JSON.parse(b)), b.slice(0, 80));
   });

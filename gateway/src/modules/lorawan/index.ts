@@ -1,4 +1,5 @@
 import type { DeviceMessage, GatewayModule, ModuleContext, ModuleFactory, MqttLink } from '../../module.ts';
+import { makeMsgId } from '../../msgid.ts';
 import { parseConfig } from './config.ts';
 import type { BoolRule, DeviceConfig, Emit, EnumRule, LorawanConfig, NumberRule, Rule } from './config.ts';
 
@@ -11,7 +12,9 @@ import type { BoolRule, DeviceConfig, Emit, EnumRule, LorawanConfig, NumberRule,
  *
  * Garanties :
  *  - charge bornee (64 Kio), JSON invalide ignore et journalise ; chemins surs (jamais d'eval) ;
- *  - une retransmission reseau (meme fCnt) n'est traitee qu'une fois ; msgId deterministe <devEui>-<fCnt>-<champ> ;
+ *  - une retransmission reseau (meme fCnt) n'est traitee qu'une fois ; msgId deterministe <devEui>-<fCnt>-<heure>-<champ> :
+ *    l'heure de la trame y figure car le fCnt repart de 0 a chaque nouvelle session (join, redemarrage d'un capteur ABP) ;
+ *    sans elle, le PSIM prendrait les trames de la nouvelle session pour des doublons (7 jours) et les ignorerait ;
  *  - pas d'inondation : bande morte, delai minimal par regle, plafond par capteur ;
  *  - chaque trame valide sans autre message produit un `heartbeat` (le PSIM surveille ainsi le silence).
  */
@@ -230,7 +233,7 @@ export const create: ModuleFactory = (rawConfig): GatewayModule => {
 
   function send(dev: DeviceConfig, tag: string, ts: number, p: Pending): void {
     if (!ctx) return;
-    const msg: DeviceMessage = { ts, msgId: `${dev.eui}-${tag}-${p.key}` };
+    const msg: DeviceMessage = { ts, msgId: makeMsgId(dev.eui, tag, p.key) };
     if (p.emit.state !== undefined) msg.state = p.emit.state;
     if (p.emit.event !== undefined) msg.event = p.emit.event;
     if (p.value !== undefined && p.emit.value === true) msg.value = p.value;
@@ -295,7 +298,7 @@ export const create: ModuleFactory = (rawConfig): GatewayModule => {
       warn('noobject', dev.eui, "trame sans objet decode : verifiez le codec de l'appareil dans ChirpStack");
     }
 
-    const tag = String(fCnt);
+    const tag = `${fCnt}-${ts}`;
     let sent = 0;
     if (isObj(object)) {
       dev.rules.forEach((rule, i) => {

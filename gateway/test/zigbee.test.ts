@@ -519,3 +519,27 @@ test('arret avant demarrage : sans erreur ; module nomme zigbee', async () => {
   assert.equal(h.mod.name, 'zigbee');
   await assert.doesNotReject(h.mod.stop());
 });
+
+test('msgId toujours accepte par le PSIM, meme avec un nom Zigbee2MQTT pathologique (accents, espaces, « / », 100+ caracteres)', async () => {
+  const MSG_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+  const names = [
+    'Entrée principale/porte du hall',
+    `bâtiment A/${'très long nom de capteur '.repeat(5)}`.slice(0, 120),
+    'salle:serveur 1',
+    'éèêàç/ôû',
+  ];
+  const devices: Record<string, unknown> = {};
+  names.forEach((n, i) => (devices[n] = { id: `zb-p${i}`, kind: 'contact' }));
+  const h = await setup({ broker: { url: 'mqtt://127.0.0.1:1883' }, devices });
+  const h2 = await setup({ broker: { url: 'mqtt://127.0.0.1:1883' }, devices });
+  const seen = '2026-10-10T09:59:58.000Z';
+  for (const n of names) {
+    h.dev(n, { contact: false, tamper: true, last_seen: seen });
+    h2.dev(n, { contact: false, tamper: true, last_seen: seen });
+  }
+  const ids = h.emitted.map((e) => e.msg.msgId ?? '');
+  assert.equal(ids.length, names.length * 2);
+  for (const id of ids) assert.match(id, MSG_ID, id);
+  assert.equal(new Set(ids).size, ids.length, 'tous distincts');
+  assert.deepEqual(h2.emitted.map((e) => e.msg.msgId), ids, 'deterministes (rejeu, redemarrage)');
+});
