@@ -36,6 +36,9 @@ import { loadSecretKey } from './secrets.ts';
 import { seedDemo, seedEmptySite, seedUsers } from './seed.ts';
 import { createSnapshotService } from './snapshots.ts';
 import type { SnapshotService } from './snapshots.ts';
+import { createDeviceKeys } from './devicekeys.ts';
+import { createDeviceImages } from './deviceimages.ts';
+import type { DeviceImages } from './deviceimages.ts';
 import { createSystemStatus } from './system.ts';
 import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
@@ -123,6 +126,7 @@ const findings = preflight({
   smtpHost: config.notify.smtp.host,
   smtpStarttls: config.notify.smtp.starttls,
   serviceUrls: serviceUrls(notify),
+  deviceImages: config.deviceImages,
   orphanRecipients: channelSetup(notify)
     .filter((c) => !c.configured && recipients.effective(c.id, 1).length + recipients.effective(c.id, 2).length > 0)
     .map((c) => c.label),
@@ -176,12 +180,14 @@ const engine = createEngine(db, publish, Date.now, {
   onIncidentEvent: (incident, kind) => {
     void notifier?.notifyIncident(incident, kind);
     void snapshots?.capture(incident, kind).then((saved) => (saved > 0 ? notifier?.sendImages(incident.id, kind) : undefined));
+    if (kind === 'opened') deviceImages?.attachPending(incident); // images d'equipement arrivees juste avant l'alarme
   },
   onDetectorSilent: (device) => void notifier?.notifySilent(device),
 });
 arming = createArming(db, (actor, action, ref) => engine.audit(actor, action, ref), Date.now, () => publish({ type: 'config' }));
 const floors = createFloors({ db, dataDir, audit: (actor, action, ref) => engine.audit(actor, action, ref), publishConfig: () => publish({ type: 'config' }) });
 let snapshots: SnapshotService | undefined;
+let deviceImages: DeviceImages | undefined;
 let notifier: Notifier | undefined;
 const video = createVideoService({
   db,
@@ -221,6 +227,16 @@ snapshots = createSnapshotService({
   seriesCount: config.snapshotSeries,
   publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
 });
+// Images envoyees par les equipements (cles par equipement), scellees au journal comme celles des cameras liees.
+deviceImages = createDeviceImages({
+  db,
+  engine,
+  dataDir,
+  keys: createDeviceKeys({ db, audit: (actor, action, ref) => engine.audit(actor, action, ref) }),
+  limits: config.deviceImages,
+  publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
+});
+deviceImages.start();
 notifier = createNotifier({
   db,
   engine,
@@ -459,6 +475,7 @@ const app = createApp({
     : null,
   triggerSim: (id, payload) => broker.publishDetector(id, payload),
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
+  deviceImages,
 });
 
 const server: Server = createWebServer(app, tlsFiles);
@@ -621,6 +638,7 @@ async function shutdown() {
   cameraHealth.stop();
   dahua.stop();
   tuya.stop();
+  deviceImages?.stop();
   video.shutdown();
   wss.close();
   server.close();

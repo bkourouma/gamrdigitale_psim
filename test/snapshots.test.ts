@@ -138,9 +138,14 @@ describe('lecture et conservation des images', () => {
     const t = setup(async () => JPEG);
     t.send('D-06', 'alarm');
     await tick();
-    const [old, recent] = t.engine.getSnapshot().incidents[0].snapshots;
+    const incident = t.engine.getSnapshot().incidents[0];
+    const [old, recent] = incident.snapshots;
     t.db.prepare('UPDATE incident_snapshot SET taken_at = ? WHERE id = ?').run(Date.now() - 40 * 86_400_000, old.id);
+    assert.equal(t.snapshots.purge(30), 0, "jamais les images d'un incident non clos (preuves d'un incident en cours)");
+    t.send('D-06', 'normal');
+    t.engine.close(incident.id, 'admin', 'false_alarm', '');
     assert.equal(t.snapshots.purge(30), 1);
+    assert.match(t.engine.listAudit(5).find((a) => a.action === 'images_purgees')?.details ?? '', new RegExp(`^images ${old.id} \\(conservation 30 jours\\)`), 'la purge est inscrite au journal');
     assert.equal(t.snapshots.read(old.id), null);
     assert.ok(!existsSync(join(t.dataDir, 'snapshots', `${old.id}.jpg`)));
     assert.deepEqual(t.snapshots.read(recent.id), JPEG);

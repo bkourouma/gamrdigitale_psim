@@ -25,6 +25,11 @@ const ADMIN_ONLY_DETAILS = new Set([
   'login_failed',
   'login_locked',
   'login_2fa_failed',
+  // Cles et images d'equipement : adresses, numeros de cles (jamais la cle elle-meme).
+  'device_key_created',
+  'device_key_revoked',
+  'device_key_rotated',
+  'image_refusee',
   'heartbeat_failing',
   'heartbeat_recovered',
   'journal_integrity_failed',

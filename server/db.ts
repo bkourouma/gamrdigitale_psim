@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { migrateFloors } from './floors.ts';
+import { migrateEvidence } from './evidence.ts';
 
 const SCHEMA = `
 -- plan_file / plan_version : ancien plan unique, repris par le premier etage a la migration (voir floors.ts), plus utilises ensuite.
@@ -293,5 +294,6 @@ export function openDb(path: string): DatabaseSync {
   migrateRecipientChannels(db); // canal WhatsApp accepte pour les destinataires saisis dans l'interface
   migrate(db); // les donnees existantes sont conservees
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
+  migrateEvidence(db); // images d'incident : origine et empreinte scellee ; images en attente ; cles d'equipement
   return db;
 }

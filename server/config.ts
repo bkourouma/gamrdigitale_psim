@@ -163,6 +163,16 @@ export const config = {
   snapshotDays: seconds('PSIM_SNAPSHOT_DAYS', 30),
   // Images prises a l'OUVERTURE d'un incident, par camera liee : une toutes les 1,5 s (1 = une seule image).
   snapshotSeries: num('PSIM_SNAPSHOT_SERIES', 5, 1, 10),
+  // Images envoyees par les equipements (POST /api/ingest/<id>/image, cle par equipement) : voir server/deviceimages.ts.
+  deviceImages: {
+    maxBytes: num('PSIM_DEVICE_IMAGE_MAX_KB', 2048, 16, 10_240) * 1024,
+    perDevicePerMin: num('PSIM_DEVICE_IMAGE_PER_MIN', 6, 1, 120),
+    perIpPerMin: num('PSIM_DEVICE_IMAGE_IP_PER_MIN', 30, 1, 600),
+    quotaBytes: num('PSIM_DEVICE_IMAGE_QUOTA_MB', 500, 1, 100_000) * 1024 * 1024,
+    quotaCount: num('PSIM_DEVICE_IMAGE_QUOTA_COUNT', 5000, 1, 1_000_000),
+    maxPerIncident: num('PSIM_DEVICE_IMAGE_PER_INCIDENT', 20, 1, 200),
+    pendingS: num('PSIM_DEVICE_IMAGE_PENDING_S', 300, 0, 3600),
+  },
   // Notifications : e-mail (SMTP), Telegram, webhook. Niveau 1 = prevenu a l'ouverture ; niveau 2 =
   // prevenu si personne n'acquitte. Les secrets (mot de passe SMTP, jeton Telegram) restent dans .env.
   notify: {

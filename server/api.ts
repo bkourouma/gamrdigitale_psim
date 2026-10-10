@@ -35,6 +35,7 @@ import type { RecipientsService } from './recipients.ts';
 import type { UsersService } from './users.ts';
 import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
+import type { DeviceImages } from './deviceimages.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
 
@@ -74,6 +75,8 @@ export interface ApiDeps {
   triggerSim: (detectorId: string, payload: Record<string, unknown>) => Promise<void>;
   /** Jeton de l'entree HTTP des equipements ; vide = entree desactivee. */
   ingestToken?: string;
+  /** Cles par equipement et images envoyees par les equipements (POST /api/ingest/<id>/image). */
+  deviceImages?: DeviceImages;
 }
 
 type AuthedRequest = Request & { session: Session };
@@ -362,7 +365,9 @@ export function createApp(deps: ApiDeps) {
     const id = Number(req.params.id);
     const image = Number.isInteger(id) && id > 0 ? deps.snapshots.read(id) : null;
     if (!image) throw new PsimError(404, 'Image introuvable');
-    res.setHeader('Content-Type', 'image/jpeg');
+    // Type d'apres les octets (JPEG ou PNG, verifies a l'arrivee) ; jamais interpretable comme un document actif.
+    res.setHeader('Content-Type', image[0] === 0x89 ? 'image/png' : 'image/jpeg');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
     res.end(image);
   });
@@ -566,13 +571,23 @@ export function createApp(deps: ApiDeps) {
 
   // Pour les systemes qui poussent leurs evenements (controle d'acces, passerelle IoT) sans parler MQTT.
   // Authentification par jeton partage (pas de session) ; desactivee tant qu'aucun jeton n'est configure.
-  if (deps.ingestToken) {
+  // Cle par equipement (deviceimages.ts) : acceptee aussi pour les messages d'etat, limitee a SES equipements.
+  if (deps.ingestToken || deps.deviceImages) {
     const digest = (v: string) => createHash('sha256').update(v).digest();
-    const expected = digest(deps.ingestToken);
+    const expected = digest(deps.ingestToken ?? '');
     const ingestJson = express.json({ limit: '2kb' });
     app.post('/api/ingest/:id', (req, res, next) => {
       const key = `ingest:${req.ip}`;
       if (isRateLimited(key)) return void res.status(429).json({ error: 'Trop de tentatives, reessayez dans une minute' });
+      const keys = deps.deviceImages?.keys;
+      if (keys?.presentsKey(req.headers.authorization)) {
+        const check = keys.check(req.headers.authorization, String(req.params.id));
+        if (check.ok) return next();
+        recordFailure(key);
+        deps.deviceImages!.noteRefusal(req.ip ?? 'inconnue', String(req.params.id), `message d'etat : cle refusee (${check.reason})`, check.keyId);
+        return void res.status(check.reason === 'scope' ? 403 : 401).json({ error: check.reason === 'scope' ? "Cette cle n'est pas autorisee pour cet equipement" : 'Jeton invalide' });
+      }
+      if (!deps.ingestToken) return next('route'); // sans jeton partage, l'entree n'existe que pour les cles d'equipement
       const header = req.headers.authorization ?? '';
       const given = header.startsWith('Bearer ') ? header.slice(7) : '';
       if (!timingSafeEqual(digest(given), expected)) {
@@ -586,6 +601,7 @@ export function createApp(deps: ApiDeps) {
       res.status(204).end();
     });
   }
+  deps.deviceImages?.mount(app, { adminOnly, actorOf });
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------
 
