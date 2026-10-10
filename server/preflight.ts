@@ -54,6 +54,11 @@ export interface PreflightInput {
   serviceUrls?: { name: string; url: string }[];
   /** Canaux qui ont des destinataires mais pas de configuration (jeton, serveur) : ces destinataires ne recevraient rien. */
   orphanRecipients?: string[];
+  /** Passerelles MQTT declarees, et supervision de leur liaison (voir gatewaylink.ts). */
+  gateways?: number;
+  gatewayTimeoutS?: number;
+  /** Age maximal d'un message date (voir ingestmeta.ts). */
+  ingestMaxAgeS?: number;
 }
 
 const isLoopback = (host: string) => ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host);
@@ -137,6 +142,12 @@ export function preflight(c: PreflightInput): Finding[] {
   if (c.notificationChannels === 0) add('warn', "Aucun canal de notification : une alarme ne previent personne en dehors de l'ecran du PSIM.");
   else if (!c.escalationConfigured) add('warn', "Aucun destinataire de niveau 2 : si personne n'acquitte, l'alerte n'est escaladee a personne.");
   if (c.detectorTimeoutS <= 0) add(c.production ? 'warn' : 'warn', "Surveillance des detecteurs muets desactivee : un detecteur en panne resterait affiche « Normal » (PSIM_DETECTOR_TIMEOUT_S).");
+  if ((c.gateways ?? 0) > 0 && c.gatewayTimeoutS !== undefined) {
+    if (c.gatewayTimeoutS <= 0) add('warn', "Supervision des passerelles desactivee (PSIM_GATEWAY_TIMEOUT_S=0) : une passerelle coupee ferait declarer ses capteurs muets un par un (une alerte par capteur).");
+    // Tant que la passerelle n'est pas declaree injoignable, ses capteurs ne sont plus juges un par un : ils restent affiches dans leur dernier etat.
+    else if (c.detectorTimeoutS > 0 && c.gatewayTimeoutS > c.detectorTimeoutS) add('warn', `PSIM_GATEWAY_TIMEOUT_S (${c.gatewayTimeoutS} s) depasse le delai des detecteurs muets (${c.detectorTimeoutS} s) : une passerelle coupee laisserait ses capteurs affiches dans leur dernier etat plus longtemps qu'un detecteur muet.`);
+  }
+  if (c.ingestMaxAgeS !== undefined && c.ingestMaxAgeS < 86_400) add('warn', `PSIM_INGEST_MAX_AGE_S (${c.ingestMaxAgeS} s) inferieur a un jour : les alertes gardees par une passerelle pendant une coupure plus longue seraient refusees a son retour.`);
   if (c.production && c.requireTotp === 'none') add('warn', "La double authentification n'est imposee a personne (PSIM_REQUIRE_2FA) : un mot de passe vole suffirait pour acceder au PSIM, y compris en administrateur.");
   if (c.production && c.backupEveryH <= 0) add('warn', 'Sauvegarde automatique desactivee (PSIM_BACKUP_EVERY_H) : planifiez `npm run backup`.');
   return out;

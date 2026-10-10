@@ -17,6 +17,8 @@ import { beginHistory, purgeHistory } from './history.ts';
 import { buildSiteSummary, createPortalSender } from './portal.ts';
 import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
+import { createGatewayLink } from './gatewaylink.ts';
+import type { GatewayLink } from './gatewaylink.ts';
 import { acquireLock } from './lock.ts';
 import { installFileLogger } from './logger.ts';
 import { startBroker } from './mqtt.ts';
@@ -114,6 +116,9 @@ const findings = preflight({
   notificationChannels: channels.filter((c) => c.recipients(1).length + c.recipients(2).length > 0).length,
   escalationConfigured: channels.some((c) => c.recipients(2).length > 0),
   detectorTimeoutS: config.detectorTimeoutS,
+  gateways: config.mqttGateways.length,
+  gatewayTimeoutS: config.gatewayTimeoutS,
+  ingestMaxAgeS: config.ingestMaxAgeS,
   backupEveryH: config.backup.everyH,
   requireTotp: config.requireTotp,
   ingestToken: config.ingestToken,
@@ -164,6 +169,7 @@ seedUsers(db, config.adminPassword, config.operatorPassword);
 const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
 let arming: Arming | undefined;
+let gatewayLink: GatewayLink | undefined;
 const engine = createEngine(db, publish, Date.now, {
   isArmed: (zone) => arming?.isArmed(zone) ?? true,
   armingState: () => arming?.snapshot() ?? {},
@@ -178,6 +184,20 @@ const engine = createEngine(db, publish, Date.now, {
     void snapshots?.capture(incident, kind).then((saved) => (saved > 0 ? notifier?.sendImages(incident.id, kind) : undefined));
   },
   onDetectorSilent: (device) => void notifier?.notifySilent(device),
+  ingestMaxAgeMs: config.ingestMaxAgeS * 1000,
+  silenceReference: (id) => gatewayLink?.silenceReference(id) ?? null,
+});
+// Passerelle coupee : ses capteurs sont « non surveilles » avec un seul avertissement, au lieu de N detecteurs muets.
+gatewayLink = createGatewayLink({
+  db,
+  gateways: config.mqttGateways,
+  timeoutMs: config.gatewayTimeoutS * 1000,
+  graceMs: config.gatewayGraceS * 1000,
+  audit: (action, ref) => engine.audit('systeme', action, ref),
+  publishDevice: (id) => {
+    const device = engine.getDevice(id);
+    if (device) publish({ type: 'device', device });
+  },
 });
 arming = createArming(db, (actor, action, ref) => engine.audit(actor, action, ref), Date.now, () => publish({ type: 'config' }));
 const floors = createFloors({ db, dataDir, audit: (actor, action, ref) => engine.audit(actor, action, ref), publishConfig: () => publish({ type: 'config' }) });
@@ -304,6 +324,7 @@ const broker = await startBroker(engine, {
   password: config.mqttPassword,
   tls: mqttTlsFiles,
   gateways: config.mqttGateways,
+  onGateway: (user, connected, client) => gatewayLink?.connection(user, connected, client),
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
   releaseLock();
@@ -333,6 +354,7 @@ const system = createSystemStatus({
   heartbeat: () => heartbeat.status(),
   portal: () => portal.status(),
   cameras: () => cameraHealth.status(),
+  gateways: () => gatewayLink?.status() ?? [],
 });
 
 // Journal infalsifiable : verification de la chaine d'empreintes au demarrage puis toutes les 6 h, ancre quotidienne.
@@ -532,6 +554,7 @@ const tickTimer = setInterval(() => {
   notifier?.tick();
   try {
     arming?.tick(); // armements et desarmements dus au planning
+    gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
       sweepSockets();

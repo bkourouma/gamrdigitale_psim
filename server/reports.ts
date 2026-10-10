@@ -192,6 +192,7 @@ export function fmtDuration(seconds: number | null): string {
 
 const ACTION_TEXT: Record<string, string> = {
   incident_opened: 'Incident ouvert',
+  alarm_late: 'Alarme reçue en différé',
   incident_escalated: 'Aggravation (préalarme → alarme)',
   incident_confirmed: 'Incident confirmé',
   incident_hint: 'Indice : fausse alarme probable',

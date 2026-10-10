@@ -8,9 +8,9 @@
  * Trois notions, qu'il ne faut jamais melanger :
  *  - EN SERVICE : normal, prealarme, alarme. Un detecteur en alarme fonctionne : il ne compte pas comme une panne.
  *  - HORS SERVICE : defaut, hors ligne.
- *  - NON SURVEILLE : le PSIM etait arrete. On ne sait pas ce qui s'est passe ; ce temps n'est compte ni comme
- *    disponible ni comme indisponible, il est rapporte a part (sinon une coupure de courant ferait mentir le chiffre
- *    dans un sens ou dans l'autre).
+ *  - NON SURVEILLE : le PSIM etait arrete, ou la passerelle du capteur injoignable (etat `unmonitored`, voir
+ *    gatewaylink.ts). On ne sait pas ce qui s'est passe ; ce temps n'est compte ni comme disponible ni comme
+ *    indisponible, il est rapporte a part (sinon une coupure de courant ferait mentir le chiffre dans un sens ou dans l'autre).
  *
  * Sont suivis : les detecteurs, et les cameras REELLES (avec une source video), mesurees par un test de connexion
  * regulier (voir camerahealth.ts). Une camera simulee n'est pas mesuree : lui inventer 100 % de disponibilite serait faux.
@@ -18,6 +18,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 export const DOWN_STATES: ReadonlySet<string> = new Set(['fault', 'offline']);
+/** Etat d'historique seulement (jamais affiche comme etat d'un equipement) : ni en service ni hors service. */
+export const UNMONITORED_STATE = 'unmonitored';
 
 /** Une periode d'arret d'un equipement : etats « defaut » et « hors ligne » consecutifs fusionnes. */
 export interface Outage {
@@ -146,7 +148,7 @@ export function availabilityOf(intervals: Interval[], from: number, to: number, 
     const clipped = Math.min(i.end, cap) - Math.max(i.start, from);
     if (clipped <= 0) continue;
     if (DOWN_STATES.has(i.state)) down += clipped;
-    else up += clipped;
+    else if (i.state !== UNMONITORED_STATE) up += clipped; // non surveille : compte a part, ci-dessous
   }
   // Le temps observable commence au premier etat connu : un detecteur ajoute en cours de periode n'etait pas « non surveille » avant.
   const first = intervals.length > 0 ? Math.max(intervals[0].start, from) : cap;

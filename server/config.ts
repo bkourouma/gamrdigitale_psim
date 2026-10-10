@@ -140,6 +140,14 @@ export const config = {
       return { user: gw.user, password: gw.password, detectors: gw.detectors as string[] };
     });
   })(),
+  // Passerelle deconnectee du broker depuis N secondes : ses capteurs sont « non surveilles », avec UN avertissement, au lieu
+  // d'etre declares muets un par un (voir gatewaylink.ts). 0 = desactive. A son retour, le silence de chaque capteur n'est
+  // compte qu'apres le delai de grace (le temps de renvoyer les alertes gardees pendant la coupure).
+  gatewayTimeoutS: num('PSIM_GATEWAY_TIMEOUT_S', 120, 0, 86_400),
+  gatewayGraceS: num('PSIM_GATEWAY_GRACE_S', 120, 0, 3_600),
+  // Messages dates (`ts`) et rejouables (`msgId`, voir ingestmeta.ts) : age maximal d'un message date (au-dela : refuse),
+  // qui est aussi la duree de memoire des `msgId` deja traites. 7 jours par defaut.
+  ingestMaxAgeS: num('PSIM_INGEST_MAX_AGE_S', 7 * 86_400, 60, 30 * 86_400),
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',
   dataDir: env.PSIM_DATA_DIR ?? 'data',

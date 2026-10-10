@@ -39,7 +39,7 @@ export function allows(patterns: readonly string[], id: string): boolean {
   return patterns.some((p) => (p.endsWith('*') ? id.startsWith(p.slice(0, -1)) : p === id));
 }
 
-type PsimClient = { psimAllowed?: readonly string[] | null; conn?: Socket };
+type PsimClient = { psimAllowed?: readonly string[] | null; psimGateway?: string; conn?: Socket };
 
 /**
  * Broker MQTT embarque. Les detecteurs (ou leur passerelle) publient sur
@@ -53,7 +53,16 @@ type PsimClient = { psimAllowed?: readonly string[] | null; conn?: Socket };
  */
 export async function startBroker(
   engine: Engine,
-  opts: { host: string; port: number; user: string; password: string; tls?: { cert: string; key: string } | null; gateways?: Gateway[] },
+  opts: {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    tls?: { cert: string; key: string } | null;
+    gateways?: Gateway[];
+    /** Connexion / deconnexion d'un client authentifie avec un compte de passerelle (voir gatewaylink.ts). Jamais bloquant. */
+    onGateway?: (user: string, connected: boolean, client: object) => void;
+  },
 ): Promise<Broker> {
   const aedes = await Aedes.createBroker({ connectTimeout: 10_000, maxClientsIdLength: 64 });
   const gateways = opts.gateways ?? [];
@@ -78,6 +87,7 @@ export async function startBroker(
     }
     if (gateway && gatewayOk) {
       (client as unknown as PsimClient).psimAllowed = gateway.detectors;
+      (client as unknown as PsimClient).psimGateway = gateway.user;
       return done(null, true);
     }
     recent.push(t);
@@ -105,6 +115,19 @@ export async function startBroker(
     const detectorsOnly = topic === 'psim/detectors/+/state' || TOPIC.test(topic);
     done(null, allowed === null && detectorsOnly ? sub : null);
   };
+
+  // Liaison des passerelles : leurs capteurs ne sont pas declares muets un par un quand c'est la passerelle qui est coupee.
+  const gatewayEvent = (client: unknown, connected: boolean) => {
+    const user = (client as PsimClient).psimGateway;
+    if (!user || !opts.onGateway) return;
+    try {
+      opts.onGateway(user, connected, client as object);
+    } catch (err) {
+      console.error('[mqtt] liaison passerelle :', err);
+    }
+  };
+  aedes.on('client', (client) => gatewayEvent(client, true));
+  aedes.on('clientDisconnect', (client) => gatewayEvent(client, false));
 
   aedes.on('publish', (packet) => {
     const match = TOPIC.exec(packet.topic);

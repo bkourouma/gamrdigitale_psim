@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS incident_snapshot (
   file TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS snapshot_by_incident ON incident_snapshot(incident_id);
+-- Messages d'equipements deja traites, par leur identifiant msgId (voir ingestmeta.ts) : le renvoi d'une passerelle apres
+-- une coupure est sans effet. Fenetre et taille bornees, purge automatique. Pas de cle etrangere : purge par anciennete.
+CREATE TABLE IF NOT EXISTS ingest_dedup (
+  device_id TEXT NOT NULL,
+  msg_id TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY (device_id, msg_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ingest_dedup_by_device ON ingest_dedup(device_id, received_at);
+CREATE INDEX IF NOT EXISTS ingest_dedup_by_time ON ingest_dedup(received_at);
 -- Journal des notifications envoyees (e-mail, Telegram, webhook) et de leur escalade.
 CREATE TABLE IF NOT EXISTS notification_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,6 +233,11 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'device', column: 'heartbeat_s', definition: 'INTEGER' },
   // Etage de l'equipement ; rempli par migrateFloors (etage le plus bas) pour les equipements existants.
   { table: 'device', column: 'floor_id', definition: 'INTEGER REFERENCES floor(id)' },
+  // Heure reelle (`ts`) du dernier message qui a fixe l'etat : un message plus ancien ne l'ecrase pas (voir engine.ts, ingest).
+  { table: 'device', column: 'state_ts', definition: 'INTEGER' },
+  // Passerelle injoignable (voir gatewaylink.ts) : depuis quand le capteur n'est plus surveille, et son etat d'avant.
+  { table: 'device', column: 'link_lost_at', definition: 'INTEGER' },
+  { table: 'device', column: 'link_lost_status', definition: 'TEXT' },
   // Journal infalsifiable : chaine d'empreintes (voir auditchain.ts). NULL = entree anterieure au mecanisme.
   { table: 'audit_log', column: 'prev_hash', definition: 'TEXT' },
   { table: 'audit_log', column: 'hash', definition: 'TEXT' },
@@ -230,6 +245,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'incident', column: 'confirmation_reason', definition: 'TEXT' },
   { table: 'incident', column: 'hint', definition: 'TEXT' },
   { table: 'incident', column: 'hint_details', definition: 'TEXT' },
+  // Alarme recue en differe (passerelle qui renvoie apres une coupure) : heure de reception ; NULL = recue en direct.
+  { table: 'incident', column: 'received_at', definition: 'INTEGER' },
   // Destinataire limite a certaines zones (JSON) ; NULL = toutes les alarmes.
   { table: 'notification_recipient', column: 'zones', definition: 'TEXT' },
   // Format d'affichage de l'image d'une camera (voir video.ts, scaleFilter) : auto, 16:9, 4:3 ou source.
