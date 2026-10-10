@@ -113,6 +113,9 @@ export function createNetworkTargets(options: NetworkTargetsOptions) {
     if (db.prepare('SELECT 1 AS x FROM detector_source WHERE device_id = ?').get(id)) {
       throw new PsimError(409, "Cet equipement lit la detection d'un enregistreur : retirer d'abord cette source");
     }
+    if (db.prepare('SELECT 1 AS x FROM tuya_source WHERE device_id = ?').get(id)) {
+      throw new PsimError(409, "Cet equipement lit un capteur Tuya (Smart Life) : retirer d'abord cette source");
+    }
     const host = cleanHost(input.host);
     const port = cleanPort(input.port);
     const known = db.prepare('SELECT 1 AS x FROM network_target WHERE device_id = ?').get(id);

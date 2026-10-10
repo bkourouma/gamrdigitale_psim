@@ -552,6 +552,10 @@ export function createDahuaEvents(deps: DahuaDeps) {
     if (!detector || detector.kind !== 'detector') throw new PsimError(404, 'Detecteur introuvable');
     if (detector.category !== 'intrusion') throw new PsimError(400, "Les evenements Dahua alimentent un detecteur d'INTRUSION (armement, planning de nuit) : changer d'abord sa categorie");
     if (!detector.zone) throw new PsimError(400, "Donner d'abord une zone au detecteur (ex. Portail) : le planning de nuit et les destinataires s'appliquent par zone");
+    // Une seule source par detecteur (un capteur Tuya de contact ou de mouvement est aussi un detecteur d'intrusion).
+    if (db.prepare('SELECT 1 AS x FROM tuya_source WHERE device_id = ?').get(detectorId)) {
+      throw new PsimError(409, "Ce detecteur lit deja un capteur Tuya (Smart Life) : retirer d'abord cette source");
+    }
     const cameraId = typeof input.cameraId === 'string' ? input.cameraId : '';
     const channel = input.channel;
     if (typeof channel !== 'number' || !Number.isInteger(channel) || channel < 1 || channel > 128) throw new PsimError(400, 'Voie invalide (1 a 128)');

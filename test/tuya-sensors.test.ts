@@ -5,15 +5,17 @@
  * requetes comme dans test/tuya.test.ts ; il sert aussi les specifications des appareils (echelle des mesures).
  */
 import assert from 'node:assert/strict';
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { createDahuaEvents } from '../server/dahua.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
+import { createNetworkTargets } from '../server/networkhealth.ts';
 import { seedDemo } from '../server/seed.ts';
 import { createTuya, readAny, TUYA_SUPERVISION_S } from '../server/tuya.ts';
 import type { TuyaDevice } from '../server/tuya.ts';
@@ -437,6 +439,31 @@ describe('Tuya capteurs : du cloud au moteur du PSIM', () => {
     assert.throws(() => t.engine.updateDevice('admin', 'I-01', { category: 'environment' }), /garde sa categorie/);
     t.tuya.removeSource('admin', 'I-01');
     assert.equal(t.engine.updateDevice('admin', 'I-01', { category: 'environment' }).category, 'environment');
+    t.tuya.stop();
+  });
+
+  it('une seule source par detecteur : Tuya exclut la supervision reseau (environnement) et un enregistreur Dahua (intrusion)', () => {
+    // Integration etape 3 : Tuya alimente desormais aussi les categories environnement et intrusion, deja servies par la
+    // supervision reseau et par Dahua. Les deux ensemble rendaient le detecteur impossible a regler (delai « aucun message »
+    // exige par Tuya, interdit par la supervision reseau) : la seconde source est refusee, dans les deux sens.
+    const t = setup();
+    put(dev('wsdcg', [dp('va_temperature', 215)]));
+    const network = createNetworkTargets({ db: t.db, audit: t.engine.audit, probe: async () => true });
+    network.set('admin', 'E-01', { host: '192.0.2.10', port: 443 });
+    assert.throws(() => t.tuya.setSource('admin', 'E-01', { deviceId: DEV }), /supervise par le reseau/);
+    network.remove('admin', 'E-01');
+    t.tuya.setSource('admin', 'E-01', { deviceId: DEV });
+    assert.throws(() => network.set('admin', 'E-01', { host: '192.0.2.10', port: 443 }), /capteur Tuya/);
+    // Dahua : refuse sur un detecteur d'intrusion qui lit deja un capteur Tuya, et inversement
+    const dahua = createDahuaEvents({ db: t.db, engine: t.engine, key: randomBytes(32), log: () => {}, isArmed: () => true });
+    const DOOR = 'd2b2c3d4e5f6a7b8c9d0e1';
+    put({ ...dev('mcs', [dp('doorcontact_state', false)]), id: DOOR });
+    t.tuya.setSource('admin', 'I-01', { deviceId: DOOR });
+    assert.throws(() => dahua.setSource('admin', 'I-01', { cameraId: 'C-01', channel: 1, events: ['SmartMotionHuman'] }), /capteur Tuya/);
+    t.tuya.removeSource('admin', 'I-01');
+    t.db.prepare("INSERT INTO detector_source (device_id, kind, camera_id, channel, events) VALUES ('I-01', 'dahua', 'C-01', 1, 'SmartMotionHuman')").run();
+    assert.throws(() => t.tuya.setSource('admin', 'I-01', { deviceId: DOOR }), /enregistreur Dahua/);
+    dahua.stop();
     t.tuya.stop();
   });
 

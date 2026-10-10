@@ -398,6 +398,14 @@ export function createTuya(deps: TuyaDeps) {
     const detector = engine.getDevice(detectorId);
     if (!detector || detector.kind !== 'detector') throw new PsimError(404, 'Detecteur introuvable');
     if (!TUYA_PSIM_CATEGORIES.includes(detector.category)) throw new PsimError(400, 'Un capteur Tuya alimente un detecteur incendie, intrusion, acces, environnement ou personnes : changer d\'abord sa categorie');
+    // Une seule source par detecteur : un enregistreur Dahua (intrusion) ou une supervision reseau (environnement) imposent
+    // leurs propres regles de supervision (la supervision reseau desactive le delai « aucun message », Tuya l'exige).
+    if (db.prepare('SELECT 1 AS x FROM detector_source WHERE device_id = ?').get(detectorId)) {
+      throw new PsimError(409, "Ce detecteur lit deja la detection d'un enregistreur Dahua : retirer d'abord cette source");
+    }
+    if (db.prepare('SELECT 1 AS x FROM network_target WHERE device_id = ?').get(detectorId)) {
+      throw new PsimError(409, "Cet equipement est supervise par le reseau : retirer d'abord sa supervision reseau");
+    }
     needClient();
     const tuyaId = cleanId(input.deviceId);
     // Type de capteur : absent ou « auto » = d'apres la categorie du produit Tuya.
