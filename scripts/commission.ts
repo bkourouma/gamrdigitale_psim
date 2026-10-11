@@ -7,6 +7,7 @@
  *   npm run commission -- --telegram-chat 123456       + envoie un message de test Telegram
  *   npm run commission -- --whatsapp-to +2250700000000 + envoie un message de test WhatsApp (Meta) a ce numero
  *   npm run commission -- --callmebot-test             + envoie un message de test CallMeBot au niveau 1
+ *   npm run commission -- --vonage-to +2250700000000   + passe UN appel de test Vonage a ce numero (sans option : verifie seulement les identifiants)
  *   npm run commission -- --skip-cameras                ne teste pas les cameras (plus rapide)
  *   npm run commission -- watch              ecoute les detecteurs : montre ce que le PSIM comprend de chaque message
  *        options : --minutes 10 (duree)  --until-all (s'arrete quand tous ont parle)  --allow-missing
@@ -19,7 +20,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  checkBackups, checkCameras, checkClock, checkDisk, checkFfmpeg, checkHeartbeat, checkInventory, checkJournal, checkCallmebot, checkSmtp, checkTelegram, checkTls, checkWebhooks, checkWhatsapp, exitCodeFor, formatChecks, safely, schemaProblem,
+  checkBackups, checkCameras, checkClock, checkDisk, checkFfmpeg, checkHeartbeat, checkInventory, checkJournal, checkCallmebot, checkSmtp, checkTelegram, checkTls, checkVonage, checkWebhooks, checkWhatsapp, exitCodeFor, formatChecks, safely, schemaProblem,
 } from './commission/checks.ts';
 import type { Check } from './commission/checks.ts';
 import { buildSheet } from './commission/sheet.ts';
@@ -71,17 +72,20 @@ async function runChecks(args: string[]): Promise<number> {
   checks.push(await safely('ffmpeg', 'ffmpeg', () => checkFfmpeg(config.ffmpegPath)));
   checks.push(await safely('smtp', 'E-mail (SMTP)', () => checkSmtp(n.smtp, optionValue(args, '--send-mail'))));
   checks.push(await safely('telegram', 'Telegram', () => checkTelegram(n.telegram, optionValue(args, '--telegram-chat'))));
-  // Destinataires WhatsApp saisis dans l'interface (base, lecture seule) : comptes avec ceux du .env.
+  // Destinataires WhatsApp et d'appel saisis dans l'interface (base, lecture seule) : comptes avec ceux du .env.
   const recipientsDb = openReadOnly(dataDir);
-  let whatsappInDb = 0;
+  const inDb = { whatsapp: 0, vonage: 0 };
   try {
-    whatsappInDb = recipientsDb ? (recipientsDb.prepare("SELECT COUNT(*) AS n FROM notification_recipient WHERE channel = 'whatsapp' AND active = 1").get() as { n: number }).n : 0;
+    for (const channel of ['whatsapp', 'vonage'] as const) {
+      inDb[channel] = recipientsDb ? (recipientsDb.prepare('SELECT COUNT(*) AS n FROM notification_recipient WHERE channel = ? AND active = 1').get(channel) as { n: number }).n : 0;
+    }
   } catch {
-    // base ancienne : pas encore de destinataire WhatsApp possible
+    // base ancienne : pas encore de destinataire WhatsApp ni d'appel possible
   } finally {
     recipientsDb?.close();
   }
-  checks.push(await safely('whatsapp', 'WhatsApp', () => checkWhatsapp(n.whatsapp, n.recipients.whatsapp, { to: optionValue(args, '--whatsapp-to'), dbRecipients: whatsappInDb })));
+  checks.push(await safely('whatsapp', 'WhatsApp', () => checkWhatsapp(n.whatsapp, n.recipients.whatsapp, { to: optionValue(args, '--whatsapp-to'), dbRecipients: inDb.whatsapp })));
+  checks.push(await safely('vonage', 'Appel telephonique (Vonage)', () => checkVonage(n.vonage, n.recipients.vonage, { to: optionValue(args, '--vonage-to'), dbRecipients: inDb.vonage })));
   checks.push(await safely('callmebot', 'WhatsApp (CallMeBot)', () => checkCallmebot(n.callmebot, n.recipients.callmebot, args.includes('--callmebot-test'))));
   checks.push(await safely('heartbeat', 'Supervision externe', () => checkHeartbeat(config.heartbeatUrl)));
 

@@ -350,8 +350,8 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
     const recipients = createRecipientsService({
       db,
       audit: () => {},
-      env: { email: [[], []], telegram: [[], []], whatsapp: [['+2250100000001'], []], callmebot: [[], []], webhook: [[], []] },
-      available: { email: false, telegram: false, whatsapp: true, callmebot: false, webhook: true },
+      env: { email: [[], []], telegram: [[], []], whatsapp: [['+2250100000001'], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] },
+      available: { email: false, telegram: false, whatsapp: true, callmebot: false, vonage: false, webhook: true },
     });
     const gardien = recipients.add('admin', { channel: 'whatsapp', address: '+2250700000002', level: 1, label: 'Gardien', zones: ['Portail'] });
     assert.deepEqual(gardien.zones, ['Portail']);
@@ -393,8 +393,8 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
     const recipients = createRecipientsService({
       db,
       audit: () => {},
-      env: { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], webhook: [[], []] },
-      available: { email: false, telegram: false, whatsapp: true, callmebot: false, webhook: true },
+      env: { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] },
+      available: { email: false, telegram: false, whatsapp: true, callmebot: false, vonage: false, webhook: true },
     });
     return { db, engine, recipients };
   }
@@ -409,6 +409,7 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
         telegram: { token: '', apiBase: '' },
         whatsapp: { apiBase: 'http://127.0.0.1:9', token: 'jeton', phoneId: '123', template: 'psim_alerte', language: 'fr' },
         callmebot: { apiBase: '' },
+        vonage: { apiBase: '', applicationId: '', privateKey: '', from: '', language: 'fr-FR' },
         webhookSecret: '',
       },
       recipients.effective,

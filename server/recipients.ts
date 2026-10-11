@@ -9,10 +9,10 @@ import type { DatabaseSync } from 'node:sqlite';
 import { PsimError } from './engine.ts';
 import { PHONE_E164, maskCallmebot, maskPhone } from './notifications.ts';
 
-export type ChannelId = 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook';
+export type ChannelId = 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'vonage' | 'webhook';
 export type Level = 1 | 2;
 
-const CHANNELS: ChannelId[] = ['email', 'telegram', 'whatsapp', 'callmebot', 'webhook'];
+const CHANNELS: ChannelId[] = ['email', 'telegram', 'whatsapp', 'callmebot', 'vonage', 'webhook'];
 const MAX_RECIPIENTS = 100;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -66,7 +66,7 @@ export interface RecipientsDeps {
 
 export function maskAddress(channel: ChannelId, address: string): string {
   if (channel === 'email') return address.replace(/^(.).*(@.*)$/, '$1***$2');
-  if (channel === 'whatsapp') return maskPhone(address);
+  if (channel === 'whatsapp' || channel === 'vonage') return maskPhone(address);
   if (channel === 'callmebot') return maskCallmebot(address);
   if (channel === 'webhook') {
     try {
@@ -87,6 +87,9 @@ export function validateAddress(channel: ChannelId, raw: unknown): string {
   }
   if (channel === 'whatsapp' && !PHONE_E164.test(address)) {
     throw new PsimError(400, 'Numero WhatsApp invalide : format international, sans espace (ex. +2250700000000)');
+  }
+  if (channel === 'vonage' && !PHONE_E164.test(address)) {
+    throw new PsimError(400, 'Numero de telephone invalide : format international, sans espace (ex. +2250700000000)');
   }
   if (channel === 'telegram' && !/^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/.test(address)) {
     throw new PsimError(400, "Identifiant Telegram invalide (numero de conversation, ou @canal)");
@@ -202,7 +205,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
 
   function add(actor: string, input: Record<string, unknown>): RecipientView {
     const channel = input.channel as ChannelId;
-    if (!CHANNELS.includes(channel)) throw new PsimError(400, 'Canal invalide (email, telegram, whatsapp ou webhook)');
+    if (!CHANNELS.includes(channel)) throw new PsimError(400, 'Canal invalide (email, telegram, whatsapp, vonage ou webhook)');
     if (channel === 'callmebot') {
       throw new PsimError(409, 'Les destinataires CallMeBot se declarent dans le .env (PSIM_NOTIFY_CALLMEBOT_L1 / L2) : chacun a sa cle, qui est secrete');
     }
@@ -211,6 +214,7 @@ export function createRecipientsService(deps: RecipientsDeps) {
         email: 'Canal e-mail non configure (PSIM_SMTP_HOST et PSIM_SMTP_FROM dans le .env)',
         telegram: 'Canal Telegram non configure (PSIM_TELEGRAM_TOKEN dans le .env)',
         whatsapp: 'Canal WhatsApp non configure (PSIM_WHATSAPP_TOKEN et PSIM_WHATSAPP_PHONE_ID dans le .env)',
+        vonage: 'Canal appel telephonique non configure (PSIM_VONAGE_APPLICATION_ID, PSIM_VONAGE_PRIVATE_KEY_FILE et PSIM_VONAGE_FROM dans le .env)',
       };
       throw new PsimError(409, missing[channel] ?? 'Canal non configure');
     }

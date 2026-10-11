@@ -323,8 +323,8 @@ describe('WhatsApp : destinataires, configuration et base', () => {
     createRecipientsService({
       db: openDb(':memory:'),
       audit: () => {},
-      env: { email: [[], []], telegram: [[], []], whatsapp: [[PHONE], []], callmebot: [['+2250500000001:cleX123'], []], webhook: [[], []] },
-      available: { email: true, telegram: true, whatsapp, callmebot: false, webhook: true },
+      env: { email: [[], []], telegram: [[], []], whatsapp: [[PHONE], []], callmebot: [['+2250500000001:cleX123'], []], vonage: [[], []], webhook: [[], []] },
+      available: { email: true, telegram: true, whatsapp, callmebot: false, vonage: false, webhook: true },
     });
 
   it("l'interface ajoute des numeros WhatsApp (canal configure), refuse un numero mal ecrit et toute entree CallMeBot", () => {

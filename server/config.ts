@@ -1,3 +1,7 @@
+import { createPrivateKey } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 const env = process.env;
 
 const host = env.PSIM_HOST ?? '127.0.0.1';
@@ -43,6 +47,41 @@ function whatsappList(name: string, withKey: boolean): string[] {
   return entries;
 }
 
+/** Numeros de telephone (appels vocaux) : une entree mal formee est une erreur de demarrage, avec sa position. */
+function phoneList(name: string): string[] {
+  const entries = list(name);
+  entries.forEach((entry, index) => {
+    if (!/^\+\d{8,15}$/.test(entry)) throw new Error(`${name} : l'entree n°${index + 1} est invalide. Format attendu : +<indicatif><numero>, sans espace (ex. +2250700000000), entrees separees par des virgules.`);
+  });
+  return entries;
+}
+
+/**
+ * Appels vocaux Vonage : identifiant de l'application, cle privee (fichier PEM) et numero appelant vont ensemble. Une cle
+ * illisible est une erreur de demarrage (jamais des appels qui ne partiraient pas), et son contenu n'est jamais cite.
+ */
+function vonageConfig(): { apiBase: string; applicationId: string; privateKey: string; from: string; language: string } {
+  const applicationId = (env.PSIM_VONAGE_APPLICATION_ID ?? '').trim();
+  const keyFile = (env.PSIM_VONAGE_PRIVATE_KEY_FILE ?? '').trim();
+  const from = (env.PSIM_VONAGE_FROM ?? '').trim().replace(/^\+/, '');
+  const language = (env.PSIM_VONAGE_LANG ?? 'fr-FR').trim() || 'fr-FR';
+  const apiBase = env.PSIM_VONAGE_API ?? 'https://api.nexmo.com';
+  if (!applicationId && !keyFile && !from) return { apiBase, applicationId, privateKey: '', from, language };
+  if (!applicationId || !keyFile || !from) {
+    throw new Error('PSIM_VONAGE_APPLICATION_ID, PSIM_VONAGE_PRIVATE_KEY_FILE et PSIM_VONAGE_FROM vont ensemble : renseigner les trois, ou aucun.');
+  }
+  if (!/^\d{6,15}$/.test(from)) throw new Error('PSIM_VONAGE_FROM est invalide : le numero Vonage qui appelle, chiffres seulement avec l\'indicatif (ex. 14155550100).');
+  if (!/^[a-z]{2,3}-[A-Z]{2}$/.test(language)) throw new Error(`PSIM_VONAGE_LANG="${env.PSIM_VONAGE_LANG}" est invalide : une langue de synthese vocale comme fr-FR est attendue.`);
+  let privateKey: string;
+  try {
+    privateKey = readFileSync(resolve(import.meta.dirname, '..', keyFile), 'utf8');
+    if (createPrivateKey(privateKey).asymmetricKeyType !== 'rsa') throw new Error('pas RSA');
+  } catch {
+    throw new Error('PSIM_VONAGE_PRIVATE_KEY_FILE : fichier introuvable, ou ce n\'est pas la cle privee RSA (PEM) generee avec l\'application Vonage.');
+  }
+  return { apiBase, applicationId, privateKey, from, language };
+}
+
 /** Liste separee par des virgules ou des espaces ; absente = liste vide. */
 function list(name: string): string[] {
   return (process.env[name] ?? '')
@@ -52,11 +91,12 @@ function list(name: string): string[] {
 }
 
 /** Canaux dont les destinataires dependent d'une configuration (jeton, serveur) : libelle et presence de cette configuration. */
-export function channelSetup(notify: typeof config.notify): { id: 'email' | 'telegram' | 'whatsapp'; label: string; configured: boolean }[] {
+export function channelSetup(notify: typeof config.notify): { id: 'email' | 'telegram' | 'whatsapp' | 'vonage'; label: string; configured: boolean }[] {
   return [
     { id: 'email', label: 'e-mail', configured: Boolean(notify.smtp.host && notify.smtp.from) },
     { id: 'telegram', label: 'Telegram', configured: Boolean(notify.telegram.token) },
     { id: 'whatsapp', label: 'WhatsApp', configured: Boolean(notify.whatsapp.token && notify.whatsapp.phoneId) },
+    { id: 'vonage', label: 'appel telephonique (Vonage)', configured: Boolean(notify.vonage.applicationId && notify.vonage.privateKey && notify.vonage.from) },
   ];
 }
 
@@ -66,6 +106,7 @@ export function serviceUrls(notify: typeof config.notify): { name: string; url: 
     { name: 'PSIM_TELEGRAM_API', url: notify.telegram.apiBase },
     { name: 'PSIM_WHATSAPP_API', url: notify.whatsapp.apiBase },
     { name: 'PSIM_CALLMEBOT_API', url: notify.callmebot.apiBase },
+    { name: 'PSIM_VONAGE_API', url: notify.vonage.apiBase },
   ];
 }
 
@@ -212,12 +253,16 @@ export const config = {
     },
     // WhatsApp par CallMeBot (gratuit, usage personnel, sans garantie) : une cle par telephone, dans le .env seulement.
     callmebot: { apiBase: process.env.PSIM_CALLMEBOT_API ?? 'https://api.callmebot.com' },
+    // Appels vocaux Vonage (API Voice) : message lu par synthese vocale. Identifiant d'application, cle privee (fichier) et
+    // numero appelant vont ensemble ; destinataires : numeros ci-dessous ou interface.
+    vonage: vonageConfig(),
     webhookSecret: process.env.PSIM_WEBHOOK_SECRET ?? '',
     recipients: {
       email: [list('PSIM_NOTIFY_EMAIL_L1'), list('PSIM_NOTIFY_EMAIL_L2')],
       telegram: [list('PSIM_NOTIFY_TELEGRAM_L1'), list('PSIM_NOTIFY_TELEGRAM_L2')],
       whatsapp: [whatsappList('PSIM_NOTIFY_WHATSAPP_L1', false), whatsappList('PSIM_NOTIFY_WHATSAPP_L2', false)],
       callmebot: [whatsappList('PSIM_NOTIFY_CALLMEBOT_L1', true), whatsappList('PSIM_NOTIFY_CALLMEBOT_L2', true)],
+      vonage: [phoneList('PSIM_NOTIFY_VONAGE_L1'), phoneList('PSIM_NOTIFY_VONAGE_L2')],
       webhook: [list('PSIM_NOTIFY_WEBHOOK_L1'), list('PSIM_NOTIFY_WEBHOOK_L2')],
     },
   },

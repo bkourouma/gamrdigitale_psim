@@ -1,5 +1,5 @@
 /**
- * Notifications (e-mail, Telegram, WhatsApp officiel ou CallMeBot, webhook) avec escalade.
+ * Notifications (e-mail, Telegram, WhatsApp officiel ou CallMeBot, appel vocal Vonage, webhook) avec escalade.
  *
  * Regles de conception :
  *  - une alarme notifie TOUJOURS, meme « a confirmer » : les regles anti-fausses alarmes qualifient,
@@ -8,7 +8,7 @@
  *  - escalade : si personne n'acquitte, le niveau 2 est prevenu, puis des rappels (nombre plafonne) ;
  *  - aucun secret (mot de passe SMTP, jeton, adresse de webhook complete) dans les journaux.
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, createSign, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import nodemailer from 'nodemailer';
 import type { Engine } from './engine.ts';
@@ -37,8 +37,10 @@ export interface Scope {
 }
 
 export interface Channel {
-  id: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook' | string;
+  id: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'vonage' | 'webhook' | string;
   label: string;
+  /** Types de message que ce canal envoie ; absent = tous. Un appel vocal ne sonne que pour une alarme (jamais pour un redemarrage ou une alerte de compte). */
+  accepts?(kind: Kind): boolean;
   recipients(level: Level, scope?: Scope): string[];
   send(message: Message, recipient: string): Promise<void>;
   sendImages?(message: Message, recipient: string, images: ImageAttachment[]): Promise<void>;
@@ -345,6 +347,97 @@ export function callmebotChannel(cfg: { apiBase: string }, recipientsSource: Rec
   };
 }
 
+export interface VonageConfig {
+  /** Ex. https://api.nexmo.com */
+  apiBase: string;
+  applicationId: string;
+  /** Cle privee RSA (PEM) generee avec l'application Vonage : secret. */
+  privateKey: string;
+  /** Numero Vonage qui appelle, chiffres seulement (sans « + »). */
+  from: string;
+  /** Langue de la synthese vocale, ex. fr-FR. */
+  language: string;
+}
+
+/** Messages qui font sonner un telephone : les alarmes et leur escalade, et l'essai. Le reste part par les autres canaux. */
+const VONAGE_KINDS: Kind[] = ['opened', 'escalated', 'unacked', 'reminder', 'test'];
+
+/** Jeton d'acces Vonage : JWT RS256 signe avec la cle privee de l'application, valable 5 minutes. */
+export function vonageToken(cfg: Pick<VonageConfig, 'applicationId' | 'privateKey'>, nowMs = Date.now()): string {
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
+  const iat = Math.floor(nowMs / 1000);
+  const body = `${b64({ typ: 'JWT', alg: 'RS256' })}.${b64({ application_id: cfg.applicationId, iat, jti: randomUUID(), exp: iat + 300 })}`;
+  try {
+    return `${body}.${createSign('RSA-SHA256').update(body).sign(cfg.privateKey).toString('base64url')}`;
+  } catch {
+    throw new Error('Vonage : cle privee illisible (PSIM_VONAGE_PRIVATE_KEY_FILE)');
+  }
+}
+
+/**
+ * Texte lu au telephone : court, sans majuscules (la synthese epelerait les mots en capitales), sans tirets ni signes qui
+ * sont lus ou prises pour du balisage vocal (SSML). Dit l'alarme, le lieu, et quoi faire.
+ */
+export function spokenText(message: Message): string {
+  if (message.kind === 'test') return "Ceci est un appel de test du P S I M. Aucune action n'est requise.";
+  const plain = (s: string) => s.replace(/[<>&"]/g, ' ').replace(/\s+-\s+/g, ', ').replace(/\s+/g, ' ').trim().toLocaleLowerCase('fr');
+  const place = [message.data.zone, message.data.floor].filter((v): v is string => typeof v === 'string' && v !== '').map(plain).join(', ');
+  return clip(`Alerte P S I M. ${plain(message.subject.replace(/^\[PSIM\]\s*/, ''))}.${place ? ` Lieu : ${place}.` : ''} Ouvrez le P S I M pour traiter l'alarme.`, 400, '...');
+}
+
+/** Erreurs les plus probables de l'API Voice de Vonage, en clair (le reste : le detail de Vonage, raccourci). */
+const VONAGE_ERRORS: Record<number, string> = {
+  401: "identifiants refuses (PSIM_VONAGE_APPLICATION_ID, ou cle privee qui n'est pas celle de cette application)",
+  402: 'credit Vonage insuffisant',
+  403: "appel interdit : l'application n'a pas la capacite Voice, ou le compte est en essai (numeros a verifier d'abord)",
+  422: "appel refuse : numero appele ou numero appelant (PSIM_VONAGE_FROM) non valide pour ce compte",
+  429: "trop d'appels (limite Vonage)",
+};
+
+/**
+ * Appel vocal par Vonage (API Voice) : le telephone sonne et un message de synthese vocale est lu deux fois. « Accepte par
+ * Vonage » n'est pas « decroche » : l'appel est lance, la personne peut ne pas repondre ; c'est pourquoi un appel s'ajoute aux
+ * autres canaux sans jamais les remplacer. Pas d'accuse de reception par touche : la personne acquitte dans le PSIM.
+ */
+export function vonageChannel(cfg: VonageConfig, recipientsSource: Recipients): Channel | null {
+  const source = resolveRecipients(recipientsSource);
+  if (!cfg.applicationId || !cfg.privateKey || !cfg.from) return null;
+  return {
+    id: 'vonage',
+    label: 'Appel téléphonique', // identique au libelle de l'interface (web/notifications.js), qui s'en sert pour l'icone
+    accepts: (kind) => VONAGE_KINDS.includes(kind),
+    recipients: (level, scope) => source(level, scope).filter((r) => PHONE_E164.test(r)),
+    mask: maskPhone,
+    async send(message, phone) {
+      const token = vonageToken(cfg);
+      const body = {
+        to: [{ type: 'phone', number: phone.replace(/^\+/, '') }],
+        from: { type: 'phone', number: cfg.from },
+        ncco: [{ action: 'talk', text: spokenText(message), language: cfg.language, loop: 2 }],
+      };
+      let res: Response;
+      try {
+        res = await fetch(`${cfg.apiBase.replace(/\/$/, '')}/v1/calls`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+          redirect: 'error',
+        });
+      } catch {
+        throw new Error('Vonage injoignable');
+      }
+      const reply = (await res.json().catch(() => ({}))) as { uuid?: string; title?: string; detail?: string };
+      if (!res.ok) {
+        const clean = (v: unknown) => clip(String(v ?? '').split(token).join('***'), 120);
+        const why = VONAGE_ERRORS[res.status] ?? (clean(reply.detail || reply.title) || (res.status >= 500 ? 'Vonage indisponible' : 'refuse par Vonage'));
+        throw new Error(`Vonage HTTP ${res.status} : ${why}`);
+      }
+      if (!reply.uuid) throw new Error("Vonage : reponse sans identifiant d'appel");
+    },
+  };
+}
+
 /** Le canal webhook n'a pas de configuration propre : il existe toujours, ses destinataires peuvent etre ajoutes a chaud. */
 export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipients): Channel {
   const source = resolveRecipients(recipientsSource);
@@ -389,6 +482,7 @@ export interface ChannelsConfig {
   telegram: { token: string; apiBase: string };
   whatsapp: WhatsappConfig;
   callmebot: { apiBase: string };
+  vonage: VonageConfig;
   webhookSecret: string;
 }
 
@@ -396,12 +490,13 @@ export interface ChannelsConfig {
  * Les canaux du serveur, chacun relisant ses destinataires a chaque envoi AVEC la portee de l'envoi : un destinataire
  * limite a la zone Portail ne recoit que les alarmes du portail. Seule construction utilisee par le serveur (et les tests).
  */
-export function buildChannels(cfg: ChannelsConfig, source: (channel: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook', level: Level, scope?: Scope) => string[]): Channel[] {
+export function buildChannels(cfg: ChannelsConfig, source: (channel: 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'vonage' | 'webhook', level: Level, scope?: Scope) => string[]): Channel[] {
   return [
     emailChannel({ ...cfg.smtp }, (level, scope) => source('email', level, scope)),
     telegramChannel({ token: cfg.telegram.token, apiBase: cfg.telegram.apiBase }, (level, scope) => source('telegram', level, scope)),
     whatsappChannel({ ...cfg.whatsapp }, (level, scope) => source('whatsapp', level, scope)),
     callmebotChannel({ apiBase: cfg.callmebot.apiBase }, (level, scope) => source('callmebot', level, scope)),
+    vonageChannel({ ...cfg.vonage }, (level, scope) => source('vonage', level, scope)),
     webhookChannel({ secret: cfg.webhookSecret }, (level, scope) => source('webhook', level, scope)),
   ].filter((c): c is Channel => c !== null);
 }
@@ -571,6 +666,7 @@ export function createNotifier(deps: NotifierDeps) {
     const scope = scopeOf(message);
     const scopes = new Map(levels.map((level) => [level, effectiveScope(level, scope)]));
     for (const channel of channels) {
+      if (channel.accepts && !channel.accepts(message.kind)) continue;
       for (const level of levels) {
         for (const recipient of channel.recipients(level, scopes.get(level))) jobs.push(deliver(channel, recipient, message, level));
       }
