@@ -284,6 +284,30 @@ describe('indice de securite GAMR agrege', () => {
   });
 });
 
+describe('modules du navigateur', () => {
+  it('chaque module de portal/web a une syntaxe valide (app.js ne peut pas etre charge hors navigateur)', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    for (const file of ['app.js', 'groups.js', 'ui.js', 'gauge.js', 'charts.js']) {
+      const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL(`../../portal/web/${file}`, import.meta.url))], { encoding: 'utf8' });
+      assert.equal(r.status, 0, `${file} : ${r.stderr}`);
+    }
+  });
+
+  it('groups.js se charge et fournit les ecrans de groupe', async () => {
+    // @ts-ignore module du navigateur sans declaration de types
+    const groups = await import('../../portal/web/groups.js');
+    for (const name of ['groupHref', 'orgHref', 'crumbs', 'orgTrail', 'soloGroupId', 'clientsPage', 'orgPage', 'groupPage', 'railTree']) assert.equal(typeof groups[name], 'function', name);
+    assert.equal(groups.groupHref(7), '#/group/7');
+    assert.equal(groups.orgHref(3, true), '#/org/3');
+    assert.equal(groups.orgHref(3, false), '#/');
+    const one = { scoped: true, organizations: [{ groups: [{ id: 5 }], ungrouped: null }] };
+    assert.equal(groups.soloGroupId(one), 5, 'un directeur regional a un seul groupe arrive sur ce groupe');
+    assert.equal(groups.soloGroupId({ ...one, scoped: false }), null, 'un compte non limite n est pas redirige');
+    assert.equal(groups.soloGroupId({ scoped: true, organizations: [{ groups: [{ id: 5 }], ungrouped: { siteIds: ['x'] } }] }), null);
+  });
+});
+
 describe('categories energie et personnes', () => {
   /** Un resume dont les incidents ouverts sont d une categorie donnee (le PSIM de l'etape 2 en envoie de ces categories). */
   function withOpen(category: 'energy' | 'people' | 'fire', severity: 'warning' | 'critical' = 'critical'): SiteSummary {

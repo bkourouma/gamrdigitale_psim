@@ -143,6 +143,15 @@ body { background: var(--frame); }
 .nav-org + .nav-org { margin-top: var(--s2); }
 .nav-org-title { margin: var(--s2) var(--s3) 0; font-size: var(--fs-xs); font-weight: 600; color: var(--frame-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-list { display: grid; gap: 2px; }
+/* Menu en arbre (clients à groupes) : un groupe, ses sites et ses sous-groupes en retrait, un filet pour suivre la filiation. */
+.nav-group-item .nav-label { flex: 1 1 auto; }
+.nav-count { flex: none; min-width: 1.6em; padding: 0 6px; border-radius: 999px; background: var(--frame-2); color: var(--frame-ink); font: 700 var(--fs-xs) / 1.6 var(--font-ui); text-align: center; font-variant-numeric: tabular-nums; }
+.nav-nested-list { margin: 2px 0 var(--s1) var(--s4); padding-left: var(--s2); border-left: 1px solid var(--frame-2); }
+.nav-nested { display: block; }
+/* Colonne bornée : un nom long se coupe avec des points de suspension au lieu de déborder du rail. */
+.nav-org, .nav-list { grid-template-columns: minmax(0, 1fr); }
+.nav-list > li { min-width: 0; }
+.nav-loose { margin-top: var(--s3); }
 
 /* L'état de chaque site, dans le rail : icône (sa forme) et couleur ; le mot est donné aux lecteurs d'écran et à l'infobulle. */
 .nav-state { display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none; }
@@ -255,6 +264,18 @@ h1[tabindex='-1']:focus { outline: none; }
   font-size: var(--fs-sm); font-weight: 700; text-decoration: none;
 }
 .crumb:hover { background: var(--brand-soft); text-decoration: none; }
+
+/* Fil d'Ariane des clients à groupes : organisation › groupe › sous-groupe (la page elle-même est le titre). */
+.crumbs { justify-self: start; margin: calc(-1 * var(--s3)) 0 calc(-1 * var(--s2)) calc(-1 * var(--s2)); }
+.crumbs ol { display: flex; flex-wrap: wrap; align-items: center; gap: 0; margin: 0; padding: 0; list-style: none; }
+.crumbs li { display: inline-flex; align-items: center; }
+.crumbs li + li::before { content: '›'; padding: 0 2px; color: var(--ink-2); font-weight: 700; }
+.crumbs a {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: var(--control-h); padding: 0 var(--s2); border-radius: var(--r-sm);
+  font-size: var(--fs-sm); font-weight: 700; text-decoration: none; overflow-wrap: anywhere;
+}
+.crumbs a:hover { background: var(--brand-soft); text-decoration: none; }
 .state-row { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s1); }
 .pill.is-unknown { color: var(--ink-2); }
 .page-foot { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--ink-2); }
@@ -293,6 +314,12 @@ table.data tr.is-alarm:hover { background: var(--alarm-soft); }
 .state-cell { display: grid; gap: 4px; justify-items: start; }
 .state-detail { max-width: 40ch; font-size: var(--fs-xs); color: var(--ink-2); }
 
+/* Niveau groupe : tableau des groupes, « à vérifier », menu en arbre. */
+.groups-table .state-cell { gap: 6px; }
+.panel-attention { border-left: 4px solid var(--fault); }
+.panel-attention .lines li > .icon { color: var(--fault-ink); }
+.panel-attention .lines li.is-state-alarm > .icon { color: var(--alarm); }
+.panel-attention .lines a { font-weight: 700; }
 /* Jauge GAMR en ligne : tube + chiffre (Baloo) + niveau en mot. */
 .risk-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s3); }
 .risk-inline .tube { width: 96px; flex: none; }
@@ -523,7 +550,7 @@ ul.formula li::marker { color: var(--ink-3); }
 @media print {
   body, .app { background: #fff; }
   .app { display: block; }
-  .rail, .scrim, .topbar, .skip, .no-print, .tooltip, .updated, .crumb { display: none !important; }
+  .rail, .scrim, .topbar, .skip, .no-print, .tooltip, .updated, .crumb, .crumbs { display: none !important; }
   .workspace { margin: 0; min-height: 0; border: 0; border-radius: 0; background: #fff; }
   .sheet { max-width: none; padding: 0; gap: 14px; }
   .panel, .site-banner, .fact, .zone-row, tr { break-inside: avoid; }

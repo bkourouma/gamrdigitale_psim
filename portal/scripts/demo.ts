@@ -1,16 +1,16 @@
 /**
  * Portail de demonstration : npm run portal:demo
  *
- * Cree une base VIERGE (portal-demo-data/, recreee a chaque lancement) avec deux clients, cinq sites a des etats differents
+ * Cree une base VIERGE (portal-demo-data/, recreee a chaque lancement) avec trois clients (dont une banque a deux regions), treize sites a des etats differents
  * et un historique de 35 jours produit par le vrai moteur du PSIM, puis sert le portail sur http://127.0.0.1:4301.
- * Comptes : prestataire, diallo (direction), kaloum (responsable d'un site), autre (autre client) ; mot de passe : voir la sortie.
+ * Comptes : prestataire, diallo (direction), kaloum (responsable d'un site), autre (autre client), dg-banque / dir-conakry / dir-haute-guinee (la banque) ; mot de passe : voir la sortie.
  * Rien n'est ecrit dans portal-data/ : la demo ne touche pas a une vraie installation.
  */
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createUser } from '../server/accounts.ts';
-import { addOrganization, addSite } from '../server/admin.ts';
+import { addGroup, addOrganization, addSite, assignSite, groupIdsByCodes } from '../server/admin.ts';
 import { createPortalApp } from '../server/api.ts';
 import { openPortalDb } from '../server/db.ts';
 import { storeSummary } from '../server/ingest.ts';
@@ -49,6 +49,8 @@ interface Plan {
   blind?: [number, number][];
   /** Evaluation du risque propre au site : probabilite de base par zone (null : zone non evaluee). */
   riskP?: Record<string, number | null>;
+  /** Detecteurs d'une autre categorie que l'incendie (l'etape 2 du PSIM en envoie : energie, personnes...). */
+  categories?: Record<string, 'energy' | 'people' | 'environment'>;
 }
 
 function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSummary; at: number } {
@@ -62,6 +64,7 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
     if (p === null) db.prepare('DELETE FROM risk_zone WHERE zone = ?').run(zone);
     else db.prepare('UPDATE risk_zone SET probability = ? WHERE zone = ?').run(p, zone);
   }
+  for (const [id, category] of Object.entries(plan.categories ?? {})) db.prepare('UPDATE device SET category = ? WHERE id = ?').run(category, id);
   beginHistory(db, clock, null, null);
   for (const id of plan.cameras ?? []) {
     db.prepare("INSERT INTO camera_source (device_id, kind, host, port) VALUES (?, 'rtsp', '192.0.2.10', 554)").run(id);
@@ -116,7 +119,14 @@ const db = openPortalDb(join(dataDir, 'portal.db'));
 
 addOrganization(db, 'Groupe Diallo');
 addOrganization(db, 'Maison Camara');
-const SITES: { org: string; id: string; name: string; plan: Plan; seed: number }[] = [
+addOrganization(db, 'Banque du Fouta');
+// La banque : deux regions (l'une avec deux groupes d'agences), un siege sans groupe. Groupe Diallo et Maison Camara
+// n'ont pas de groupe : leur portail reste celui d'avant.
+addGroup(db, 'Banque du Fouta', 'region-conakry', 'Région Conakry');
+addGroup(db, null, 'agences-kaloum', 'Agences de Kaloum', 'region-conakry');
+addGroup(db, null, 'agences-ratoma', 'Agences de Ratoma', 'region-conakry');
+addGroup(db, 'Banque du Fouta', 'region-haute-guinee', 'Région Haute-Guinée');
+const SITES: { org: string; id: string; name: string; plan: Plan; seed: number; group?: string; neverSends?: boolean }[] = [
   {
     org: 'Groupe Diallo', id: 'entrepot-kaloum', name: 'Entrepôt Kaloum', seed: 11,
     plan: {
@@ -138,9 +148,23 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number }
     plan: { outages: [[300, 60, 'D-02', 'fault']], incidents: [], now: { 'D-04': ['prealarm', 20] }, silentFor: 190, riskP: { Accueil: null, Bureaux: null, 'Salle serveurs': null, Couloir: null, Entrepot: null, Atelier: null, Stockage: null } },
   },
   { org: 'Maison Camara', id: 'maison-camara', name: 'Résidence Camara', seed: 55, plan: { cameras: ['C-01', 'C-02', 'C-03', 'C-04'], outages: [[100, 8, 'D-01', 'offline']], incidents: [[200, 'D-02', 'false_alarm']], now: { 'C-03': ['offline', 45] }, riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1, Stockage: 1 } } },
+  // ---- Banque du Fouta
+  { org: 'Banque du Fouta', group: 'agences-kaloum', id: 'agence-kaloum-centre', name: 'Agence Kaloum Centre', seed: 61, plan: { cameras: ['C-01', 'C-02'], outages: [[200, 20, 'D-02', 'offline']], incidents: [[300, 'D-01', 'false_alarm']], riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1, Stockage: 1 } } },
+  { org: 'Banque du Fouta', group: 'agences-kaloum', id: 'agence-kaloum-port', name: 'Agence du Port', seed: 62, plan: { outages: [[400, 45, 'D-03', 'fault']], incidents: [[120, 'D-02', 'false_alarm']], now: { 'D-01': ['alarm', 9] }, riskP: { Atelier: 3, Entrepot: 3 } } },
+  { org: 'Banque du Fouta', group: 'agences-ratoma', id: 'agence-ratoma-marche', name: 'Agence Marché de Ratoma', seed: 63, plan: { outages: [[300, 30, 'D-01', 'offline']], incidents: [], now: { 'D-02': ['fault', 150] }, riskP: { Atelier: 2 } } },
+  { org: 'Banque du Fouta', group: 'agences-ratoma', id: 'agence-ratoma-nord', name: 'Agence Ratoma Nord', seed: 64, plan: { categories: { 'D-05': 'energy' }, outages: [], incidents: [], now: { 'D-05': ['alarm', 25] }, riskP: { Atelier: 1, Entrepot: 2 } } },
+  { org: 'Banque du Fouta', group: 'region-haute-guinee', id: 'agence-kankan-centre', name: 'Agence Kankan Centre', seed: 65, plan: { cameras: ['C-01', 'C-03'], outages: [[100, 15, 'D-01', 'offline']], incidents: [], now: { 'D-04': ['alarm', 330] }, silentFor: 360, riskP: { Atelier: 2, Entrepot: 2 } } },
+  { org: 'Banque du Fouta', group: 'region-haute-guinee', id: 'agence-kankan-gare', name: 'Agence de la Gare', seed: 66, plan: { categories: { 'D-06': 'people' }, outages: [], incidents: [[3, 'D-06', 'fire']], riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1 } } },
+  { org: 'Banque du Fouta', group: 'region-haute-guinee', id: 'agence-siguiri', name: 'Agence de Siguiri (nouvelle)', seed: 67, plan: { outages: [], incidents: [] }, neverSends: true },
+  { org: 'Banque du Fouta', id: 'siege-conakry', name: 'Siège de Conakry', seed: 68, plan: { cameras: ['C-01', 'C-02', 'C-03'], outages: [[500, 10, 'D-03', 'offline']], incidents: [[250, 'D-03', 'false_alarm']], riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1 } } },
 ];
 for (const s of SITES) {
   addSite(db, s.org, s.id, s.name);
+  if (s.group) assignSite(db, s.id, s.group);
+  if (s.neverSends) {
+    console.log(`[demo] ${s.name} : créé, n'a encore rien envoyé`);
+    continue;
+  }
   const { summary, at } = simulate(s.id, s.plan, s.seed);
   storeSummary(db, s.id, summary, at);
   console.log(`[demo] ${s.name} : ${summary.incidents.length} incident(s), ${summary.outages.length} panne(s)`);
@@ -151,6 +175,10 @@ const accounts = [
   { username: 'diallo', role: 'director' as const, orgId: orgId('Groupe Diallo'), displayName: 'M. Diallo' },
   { username: 'kaloum', role: 'site_manager' as const, orgId: orgId('Groupe Diallo'), siteId: 'entrepot-kaloum', displayName: 'Responsable Kaloum' },
   { username: 'autre', role: 'director' as const, orgId: orgId('Maison Camara'), displayName: 'Mme Camara' },
+  // La banque : la direction generale voit tout ; chaque directeur regional n'a que sa region.
+  { username: 'dg-banque', role: 'director' as const, orgId: orgId('Banque du Fouta'), displayName: 'Direction générale' },
+  { username: 'dir-conakry', role: 'director' as const, orgId: orgId('Banque du Fouta'), displayName: 'Directeur région Conakry', groupIds: groupIdsByCodes(db, ['region-conakry']) },
+  { username: 'dir-haute-guinee', role: 'director' as const, orgId: orgId('Banque du Fouta'), displayName: 'Directrice Haute-Guinée', groupIds: groupIdsByCodes(db, ['region-haute-guinee']) },
 ];
 for (const a of accounts) {
   createUser(db, a, PASSWORD);
@@ -164,5 +192,6 @@ const server = app.listen(port, '127.0.0.1', () => {
   console.log(`\n[demo] portail : http://127.0.0.1:${port}`);
   console.log(`[demo] comptes : ${accounts.map((a) => a.username).join(', ')}   mot de passe : ${PASSWORD}`);
   console.log('[demo] diallo voit 4 sites (un en alarme, un injoignable, un a surveiller) ; kaloum n\'en voit qu\'un ; autre voit seulement sa résidence.');
+  console.log('[demo] dg-banque voit toute la banque (2 régions, un siège sans groupe) ; dir-conakry ne voit que la région Conakry ; dir-haute-guinee que la Haute-Guinée (un site muet, un site jamais vu).');
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => server.close(() => process.exit(0)));

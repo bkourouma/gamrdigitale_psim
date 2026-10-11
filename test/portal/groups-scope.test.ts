@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
-import { principalFor, resetThrottles, visibleGroups, visibleSites } from '../../portal/server/accounts.ts';
+import { createSession, principalFor, resetThrottles, visibleGroups, visibleSites } from '../../portal/server/accounts.ts';
 import type { Principal } from '../../portal/server/accounts.ts';
 import { addGroup, addOrganization, assignSite, groupIdsByCodes, limitUser, removeGroup, unlimitUser } from '../../portal/server/admin.ts';
 import { siteKey } from '../../portal/server/keys.ts';
@@ -254,6 +254,24 @@ describe('perimetre par groupe', () => {
       assert.throws(() => portal.db.prepare("INSERT INTO portal_user_group (username, group_id) VALUES ('dir-banque', ?)").run(ids['groupe-autre']), /son organisation/);
       assert.throws(() => portal.db.prepare("INSERT INTO portal_user_group (username, group_id) VALUES ('prestataire', ?)").run(ids['region-sud']), /seul un directeur/);
       assert.throws(() => portal.db.prepare("INSERT INTO portal_user_group (username, group_id) VALUES ('resp-nord-un', ?)").run(ids['region-sud']), /seul un directeur/);
+    });
+
+    it('ceinture et bretelles : meme dans une base alteree a la main (garde-fou retire), une limite ne donne jamais un site d une autre organisation', async () => {
+      const { openPortalDb } = await import('../../portal/server/db.ts');
+      const db = openPortalDb(':memory:');
+      addOrganization(db, 'Banque', NOW);
+      addOrganization(db, 'Autre', NOW);
+      addGroup(db, 'Autre', 'groupe-etranger', 'Groupe étranger', null, NOW);
+      provision(db, 'Autre', 'site-etranger', 'Site étranger');
+      assignSite(db, 'site-etranger', 'groupe-etranger', NOW);
+      const bank = (db.prepare("SELECT id FROM organization WHERE name = 'Banque'").get() as { id: number }).id;
+      addUser(db, { username: 'dir-pirate', role: 'director', orgId: bank });
+      db.exec('DROP TRIGGER portal_user_group_ins');
+      db.prepare("INSERT INTO portal_user_group (username, group_id) VALUES ('dir-pirate', (SELECT id FROM site_group WHERE code = 'groupe-etranger'))").run();
+      const p = principalFor(db, createSession(db, 'dir-pirate', 0, NOW), NOW)!;
+      assert.deepEqual(p.groupScope, [1]);
+      assert.deepEqual(visibleSites(db, p), [], 'aucun site de l autre organisation');
+      assert.deepEqual(visibleGroups(db, p), [], 'aucun groupe de l autre organisation');
     });
 
     it('un groupe qui limite un compte ne peut pas etre supprime, meme en SQL direct (le perimetre ne s elargit pas en silence)', () => {
