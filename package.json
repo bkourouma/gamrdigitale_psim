@@ -29,6 +29,8 @@
     "device-key:prod": "node --env-file=.env.production scripts/device-key.ts",
     "commission": "node --env-file-if-exists=.env scripts/commission.ts",
     "init-production": "node scripts/init-production.ts",
+    "pack": "node --env-file-if-exists=.env scripts/pack.ts",
+    "pack:prod": "node --env-file=.env.production scripts/pack.ts",
     "start:prod": "node --env-file=.env.production server/index.ts",
     "supervise:prod": "node --env-file=.env.production scripts/supervise.ts",
     "check-config:prod": "node --env-file=.env.production scripts/check-config.ts",

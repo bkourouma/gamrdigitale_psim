@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" font-family="Segoe UI, Arial, sans-serif" font-size="22">
+  <title>Villa - etage (plan type)</title>
+  <rect x="0" y="0" width="1000" height="700" fill="#f3efe8"/>
+  <rect x="220" y="150" width="560" height="380" fill="#ffffff" stroke="#333" stroke-width="5"/>
+  <line x1="220" y1="300" x2="780" y2="300" stroke="#333" stroke-width="3"/>
+  <line x1="220" y1="380" x2="780" y2="380" stroke="#333" stroke-width="3"/>
+  <line x1="500" y1="380" x2="500" y2="530" stroke="#333" stroke-width="3"/>
+  <line x1="500" y1="150" x2="500" y2="300" stroke="#333" stroke-width="3"/>
+  <text x="300" y="230">Chambre 1</text>
+  <text x="580" y="230">Chambre 2</text>
+  <text x="420" y="350">Couloir</text>
+  <text x="300" y="460">Chambre 3</text>
+  <text x="580" y="460">Salle de bain</text>
+</svg>

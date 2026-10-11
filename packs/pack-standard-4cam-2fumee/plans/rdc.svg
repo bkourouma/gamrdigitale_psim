@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" font-family="Segoe UI, Arial, sans-serif" font-size="22">
+  <title>Plan type - pack standard 4 cameras et 2 detecteurs de fumee</title>
+  <rect x="0" y="0" width="1000" height="700" fill="#f4f1ea"/>
+  <!-- Parcelle et cours -->
+  <rect x="20" y="20" width="960" height="660" fill="none" stroke="#8a8a8a" stroke-width="4" stroke-dasharray="14 8"/>
+  <text x="40" y="60" fill="#666">Cour avant</text>
+  <text x="40" y="660" fill="#666">Cour arriere</text>
+  <rect x="440" y="10" width="120" height="20" fill="#c9c2b3"/>
+  <text x="455" y="55" fill="#444">Entree / portail</text>
+  <!-- Batiment -->
+  <rect x="200" y="160" width="600" height="380" fill="#ffffff" stroke="#333" stroke-width="5"/>
+  <line x1="520" y1="160" x2="520" y2="540" stroke="#333" stroke-width="3"/>
+  <line x1="520" y1="360" x2="800" y2="360" stroke="#333" stroke-width="3"/>
+  <line x1="200" y1="440" x2="520" y2="440" stroke="#333" stroke-width="3"/>
+  <text x="300" y="300">Sejour</text>
+  <text x="580" y="270">Couloir des chambres</text>
+  <text x="590" y="460">Chambres</text>
+  <text x="230" y="500">Local technique</text>
+</svg>

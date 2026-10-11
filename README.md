@@ -578,6 +578,18 @@ Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équ
 
 **Limites** : ces outils vérifient ce qu'ils peuvent mesurer depuis le serveur ; ils ne remplacent pas la constatation sur place (le détecteur déclenche-t-il vraiment, la sirène retentit-elle, le destinataire a-t-il reçu l'alerte). Les équipements qui ne parlent pas MQTT/JSON passent par la **Passerelle GAMR** (voir plus haut et [docs/PASSERELLE.md](docs/PASSERELLE.md)).
 
+## Packs d'installation
+
+Un **pack** (dossier `packs/<nom>/` : un `pack.json` et ses plans d'étage) décrit une installation type du catalogue (segment, niveau Essentiel / Confort / Renforcé) : étages, zones, équipements avec leur **modèle catalogue** et leur statut (`qualified` / `to_qualify`), sources (voie d'enregistreur Dahua, Tuya, caméra RTSP/ONVIF, supervision réseau), liens détecteur → caméras, planning d'armement, évaluation de risque, destinataires **en gabarit**, comptes et modules de passerelle. **Jamais de secret dans un pack** : mots de passe, identifiants et adresses sont des questions (`{"$ask": "libellé"}`) ou des variables (`{"$env": "NOM"}`) ; un mot de passe écrit en clair fait refuser le pack.
+
+- `npm run pack -- check <pack>` : validation stricte (clé inconnue refusée, chemin fautif cité) ;
+- `npm run pack -- plan <pack>` : **simulation** sur une copie de la base (rien n'est écrit, PSIM en marche ou non) ;
+- `npm run pack -- apply <pack>` : montre le plan, pose les questions, demande confirmation, applique **tout ou rien** en une transaction, par les fonctions du PSIM (même journal) et inscrit `pack_applique` au journal. Réappliquer ne crée aucun doublon ; une différence avec l'existant est un **conflit** (rien n'est appliqué) sauf `--update` ou `--keep-existing`. Modèles à qualifier : `--allow-unqualified`. Refuse d'agir pendant que le PSIM tourne ;
+- `npm run pack -- export --out <dossier>` : l'installation courante en pack, sans secret, pour reproduire un site ;
+- recette : `npm run commission -- --pack <pack>` (« le pack est complet »), `watch --pack`, `sheet --pack` (la fiche cite le pack et sa version).
+
+Trois packs d'exemple : `pack-standard-4cam-2fumee` (4 caméras Dahua HAC-HFW1500TH-I8, enregistreur XVR5104HS-I3, 2 détecteurs de fumée Heiman HS1SA-E), `villa-essentiel`, `appartement-confort`. Guide de l'installateur : [docs/PACKS.md](docs/PACKS.md).
+
 ## Passer aux équipements réels
 
 - **Détecteurs** : publier sur le topic ci-dessus (directement ou via une passerelle vers MQTT). Rien d'autre à changer. Voir « Mise en service sur site » pour la recette, détecteur par détecteur.
