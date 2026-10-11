@@ -184,7 +184,10 @@ describe('notifications : le vrai motif plutot que « Alarme »', () => {
       await t.notifier.notifyIncident(t.engine.getSnapshot().incidents.find((i) => i.detectorId === 'X-1')!, 'opened');
       assert.equal(t.sent.length, 1);
       assert.match(t.sent[0].subject, subject);
-      assert.equal(t.sent[0].data?.event, event);
+      // Le motif est dans `reason` / `reasonLabel` ; `event` est reserve au type de message (webhook).
+      assert.equal(t.sent[0].data?.reason, event);
+      assert.equal(t.sent[0].data?.reasonLabel, motive);
+      assert.ok(!('event' in (t.sent[0].data ?? {})), 'les donnees du message ne portent pas de cle event');
       assert.match(t.sent[0].text, new RegExp(motive.replace(/[()]/g, '\\$&')));
     });
   }
