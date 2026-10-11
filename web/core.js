@@ -146,6 +146,7 @@ export const ACTION_LABEL = {
   heartbeat_recovered: 'Supervision externe rétablie',
   zone_armed: 'Zone armée',
   report_exported: 'Export / rapport',
+  export_preuve: 'Dossier de preuve exporté',
   report_schedule_updated: 'Rapport automatique réglé',
   report_email_sent: 'Rapport envoyé par e-mail',
   report_email_failed: "Échec d'envoi du rapport",

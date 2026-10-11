@@ -32,6 +32,7 @@ import { createFloors } from './floors.ts';
 import { createDahuaEvents } from './dahua.ts';
 import { createTuya } from './tuya.ts';
 import type { Arming } from './arming.ts';
+import { createProofService } from './proofpack.ts';
 import { createReports } from './reports.ts';
 import { createReportMail } from './reportmail.ts';
 import { createRiskService } from './risk.ts';
@@ -456,6 +457,7 @@ if (startupGap) {
 // Rapports : pages et exports a la demande, et rapport periodique par e-mail (meme serveur SMTP que les alertes).
 const siteName = () => (db.prepare('SELECT name FROM site WHERE id = 1').get() as { name: string } | undefined)?.name ?? 'Site';
 const reports = createReports(db, siteName, () => headOf(db));
+const proofs = createProofService({ db, dataDir, siteName, audit: (actor, action, ref) => engine.audit(actor, action, ref) });
 const reportMail = createReportMail({
   db,
   reports,
@@ -507,6 +509,7 @@ const app = createApp({
   triggerSim: (id, payload) => broker.publishDetector(id, payload),
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
   deviceImages,
+  proofs,
 });
 
 const server: Server = createWebServer(app, tlsFiles);

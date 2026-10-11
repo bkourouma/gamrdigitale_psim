@@ -509,6 +509,12 @@ Chaque entrée du journal contient l'**empreinte SHA-256 de la précédente** (c
 - Ne couvre que le **journal** (`audit_log`) : pas les incidents, les comptes, ni l'historique des notifications. Les entrées **antérieures** à l'activation (mise à jour) ne sont pas protégées ; elles sont comptées à part.
 - Ce n'est pas un horodatage certifié : l'heure reste celle du serveur.
 
+## Dossier de preuve d'un incident
+
+Pour un incident (même clos), le bouton **« Dossier de preuve »** (fiche de l'alarme et liste des alarmes clôturées) télécharge un **fichier `.zip` unique** (`GET /api/incidents/:id/proof`, opérateurs et administrateurs connectés, débit limité) : `LISEZ-MOI.txt`, `rapport.html` (imprimable, sans script), `incident.json` (identité, équipement, zone, étage, états, acquittement, qualification, clôture, personnes intervenues), `journal-extrait.json` (entrées liées à l'incident et à l'équipement, avec leurs empreintes et l'ancre du journal), `images/` (originaux scellés), `notifications.json` (sans secret) et `MANIFEST.sha256` (empreinte de chaque fichier). Chaque export est inscrit au journal (`export_preuve`, avec l'empreinte du `.zip`) **avant** la livraison ; une image manquante ou modifiée n'empêche pas l'export, elle est signalée en clair.
+
+**Vérification hors ligne**, sans accès à la base : `npm run verify-proof -- dossier.zip` (verdict en français, code de sortie 0 conforme / 1 altéré, anomalie ou refusé ; fichier traité comme non fiable : zip tronqué, noms piégés, bombe de décompression refusés). `--anchor 1234:<empreinte>` compare à une ancre conservée ailleurs, `--sha256 <empreinte>` à l'empreinte du `.zip` relevée au journal. **Limites** : heure du serveur sans horodatage certifié ; un dossier entièrement refabriqué par quelqu'un qui a un accès complet à la base n'est révélé que par une ancre externe ou l'empreinte du `.zip` inscrite au journal ; l'extrait ne prouve pas son propre caractère complet. Mode d'emploi pour un gestionnaire : [`docs/PREUVE.md`](docs/PREUVE.md).
+
 ## Architecture
 
 ```
@@ -549,6 +555,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
 | `server/auditchain.ts`, `server/journal.ts` | Journal infalsifiable : chaîne d'empreintes, vérification, ancres, alerte d'altération |
 | `scripts/verify-journal.ts` | Vérification du journal hors PSIM (base, sauvegarde, ancre externe) |
+| `server/proofpack.ts`, `server/proofformat.ts`, `server/zip.ts`, `scripts/verify-proof.ts` | Dossier de preuve d'un incident (zip sans dépendance, manifeste, journal extrait, images scellées) et sa vérification hors ligne |
 | `server/reportmail.ts` | Rapport périodique par e-mail : calendrier, rattrapage borné, reprises, contenu |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |

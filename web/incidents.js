@@ -305,7 +305,7 @@ function buildCard(incident) {
       h('p', { class: 'inc-meta' }, h('span', {}, icon('pin', 'icon-sm'), refs.place), h('span', {}, icon('clock', 'icon-sm'), refs.opened), refs.measure),
       h('div', { class: 'inc-wait' }, refs.waitLine, refs.bar, refs.escalated),
     ),
-    h('div', { class: 'inc-main' }, refs.conf, refs.advice, refs.shotsBlock, h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li)),
+    h('div', { class: 'inc-main' }, refs.conf, refs.advice, refs.shotsBlock, h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li), h('div', { class: 'actions' }, proofLink(id))),
   );
 
   async function acknowledge() {
@@ -636,6 +636,16 @@ function activeRow(i, floors, primary) {
   );
 }
 
+/** Dossier de preuve d'un incident (zip : journal, images scellées, notifications), téléchargé par le navigateur. */
+function proofLink(incidentId) {
+  return h(
+    'a',
+    { class: 'btn btn-sm btn-ghost', href: `/api/incidents/${incidentId}/proof`, download: '', 'aria-label': `Dossier de preuve de l’incident n° ${incidentId} (téléchargement)` },
+    'Dossier de preuve',
+    icon('download', 'icon-sm'),
+  );
+}
+
 function closedRow(i) {
   const real = i.qualification === 'fire';
   const shots = h('div', { class: 'shots mini' });
@@ -663,6 +673,7 @@ function closedRow(i) {
         'Fiche',
         icon('external', 'icon-sm'),
       ),
+      proofLink(i.id),
     ),
   );
 }
