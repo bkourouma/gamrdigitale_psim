@@ -93,7 +93,7 @@ const recipients = createRecipientsService({
   db,
   audit: (actor, action, ref) => engine.audit(actor, action, ref),
   env: notify.recipients,
-  available: { ...Object.fromEntries(channelSetup(notify).map((c) => [c.id, c.configured])), callmebot: false, webhook: true } as Record<'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook', boolean>,
+  available: { ...Object.fromEntries(channelSetup(notify).map((c) => [c.id, c.configured])), callmebot: false, webhook: true } as Record<'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'vonage' | 'webhook', boolean>,
 });
 // Chaque envoi transmet sa portee (zone de l'alarme) : un destinataire limite a une zone ne recoit que ses alarmes.
 const channels = buildChannels(notify, recipients.effective);
@@ -230,8 +230,8 @@ notifier = createNotifier({
   maxReminders: notify.maxReminders,
   publicUrl: notify.publicUrl,
   readSnapshot: (id) => snapshots?.read(id) ?? null,
-  // Cles WhatsApp comprises : jamais dans les journaux, meme si un service les renvoyait dans un message d'erreur.
-  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, ...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
+  // Cles WhatsApp et Vonage comprises : jamais dans les journaux, meme si un service les renvoyait dans un message d'erreur.
+  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, notify.vonage.privateKey, ...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
 });
 // Actions de securite sur les comptes : inscrites au journal ET notifiees (un pirate qui enrole sa propre 2FA ne passe pas inapercu).
 const SECURITY_ACTIONS = new Set(['totp_enabled', 'totp_disabled', 'totp_reset', 'recovery_code_used', 'user_created', 'user_updated', 'user_deleted', 'password_reset']);

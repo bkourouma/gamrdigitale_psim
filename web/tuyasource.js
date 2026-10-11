@@ -40,12 +40,32 @@ export function buildTuyaSource(d) {
     return { kind: 'ok', text: `Le PSIM lit le détecteur dans le cloud Tuya : aucune fumée, appareil en ligne.${when}` };
   }
 
+  /** Niveau de pile en mots : pourcentage et/ou état publiés par le détecteur ; « faible » dès 15 % (seuil du PSIM). */
+  function batteryText(battery) {
+    if (!battery) return { kind: 'info', text: 'Pile : ce modèle ne transmet pas son niveau.' };
+    const low = battery.state === 'low' || (battery.percent !== null && battery.percent <= 15);
+    const level = battery.percent !== null ? `${battery.percent} %` : { low: 'faible', middle: 'moyen', normal: 'normal', high: 'bon' }[battery.state] ?? battery.state;
+    return low
+      ? { kind: 'error', text: `Pile faible : ${level}. Remplacez la pile (9 V) avant qu’elle ne s’épuise : le détecteur ne préviendra plus.` }
+      : { kind: 'ok', text: `Pile : ${level}.` };
+  }
+
+  /** Ligne « Pile », sous l'état de la lecture : seulement quand une lecture du cloud a réussi au moins une fois. */
+  function showBattery(line, src) {
+    const c = src.connection;
+    if (!src.tuyaId || !c || c.state === 'connecting' || (c.lastPoll === null && !c.battery)) return setStatus(line, '', '');
+    const b = batteryText(c.battery);
+    setStatus(line, b.kind, c.battery && c.lastPoll ? `${b.text} (lue à ${time(c.lastPoll)})` : b.text);
+  }
+
   function render(src) {
     pinned = false;
     const tuyaId = h('input', { type: 'text', value: src.tuyaId ?? '', maxlength: '64', autocomplete: 'off', spellcheck: 'false', class: 'mono', placeholder: 'ex. 6c1234abcd5678efghijkl' });
     const line = statusLine({ dataset: { role: 'connection' } });
     const c = connectionText(src);
     setStatus(line, c.kind, c.text);
+    const batteryLine = statusLine({ dataset: { role: 'battery' } });
+    showBattery(batteryLine, src);
     const results = h('ul', { class: 'source-events', 'aria-label': 'Données reçues pendant l’essai' });
     results.hidden = true;
 
@@ -77,6 +97,8 @@ export function buildTuyaSource(d) {
         const r = await withBusy(test, () => api('/api/tuya/test', { method: 'POST', body: { deviceId: tuyaId.value.trim() } }));
         const name = r.name ? ` (« ${r.name} »)` : '';
         setStatus(line, r.ok ? 'ok' : 'error', `${r.message}${name}`);
+        const b = batteryText(r.battery);
+        setStatus(batteryLine, b.kind, b.text);
         results.hidden = r.data.length === 0;
         results.replaceChildren(...r.data.map((e) => h('li', {}, h('span', { class: 'mono', text: `${e.code} = ${e.value}` }))));
       } catch (e) {
@@ -119,6 +141,7 @@ export function buildTuyaSource(d) {
         h('div', { class: 'eq-grid' }, field('Identifiant de l’appareil Tuya', tuyaId, 'Dans la console Tuya (iot.tuya.com), projet, onglet « Appareils » : colonne « Device ID ».')),
         h('div', { class: 'actions' }, save, test, remove),
         line,
+        batteryLine,
         results,
       ].filter(Boolean),
     );
@@ -135,6 +158,8 @@ export function buildTuyaSource(d) {
         if (!line || pinned || !src.tuyaId) return;
         const c = connectionText(src);
         setStatus(line, c.kind, c.text);
+        const batteryLine = box.querySelector('[data-role="battery"]');
+        if (batteryLine) showBattery(batteryLine, src);
       })
       .catch(() => {});
   }, 15_000);
