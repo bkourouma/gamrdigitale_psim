@@ -16,7 +16,7 @@ Le site appelle le portail, jamais l'inverse : **rien n'est ouvert sur le résea
 npm run portal:demo
 ```
 
-Ouvrir http://127.0.0.1:4301. Comptes `prestataire`, `diallo` (direction, 4 sites), `kaloum` (un seul site), `autre` (autre client) ; le mot de passe est affiché dans le terminal. La démo recrée une base vierge (`portal-demo-data/`) avec cinq sites dans des états différents (alarme, injoignable, équipement hors service, tout va bien).
+Ouvrir http://127.0.0.1:4301. Comptes `prestataire`, `diallo` (direction, 4 sites), `kaloum` (un seul site), `autre` (autre client) ; le mot de passe est affiché dans le terminal. La démo recrée une base vierge (`portal-demo-data/`) avec treize sites dans des états différents (alarme, injoignable, équipement hors service, tout va bien). Elle montre aussi **une banque à deux régions** (« Banque du Fouta ») : `dg-banque` voit toute la banque, `dir-conakry` et `dir-haute-guinee` ne voient que leur région (un site muet et un site qui n'a jamais rien envoyé en Haute-Guinée ; une alerte énergie à Ratoma ; un incident « personne » à Kankan).
 
 ## Installer le portail
 
@@ -52,10 +52,46 @@ npm run portal:admin -- list
 | Rôle | Voit |
 |---|---|
 | `admin` (vous) | tous les clients et tous les sites |
-| `director` | tous les sites de son organisation |
+| `director` | tous les sites de son organisation, ou seulement ceux de ses groupes (voir plus bas) |
 | `site_manager` | un seul site |
 
+### Clients à plusieurs sites : groupes, régions, agences
+
+Pour une banque, une microfinance, une chaîne de boutiques : **organisation → groupes → sites**. Un groupe (région, agence, branche) peut avoir des **sous-groupes**, sur **deux niveaux au plus** (groupe puis sous-groupe). Un groupe a un **code** (minuscules, chiffres, tirets, 3 à 40 caractères) qui sert dans les commandes, et un nom affiché. Un site est dans **un seul** groupe ou dans aucun (« Sans groupe »), toujours de sa propre organisation.
+
+```bash
+npm run portal:admin -- add-group region-conakry Région Conakry --org "Banque du Fouta"
+npm run portal:admin -- add-group agences-kaloum Agences de Kaloum --parent region-conakry
+npm run portal:admin -- assign-site agence-kaloum-centre agences-kaloum
+npm run portal:admin -- unassign-site agence-kaloum-centre           # retour à « Sans groupe »
+npm run portal:admin -- rename-group region-conakry Région de Conakry
+npm run portal:admin -- remove-group agences-kaloum                  # refusé si le groupe n'est pas vide
+npm run portal:admin -- add-user dir-conakry director --org "Banque du Fouta" --groups region-conakry
+npm run portal:admin -- limit-user dir-conakry region-conakry region-kankan   # limite (ou change la limite) d'un directeur
+npm run portal:admin -- unlimit-user dir-conakry                     # il revoit toute son organisation
+```
+
+**Périmètre d'un compte.** Un `director` sans limite voit toute son organisation (siège « Sans groupe » compris). Un `director` **limité à des groupes** (directeur régional) ne voit que ces groupes et leurs sous-groupes, y compris ceux créés plus tard ; limité à un sous-groupe, il ne voit ni son groupe parent (même pas son nom) ni ses voisins. Les sites « Sans groupe » ne sont vus que d'un directeur non limité. Un compte marqué limité mais **sans aucun groupe ne voit rien** (jamais « toute l'organisation » par défaut). Un `site_manager` garde un seul site et ne voit aucun groupe ; `admin` voit tout. La limite est relue **à chaque requête** (changer le périmètre ou déplacer un site agit aussitôt, sans reconnexion) ; un groupe ou un site hors périmètre est « introuvable » (404), identique à un identifiant inexistant.
+
+**Refus de la ligne de commande.** `remove-group` refuse un groupe qui contient des sites (même désactivés) ou des sous-groupes, et un groupe qui limite encore un compte (le supprimer élargirait en silence le périmètre de ce compte : changer d'abord sa limite). La base elle-même refuse trois niveaux, un site rangé dans le groupe d'une autre organisation, et une limite vers un groupe d'une autre organisation. Chaque geste (création, renommage, suppression, rattachement, limite) est écrit dans le journal du portail (`audit`).
+
+**Ce que voit la direction.** Pour une organisation à groupes, l'accueil est un tableau de bord : groupes classés **du plus préoccupant au plus serein**, puis chaque groupe, sous-groupe et site, avec fil d'Ariane (organisation › groupe › site). Un directeur régional limité à un seul groupe arrive directement sur son groupe ; un prestataire qui suit plusieurs clients arrive sur la liste de ses clients. Par groupe :
+
+- **états** des sites (alarme, muet, à surveiller, incident récent, sans mesure, en bon état) ; le pire état classe le groupe ; un groupe vide dit « Aucun site » ;
+- **disponibilité du mois** : temps en service ÷ temps observé, **sur les sites mesurés seulement** (un site non mesuré ou muet depuis plus de 30 jours ne compte pas comme 100 %) ; l'écran dit sur combien de sites elle repose ;
+- **sites muets** (plus de résumé récent) et sites **qui n'ont jamais rien envoyé**, nommés dans « À vérifier » ; leurs incidents encore ouverts sont des « derniers états connus », comptés à part des incidents confirmés ;
+- **incidents ouverts** par catégorie (incendie, intrusion, accès, environnement, **énergie**, **personnes**) ;
+- **indice de sécurité GAMR** : moyenne des sites évalués et site le plus exposé ; un site sans indice n'entre pas dans la moyenne (jamais compté pour 0), un site muet y compte avec son dernier indice connu, dit.
+
+Un client sans groupe garde exactement l'écran d'avant.
+
 Un compte reçoit un **mot de passe provisoire**, affiché une seule fois ; il ne voit rien tant qu'il ne l'a pas changé. Un site hors du périmètre d'un compte est « introuvable » (404), jamais « interdit » : on ne révèle pas qu'il existe.
+
+## Mise à jour : le portail AVANT les PSIM
+
+Le portail se met à jour **avant** les PSIM des sites : les groupes ne changent pas le format du résumé (`v: 1`), donc les PSIM déjà déployés continuent d'envoyer sans rien changer, et un portail à jour accepte aussi les catégories `energy` et `people` envoyées par les PSIM de l'étape 2. L'inverse n'est pas vrai : un portail ancien refuserait ces catégories. Ordre : sauvegarder `portal-data/`, arrêter le portail, déployer le nouveau code, relancer (`npm run portal`), puis mettre à jour les PSIM site par site.
+
+À la première ouverture, le portail **migre sa base tout seul** (ajout de `site.group_id`, `portal_user.group_limited` et des tables de groupes) : opération unique, atomique, sans perte, notée dans le journal (`schema_migrated`) ; tous les sites existants restent « Sans groupe » et tous les comptes gardent leur périmètre d'avant. La ligne de commande `portal:admin` fait la même migration si elle ouvre la base la première. Revenir à l'ancien code après migration est possible (les colonnes ajoutées sont ignorées) mais les groupes et limites ne seraient plus appliqués : un directeur limité verrait alors toute son organisation. Ne pas revenir en arrière sur un portail qui sert des directeurs régionaux sans d'abord lever leurs limites.
 
 ## Brancher le PSIM d'un site
 
@@ -103,3 +139,5 @@ Ne part **jamais** : adresses ou identifiants des caméras, images, comptes et n
 ## Tests
 
 `npm test` couvre l'historique des états, le résumé, la signature, la réception, les accès et le périmètre. Les tests de périmètre ont été vérifiés par mutation : en cassant volontairement le filtre par organisation, cinq d'entre eux échouent.
+
+Niveau groupe (`test/portal/groups-*.test.ts`) : migration d'une base ancienne (schéma exact d'avant, copié dans `test/portal/fixtures/`), périmètre (un compte limité à un groupe ne lit aucune donnée d'un autre groupe par aucune route, identifiants de groupe et de site devinés compris), agrégats avec sites muets et non mesurés, commandes d'administration (fonctions et processus réel), catégories énergie et personnes. Vérifié par mutation : retirer le filtre de groupe de `visibleSites` ou de `visibleGroups`, ignorer la limite dans `principalFor`, rendre « limité sans groupe » ouvert, laisser passer un groupe hors périmètre sur `/api/groups/:id`, compter un site non mesuré comme 100 % ou un site muet parmi les incidents confirmés : à chaque fois des tests échouent.

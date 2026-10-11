@@ -104,7 +104,7 @@ export function siteStatus(summary: SiteSummary | null, receivedAt: number | nul
   return { level: 'ok', label: 'Tout fonctionne', detail: 'Tous les équipements surveillés répondent.' };
 }
 
-const SEVERITY_ORDER: Record<Level, number> = { alarm: 0, unreachable: 1, degraded: 2, recent: 3, unknown: 4, ok: 5 };
+export const SEVERITY_ORDER: Record<Level, number> = { alarm: 0, unreachable: 1, degraded: 2, recent: 3, unknown: 4, ok: 5 };
 
 export interface RiskView {
   /** Indice de securite GAMR du site (1 a 60), `null` tant qu'aucune zone n'est evaluee. */
@@ -149,6 +149,15 @@ export function lastDays(db: DatabaseSync, siteId: string, days: number): DayRow
   return (db.prepare('SELECT day, pct, up_s, down_s, unmonitored_s FROM site_day WHERE site_id = ? ORDER BY day DESC LIMIT ?').all(siteId, days) as unknown as DayRow[]).reverse();
 }
 
+/**
+ * Les jours connus des `days` derniers jours CALENDAIRES (pas « les N derniers jours connus ») : un site muet depuis des mois ne
+ * presente pas de vieilles mesures comme celles du mois. Jour du site vs jour du portail : un jour de tolerance au bord.
+ */
+export function recentDays(db: DatabaseSync, siteId: string, days: number, now: number): DayRow[] {
+  const oldest = new Date(now - days * DAY_MS).toISOString().slice(0, 10);
+  return lastDays(db, siteId, days).filter((r) => r.day > oldest);
+}
+
 /** Disponibilite d'un ensemble de jours : moyenne PONDEREE par le temps observe (un jour court pese moins qu'un jour entier). */
 export function availabilityOfDays(rows: DayRow[]): { pct: number | null; upS: number; downS: number; unmonitoredS: number } {
   const up = rows.reduce((s, r) => s + r.up_s, 0);
@@ -184,31 +193,34 @@ export function incidentStats(rows: { status: string; qualification: string | nu
   };
 }
 
-function incidentRows(db: DatabaseSync, siteId: string, since: number) {
+export function incidentRows(db: DatabaseSync, siteId: string, since: number) {
   return db
     .prepare('SELECT id, device_id, device_name, zone, category, severity, status, qualification, opened_at, acked_at, closed_at FROM incident WHERE site_id = ? AND (opened_at >= ? OR status <> \'closed\') ORDER BY opened_at DESC')
     .all(siteId, since) as { id: number; device_id: string; device_name: string; zone: string; category: string; severity: string; status: string; qualification: string | null; opened_at: number; acked_at: number | null; closed_at: number | null }[];
 }
 
 /** Une ligne par site : de quoi choisir ou regarder en premier. Les sites a probleme en tete. */
+export function siteCard(db: DatabaseSync, s: VisibleSite, now: number, staleAfterMs: number, snap: { summary: SiteSummary; receivedAt: number } | null = loadSummary(db, s.id)) {
+  const status = siteStatus(snap?.summary ?? null, snap?.receivedAt ?? null, now, staleAfterMs);
+  const month = availabilityOfDays(recentDays(db, s.id, 30, now));
+  return {
+    id: s.id,
+    name: s.name,
+    organization: s.org_name,
+    /** Groupe du site (identifiant), `null` : « Sans groupe ». Le chemin lisible est ajoute par l'API, selon ce que le compte voit. */
+    groupId: s.group_id ?? null,
+    status,
+    lastReceivedAt: snap?.receivedAt ?? null,
+    availability30: month.pct,
+    availability30DownS: month.downS,
+    openIncidents: snap?.summary.incidents.filter((i) => i.status !== 'closed').length ?? 0,
+    devicesDown: snap?.summary.devices.filter((d) => d.monitored && (d.status === 'fault' || d.status === 'offline')).length ?? 0,
+    risk: riskOf(snap?.summary),
+  };
+}
+
 export function siteCards(db: DatabaseSync, sites: VisibleSite[], now: number, staleAfterMs: number) {
-  const cards = sites.map((s) => {
-    const snap = loadSummary(db, s.id);
-    const status = siteStatus(snap?.summary ?? null, snap?.receivedAt ?? null, now, staleAfterMs);
-    const month = availabilityOfDays(lastDays(db, s.id, 30));
-    return {
-      id: s.id,
-      name: s.name,
-      organization: s.org_name,
-      status,
-      lastReceivedAt: snap?.receivedAt ?? null,
-      availability30: month.pct,
-      availability30DownS: month.downS,
-      openIncidents: snap?.summary.incidents.filter((i) => i.status !== 'closed').length ?? 0,
-      devicesDown: snap?.summary.devices.filter((d) => d.monitored && (d.status === 'fault' || d.status === 'offline')).length ?? 0,
-      risk: riskOf(snap?.summary),
-    };
-  });
+  const cards = sites.map((s) => siteCard(db, s, now, staleAfterMs));
   return cards.sort((a, b) => SEVERITY_ORDER[a.status.level] - SEVERITY_ORDER[b.status.level] || a.name.localeCompare(b.name, 'fr'));
 }
 
@@ -217,7 +229,7 @@ export function overview(db: DatabaseSync, sites: VisibleSite[], now: number, st
   const cards = siteCards(db, sites, now, staleAfterMs);
   const counts: Record<Level, number> = { alarm: 0, unreachable: 0, degraded: 0, recent: 0, unknown: 0, ok: 0 };
   for (const c of cards) counts[c.status.level]++;
-  const all = sites.flatMap((s) => lastDays(db, s.id, 30));
+  const all = sites.flatMap((s) => recentDays(db, s.id, 30, now));
   const rows = sites.flatMap((s) => incidentRows(db, s.id, now - 30 * DAY_MS).filter((r) => r.opened_at >= now - 30 * DAY_MS || r.status !== 'closed'));
   // Le site le plus expose : celui dont l'indice GAMR est le plus haut, parmi ceux qui en ont un.
   const scored = cards.filter((c) => c.risk?.index != null);
@@ -245,7 +257,7 @@ export function siteDetail(db: DatabaseSync, site: VisibleSite, days: number, no
   const outages = db.prepare('SELECT device_id, device_name, zone, from_ts, to_ts, duration_s, cause FROM outage WHERE site_id = ? AND (from_ts >= ? OR to_ts IS NULL OR to_ts >= ?) ORDER BY from_ts DESC LIMIT 200').all(site.id, since, since) as { device_id: string; device_name: string; zone: string; from_ts: number; to_ts: number | null; duration_s: number; cause: string }[];
   const s = snap?.summary;
   return {
-    site: { id: site.id, name: site.name, organization: site.org_name },
+    site: { id: site.id, name: site.name, organization: site.org_name, organizationId: site.org_id, groupId: site.group_id ?? null },
     status,
     lastReceivedAt: snap?.receivedAt ?? null,
     days,
