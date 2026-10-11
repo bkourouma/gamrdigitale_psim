@@ -28,6 +28,8 @@
     "device-key": "node --env-file-if-exists=.env scripts/device-key.ts",
     "device-key:prod": "node --env-file=.env.production scripts/device-key.ts",
     "commission": "node --env-file-if-exists=.env scripts/commission.ts",
+    "qualify": "node scripts/qualify.ts",
+    "bench": "node scripts/bench.ts",
     "init-production": "node scripts/init-production.ts",
     "start:prod": "node --env-file=.env.production server/index.ts",
     "supervise:prod": "node --env-file=.env.production scripts/supervise.ts",

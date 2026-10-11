@@ -1,0 +1,3484 @@
+{
+  "version": 1,
+  "defaults": {
+    "id_psim": "BANC-01",
+    "categorie_psim": "selon le profil",
+    "delai_premier_message_s": 120,
+    "repetitions": 10,
+    "latence_essais": 10,
+    "latence_max_s": 10,
+    "retour_max_s": 30,
+    "liaison_max_s": 120,
+    "reprise_max_s": 120,
+    "silence_max_s": 600,
+    "delai_silence": "3 fois la période d'émission du capteur",
+    "premier_message": "Mettre l'équipement sous tension et l'attacher à la passerelle ou au PSIM selon la notice.",
+    "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+    "attendu_alarme": "Un incident s'ouvre.",
+    "motif_alarme": "Alarme",
+    "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+    "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+    "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+    "action_liaison": "Couper la liaison entre l'équipement et le PSIM sans couper l'alimentation de l'équipement.",
+    "action_retablissement": "Rétablir la liaison.",
+    "action_silence": "Couper l'alimentation de l'équipement (retirer la pile ou débrancher) en laissant le reste en marche.",
+    "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+    "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+  },
+  "templates": {
+    "prep-identif": {
+      "section": "preparation",
+      "titre": "Identifier l'équipement",
+      "action": "Relever sur l'équipement et noter dans le résultat : numéro de série, version du micrologiciel (firmware) et référence exacte du modèle. Photographier l'étiquette.",
+      "attendu": "Les trois informations sont lisibles et notées. La référence correspond à l'entrée du registre ; sinon, s'arrêter et créer une nouvelle entrée (un autre modèle n'est pas qualifié par le voisin).",
+      "obligatoire": true,
+      "bench": "physique"
+    },
+    "prep-banc": {
+      "section": "preparation",
+      "titre": "Monter le banc d'essai",
+      "action": "Monter le banc décrit plus haut, démarrer le PSIM de recette (jamais le PSIM de production) et déclarer l'équipement avec l'identifiant exact {{id_psim}} (catégorie : {{categorie_psim}}).",
+      "attendu": "L'équipement figure sur le plan. Aucun incident ouvert. Les destinataires de test sont prévenus qu'une recette commence.",
+      "obligatoire": true,
+      "bench": "physique"
+    },
+    "prep-reception": {
+      "section": "preparation",
+      "titre": "Premier message",
+      "action": "{{premier_message}} Laisser l'ensemble au repos 10 minutes sans toucher à l'équipement.",
+      "attendu": "L'état passe à Normal en moins de {{delai_premier_message_s}} s (noter la valeur). Aucune alarme ni aucun défaut parasite pendant les 10 minutes de repos.",
+      "obligatoire": true,
+      "bench": "normal",
+      "mesures": [
+        {
+          "cle": "premier_message_s",
+          "libelle": "Délai jusqu'au premier état Normal",
+          "unite": "s",
+          "max": "$delai_premier_message_s"
+        }
+      ]
+    },
+    "trigger": {
+      "section": "detection",
+      "titre": "Déclenchement",
+      "action": "{{declencheur}} Noter l'heure exacte du geste.",
+      "attendu": "{{attendu_alarme}} L'incident porte le bon nom, la bonne zone et le motif « {{motif_alarme}} » ; l'alerte sonore retentit ; la notification arrive chez les destinataires de niveau 1.",
+      "obligatoire": true,
+      "bench": "declenchement"
+    },
+    "restore": {
+      "section": "detection",
+      "titre": "Retour à la normale",
+      "action": "{{retour}}",
+      "attendu": "L'état revient à Normal en moins de {{retour_max_s}} s. L'incident reste ouvert tant qu'un opérateur ne l'a pas acquitté puis clôturé : un retour à la normale ne ferme jamais un incident tout seul.",
+      "obligatoire": true,
+      "bench": "retour",
+      "mesures": [
+        {
+          "cle": "retour_s",
+          "libelle": "Délai de retour à Normal",
+          "unite": "s",
+          "max": "$retour_max_s"
+        }
+      ]
+    },
+    "repeat": {
+      "section": "detection",
+      "titre": "Répétabilité",
+      "action": "Répéter {{repetitions}} fois de suite le cycle déclenchement / retour à la normale, en acquittant et clôturant l'incident entre deux cycles. Noter combien de cycles ont ouvert un incident.",
+      "attendu": "{{repetitions}} cycles sur {{repetitions}} : chaque déclenchement ouvre un incident, aucun n'est manqué, aucun n'est doublé.",
+      "obligatoire": true,
+      "bench": "repetition",
+      "mesures": [
+        {
+          "cle": "cycles_reussis",
+          "libelle": "Cycles réussis",
+          "unite": "cycles",
+          "min": "$repetitions"
+        }
+      ]
+    },
+    "latency": {
+      "section": "detection",
+      "titre": "Latence mesurée",
+      "action": "Mesurer, au chronomètre ou avec les heures du journal du PSIM, le temps entre le geste et l'affichage de l'incident. Faire {{latence_essais}} essais ; noter le PIRE délai (pas la moyenne).",
+      "attendu": "Pire délai inférieur ou égal à {{latence_max_s}} s.",
+      "obligatoire": true,
+      "bench": "latence",
+      "mesures": [
+        {
+          "cle": "latence_max_s",
+          "libelle": "Pire latence geste → incident",
+          "unite": "s",
+          "max": "$latence_max_s"
+        }
+      ]
+    },
+    "lowbat": {
+      "section": "detection",
+      "titre": "Batterie faible",
+      "action": "{{action_batterie}}",
+      "attendu": "Le détecteur passe en Défaut (« batterie faible » ou équivalent), jamais en Normal, avec notification. Une alarme survenant pendant le défaut n'est pas masquée : elle l'emporte.",
+      "obligatoire": true,
+      "bench": "defaut"
+    },
+    "tamper": {
+      "section": "detection",
+      "titre": "Sabotage (autoprotection)",
+      "action": "{{action_sabotage}} Faire l'essai zone désarmée (planning d'armement coupé).",
+      "attendu": "Alarme « Sabotage » ouverte même zone désarmée (le sabotage est toujours actif). Si l'équipement n'a pas d'autoprotection, le noter : étape à marquer « na » avec cette justification.",
+      "obligatoire": false,
+      "bench": "sabotage"
+    },
+    "linkloss": {
+      "section": "liaison",
+      "titre": "Coupure de liaison",
+      "action": "{{action_liaison}} Noter l'heure.",
+      "attendu": "En moins de {{liaison_max_s}} s l'équipement n'est plus affiché « Normal » : il passe en Défaut ou Hors ligne, avec notification. Il ne reste JAMAIS Normal faute de savoir.",
+      "obligatoire": true,
+      "bench": "liaison",
+      "mesures": [
+        {
+          "cle": "liaison_perdue_s",
+          "libelle": "Délai jusqu'à Défaut / Hors ligne",
+          "unite": "s",
+          "max": "$liaison_max_s"
+        }
+      ]
+    },
+    "linkback": {
+      "section": "liaison",
+      "titre": "Rétablissement",
+      "action": "{{action_retablissement}} Noter l'heure.",
+      "attendu": "Reprise automatique, sans intervention ni redémarrage, en moins de {{reprise_max_s}} s. L'état affiché est l'état réel (Normal, ou alarme si le fait persiste).",
+      "obligatoire": true,
+      "bench": "reprise",
+      "mesures": [
+        {
+          "cle": "reprise_s",
+          "libelle": "Délai de reprise",
+          "unite": "s",
+          "max": "$reprise_max_s"
+        }
+      ]
+    },
+    "silence": {
+      "section": "liaison",
+      "titre": "Silence du capteur (« muet »)",
+      "action": "{{action_silence}} Vérifier que la supervision de l'équipement dans le PSIM est réglée à {{delai_silence}} (champ « Supervision »). Ne rien toucher d'autre ; chronométrer.",
+      "attendu": "Au bout du délai réglé (marge comprise : {{silence_max_s}} s au plus) l'équipement est affiché « Hors ligne » (muet), la notification « Détecteur muet » part. Il n'est JAMAIS affiché « Normal » alors qu'il se tait.",
+      "obligatoire": true,
+      "bench": "silence",
+      "mesures": [
+        {
+          "cle": "silence_detecte_s",
+          "libelle": "Délai réel avant « muet »",
+          "unite": "s",
+          "max": "$silence_max_s"
+        }
+      ]
+    },
+    "psimrestart": {
+      "section": "psim",
+      "titre": "Redémarrage du PSIM",
+      "action": "Tuer brutalement le processus du PSIM de recette (pas un arrêt propre), attendre 60 s, le relancer. Déclencher ensuite l'équipement.",
+      "attendu": "Au redémarrage : l'équipement et son état sont retrouvés sans reconfiguration ; la période sans surveillance est journalisée ; aucune alarme fantôme ; l'équipement n'est pas déclaré muet avant son délai de grâce ; le premier déclenchement après redémarrage ouvre bien un incident.",
+      "obligatoire": true,
+      "bench": "redemarrage"
+    },
+    "netcut": {
+      "section": "psim",
+      "titre": "Coupure réseau puis renvoi daté",
+      "action": "{{action_coupure}}",
+      "attendu": "{{attendu_coupure}}",
+      "obligatoire": true,
+      "bench": "renvoi"
+    },
+    "tropical": {
+      "section": "environnement",
+      "titre": "Conditions tropicales (35 °C, 90 % d'humidité)",
+      "action": "Placer l'équipement et son alimentation au moins 4 h dans une enceinte à 35 °C et 90 % d'humidité relative si une enceinte est disponible. Sinon, mesurer sur site au point le plus chaud et humide (local technique, extérieur à l'ombre l'après-midi) avec un thermo-hygromètre étalonné. Noter température et humidité mesurées, puis refaire un déclenchement, un retour à la normale et une mesure de latence dans ces conditions.",
+      "attendu": "Mêmes résultats qu'aux étapes de déclenchement et de latence ; aucune fausse alarme, aucun défaut, aucune condensation visible, aucune dérive de mesure. Si l'essai n'est pas possible, marquer « na » et en donner la raison : la limite sera inscrite au dossier.",
+      "obligatoire": false,
+      "bench": "physique",
+      "mesures": [
+        {
+          "cle": "tropical_temperature_c",
+          "libelle": "Température relevée pendant l'essai",
+          "unite": "°C",
+          "min": 35
+        },
+        {
+          "cle": "tropical_humidite_pct",
+          "libelle": "Humidité relative relevée pendant l'essai",
+          "unite": "% HR",
+          "min": 90
+        }
+      ]
+    },
+    "closeout": {
+      "section": "cloture",
+      "titre": "Synthèse et signatures",
+      "action": "Remplir la page de synthèse : conclusion (qualifié / à refaire / rejeté), nom du testeur, signature du responsable d'atelier. Ranger la fiche papier ou PDF signée avec le fichier de résultat.",
+      "attendu": "Fiche signée. Le résultat est enregistré avec `npm run qualify -- record`.",
+      "obligatoire": true,
+      "bench": "physique"
+    }
+  },
+  "fiches": [
+    {
+      "id": "zigbee",
+      "version": 1,
+      "titre": "Capteurs Zigbee (module « zigbee » de la passerelle, via Zigbee2MQTT)",
+      "resume": "Qualification d'un modèle de capteur Zigbee (mouvement, ouverture, fuite, température, fumée, gaz, CO, vibration, bouton d'urgence) lu par la passerelle GAMR.",
+      "docs": [
+        "gateway/docs/zigbee.md",
+        "docs/PASSERELLE.md",
+        "docs/MISE-EN-SERVICE.md"
+      ],
+      "materiel": [
+        "2 exemplaires du capteur à qualifier (un pour l'essai, un pour la répétabilité), piles neuves du type prévu par le fabricant",
+        "Clé USB Zigbee (Sonoff ZBDongle-E ou -P, ou équivalent) et son broker Mosquitto, Zigbee2MQTT en marche avec `last_seen: ISO_8601`",
+        "Poste de recette : PSIM hors production (dossier de données séparé) et Passerelle GAMR avec le module zigbee configuré",
+        "Chronomètre ou horloge synchronisée (NTP), multimètre (tension de pile), thermo-hygromètre étalonné",
+        "Pour le sabotage et la fumée : outils d'ouverture du boîtier ; bombe de fumée d'essai ou aérosol de test agréé (détecteur de fumée)",
+        "Enceinte à 35 °C / 90 % HR, ou accès à un local chaud et humide (étape « conditions tropicales »)"
+      ],
+      "banc": [
+        "Poser la clé Zigbee sur une rallonge USB d'1 m, loin des ports USB 3 et du Wi-Fi ; démarrer Mosquitto puis Zigbee2MQTT.",
+        "Dans la configuration du module zigbee de la passerelle, déclarer le capteur (`kind` adapté, identifiant {{id_psim}}), avec `staleAfterS` à 300 et `heartbeatEveryS` à 60 pour la recette.",
+        "Dans le PSIM de recette, créer le détecteur {{id_psim}} (catégorie du profil), régler sa supervision à 180 s, lier une caméra de démonstration si possible.",
+        "Ajouter un destinataire de test de niveau 1 et un de niveau 2 (messagerie jetable) pour constater les notifications.",
+        "Mettre le capteur à 1 m de la clé, le laisser s'appairer (Permit join), le renommer, noter ses champs dans l'onglet State de Zigbee2MQTT."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "selon le profil",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 5,
+        "retour_max_s": 30,
+        "liaison_max_s": 600,
+        "reprise_max_s": 120,
+        "silence_max_s": 540,
+        "delai_silence": "180 s (environ 3 fois la période des signes de vie de la passerelle) avec `staleAfterS` à 300 s",
+        "premier_message": "Appairer le capteur dans Zigbee2MQTT (gateway/docs/zigbee.md, section 2), le déclarer dans le module et dans le PSIM, vérifier dans l'onglet State les champs publiés.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Arrêter Zigbee2MQTT (ou retirer la clé USB) pendant 10 minutes. Noter que le module journalise « pont hors ligne » sans rien envoyer au PSIM.",
+        "action_retablissement": "Redémarrer Zigbee2MQTT (ou remettre la clé).",
+        "action_silence": "Retirer la pile du capteur, Zigbee2MQTT restant en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (`last_seen`, « reçu avec N minutes de retard »), un seul incident est ouvert, rejouer le même message ne crée aucun doublon, l'état final est exact. Noter si `last_seen` était bien activé."
+      },
+      "profils": {
+        "mouvement": {
+          "libelle": "Détecteur de mouvement (PIR)",
+          "params": {
+            "categorie_psim": "Intrusion (zone armée)",
+            "motif_alarme": "Mouvement détecté",
+            "declencheur": "Zone armée : passer devant le capteur, en faisant le tour de son champ (3 passages à 1 m, 3 m et 5 m). Noter la distance où la détection devient incertaine.",
+            "attendu_alarme": "Un incident d'intrusion s'ouvre à chaque passage (zone armée).",
+            "retour": "Sortir du champ et rester immobile ; attendre que le capteur repasse au repos (délai propre au capteur : le noter).",
+            "retour_max_s": 90
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "motion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "contact": {
+          "libelle": "Contact d'ouverture de porte ou fenêtre",
+          "params": {
+            "categorie_psim": "Contrôle d'accès ou intrusion",
+            "motif_alarme": "Porte forcée",
+            "declencheur": "Faire sauter l'autoprotection du contact (ouvrir le boîtier ou l'arracher de son support) : le module envoie « Porte forcée » après l'ouverture.",
+            "attendu_alarme": "Une alarme « Porte forcée » s'ouvre.",
+            "retour": "Refermer le boîtier, remettre l'aimant en face et la porte fermée ; attendre « Porte fermée ».",
+            "action_sabotage": "Sans objet pour ce profil : l'autoprotection sert de déclencheur à l'étape « Déclenchement ». Marquer « na » avec cette mention."
+          },
+          "bench": {
+            "categorie": "access",
+            "alarme": {
+              "event": "door_forced"
+            },
+            "normal": {
+              "event": "door_closed"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "info": {
+              "ouvre": {
+                "event": "door_opened"
+              },
+              "ferme": {
+                "event": "door_closed"
+              }
+            },
+            "silence_s": 180
+          }
+        },
+        "fuite": {
+          "libelle": "Détecteur de fuite d'eau",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Fuite d'eau",
+            "declencheur": "Plonger les deux sondes du capteur dans un verre d'eau (1 cm d'eau).",
+            "attendu_alarme": "Une alarme « Fuite d'eau » s'ouvre.",
+            "retour": "Sécher les sondes ; attendre « Sol sec »."
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "leak"
+            },
+            "normal": {
+              "event": "dry"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "temperature": {
+          "libelle": "Capteur de température et humidité",
+          "params": {
+            "categorie_psim": "Environnement (mesure en °C, seuils de préalarme 30 °C et d'alarme 38 °C pour la recette)",
+            "motif_alarme": "Température excessive",
+            "declencheur": "Chauffer le capteur (sèche-cheveux à 20 cm) jusqu'à dépasser le seuil d'alarme réglé (38 °C). Relever en parallèle le thermo-hygromètre étalonné.",
+            "attendu_alarme": "La valeur affichée suit la température (écart avec le thermo-hygromètre : voir l'étape de justesse) ; préalarme à 30 °C puis alarme à 38 °C.",
+            "retour": "Laisser refroidir le capteur à l'air ambiant jusqu'à repasser sous 30 °C.",
+            "retour_max_s": 900
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "value": 41
+            },
+            "normal": {
+              "value": 22
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "seuils": {
+              "warnAt": 30,
+              "alarmAt": 38,
+              "direction": "above",
+              "unit": "°C"
+            },
+            "silence_s": 180
+          }
+        },
+        "fumee": {
+          "libelle": "Détecteur de fumée Zigbee (non certifié EN 54)",
+          "params": {
+            "categorie_psim": "Incendie",
+            "motif_alarme": "Alarme",
+            "declencheur": "Utiliser le bouton test du détecteur, puis une bombe de fumée d'essai agréée sous le capteur. Noter laquelle des deux déclenche. Rappel : détecteur grand public, complémentaire d'une détection certifiée.",
+            "attendu_alarme": "Une alarme incendie s'ouvre (sirène locale éventuelle indépendante du PSIM).",
+            "retour": "Aérer ; attendre l'arrêt de la sirène locale et le retour à Normal.",
+            "retour_max_s": 300
+          },
+          "bench": {
+            "categorie": "fire",
+            "alarme": {
+              "state": "alarm"
+            },
+            "normal": {
+              "state": "normal"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "gaz": {
+          "libelle": "Détecteur de gaz",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Gaz détecté",
+            "declencheur": "Faire le test du fabricant (bouton test) puis, en local ventilé et avec les précautions d'usage, un gaz d'essai agréé (briquet non allumé, 1 s) à 5 cm du capteur.",
+            "attendu_alarme": "Une alarme « Gaz détecté » s'ouvre.",
+            "retour": "Aérer le local ; attendre le retour du capteur (peut demander plusieurs minutes) puis « Retour au calme ».",
+            "retour_max_s": 600
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "gas"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "co": {
+          "libelle": "Détecteur de monoxyde de carbone",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Monoxyde de carbone détecté",
+            "declencheur": "Bouton test du fabricant, puis gaz d'essai CO agréé si disponible. Ne jamais produire de CO par combustion.",
+            "attendu_alarme": "Une alarme « Monoxyde de carbone détecté » s'ouvre.",
+            "retour": "Aérer ; attendre le retour du capteur puis « Retour au calme ».",
+            "retour_max_s": 600
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "co"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "vibration": {
+          "libelle": "Capteur de vibration / choc",
+          "params": {
+            "categorie_psim": "Intrusion",
+            "motif_alarme": "Vibration détectée",
+            "declencheur": "Taper trois coups secs sur le support du capteur, puis secouer le capteur 3 s.",
+            "attendu_alarme": "Une alarme « Vibration détectée » s'ouvre (zone armée).",
+            "retour": "Poser le capteur immobile. Le capteur peut ne jamais renvoyer « fin de vibration » : le PSIM garde l'alarme jusqu'à l'acquittement, comportement voulu à constater et noter.",
+            "retour_max_s": 120
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "vibration"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        },
+        "panique": {
+          "libelle": "Bouton d'urgence",
+          "params": {
+            "categorie_psim": "Personnes",
+            "motif_alarme": "Alarme de panique",
+            "declencheur": "Appuyer sur le bouton d'urgence (un appui bref, puis un appui long). Vérifier dans Zigbee2MQTT que le capteur publie `action: emergency` ou `panic`.",
+            "attendu_alarme": "Une alarme de panique s'ouvre même zone désarmée.",
+            "retour": "Acquitter l'incident dans le PSIM, puis envoyer « Alarme réarmée » (le bouton ne publie pas de retour : le noter)."
+          },
+          "bench": {
+            "categorie": "people",
+            "alarme": {
+              "event": "panic"
+            },
+            "normal": {
+              "event": "alarm_reset"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 180
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "ref": "prep-reception"
+        },
+        {
+          "ref": "trigger",
+          "bench": "declenchement"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat"
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "id": "contact-info",
+          "section": "detection",
+          "titre": "Ouverture et fermeture sans incident",
+          "profils": [
+            "contact"
+          ],
+          "obligatoire": true,
+          "bench": "info-sans-incident",
+          "action": "Ouvrir puis refermer la porte (aimant écarté puis remis) 5 fois, porte normalement autorisée.",
+          "attendu": "Le PSIM enregistre « Porte ouverte » et « Porte fermée » comme informations, sans ouvrir d'incident ni changer l'état du détecteur."
+        },
+        {
+          "id": "justesse-temperature",
+          "section": "detection",
+          "titre": "Justesse de la mesure",
+          "profils": [
+            "temperature"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "À température stable, comparer la valeur affichée dans le PSIM à celle du thermo-hygromètre étalonné, à trois niveaux (ambiante, environ 30 °C, environ 38 °C). Noter le plus grand écart.",
+          "attendu": "Écart maximal inférieur ou égal à 1,0 °C.",
+          "mesures": [
+            {
+              "cle": "ecart_temperature_c",
+              "libelle": "Plus grand écart avec la référence",
+              "unite": "°C",
+              "max": 1
+            }
+          ]
+        },
+        {
+          "ref": "lowbat",
+          "profils": [
+            "mouvement",
+            "contact",
+            "fuite",
+            "temperature",
+            "fumee",
+            "gaz",
+            "co",
+            "vibration",
+            "panique"
+          ]
+        },
+        {
+          "ref": "tamper",
+          "profils": [
+            "mouvement",
+            "fuite",
+            "temperature",
+            "fumee",
+            "gaz",
+            "co",
+            "vibration",
+            "panique"
+          ],
+          "obligatoire": false
+        },
+        {
+          "ref": "tamper",
+          "id": "tamper-contact",
+          "profils": [
+            "contact"
+          ],
+          "obligatoire": false
+        },
+        {
+          "id": "portee",
+          "section": "detection",
+          "titre": "Portée radio",
+          "obligatoire": false,
+          "bench": "physique",
+          "action": "Éloigner le capteur de la clé USB par paliers (5, 10, 15 m, avec une cloison) ; à chaque palier déclencher 5 fois et noter combien d'événements arrivent. Relever la qualité de lien (`linkquality`) dans Zigbee2MQTT.",
+          "attendu": "100 % des événements reçus jusqu'à 10 m avec une cloison. Noter la distance au-delà de laquelle des pertes apparaissent : elle limite la pose.",
+          "mesures": [
+            {
+              "cle": "portee_m",
+              "libelle": "Distance sans perte (avec une cloison)",
+              "unite": "m",
+              "min": 10
+            }
+          ]
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut"
+        },
+        {
+          "ref": "tropical"
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Les champs réellement publiés par le capteur (onglet State de Zigbee2MQTT) correspondent à ceux que le module lit ; sinon l'écart est noté dans les remarques et `overrides` n'existe pas pour Zigbee : le module doit être corrigé avant de qualifier."
+        ],
+        "echec": [
+          "Un capteur de sécurité qui ne publie pas son retour ou son défaut batterie sans que ce comportement soit documenté dans le dossier du modèle."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "modbus",
+      "version": 1,
+      "titre": "Modbus TCP et contacts secs (module « modbus » de la passerelle)",
+      "resume": "Qualification d'un équipement lu en Modbus TCP : contact sec (barrière infrarouge, bris de vitre, radar, câble de clôture, déclencheur manuel, détecteur de coupure, centrale incendie par contact) ou mesure (niveau de cuve 4-20 mA, qualité de l'air, compteur d'énergie, groupe électrogène).",
+      "docs": [
+        "gateway/docs/modbus.md",
+        "docs/PASSERELLE.md"
+      ],
+      "materiel": [
+        "L'équipement à qualifier, son alimentation et sa notice (adresses Modbus, sens du contact)",
+        "Module d'entrées Modbus TCP (pour un contact sec) ou l'équipement parlant directement Modbus TCP, switch Ethernet, câbles",
+        "Pour une mesure 4-20 mA : calibrateur de boucle (source 4 / 12 / 20 mA) et multimètre",
+        "Poste de recette : PSIM hors production et Passerelle GAMR avec le module modbus configuré",
+        "Chronomètre ou horloge synchronisée (NTP), thermo-hygromètre étalonné"
+      ],
+      "banc": [
+        "Câbler l'équipement au module d'entrées (contact sec : fil de contact entre l'entrée et la borne commune ; noter si le contact est normalement ouvert ou fermé).",
+        "Brancher le module d'entrées sur le switch, lui donner une adresse IP fixe, vérifier avec l'outil du fabricant que l'entrée change quand le contact change.",
+        "Déclarer le point dans la configuration du module modbus (adresse, type, `onTrue`/`onFalse`, `invert`, `debounceMs`, `failThreshold`), identifiant PSIM {{id_psim}}.",
+        "Dans le PSIM de recette, créer le détecteur {{id_psim}}, régler sa supervision (au moins 3 fois `heartbeatMs`) et, pour une mesure, ses seuils.",
+        "Ajouter des destinataires de test (niveaux 1 et 2)."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "selon le profil",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 5,
+        "retour_max_s": 15,
+        "liaison_max_s": 60,
+        "reprise_max_s": 60,
+        "silence_max_s": 120,
+        "delai_silence": "90 s (3 fois le signe de vie `heartbeatMs` de 30 s)",
+        "premier_message": "Démarrer la passerelle : elle envoie l'état de chaque point au démarrage.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Débrancher le câble réseau du module d'entrées (ou arrêter l'équipement Modbus). Noter que la passerelle envoie « Défaut » une seule fois après `failThreshold` échecs.",
+        "action_retablissement": "Rebrancher le câble réseau ; la passerelle se reconnecte avec des pauses croissantes (1 s à 30 s).",
+        "action_silence": "Arrêter le module modbus de la passerelle (ou la passerelle entière) tout en laissant l'équipement et le PSIM en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "contact-sec": {
+          "libelle": "Contact sec (barrière IR, bris de vitre, radar, câble de clôture, déclencheur manuel, détecteur de coupure, centrale incendie par contact)",
+          "params": {
+            "categorie_psim": "Intrusion, Incendie ou Énergie selon l'équipement",
+            "motif_alarme": "Intrusion",
+            "declencheur": "Faire commuter le contact comme le ferait le fait réel : couper le faisceau (barrière), appuyer sur le déclencheur manuel, simuler le bris de vitre avec le testeur du fabricant, marcher dans la zone du radar, couper l'alimentation secteur (détecteur de coupure).",
+            "attendu_alarme": "Un incident s'ouvre.",
+            "retour": "Rétablir le contact (faisceau libre, déclencheur réarmé, secteur rétabli)."
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "intrusion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "liaison_perdue": {
+              "state": "fault"
+            },
+            "silence_s": 90
+          }
+        },
+        "mesure": {
+          "libelle": "Mesure (niveau de cuve 4-20 mA, qualité de l'air, compteur d'énergie, groupe électrogène)",
+          "params": {
+            "categorie_psim": "Environnement ou Énergie (mesure avec seuils de préalarme et d'alarme)",
+            "motif_alarme": "Seuil d'alarme dépassé",
+            "declencheur": "Faire franchir le seuil d'alarme réglé dans le PSIM : appliquer au calibrateur la valeur correspondante (par exemple 18 mA pour un niveau de cuve très bas ou très haut selon le sens du seuil), ou faire varier la grandeur réelle.",
+            "attendu_alarme": "La valeur affichée suit l'entrée ; préalarme au seuil bas, alarme au seuil d'alarme ; un incident s'ouvre.",
+            "retour": "Ramener la grandeur à sa valeur normale (calibrateur à 12 mA, par exemple)."
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "value": 41
+            },
+            "normal": {
+              "value": 22
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "liaison_perdue": {
+              "state": "fault"
+            },
+            "seuils": {
+              "warnAt": 30,
+              "alarmAt": 38,
+              "direction": "above",
+              "unit": "u"
+            },
+            "silence_s": 90
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "ref": "prep-reception"
+        },
+        {
+          "ref": "trigger"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat"
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "id": "anti-rebond",
+          "section": "detection",
+          "titre": "Anti-rebond",
+          "profils": [
+            "contact-sec"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Faire rebondir le contact (le secouer, ou le commuter 10 fois en 2 s). Compter les messages reçus par le PSIM (journal du détecteur).",
+          "attendu": "Un seul message par changement d'état stable ; aucune inondation du journal ; l'état final est exact.",
+          "mesures": [
+            {
+              "cle": "messages_par_changement",
+              "libelle": "Messages par changement stable",
+              "unite": "messages",
+              "max": 1
+            }
+          ]
+        },
+        {
+          "id": "etalonnage",
+          "section": "detection",
+          "titre": "Étalonnage de la mesure",
+          "profils": [
+            "mesure"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Appliquer au calibrateur 4, 12 et 20 mA (ou trois valeurs connues de la grandeur). Comparer la valeur affichée dans le PSIM à la valeur attendue.",
+          "attendu": "Écart maximal inférieur ou égal à 1 % de l'échelle.",
+          "mesures": [
+            {
+              "cle": "ecart_pct_echelle",
+              "libelle": "Plus grand écart (en % de l'échelle)",
+              "unite": "%",
+              "max": 1
+            }
+          ]
+        },
+        {
+          "id": "boucle-coupee",
+          "section": "liaison",
+          "titre": "Boucle ou capteur coupé",
+          "profils": [
+            "mesure",
+            "contact-sec"
+          ],
+          "obligatoire": true,
+          "bench": "liaison",
+          "action": "Couper la boucle 4-20 mA (courant sous 3,6 mA), ou débrancher le fil du contact sec si l'équipement est câblé en fin de ligne.",
+          "attendu": "Le point passe en Défaut (jamais en Normal ni sur une valeur figée) en moins de 60 s ; le rétablissement est constaté.",
+          "mesures": [
+            {
+              "cle": "boucle_coupee_s",
+              "libelle": "Délai jusqu'au Défaut",
+              "unite": "s",
+              "max": 60
+            }
+          ]
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut",
+          "action": "Arrêter le PSIM de recette pendant 2 minutes. Pendant la coupure, faire commuter le contact (ou franchir le seuil) puis le remettre au repos. Redémarrer le PSIM.",
+          "attendu": "La file d'envoi de la passerelle vide ses messages dans l'ordre à la reprise : l'événement est daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident, aucun doublon si on redémarre la passerelle, l'état final est exact."
+        },
+        {
+          "ref": "tropical"
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Le sens du contact (normalement ouvert / fermé) et les adresses Modbus relevés sur le banc sont reportés dans le dossier du modèle."
+        ],
+        "echec": [
+          "Une coupure de câble ou de boucle qui laisse l'état « Normal » affiché."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "onduleur",
+      "version": 1,
+      "titre": "Supervision d'onduleur (module « ups » de la passerelle, NUT ou SNMP)",
+      "resume": "Qualification d'un onduleur (ou d'une carte réseau d'onduleur) lu par la passerelle : coupure secteur, batterie faible, mesures de charge, d'autonomie et de tension.",
+      "docs": [
+        "gateway/docs/ups.md",
+        "docs/PASSERELLE.md"
+      ],
+      "materiel": [
+        "L'onduleur à qualifier avec sa batterie en bon état et chargée à 100 % depuis au moins 12 h",
+        "Câble USB (NUT) ou carte réseau SNMP configurée (communauté en lecture seule)",
+        "Charge de test connue (lampes ou résistances, 30 à 60 % de la puissance nominale) et wattmètre",
+        "Multimètre pour la tension de batterie ; chronomètre ; thermo-hygromètre étalonné",
+        "Poste de recette : PSIM hors production et Passerelle GAMR avec le module ups configuré"
+      ],
+      "banc": [
+        "Brancher la charge de test sur l'onduleur et l'onduleur sur une prise commandée par un interrupteur (pour couper le secteur franchement).",
+        "NUT : vérifier avec `upsc` que `ups.status`, `battery.charge` et `battery.runtime` sont lisibles ; SNMP : vérifier avec `snmpwalk` les objets de l'UPS-MIB listés dans la documentation du module.",
+        "Déclarer l'onduleur dans le module ups (identifiants PSIM pour `status`, `charge`, `runtime`…), identifiant principal {{id_psim}}.",
+        "Dans le PSIM de recette, créer les détecteurs (catégorie Énergie), régler la supervision à 900 s et les seuils conseillés par la documentation."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Énergie",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 30,
+        "retour_max_s": 60,
+        "liaison_max_s": 120,
+        "reprise_max_s": 120,
+        "silence_max_s": 1000,
+        "delai_silence": "900 s (3 fois la période de lecture majorée du signe de vie de 300 s)",
+        "premier_message": "Démarrer la passerelle : le premier relevé envoie « Normal » une fois, puis les mesures.",
+        "declencheur": "Couper le secteur à l'interrupteur de la prise commandée : l'onduleur passe sur batterie. Noter l'heure.",
+        "attendu_alarme": "Une alarme « Coupure secteur » s'ouvre.",
+        "motif_alarme": "Coupure secteur",
+        "retour": "Rétablir le secteur ; attendre « Courant rétabli ».",
+        "action_batterie": "Laisser l'onduleur sur batterie, charge branchée, jusqu'au seuil de batterie faible de l'onduleur (le module envoie « Batterie faible »). Rétablir le secteur dès l'alerte. Noter la tension de batterie au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Débrancher le câble USB (NUT) ou le câble réseau de la carte SNMP. Noter que la passerelle envoie « Défaut » une seule fois après `maxFailures` échecs.",
+        "action_retablissement": "Rebrancher le câble.",
+        "action_silence": "Arrêter le module ups (ou la passerelle) en laissant l'onduleur et le PSIM en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "nut-usb": {
+          "libelle": "Onduleur USB lu par NUT",
+          "params": {},
+          "bench": {
+            "categorie": "energy",
+            "alarme": {
+              "event": "power_loss"
+            },
+            "normal": {
+              "event": "power_restored"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "liaison_perdue": {
+              "state": "fault"
+            },
+            "silence_s": 900
+          }
+        },
+        "snmp": {
+          "libelle": "Onduleur avec carte réseau SNMP",
+          "params": {},
+          "bench": {
+            "categorie": "energy",
+            "alarme": {
+              "event": "power_loss"
+            },
+            "normal": {
+              "event": "power_restored"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "liaison_perdue": {
+              "state": "fault"
+            },
+            "silence_s": 900
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "ref": "prep-reception"
+        },
+        {
+          "ref": "trigger"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat",
+          "action": "Répéter {{repetitions}} fois la coupure secteur de 20 s puis le rétablissement (laisser 40 s entre deux cycles), en acquittant et clôturant l'incident entre deux cycles."
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "ref": "lowbat"
+        },
+        {
+          "id": "autonomie",
+          "section": "detection",
+          "titre": "Autonomie réelle",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Batterie pleine, secteur coupé, charge de test branchée : mesurer la durée réelle jusqu'à la batterie faible. Comparer à l'autonomie annoncée par le module dans le PSIM (`runtime`).",
+          "attendu": "Autonomie réelle d'au moins 10 minutes sur la charge du pack (valeur de dimensionnement), et écart avec l'autonomie annoncée par l'onduleur inférieur à 30 %.",
+          "mesures": [
+            {
+              "cle": "autonomie_min",
+              "libelle": "Autonomie réelle mesurée",
+              "unite": "min",
+              "min": 10
+            },
+            {
+              "cle": "ecart_autonomie_pct",
+              "libelle": "Écart avec l'autonomie annoncée",
+              "unite": "%",
+              "max": 30
+            }
+          ]
+        },
+        {
+          "id": "justesse-mesures",
+          "section": "detection",
+          "titre": "Justesse des mesures",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Comparer la tension de batterie, la charge de l'onduleur (%) et la tension d'entrée affichées dans le PSIM aux mesures du multimètre et du wattmètre.",
+          "attendu": "Tension de batterie à 0,5 V près, charge à 10 points près.",
+          "mesures": [
+            {
+              "cle": "ecart_tension_batterie_v",
+              "libelle": "Écart de tension de batterie",
+              "unite": "V",
+              "max": 0.5
+            }
+          ]
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut"
+        },
+        {
+          "ref": "tropical",
+          "obligatoire": false,
+          "action": "Mesurer la température de la batterie de l'onduleur (sonde ou valeur `ups.temperature`) dans le local le plus chaud du site, à pleine charge de test pendant 1 h. Noter température ambiante et humidité. Une batterie plomb vieillit vite au-dessus de 30 °C : noter la durée de vie annoncée à cette température."
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Les identifiants PSIM `status`, `charge`, `runtime` sont tous lus sur le modèle (une grandeur absente est notée et retirée de la configuration)."
+        ],
+        "echec": [
+          "Une coupure secteur réelle non signalée, ou signalée sans que « Courant rétabli » arrive au retour."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "lorawan",
+      "version": 1,
+      "titre": "Capteurs LoRaWAN (module « lorawan » de la passerelle, via ChirpStack)",
+      "resume": "Qualification d'un modèle de capteur LoRaWAN (Dragino, Milesight…) et de la passerelle radio : jonction, noms de champs du codec, déclenchement, batterie, silence, portée.",
+      "docs": [
+        "gateway/docs/lorawan.md",
+        "docs/PASSERELLE.md"
+      ],
+      "materiel": [
+        "2 exemplaires du capteur à qualifier, piles neuves, DevEui et AppKey imprimés",
+        "Passerelle radio LoRa (concentrateur) à la bonne bande de fréquences, ChirpStack v4 installé avec son broker MQTT",
+        "Décodeur (codec) du fabricant collé dans le profil d'appareil ChirpStack",
+        "Poste de recette : PSIM hors production et Passerelle GAMR avec le module lorawan configuré",
+        "Chronomètre, multimètre, thermo-hygromètre étalonné ; pour la portée : plan du site ou mesure de distance",
+        "Confirmation écrite de l'ARTCI sur la bande de fréquences utilisée (voir gateway/docs/lorawan.md, section 8)"
+      ],
+      "banc": [
+        "Installer la passerelle radio, l'ajouter dans ChirpStack ; créer le profil d'appareil (OTAA, région adaptée) avec le codec du fabricant.",
+        "Créer l'application et l'appareil (DevEui, AppKey) ; attendre la jonction (join) puis la première trame ; vérifier dans l'onglet Events que le champ `object` est rempli.",
+        "Déclarer le capteur dans le module lorawan (`kind` du profil), identifiant PSIM {{id_psim}}, et dans le PSIM de recette ; régler la supervision à 3 fois la période d'émission du capteur.",
+        "Ajouter des destinataires de test (niveaux 1 et 2)."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "selon le profil",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 60,
+        "retour_max_s": 120,
+        "liaison_max_s": 1800,
+        "reprise_max_s": 900,
+        "silence_max_s": 2000,
+        "delai_silence": "1 800 s pour un capteur qui émet toutes les 10 minutes (3 fois la période)",
+        "premier_message": "Attendre la jonction puis la première trame dans ChirpStack (Events), relever les noms de champs réels de `object`.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper l'alimentation de la passerelle radio (ou arrêter ChirpStack) pendant 40 minutes. Les capteurs continuent d'émettre dans le vide.",
+        "action_retablissement": "Remettre l'alimentation de la passerelle radio ou relancer ChirpStack.",
+        "action_silence": "Retirer la pile du capteur, passerelle radio et ChirpStack restant en marche.",
+        "action_coupure": "Arrêter le PSIM de recette pendant 2 minutes. Pendant la coupure, déclencher le capteur puis le remettre au repos. Redémarrer le PSIM. Faire ensuite rejouer une trame déjà vue (même `fCnt`) en republiant le message sur le broker ChirpStack.",
+        "attendu_coupure": "Après le rétablissement : les trames suivantes remettent l'état à jour. Rappel : ChirpStack ne rejoue pas l'historique MQTT ; un événement unique perdu pendant la coupure du lien vers le PSIM est rattrapé par la file de la passerelle GAMR (heure réelle, un seul incident, aucun doublon si le même `fCnt` est rejoué)."
+      },
+      "profils": {
+        "capteur-porte": {
+          "libelle": "Contact de porte (Dragino LDS03A, Milesight WS301)",
+          "params": {
+            "categorie_psim": "Intrusion",
+            "motif_alarme": "Intrusion",
+            "declencheur": "Ouvrir la porte (écarter l'aimant). Une trame part immédiatement à l'ouverture.",
+            "attendu_alarme": "Une alarme d'intrusion s'ouvre (zone armée).",
+            "retour": "Refermer la porte ; attendre « Porte fermée »."
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "intrusion"
+            },
+            "normal": {
+              "event": "door_closed"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "silence_s": 1800
+          }
+        },
+        "capteur-fuite": {
+          "libelle": "Détecteur de fuite d'eau (Dragino LWL03A)",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Fuite d'eau",
+            "declencheur": "Plonger la sonde dans 1 cm d'eau.",
+            "attendu_alarme": "Une alarme « Fuite d'eau » s'ouvre.",
+            "retour": "Sécher la sonde ; attendre « Sol sec »."
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "leak"
+            },
+            "normal": {
+              "event": "dry"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "silence_s": 1800
+          }
+        },
+        "capteur-niveau": {
+          "libelle": "Niveau de cuve par ultrason (Dragino LDDS75 / LDDS45)",
+          "params": {
+            "categorie_psim": "Environnement (niveau en %, seuil d'alarme bas)",
+            "motif_alarme": "Niveau bas",
+            "declencheur": "Vérifier la hauteur de cuve (`emptyAt`) avec un mètre. Faire varier le niveau réel ou placer une plaque à des distances connues (20 %, 50 %, 80 %) devant le capteur ; comparer les niveaux affichés.",
+            "attendu_alarme": "Le niveau affiché suit la distance (écart inférieur à 5 points) ; l'alarme de seuil bas s'ouvre.",
+            "retour": "Remettre le niveau à 80 %."
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "value": 12
+            },
+            "normal": {
+              "value": 80
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "seuils": {
+              "warnAt": 25,
+              "alarmAt": 15,
+              "direction": "below",
+              "unit": "%"
+            },
+            "silence_s": 1800
+          }
+        },
+        "capteur-temperature": {
+          "libelle": "Température et humidité (Dragino LHT65, Milesight famille EM300-TH)",
+          "params": {
+            "categorie_psim": "Environnement (°C, préalarme 30, alarme 38 pour la recette)",
+            "motif_alarme": "Température excessive",
+            "declencheur": "Chauffer le capteur au sèche-cheveux jusqu'à dépasser 38 °C ; relever le thermo-hygromètre étalonné en parallèle.",
+            "attendu_alarme": "La valeur suit la température à 1 °C près ; alarme à 38 °C.",
+            "retour": "Laisser refroidir sous 30 °C.",
+            "retour_max_s": 1800
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "value": 41
+            },
+            "normal": {
+              "value": 22
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "seuils": {
+              "warnAt": 30,
+              "alarmAt": 38,
+              "direction": "above",
+              "unit": "°C"
+            },
+            "silence_s": 1800
+          }
+        },
+        "capteur-mouvement": {
+          "libelle": "Mouvement PIR (Milesight WS202)",
+          "params": {
+            "categorie_psim": "Intrusion",
+            "motif_alarme": "Mouvement détecté",
+            "declencheur": "Passer devant le capteur à 1 m, 3 m, 5 m.",
+            "attendu_alarme": "Un incident s'ouvre à chaque passage (zone armée).",
+            "retour": "Rester immobile hors du champ jusqu'au retour au repos.",
+            "retour_max_s": 300
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "motion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "silence_s": 1800
+          }
+        },
+        "bouton": {
+          "libelle": "Bouton panique (Milesight WS101, bouton SOS générique)",
+          "params": {
+            "categorie_psim": "Personnes",
+            "motif_alarme": "Alarme de panique",
+            "declencheur": "Appui court, appui double, puis appui long : seul l'appui prévu par le profil (long pour le WS101) déclenche. Vérifier les trois appuis.",
+            "attendu_alarme": "Seul l'appui prévu ouvre une alarme de panique, même zone désarmée.",
+            "retour": "Acquitter l'incident ; envoyer « Alarme réarmée »."
+          },
+          "bench": {
+            "categorie": "people",
+            "alarme": {
+              "event": "panic"
+            },
+            "normal": {
+              "event": "alarm_reset"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "silence_s": 1800
+          }
+        },
+        "passerelle-radio": {
+          "libelle": "Passerelle radio LoRa (concentrateur)",
+          "params": {},
+          "bench": null
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "prep-banc",
+          "id": "prep-banc-radio",
+          "profils": [
+            "passerelle-radio"
+          ],
+          "action": "Monter le banc : passerelle radio branchée en Ethernet, ajoutée dans ChirpStack, antenne dégagée à 2 m du sol, trois capteurs de référence déjà qualifiés ou à qualifier.",
+          "attendu": "La passerelle radio apparaît « en ligne » dans ChirpStack et reçoit les trames des trois capteurs."
+        },
+        {
+          "id": "jonction",
+          "section": "preparation",
+          "titre": "Jonction OTAA et champs du codec",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Mettre le capteur sous tension, attendre la jonction (join) et la première trame ; ouvrir l'onglet Events de ChirpStack et relever les noms réels des champs de `object`. Les comparer au tableau de gateway/docs/lorawan.md (section 5).",
+          "attendu": "Le champ `object` est rempli et ses noms correspondent au profil du module. Tout écart est noté ; il se corrige par `overrides` AVANT de poursuivre, et l'écart figure au dossier du modèle."
+        },
+        {
+          "ref": "prep-reception",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "trigger",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "restore",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "repeat",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "latency",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "lowbat",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ],
+          "action": "Alimenter le capteur avec des piles déchargées (tension juste sous le seuil du profil : 2,4 V pour les Dragino LDS03A et LWL03A, 3,0 V pour le LDDS75, 2,6 V pour le LHT65) et attendre la trame suivante. Noter la tension au multimètre."
+        },
+        {
+          "ref": "tamper",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ],
+          "obligatoire": false,
+          "bench": "physique",
+          "action": "Ouvrir le boîtier ou arracher le capteur. La plupart des capteurs LoRa n'ont pas d'autoprotection ni de profil prévu pour elle : le noter ; marquer « na » avec cette justification."
+        },
+        {
+          "id": "rejeu-fcnt",
+          "section": "psim",
+          "titre": "Trame rejouée (même compteur)",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ],
+          "obligatoire": true,
+          "bench": "renvoi",
+          "action": "Republier sur le broker de ChirpStack une trame `event/up` déjà traitée (même `fCnt`) : `mosquitto_pub` avec le contenu relevé avec `mosquitto_sub`.",
+          "attendu": "Aucun nouvel incident ni doublon : le module ignore la trame déjà vue."
+        },
+        {
+          "ref": "linkloss",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "linkback",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "silence",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "psimrestart",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "ref": "netcut",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton"
+          ]
+        },
+        {
+          "id": "portee",
+          "section": "detection",
+          "titre": "Portée radio mesurée",
+          "profils": [
+            "capteur-porte",
+            "capteur-fuite",
+            "capteur-niveau",
+            "capteur-temperature",
+            "capteur-mouvement",
+            "bouton",
+            "passerelle-radio"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Éloigner le capteur de la passerelle radio par paliers (100, 300, 500 m ou la distance du site, en visibilité puis avec obstacles). À chaque palier, déclencher 10 fois et compter les trames reçues par ChirpStack ; relever RSSI et SNR.",
+          "attendu": "Au moins 95 % des trames reçues à la distance prévue pour le site (500 m minimum en visibilité) ; RSSI et SNR notés pour le dossier du site.",
+          "mesures": [
+            {
+              "cle": "portee_m",
+              "libelle": "Distance avec au moins 95 % de trames reçues",
+              "unite": "m",
+              "min": 500
+            },
+            {
+              "cle": "trames_recues_pct",
+              "libelle": "Trames reçues à cette distance",
+              "unite": "%",
+              "min": 95
+            }
+          ]
+        },
+        {
+          "id": "radio-bande",
+          "section": "preparation",
+          "titre": "Bande de fréquences et autorisation",
+          "profils": [
+            "passerelle-radio"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Relever la bande de fréquences, la puissance et la région configurées sur la passerelle radio, le profil d'appareil ChirpStack et le capteur. Obtenir (ou joindre) la confirmation écrite de l'ARTCI.",
+          "attendu": "Région identique partout et confirmation écrite jointe au dossier. Sans elle : ne pas qualifier."
+        },
+        {
+          "id": "radio-couverture",
+          "section": "detection",
+          "titre": "Couverture mesurée avec trois capteurs",
+          "profils": [
+            "passerelle-radio"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Placer trois capteurs à trois distances et orientations ; sur 1 heure, compter les trames reçues par rapport aux trames émises.",
+          "attendu": "Pertes de trames inférieures à 5 % sur chaque capteur.",
+          "mesures": [
+            {
+              "cle": "pertes_trames_pct",
+              "libelle": "Pertes de trames (pire capteur)",
+              "unite": "%",
+              "max": 5
+            }
+          ]
+        },
+        {
+          "id": "radio-reprise",
+          "section": "liaison",
+          "titre": "Reprise après coupure de la passerelle radio",
+          "profils": [
+            "passerelle-radio"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Couper l'alimentation de la passerelle radio 10 minutes, puis la rétablir sans autre intervention.",
+          "attendu": "La passerelle radio revient « en ligne » seule et les trames reprennent en moins de 10 minutes ; pendant la coupure, les capteurs passent « Hors ligne » dans le PSIM après leur délai.",
+          "mesures": [
+            {
+              "cle": "reprise_radio_min",
+              "libelle": "Délai de reprise",
+              "unite": "min",
+              "max": 10
+            }
+          ]
+        },
+        {
+          "ref": "tropical"
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Le noms de champs réels du codec sont notés au dossier du modèle ; les `overrides` éventuels sont recopiés dans la fiche de configuration du site."
+        ],
+        "echec": [
+          "Un capteur dont la trame d'alarme est perdue à la portée prévue sans qu'une trame périodique la rattrape."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "sia",
+      "version": 1,
+      "titre": "Centrales d'alarme (module « sia » de la passerelle, SIA DC-09)",
+      "resume": "Qualification d'une marque et d'un modèle de centrale d'alarme intrusion ou incendie qui transmet ses événements à la passerelle en SIA DC-09.",
+      "docs": [
+        "gateway/docs/sia.md",
+        "docs/PASSERELLE.md"
+      ],
+      "materiel": [
+        "La centrale à qualifier, alimentée, avec un détecteur de chaque type que le pack utilise (mouvement, ouverture, fumée en mode test, bouton panique, autoprotection)",
+        "Module de transmission IP (ou centrale IP) réglé en SIA DC-09, notice des réglages",
+        "Switch, câbles ; poste de recette (PSIM hors production + Passerelle GAMR avec le module sia)",
+        "Clé AES-128 générée au hasard (32 caractères hexadécimaux), numéro de compte de 3 à 16 caractères hexadécimaux",
+        "Chronomètre ; accès NTP pour la centrale ou possibilité de décaler son horloge"
+      ],
+      "banc": [
+        "Mettre la centrale et la passerelle sur le même réseau, adresse IP fixe pour la passerelle (`listen.host`), port choisi (`listen.port`).",
+        "Sur la centrale : protocole SIA DC-09 format SIA-DCS, adresse et port de la passerelle, numéro de compte, chiffrement AES activé avec la clé, horodatage activé, test cyclique toutes les 60 s à 5 min.",
+        "Dans le module sia : compte, clé (`keyEnv` de préférence), `zones`, `partitions`, `defaultId`, `supervisionS` à 2 à 3 fois l'intervalle de test cyclique.",
+        "Dans le PSIM de recette, créer un détecteur par zone utile ({{id_psim}} pour la zone d'intrusion de référence) et un pour la centrale (`defaultId`)."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Intrusion (zone d'intrusion de la centrale)",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 10,
+        "retour_max_s": 30,
+        "liaison_max_s": 300,
+        "reprise_max_s": 180,
+        "silence_max_s": 360,
+        "delai_silence": "2 à 3 fois l'intervalle du test cyclique de la centrale (`supervisionS`)",
+        "premier_message": "Sur la centrale, lancer un test de transmission : elle doit afficher « transmission réussie » (ACK reçu). Un message « compte inconnu », « horodatage hors fenetre », « dechiffrement impossible » dans le journal de la passerelle est un réglage à corriger.",
+        "declencheur": "Armer la centrale puis déclencher le détecteur d'intrusion de la zone de référence (ouverture ou mouvement).",
+        "attendu_alarme": "La centrale envoie l'alarme (code BA ou équivalent) ; un incident d'intrusion s'ouvre sur le bon équipement.",
+        "motif_alarme": "Intrusion",
+        "retour": "Désarmer la centrale ; la restauration (BR ou équivalent) arrive.",
+        "action_batterie": "Débrancher la batterie de la centrale puis le secteur jusqu'à l'alerte « batterie faible » (ou utiliser le test de batterie de la centrale). Noter la tension. Rétablir ensuite.",
+        "action_sabotage": "Ouvrir le boîtier de la centrale ou arracher un détecteur de son support (autoprotection).",
+        "action_liaison": "Débrancher le câble réseau de la centrale (ou du module IP) plus longtemps que `supervisionS`.",
+        "action_retablissement": "Rebrancher le câble réseau.",
+        "action_silence": "Couper l'alimentation de la centrale et sa batterie (mettre la centrale hors tension) en laissant la passerelle et le PSIM en marche.",
+        "action_coupure": "Arrêter la passerelle pendant 5 minutes. Pendant la coupure, déclencher un détecteur de la centrale puis le restaurer. Redémarrer la passerelle.",
+        "attendu_coupure": "La centrale, faute d'ACK, retransmet ; l'événement arrive à la reprise, daté de son heure réelle (horodatage de la trame), un seul incident, aucun doublon si la centrale retransmet une trame déjà traitée."
+      },
+      "profils": {
+        "centrale": {
+          "libelle": "Centrale d'alarme intrusion / incendie",
+          "params": {},
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "intrusion"
+            },
+            "normal": {
+              "event": "restored"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "liaison_perdue": {
+              "state": "fault"
+            },
+            "silence_s": 300
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "id": "sia-reglages",
+          "section": "preparation",
+          "titre": "Réglages de la centrale",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Relever et noter les réglages saisis sur la centrale : format (SIA-DCS ou ADM-CID), transport (TCP ou UDP), numéro de compte, chiffrement AES (longueur de clé), horodatage, test cyclique (intervalle). Joindre une photo de l'écran ou une copie de la configuration SANS la clé.",
+          "attendu": "Tous les réglages correspondent à la section 1 de gateway/docs/sia.md. La clé n'est écrite nulle part dans la fiche."
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "ref": "prep-reception",
+          "bench": "normal"
+        },
+        {
+          "id": "sia-test",
+          "section": "preparation",
+          "titre": "Test de transmission",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Lancer un test de transmission depuis la centrale. Lire l'affichage de la centrale et le journal de la passerelle.",
+          "attendu": "La centrale indique « transmission réussie » (ACK). Le journal de la passerelle montre la réception sans erreur."
+        },
+        {
+          "ref": "trigger"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat"
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "id": "sia-incendie",
+          "section": "detection",
+          "titre": "Alarme incendie (mode test)",
+          "obligatoire": false,
+          "bench": "physique",
+          "action": "Déclencher un détecteur incendie de la centrale en mode test (bouton test, jamais de flamme réelle). Si la centrale n'a pas de voie incendie, marquer « na ».",
+          "attendu": "Alarme incendie (code FA ou 1110) transmise et affichée sur le bon équipement ; la restauration arrive."
+        },
+        {
+          "id": "sia-panique",
+          "section": "detection",
+          "titre": "Panique",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Déclencher la panique (clavier ou bouton) ; le déclencher centrale désarmée.",
+          "attendu": "Alarme de panique ouverte même centrale désarmée (code PA / HA)."
+        },
+        {
+          "ref": "tamper",
+          "obligatoire": true
+        },
+        {
+          "ref": "lowbat"
+        },
+        {
+          "id": "sia-secteur",
+          "section": "detection",
+          "titre": "Perte et retour du secteur de la centrale",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Couper le secteur de la centrale (batterie branchée), attendre l'alerte, puis rétablir.",
+          "attendu": "« Coupure secteur » (AT) puis « Courant rétabli » (AR) arrivent sur l'équipement de la centrale (`defaultId`)."
+        },
+        {
+          "id": "sia-chiffrement",
+          "section": "liaison",
+          "titre": "Chiffrement et clé",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Changer volontairement la clé AES sur la centrale (clé fausse), lancer un test de transmission, puis remettre la bonne clé. Si la centrale sait envoyer en clair, essayer aussi une trame en clair.",
+          "attendu": "Avec une mauvaise clé ou en clair (alors que `requireEncryption` vaut vrai) : la trame est refusée, le journal le dit (« dechiffrement impossible » ou « trame en clair refusee »), aucun événement n'arrive au PSIM. Avec la bonne clé : tout redevient normal."
+        },
+        {
+          "id": "sia-horloge",
+          "section": "liaison",
+          "titre": "Horloge de la centrale décalée",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Décaler l'horloge de la centrale de plus de 60 s (au-delà de `maxClockSkewS`), lancer un test de transmission, puis la remettre à l'heure.",
+          "attendu": "La trame est refusée (NAK, « horodatage hors fenetre » dans le journal), aucun événement au PSIM ; la centrale se recale sur l'heure du NAK ou une fois remise à l'heure."
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut"
+        },
+        {
+          "ref": "tropical",
+          "obligatoire": false
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Tout code `inconnu` signalé par le journal pendant l'essai est noté et, si besoin, ajouté dans `overrides` (puis l'essai concerné est refait)."
+        ],
+        "echec": [
+          "Une trame chiffrée avec une mauvaise clé ou hors fenêtre d'horloge acceptée par la passerelle."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "tuya",
+      "version": 1,
+      "titre": "Capteurs WiFi Tuya / Smart Life (fumée et autres capteurs)",
+      "resume": "Qualification d'un modèle de détecteur de fumée WiFi Tuya (validé) ou d'un autre capteur Tuya (contact, mouvement, fuite, température, gaz, CO, SOS), lu par le PSIM dans le cloud Tuya.",
+      "docs": [
+        "docs/TUYA.md",
+        "docs/MISE-EN-SERVICE.md"
+      ],
+      "materiel": [
+        "2 exemplaires du capteur Tuya à qualifier, piles neuves, appairés dans l'application Smart Life",
+        "Compte Tuya Cloud avec un projet lié au compte Smart Life (Access ID / Secret, région correcte, services API souscrits)",
+        "Poste de recette : PSIM hors production avec `PSIM_TUYA_*` renseignées, accès Internet, possibilité de couper Internet (câble ou pare-feu)",
+        "Chronomètre ; multimètre ; thermo-hygromètre étalonné ; pour la fumée : bombe de fumée d'essai agréée",
+        "Une pile déchargée du même type (9 V vers 6 V, par exemple) pour l'étape batterie faible"
+      ],
+      "banc": [
+        "Appairer le capteur dans Smart Life, le retrouver dans la console Tuya (Device ID), vérifier qu'il est « En ligne ».",
+        "Dans le PSIM de recette, créer le détecteur {{id_psim}} (catégorie du profil) et coller le Device ID dans la section « Capteur WiFi Tuya ».",
+        "Cliquer « Tester la lecture » : relever le type reconnu et les données reçues (noms des fonctions Tuya, valeur de la pile).",
+        "Enregistrer la source ; vérifier que la supervision de 300 s est posée. Ajouter des destinataires de test."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "selon le profil",
+        "delai_premier_message_s": 120,
+        "repetitions": 5,
+        "latence_essais": 10,
+        "latence_max_s": 120,
+        "retour_max_s": 180,
+        "liaison_max_s": 420,
+        "reprise_max_s": 180,
+        "silence_max_s": 420,
+        "delai_silence": "300 s (supervision posée automatiquement)",
+        "premier_message": "Enregistrer la source ; la première lecture du cloud arrive dans la minute.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper l'accès Internet du poste du PSIM de recette (débrancher le câble réseau) pendant 8 minutes, capteur inchangé. Le PSIM ne peut plus interroger le cloud.",
+        "action_retablissement": "Rétablir l'accès Internet.",
+        "action_silence": "Retirer la pile du capteur (ou couper le WiFi de son point d'accès), Internet du PSIM restant en marche, de sorte que Tuya déclare l'appareil hors ligne.",
+        "action_coupure": "Couper l'accès Internet du poste de recette pendant 6 minutes. Pendant la coupure, déclencher le capteur et NE PAS le remettre au repos. Rétablir Internet.",
+        "attendu_coupure": "Pendant la coupure : le capteur passe « Hors ligne » après 5 minutes (jamais Normal). Au rétablissement : l'alarme encore active est lue et ouvre un incident en moins de 3 minutes. Limite connue à noter : une alarme terminée pendant la coupure n'est pas rejouée (le PSIM lit un niveau, pas des impulsions)."
+      },
+      "profils": {
+        "fumee": {
+          "libelle": "Détecteur de fumée WiFi (catégorie Tuya ywbj)",
+          "params": {
+            "categorie_psim": "Incendie",
+            "motif_alarme": "Alarme",
+            "declencheur": "Appuyer 2 s sur le bouton TEST du détecteur (sirène et alarme), puis, dans un second essai, la bombe de fumée d'essai sous le capteur. La sirène sonne seule, sur place, indépendamment du PSIM.",
+            "attendu_alarme": "Un incident incendie s'ouvre dans la minute qui suit la remontée au cloud.",
+            "retour": "Arrêter la sirène (bouton), aérer ; attendre « Normal ».",
+            "action_batterie": "Remplacer la pile par une pile 9 V déchargée (environ 6 V) ou attendre le message de pile faible du détecteur ; relever `battery_state` / `battery_percentage` avec « Tester la lecture » et la tension au multimètre."
+          },
+          "bench": {
+            "categorie": "fire",
+            "alarme": {
+              "state": "alarm"
+            },
+            "normal": {
+              "state": "normal"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "liaison_perdue": null,
+            "silence_s": 300
+          }
+        },
+        "contact": {
+          "libelle": "Contact de porte ou fenêtre (catégorie mcs)",
+          "params": {
+            "categorie_psim": "Intrusion (zone armée)",
+            "motif_alarme": "Intrusion",
+            "declencheur": "Ouvrir la porte et la laisser ouverte plus de 90 s. Rappel : une ouverture plus courte que l'intervalle de lecture peut passer inaperçue (cloud lu toutes les 60 s).",
+            "attendu_alarme": "Un incident d'intrusion s'ouvre (zone armée).",
+            "retour": "Refermer la porte ; attendre « Porte fermée »."
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "intrusion"
+            },
+            "normal": {
+              "event": "door_closed"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "pir": {
+          "libelle": "Détecteur de mouvement (catégorie pir)",
+          "params": {
+            "categorie_psim": "Intrusion (zone armée)",
+            "motif_alarme": "Mouvement détecté",
+            "declencheur": "Rester dans le champ du capteur plus de 90 s (agiter la main en continu). Un mouvement d'une seconde peut passer inaperçu à cause de la lecture toutes les 60 s : le tester et le noter.",
+            "attendu_alarme": "Un incident s'ouvre.",
+            "retour": "Quitter le champ ; attendre « Retour au calme ».",
+            "retour_max_s": 300
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "motion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "fuite": {
+          "libelle": "Détecteur de fuite d'eau (catégorie sj)",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Fuite d'eau",
+            "declencheur": "Plonger la sonde dans 1 cm d'eau.",
+            "attendu_alarme": "Une alarme « Fuite d'eau » s'ouvre.",
+            "retour": "Sécher la sonde ; attendre « Sol sec »."
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "leak"
+            },
+            "normal": {
+              "event": "dry"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "temperature": {
+          "libelle": "Température et humidité (catégorie wsdcg)",
+          "params": {
+            "categorie_psim": "Environnement (°C, préalarme 30, alarme 38)",
+            "motif_alarme": "Température excessive",
+            "declencheur": "Chauffer le capteur au sèche-cheveux jusqu'à dépasser 38 °C ; relever le thermo-hygromètre étalonné. Noter l'échelle (`scale`) lue dans les spécifications de l'appareil.",
+            "attendu_alarme": "La valeur suit la température à 1 °C près ; alarme à 38 °C.",
+            "retour": "Laisser refroidir sous 30 °C.",
+            "retour_max_s": 1200
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "value": 41
+            },
+            "normal": {
+              "value": 22
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "seuils": {
+              "warnAt": 30,
+              "alarmAt": 38,
+              "direction": "above",
+              "unit": "°C"
+            },
+            "silence_s": 300
+          }
+        },
+        "gaz": {
+          "libelle": "Détecteur de gaz (catégorie rqbj ou jwbj)",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Gaz détecté",
+            "declencheur": "Bouton test du fabricant puis gaz d'essai agréé en local ventilé. Noter si le capteur passe par un état de préchauffe (traité en défaut par le PSIM).",
+            "attendu_alarme": "Une alarme « Gaz détecté » s'ouvre.",
+            "retour": "Aérer ; attendre « Retour au calme ».",
+            "retour_max_s": 600
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "gas"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "co": {
+          "libelle": "Détecteur de monoxyde de carbone (catégorie cobj)",
+          "params": {
+            "categorie_psim": "Environnement",
+            "motif_alarme": "Monoxyde de carbone détecté",
+            "declencheur": "Bouton test du fabricant puis gaz d'essai CO agréé si disponible. Ne jamais produire de CO par combustion.",
+            "attendu_alarme": "Une alarme « Monoxyde de carbone détecté » s'ouvre.",
+            "retour": "Aérer ; attendre « Retour au calme ».",
+            "retour_max_s": 600
+          },
+          "bench": {
+            "categorie": "environment",
+            "alarme": {
+              "event": "co"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "sos": {
+          "libelle": "Bouton SOS (catégorie sos)",
+          "params": {
+            "categorie_psim": "Personnes",
+            "motif_alarme": "Appel de détresse (SOS)",
+            "declencheur": "Maintenir l'appui plus de 90 s si le capteur le permet, sinon appuyer de façon répétée pendant 90 s. Un appui bref peut passer inaperçu (lecture toutes les 60 s) : le tester et le noter. Ce capteur ne convient pas à la protection des personnes en première ligne.",
+            "attendu_alarme": "Une alarme SOS s'ouvre, même zone désarmée.",
+            "retour": "Relâcher ; envoyer « Alarme réarmée » ou attendre le retour."
+          },
+          "bench": {
+            "categorie": "people",
+            "alarme": {
+              "event": "sos"
+            },
+            "normal": {
+              "event": "alarm_reset"
+            },
+            "defaut": {
+              "state": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "id": "tuya-lecture",
+          "section": "preparation",
+          "titre": "Lecture du cloud (« Tester la lecture »)",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Cliquer « Tester la lecture » dans l'éditeur du détecteur. Relever : catégorie Tuya, nom des fonctions reçues, type reconnu par le PSIM. Les comparer à la liste de docs/TUYA.md.",
+          "attendu": "Le type de capteur est reconnu (ou forcé correctement dans la liste « Type de capteur ») et les noms de fonctions sont ceux que le PSIM lit. Un nom inconnu doit être ajouté au PSIM (server/tuyasensors.ts) AVANT de continuer ; en attendant, le PSIM l'affiche en défaut, jamais Normal."
+        },
+        {
+          "ref": "prep-reception"
+        },
+        {
+          "ref": "trigger"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat"
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "ref": "lowbat"
+        },
+        {
+          "ref": "tamper",
+          "obligatoire": false,
+          "profils": [
+            "contact",
+            "pir",
+            "fuite",
+            "temperature",
+            "gaz",
+            "co",
+            "sos"
+          ],
+          "action": "Si le capteur a une autoprotection (`tamper_alarm`), la déclencher (ouvrir le boîtier). Sinon marquer « na » avec cette justification."
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut",
+          "bench": "renvoi-direct"
+        },
+        {
+          "id": "tuya-quota",
+          "section": "psim",
+          "titre": "Quota du cloud Tuya",
+          "obligatoire": false,
+          "bench": "physique",
+          "action": "Dans la console Tuya, relever le nombre d'appels API consommés sur la journée d'essai et l'extrapoler au mois (60 s de lecture groupée : environ 43 000 appels par mois jusqu'à 20 appareils).",
+          "attendu": "Consommation extrapolée inférieure au quota de l'abonnement ; date d'expiration de l'essai gratuit notée au dossier.",
+          "mesures": [
+            {
+              "cle": "appels_par_mois",
+              "libelle": "Appels API extrapolés par mois",
+              "unite": "appels",
+              "max": 100000
+            }
+          ]
+        },
+        {
+          "ref": "tropical"
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "La sirène locale du détecteur sonne seule, que le PSIM l'entende ou non (constaté et noté)."
+        ],
+        "echec": [
+          "Un capteur déclaré Normal par le PSIM alors que Tuya le dit hors ligne ou que ses données ne sont pas reconnues."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "camera-onvif",
+      "version": 1,
+      "titre": "Caméras IP ONVIF / RTSP (fixe, PTZ, panoramique, solaire 4G, thermique)",
+      "resume": "Qualification d'un modèle de caméra IP raccordée directement au PSIM : découverte ONVIF, image RTSP, fluidité, nuit, reprise après coupure ; points propres au PTZ, au panoramique, au solaire 4G et au thermique.",
+      "docs": [
+        "README.md (section « Brancher une caméra ONVIF réelle »)",
+        "docs/MISE-EN-SERVICE.md"
+      ],
+      "materiel": [
+        "La caméra à qualifier, son alimentation (PoE ou 12 V) et son support",
+        "Switch PoE (ou injecteur), câbles ; PC de recette avec ffmpeg installé, PSIM hors production",
+        "Chronomètre, luxmètre ou conditions de nuit réelles, cible de test (personne, panneau lisible) à distance connue, mètre laser",
+        "Solaire 4G : carte SIM de test, panneau et batterie fournis, accès à un lieu ensoleillé puis occulté",
+        "Thermique : cible chaude (personne, bouteille d'eau chaude) à distance connue"
+      ],
+      "banc": [
+        "Brancher la caméra sur le switch PoE, lui donner une adresse IP fixe ; créer un compte en lecture seule dédié au PSIM ; régler son heure (NTP).",
+        "Dans le PSIM de recette, créer la caméra {{id_psim}} (Source vidéo : Caméra réseau ONVIF, ou flux direct RTSP).",
+        "Régler le flux secondaire pour l'affichage (résolution basse, 10 à 15 images/s) ; noter le chemin RTSP."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Caméra",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 10,
+        "retour_max_s": 30,
+        "liaison_max_s": 120,
+        "reprise_max_s": 120,
+        "silence_max_s": 600,
+        "delai_silence": "3 fois la période d'émission du capteur",
+        "premier_message": "Mettre l'équipement sous tension et l'attacher à la passerelle ou au PSIM selon la notice.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper la liaison entre l'équipement et le PSIM sans couper l'alimentation de l'équipement.",
+        "action_retablissement": "Rétablir la liaison.",
+        "action_silence": "Couper l'alimentation de l'équipement (retirer la pile ou débrancher) en laissant le reste en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "fixe": {
+          "libelle": "Caméra IP fixe ONVIF",
+          "params": {},
+          "bench": null
+        },
+        "ptz": {
+          "libelle": "Caméra PTZ (dôme motorisé)",
+          "params": {},
+          "bench": null
+        },
+        "panoramique": {
+          "libelle": "Caméra panoramique (360° / multi-capteurs)",
+          "params": {},
+          "bench": null
+        },
+        "solaire-4g": {
+          "libelle": "Caméra solaire 4G",
+          "params": {},
+          "bench": null
+        },
+        "thermique": {
+          "libelle": "Caméra thermique",
+          "params": {},
+          "bench": null
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "id": "onvif-decouverte",
+          "section": "preparation",
+          "titre": "Découverte ONVIF",
+          "obligatoire": false,
+          "profils": [
+            "fixe",
+            "ptz",
+            "panoramique",
+            "thermique"
+          ],
+          "bench": "physique",
+          "action": "Dans l'éditeur de la caméra, « Rechercher sur le réseau » (ONVIF). Si la caméra n'est pas trouvée, saisir son adresse à la main.",
+          "attendu": "La caméra est trouvée par la recherche, ou saisie manuelle réussie. Noter si la multidiffusion est bloquée sur le réseau du site."
+        },
+        {
+          "id": "image",
+          "section": "detection",
+          "titre": "Image affichée (« Enregistrer et tester »)",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Cliquer « Enregistrer et tester ». Relever la taille reçue et le format affiché indiqués par le PSIM. Comparer l'image du PSIM à celle de l'interface de la caméra.",
+          "attendu": "Une image nette et à l'endroit s'affiche en moins de 10 s ; proportions correctes (pas d'image écrasée) ; message d'erreur clair si on saisit un mauvais mot de passe (testé à l'étape suivante).",
+          "mesures": [
+            {
+              "cle": "delai_image_s",
+              "libelle": "Délai jusqu'à la première image",
+              "unite": "s",
+              "max": 10
+            }
+          ]
+        },
+        {
+          "id": "identifiants",
+          "section": "detection",
+          "titre": "Identifiants refusés",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Saisir un mauvais mot de passe, puis le bon. Noter le message du PSIM et vérifier que la caméra ne verrouille pas le compte après 3 essais.",
+          "attendu": "Le message nomme la cause probable (identifiants refusés). Le compte n'est pas verrouillé par les essais du PSIM. Le bon mot de passe fonctionne aussitôt."
+        },
+        {
+          "id": "fluidite",
+          "section": "detection",
+          "titre": "Fluidité et latence de l'image",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Afficher la caméra 10 minutes sur le mur vidéo (flux secondaire). Compter les images par seconde (compteur d'ffmpeg ou de la caméra) et mesurer le retard : agiter un chronomètre devant la caméra et comparer à l'écran.",
+          "attendu": "Au moins 8 images par seconde, sans saccade ni gel, et retard inférieur ou égal à 3 s.",
+          "mesures": [
+            {
+              "cle": "images_par_s",
+              "libelle": "Images par seconde",
+              "unite": "i/s",
+              "min": 8
+            },
+            {
+              "cle": "retard_image_s",
+              "libelle": "Retard de l'image",
+              "unite": "s",
+              "max": 3
+            }
+          ]
+        },
+        {
+          "id": "heure-camera",
+          "section": "detection",
+          "titre": "Heure de la caméra",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Comparer l'heure incrustée de la caméra à l'heure du PSIM (synchronisée NTP).",
+          "attendu": "Écart inférieur ou égal à 5 s (au-delà, ONVIF peut refuser les identifiants).",
+          "mesures": [
+            {
+              "cle": "ecart_heure_s",
+              "libelle": "Écart d'heure",
+              "unite": "s",
+              "max": 5
+            }
+          ]
+        },
+        {
+          "id": "nuit",
+          "section": "detection",
+          "titre": "Image de nuit",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "À la nuit tombée (ou pièce noire avec seulement l'éclairage IR de la caméra), placer une personne de référence à distances croissantes (5, 10, 15, 20 m). Noter la plus grande distance où l'on distingue une personne.",
+          "attendu": "Personne distinguée à au moins 10 m ; pas de voile ni de reflet de l'infrarouge sur le support.",
+          "mesures": [
+            {
+              "cle": "distance_nuit_m",
+              "libelle": "Distance de détection de nuit",
+              "unite": "m",
+              "min": 10
+            }
+          ]
+        },
+        {
+          "id": "ptz-presets",
+          "section": "detection",
+          "titre": "Positions mémorisées (PTZ)",
+          "profils": [
+            "ptz",
+            "panoramique"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Mémoriser 3 positions (préréglages) sur la caméra ; les rappeler depuis l'interface de la caméra ; afficher dans le PSIM. Le PSIM n'envoie aucune commande de pilotage (affichage seul) : le vérifier et le noter.",
+          "attendu": "Les positions sont reprises sans dérive après 10 rappels ; l'image reste affichée par le PSIM pendant les déplacements."
+        },
+        {
+          "id": "solaire-autonomie",
+          "section": "detection",
+          "titre": "Autonomie sans soleil",
+          "profils": [
+            "solaire-4g"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Batterie pleine, panneau occulté : laisser la caméra fonctionner (flux actif en continu au débit prévu) jusqu'à l'arrêt ou jusqu'à 72 h. Noter la durée tenue et la tension de batterie toutes les 6 h.",
+          "attendu": "Au moins 72 h sans soleil (3 jours), sans redémarrage intempestif.",
+          "mesures": [
+            {
+              "cle": "autonomie_h",
+              "libelle": "Autonomie sans soleil",
+              "unite": "h",
+              "min": 72
+            }
+          ]
+        },
+        {
+          "id": "reseau-4g",
+          "section": "detection",
+          "titre": "Liaison 4G",
+          "profils": [
+            "solaire-4g"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Mesurer le débit montant 4G au site (test de débit) à trois heures de la journée. Afficher la caméra par la 4G (flux secondaire). Noter la consommation de données par jour.",
+          "attendu": "Débit montant d'au moins 1 Mbit/s et image fluide ; consommation journalière notée pour dimensionner le forfait.",
+          "mesures": [
+            {
+              "cle": "debit_montant_kbps",
+              "libelle": "Débit montant 4G",
+              "unite": "kbit/s",
+              "min": 1000
+            }
+          ]
+        },
+        {
+          "id": "thermique-detection",
+          "section": "detection",
+          "titre": "Détection thermique",
+          "profils": [
+            "thermique"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Placer une personne (ou une source chaude à 37 °C) à 20, 50 et 100 m. Noter la plus grande distance où elle est nettement visible et distinguée du fond.",
+          "attendu": "Personne distinguée à au moins 50 m, de jour comme de nuit.",
+          "mesures": [
+            {
+              "cle": "distance_thermique_m",
+              "libelle": "Distance de détection thermique",
+              "unite": "m",
+              "min": 50
+            }
+          ]
+        },
+        {
+          "ref": "linkloss",
+          "bench": "camera-sante",
+          "action": "Couper l'alimentation de la caméra (débrancher le PoE ou le 12 V) pendant 5 minutes sans toucher au PSIM. Noter l'heure.",
+          "attendu": "Le PSIM détecte la perte après 3 mesures consécutives : « caméra hors ligne » est inscrit au journal, et l'écran Système le montre. Aucune image figée n'est présentée comme directe.",
+          "mesures": [
+            {
+              "cle": "liaison_perdue_s",
+              "libelle": "Délai jusqu'à « hors ligne »",
+              "unite": "s",
+              "max": 300
+            }
+          ]
+        },
+        {
+          "ref": "linkback",
+          "bench": "camera-sante",
+          "action": "Rétablir l'alimentation. Noter l'heure.",
+          "attendu": "La caméra repasse « en ligne » seule et l'image revient en moins de 2 minutes, sans intervention.",
+          "mesures": [
+            {
+              "cle": "reprise_s",
+              "libelle": "Délai de reprise de l'image",
+              "unite": "s",
+              "max": 120
+            }
+          ]
+        },
+        {
+          "ref": "psimrestart",
+          "bench": "physique",
+          "action": "Tuer brutalement le PSIM de recette, attendre 60 s, le relancer.",
+          "attendu": "La caméra est retrouvée sans reconfiguration et son image revient en moins de 60 s ; ses identifiants sont toujours lisibles (la clé de chiffrement est intacte)."
+        },
+        {
+          "ref": "tropical",
+          "obligatoire": true,
+          "profils": [
+            "solaire-4g",
+            "thermique"
+          ]
+        },
+        {
+          "ref": "tropical",
+          "id": "tropical-autre",
+          "obligatoire": false,
+          "profils": [
+            "fixe",
+            "ptz",
+            "panoramique"
+          ]
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Le chemin RTSP et le format d'image réglés sont notés au dossier du modèle."
+        ],
+        "echec": [
+          "Une image figée affichée comme directe après une coupure de la caméra."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "enregistreur-dahua",
+      "version": 1,
+      "titre": "Enregistreurs Dahua NVR / XVR et caméras HDCVI",
+      "resume": "Qualification d'un enregistreur Dahua (flux RTSP par voie, événements de détection de mouvement transformés en alarmes d'intrusion) ou d'une caméra HDCVI raccordée à un enregistreur.",
+      "docs": [
+        "README.md (section « Détection des enregistreurs Dahua et alertes par zone »)",
+        "server/dahua.ts"
+      ],
+      "materiel": [
+        "L'enregistreur à qualifier avec ses caméras branchées (une caméra par voie à tester) et son disque, mot de passe administrateur réinitialisé",
+        "Un compte de l'enregistreur en lecture seule dédié au PSIM",
+        "Switch, câbles ; PC de recette avec ffmpeg, PSIM hors production",
+        "Chronomètre ; mètre laser ; multimètre (tension d'alimentation des caméras HDCVI)",
+        "Pour les caméras HDCVI : câble coaxial de la longueur réelle de pose, alimentation 12 V, cible de nuit à distance connue"
+      ],
+      "banc": [
+        "Enregistreur sur le switch, adresse IP fixe, heure en NTP, fuseau correct ; vérifier dans son interface que la détection de mouvement (ou SMD humain) est activée sur chaque voie testée.",
+        "Dans le PSIM de recette : créer une caméra par voie (flux RTSP `/cam/realmonitor?channel=<voie>&subtype=1`, compte lecture seule) ; créer un détecteur d'intrusion {{id_psim}} avec une zone, armé pour la recette.",
+        "Dans l'éditeur du détecteur, section « Détection par l'enregistreur vidéo » : choisir la caméra, la voie, le type d'événement, puis « Écouter 20 secondes »."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Intrusion (zone armée)",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 5,
+        "retour_max_s": 30,
+        "liaison_max_s": 180,
+        "reprise_max_s": 180,
+        "silence_max_s": 180,
+        "delai_silence": "120 s (valeur posée par le PSIM quand le détecteur n'en avait pas)",
+        "premier_message": "Enregistrer la source ; l'état « Connecté à l'appareil » doit s'afficher (premier signe de vie lu).",
+        "declencheur": "Zone armée : passer devant la caméra de la voie testée (3 passages). Si le type suivi est « humain », se placer à la distance prévue.",
+        "attendu_alarme": "Un incident d'intrusion s'ouvre pour le détecteur de CETTE voie, avec l'image de la caméra liée.",
+        "motif_alarme": "Mouvement détecté",
+        "retour": "Sortir du champ de la caméra ; l'enregistreur envoie la fin du mouvement.",
+        "action_batterie": "Sans objet (alimentation secteur).",
+        "action_sabotage": "Couvrir l'objectif de la caméra de la voie (masquage) et débrancher son câble. Noter ce que l'enregistreur signale (perte vidéo, masquage).",
+        "action_liaison": "Débrancher le câble réseau de l'enregistreur 5 minutes. Noter l'heure.",
+        "action_retablissement": "Rebrancher le câble réseau.",
+        "action_silence": "Éteindre l'enregistreur (ou le débrancher du réseau) : le PSIM n'entend plus ses signes de vie toutes les 5 s.",
+        "action_coupure": "Couper l'accès réseau entre le PSIM et l'enregistreur 6 minutes. Pendant la coupure, passer devant la caméra. Rétablir.",
+        "attendu_coupure": "Pendant la coupure : le détecteur passe « Hors ligne » (muet) après le délai, jamais Normal. Au rétablissement : l'écoute reprend seule (reconnexion de 2 s à 60 s). Limite connue à noter : le mouvement survenu pendant la coupure n'est pas rejoué (le PSIM ne récupère pas l'historique de l'enregistreur)."
+      },
+      "profils": {
+        "enregistreur": {
+          "libelle": "Enregistreur NVR / XVR Dahua",
+          "params": {},
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "motion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 120
+          }
+        },
+        "camera-hdcvi": {
+          "libelle": "Caméra HDCVI raccordée à un enregistreur",
+          "params": {},
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "motion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "fault"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 120
+          }
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "id": "dahua-auth",
+          "section": "preparation",
+          "titre": "Authentification et connexion",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Enregistrer la source du détecteur. Lire l'état de connexion dans l'éditeur. Noter la version du micrologiciel de l'enregistreur.",
+          "attendu": "« Connecté à l'appareil » s'affiche : authentification Digest acceptée (jamais Basic), signe de vie reçu. Le mot de passe n'apparaît nulle part (écran, journal)."
+        },
+        {
+          "id": "voie-image",
+          "section": "preparation",
+          "titre": "Image d'une voie (flux RTSP)",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Pour la voie testée : « Enregistrer et tester ». Relever la taille reçue et le format affiché (704x576, 1440x1620…). Comparer à l'image de l'enregistreur.",
+          "attendu": "Image nette, proportions correctes avec le format automatique (sinon régler 16:9 ou 4:3 et noter le réglage retenu), en moins de 10 s.",
+          "mesures": [
+            {
+              "cle": "delai_image_s",
+              "libelle": "Délai jusqu'à la première image",
+              "unite": "s",
+              "max": 10
+            }
+          ]
+        },
+        {
+          "id": "voie-ecoute",
+          "section": "preparation",
+          "titre": "Écoute des événements (20 secondes)",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Cliquer « Écouter 20 secondes » en passant devant la caméra de la voie. Relever la liste des événements par voie (Code=VideoMotion, SmartMotionHuman…).",
+          "attendu": "Les événements de la bonne voie apparaissent en vert (voie et type suivis) ; ceux des autres voies n'apparaissent pas en vert."
+        },
+        {
+          "ref": "prep-reception"
+        },
+        {
+          "ref": "trigger"
+        },
+        {
+          "ref": "restore"
+        },
+        {
+          "ref": "repeat"
+        },
+        {
+          "ref": "latency"
+        },
+        {
+          "id": "voie-isolement",
+          "section": "detection",
+          "titre": "Isolement des voies",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Passer devant la caméra d'une AUTRE voie que celle du détecteur testé.",
+          "attendu": "Aucun incident sur le détecteur testé : seule sa voie le déclenche."
+        },
+        {
+          "id": "multi-voies",
+          "section": "detection",
+          "titre": "Toutes les voies du pack",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Refaire les étapes « Image d'une voie » et « Déclenchement » pour CHAQUE voie utilisée par le pack (4 voies pour le pack standard). Compter les voies réussies.",
+          "attendu": "Toutes les voies du pack passent. Si une seule voie a été essayée, la portée de la qualification est « une voie » et doit être écrite telle quelle (`promote --scope`).",
+          "mesures": [
+            {
+              "cle": "voies_testees",
+              "libelle": "Voies testées avec succès",
+              "unite": "voies",
+              "min": 4
+            }
+          ]
+        },
+        {
+          "id": "perte-video",
+          "section": "detection",
+          "titre": "Perte vidéo d'une voie",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "sabotage",
+          "action": "Débrancher la caméra de la voie testée. Faire l'essai zone armée, puis zone désarmée.",
+          "attendu": "Zone armée : alarme « Sabotage » (perte vidéo = sabotage possible). Zone désarmée : simple défaut du détecteur, pas d'incident."
+        },
+        {
+          "ref": "tamper",
+          "profils": [
+            "camera-hdcvi"
+          ],
+          "obligatoire": false,
+          "action": "Couvrir l'objectif de la caméra (masquage) puis la débrancher. Noter ce que signale l'enregistreur."
+        },
+        {
+          "id": "alimentation-hdcvi",
+          "section": "preparation",
+          "titre": "Tension à la caméra",
+          "profils": [
+            "camera-hdcvi"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Mesurer au multimètre la tension d'alimentation au bout du câble, à la caméra, avec la longueur réelle de pose.",
+          "attendu": "Tension supérieure ou égale à 10,8 V pour une alimentation 12 V (chute de tension acceptable).",
+          "mesures": [
+            {
+              "cle": "tension_camera_v",
+              "libelle": "Tension à la caméra",
+              "unite": "V",
+              "min": 10.8
+            }
+          ]
+        },
+        {
+          "id": "nuit",
+          "section": "detection",
+          "titre": "Image de nuit",
+          "profils": [
+            "camera-hdcvi"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "À la nuit tombée, placer une personne de référence à 5, 10, 15, 20 m. Noter la plus grande distance où l'on distingue une personne.",
+          "attendu": "Personne distinguée à au moins 10 m ; pas de reflet de l'infrarouge.",
+          "mesures": [
+            {
+              "cle": "distance_nuit_m",
+              "libelle": "Distance de détection de nuit",
+              "unite": "m",
+              "min": 10
+            }
+          ]
+        },
+        {
+          "ref": "linkloss"
+        },
+        {
+          "ref": "linkback"
+        },
+        {
+          "id": "auth-refusee",
+          "section": "liaison",
+          "titre": "Mot de passe changé sur l'enregistreur",
+          "profils": [
+            "enregistreur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Changer le mot de passe du compte lecture seule sur l'enregistreur ; observer le PSIM 8 minutes ; remettre le bon mot de passe.",
+          "attendu": "Le PSIM affiche l'erreur d'authentification, ne retente qu'après 5 minutes (jamais en boucle : un enregistreur Dahua bloque le compte après quelques échecs), le détecteur passe « Hors ligne » ; le retour du bon mot de passe rétablit l'écoute."
+        },
+        {
+          "ref": "silence"
+        },
+        {
+          "ref": "psimrestart"
+        },
+        {
+          "ref": "netcut",
+          "bench": "renvoi-direct"
+        },
+        {
+          "ref": "tropical",
+          "obligatoire": false
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "La portée (nombre de voies et fonctions réellement essayées) est écrite sans ambiguïté dans `--scope`."
+        ],
+        "echec": [
+          "Un détecteur qui reste Normal alors que la connexion à l'enregistreur est perdue."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "mqtt-ingest",
+      "version": 1,
+      "titre": "Équipement MQTT / HTTP direct (raccordement existant) et équipements à développer",
+      "resume": "Qualification d'un équipement qui parle directement au PSIM (message JSON MQTT sur psim/detectors/<id>/state, ou POST /api/ingest/<id>), ou d'une intégration à développer (contrôle d'accès, clavier, sirène, ronde NFC, balise).",
+      "docs": [
+        "docs/MISE-EN-SERVICE.md (section 4)",
+        "README.md (« Autres sources d'alarme »)"
+      ],
+      "materiel": [
+        "L'équipement à qualifier avec sa passerelle ou son pont constructeur s'il en a un",
+        "Client MQTT de contrôle (`mosquitto_sub`) pour voir les messages réellement émis",
+        "Poste de recette : PSIM hors production, `npm run commission -- watch` pour voir ce que le PSIM comprend",
+        "Chronomètre, multimètre, thermo-hygromètre étalonné"
+      ],
+      "banc": [
+        "Déclarer le détecteur {{id_psim}} dans le PSIM de recette avec l'identifiant exact que l'équipement publiera.",
+        "Donner à l'équipement (ou à son pont) un compte MQTT dédié limité à ses identifiants (`PSIM_MQTT_GATEWAYS`), ou un jeton d'ingestion.",
+        "Lancer `npm run commission -- watch --minutes 30` : il montre, message par message, ce que le PSIM en comprend (OK, INCONNU, ILLISIBLE)."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "selon le profil",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 5,
+        "retour_max_s": 30,
+        "liaison_max_s": 180,
+        "reprise_max_s": 180,
+        "silence_max_s": 300,
+        "delai_silence": "3 fois la période de l'équipement (au moins 2 fois, plus une marge)",
+        "premier_message": "Mettre l'équipement sous tension ; il publie son premier message sur son topic.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper la liaison réseau de l'équipement (ou de son pont) 5 minutes.",
+        "action_retablissement": "Rétablir la liaison.",
+        "action_silence": "Couper l'alimentation de l'équipement en laissant le reste en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "capteur": {
+          "libelle": "Capteur ou lecteur (état, événement ou mesure)",
+          "params": {
+            "categorie_psim": "Selon l'équipement",
+            "motif_alarme": "Alarme"
+          },
+          "bench": {
+            "categorie": "intrusion",
+            "alarme": {
+              "event": "intrusion"
+            },
+            "normal": {
+              "event": "clear"
+            },
+            "defaut": {
+              "event": "low_battery"
+            },
+            "sabotage": {
+              "event": "tamper"
+            },
+            "silence_s": 300
+          }
+        },
+        "actionneur": {
+          "libelle": "Actionneur (sirène, relais) : dépend de la fonction de commande, en cours de développement",
+          "params": {},
+          "bench": null
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "ref": "prep-reception",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "id": "format-messages",
+          "section": "preparation",
+          "titre": "Format des messages",
+          "profils": [
+            "capteur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Avec `npm run commission -- watch`, provoquer chaque type de message de l'équipement (état, événement nommé, mesure, signe de vie). Relever chaque affichage de l'outil.",
+          "attendu": "Tous les messages sont « OK » ; aucun « ILLISIBLE » ni « INCONNU ». Les événements utilisés figurent dans la liste du PSIM."
+        },
+        {
+          "ref": "trigger",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "restore",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "repeat",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "latency",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "lowbat",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "tamper",
+          "profils": [
+            "capteur"
+          ],
+          "obligatoire": false
+        },
+        {
+          "ref": "linkloss",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "linkback",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "silence",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "psimrestart",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "ref": "netcut",
+          "profils": [
+            "capteur"
+          ]
+        },
+        {
+          "id": "cmd-effet",
+          "section": "detection",
+          "titre": "La commande produit son effet",
+          "profils": [
+            "actionneur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Envoyer la commande depuis le PSIM (par exemple faire sonner la sirène 5 s). Chronométrer.",
+          "attendu": "L'effet physique est constaté en moins de 5 s et s'arrête à l'ordre ou à la fin de la durée.",
+          "mesures": [
+            {
+              "cle": "delai_commande_s",
+              "libelle": "Délai commande → effet",
+              "unite": "s",
+              "max": 5
+            }
+          ]
+        },
+        {
+          "id": "cmd-retour",
+          "section": "detection",
+          "titre": "Retour d'état de l'actionneur",
+          "profils": [
+            "actionneur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Après la commande, lire l'état renvoyé par l'équipement dans le PSIM.",
+          "attendu": "L'état affiché est l'état réel de l'équipement (jamais l'état seulement demandé)."
+        },
+        {
+          "id": "cmd-echec",
+          "section": "liaison",
+          "titre": "Commande impossible",
+          "profils": [
+            "actionneur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Couper la liaison de l'équipement, envoyer la commande.",
+          "attendu": "L'échec est signalé à l'opérateur dans les secondes qui suivent ; jamais un « ok » silencieux."
+        },
+        {
+          "id": "cmd-droits",
+          "section": "liaison",
+          "titre": "Droits sur la commande",
+          "profils": [
+            "actionneur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Envoyer la commande avec un compte qui n'a pas le droit (opérateur sans autorisation), puis avec un compte autorisé.",
+          "attendu": "Refus clair pour le premier, exécution et trace au journal (qui, quand) pour le second."
+        },
+        {
+          "ref": "tropical",
+          "obligatoire": false
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [],
+        "echec": [
+          "Un équipement qui publie un format que le PSIM ne comprend pas sans qu'un pont de traduction ait été écrit et essayé."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "notifications",
+      "version": 1,
+      "titre": "Canaux de notification (e-mail, Telegram, WhatsApp, CallMeBot, webhook)",
+      "resume": "Qualification d'un canal de notification : réception réelle chez un vrai destinataire, délai, escalade, détecteur muet, panne du canal.",
+      "docs": [
+        "docs/MISE-EN-SERVICE.md (section 6)",
+        "docs/WHATSAPP.md"
+      ],
+      "materiel": [
+        "Le compte du canal (serveur SMTP, bot Telegram, numéro WhatsApp Business, compte CallMeBot ou URL de webhook) et ses identifiants dans le fichier d'environnement du PSIM de recette",
+        "Deux destinataires réels avec téléphone en main (niveau 1 et niveau 2), dans la zone de couverture réelle du site",
+        "PSIM de recette ; `npm run commission` pour tester la connexion sans envoyer",
+        "Chronomètre ; accès pour couper Internet du poste"
+      ],
+      "banc": [
+        "Renseigner les variables du canal dans le fichier d'environnement du PSIM de recette (jamais dans la fiche) ; démarrer le PSIM.",
+        "Lancer `npm run commission` : le contrôle du canal doit être OK (connexion et authentification vérifiées sans envoi).",
+        "Dans « Personnes prévenues », ajouter les destinataires de niveau 1 et de niveau 2."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Sans objet (canal de notification)",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 10,
+        "retour_max_s": 30,
+        "liaison_max_s": 120,
+        "reprise_max_s": 120,
+        "silence_max_s": 600,
+        "delai_silence": "3 fois la période d'émission du capteur",
+        "premier_message": "Mettre l'équipement sous tension et l'attacher à la passerelle ou au PSIM selon la notice.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper la liaison entre l'équipement et le PSIM sans couper l'alimentation de l'équipement.",
+        "action_retablissement": "Rétablir la liaison.",
+        "action_silence": "Couper l'alimentation de l'équipement (retirer la pile ou débrancher) en laissant le reste en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "email": {
+          "libelle": "E-mail (SMTP)",
+          "params": {},
+          "bench": null
+        },
+        "telegram": {
+          "libelle": "Telegram",
+          "params": {},
+          "bench": null
+        },
+        "whatsapp": {
+          "libelle": "WhatsApp (API Meta)",
+          "params": {},
+          "bench": null
+        },
+        "callmebot": {
+          "libelle": "CallMeBot",
+          "params": {},
+          "bench": null
+        },
+        "webhook": {
+          "libelle": "Webhook signé",
+          "params": {},
+          "bench": null
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif",
+          "action": "Noter la version du service (fournisseur, compte, numéro d'expéditeur ou domaine) à la place du numéro de série, et la référence du modèle de message approuvé s'il y en a un."
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "id": "notif-commission",
+          "section": "preparation",
+          "titre": "Contrôle de la connexion",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Lancer `npm run commission` (sans envoi) et lire le contrôle du canal.",
+          "attendu": "Le contrôle du canal est OK (connexion et authentification vérifiées)."
+        },
+        {
+          "id": "notif-test",
+          "section": "detection",
+          "titre": "Message de test reçu",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Bouton « Envoyer un message de test » pour chaque destinataire. Chronométrer l'arrivée sur le téléphone.",
+          "attendu": "Chaque destinataire confirme la réception, texte lisible (accents, longueur), en moins de 60 s.",
+          "mesures": [
+            {
+              "cle": "delai_notification_s",
+              "libelle": "Pire délai d'arrivée",
+              "unite": "s",
+              "max": 60
+            }
+          ]
+        },
+        {
+          "id": "notif-alarme",
+          "section": "detection",
+          "titre": "Notification d'une vraie alarme",
+          "obligatoire": true,
+          "bench": "hooks",
+          "action": "Ouvrir un incident avec un détecteur de recette (ou `npm run sim`). Lire la notification reçue.",
+          "attendu": "La notification de niveau 1 arrive avec le nom du détecteur, la zone, l'étage, le motif et l'heure (et l'image jointe si le canal le permet)."
+        },
+        {
+          "id": "notif-escalade",
+          "section": "detection",
+          "titre": "Escalade",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Ne pas acquitter. Chronométrer l'arrivée de la notification de niveau 2 après le délai réglé.",
+          "attendu": "Le niveau 2 est prévenu au délai réglé, à 10 % près ; l'acquittement arrête l'escalade."
+        },
+        {
+          "id": "notif-muet",
+          "section": "liaison",
+          "titre": "Notification « Détecteur muet »",
+          "obligatoire": true,
+          "bench": "hooks",
+          "action": "Rendre muet un détecteur supervisé de recette et attendre son délai.",
+          "attendu": "La notification « Détecteur muet » arrive chez les destinataires prévus."
+        },
+        {
+          "id": "notif-fiabilite",
+          "section": "detection",
+          "titre": "Fiabilité sur 20 envois",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Envoyer 20 messages de test espacés de 1 minute. Compter les messages reçus.",
+          "attendu": "20 sur 20 reçus.",
+          "mesures": [
+            {
+              "cle": "envois_recus",
+              "libelle": "Messages reçus sur 20",
+              "unite": "messages",
+              "min": 20
+            }
+          ]
+        },
+        {
+          "id": "notif-panne-canal",
+          "section": "liaison",
+          "titre": "Canal en panne",
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Rendre le canal injoignable (mauvais mot de passe, ou Internet coupé 5 minutes), ouvrir un incident, puis rétablir.",
+          "attendu": "L'échec est visible dans le journal et l'écran Système, les autres canaux partent quand même, aucun incident n'est perdu. Noter si la notification manquée est renvoyée au retour."
+        },
+        {
+          "ref": "psimrestart",
+          "bench": "physique",
+          "action": "Tuer brutalement le PSIM de recette, le relancer, puis déclencher un incident.",
+          "attendu": "Les notifications repartent sans reconfiguration ; la notification de reprise après période sans surveillance arrive si la période dépasse le seuil réglé."
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [
+          "Le délai d'arrivée est mesuré sur un vrai téléphone, pas sur le journal du PSIM."
+        ],
+        "echec": [
+          "Un incident ouvert sans aucune notification reçue alors que le canal est donné comme OK."
+        ]
+      },
+      "bench": null
+    },
+    {
+      "id": "socle",
+      "version": 1,
+      "titre": "Socle technique : mini-PC, onduleur du poste, routeur 4G, switch PoE, parafoudre",
+      "resume": "Qualification des équipements d'infrastructure du pack : démarrage automatique du poste, autonomie de l'onduleur, reprise du routeur 4G, budget PoE du switch, parafoudre.",
+      "docs": [
+        "docs/MISE-EN-SERVICE.md (sections 0, 1, 7, 8)",
+        "deploy/"
+      ],
+      "materiel": [
+        "L'équipement à qualifier et son câblage complet tel que posé en pack",
+        "Charge réelle du pack (caméras, switch, routeur) ou son équivalent mesuré au wattmètre",
+        "Wattmètre, multimètre, chronomètre, thermo-hygromètre étalonné ; testeur de terre pour le parafoudre",
+        "PSIM de recette installé comme en exploitation (tâche de démarrage de Windows ou systemd)"
+      ],
+      "banc": [
+        "Monter le pack complet sur table comme sur site : mini-PC, onduleur, routeur 4G, switch PoE, caméras, parafoudre.",
+        "Installer le PSIM de recette avec la tâche de démarrage prévue (`scripts/windows-service.ps1` ou `deploy/psim.service`).",
+        "Déclarer l'équipement à essayer comme indiqué dans la fiche du profil."
+      ],
+      "params": {
+        "id_psim": "BANC-01",
+        "categorie_psim": "Sans objet (infrastructure)",
+        "delai_premier_message_s": 120,
+        "repetitions": 10,
+        "latence_essais": 10,
+        "latence_max_s": 10,
+        "retour_max_s": 30,
+        "liaison_max_s": 120,
+        "reprise_max_s": 120,
+        "silence_max_s": 600,
+        "delai_silence": "3 fois la période d'émission du capteur",
+        "premier_message": "Mettre l'équipement sous tension et l'attacher à la passerelle ou au PSIM selon la notice.",
+        "declencheur": "Provoquer l'événement réel avec l'équipement (bouton test ou provocation maîtrisée).",
+        "attendu_alarme": "Un incident s'ouvre.",
+        "motif_alarme": "Alarme",
+        "retour": "Remettre l'équipement au repos (fin du fait déclencheur).",
+        "action_batterie": "Alimenter l'équipement avec une pile ou une batterie déchargée (tension juste sous le seuil du fabricant) ou, à défaut, laisser le niveau descendre sous le seuil du module ; noter la tension au multimètre.",
+        "action_sabotage": "Ouvrir le boîtier ou arracher l'équipement de son support.",
+        "action_liaison": "Couper la liaison entre l'équipement et le PSIM sans couper l'alimentation de l'équipement.",
+        "action_retablissement": "Rétablir la liaison.",
+        "action_silence": "Couper l'alimentation de l'équipement (retirer la pile ou débrancher) en laissant le reste en marche.",
+        "action_coupure": "Arrêter le PSIM de recette (ou couper la liaison de la passerelle vers lui) pendant 2 minutes. Pendant la coupure, déclencher l'équipement puis le remettre au repos. Rétablir ensuite la liaison.",
+        "attendu_coupure": "Après le rétablissement : l'événement arrive daté de son heure réelle (« reçu avec N minutes de retard »), un seul incident est ouvert, renvoyer le même message ne crée aucun doublon, l'état final est exact."
+      },
+      "profils": {
+        "mini-pc": {
+          "libelle": "Mini-PC du PSIM",
+          "params": {},
+          "bench": null
+        },
+        "onduleur": {
+          "libelle": "Onduleur du poste PSIM",
+          "params": {},
+          "bench": null
+        },
+        "routeur-4g": {
+          "libelle": "Routeur 4G",
+          "params": {},
+          "bench": null
+        },
+        "switch-poe": {
+          "libelle": "Switch PoE",
+          "params": {},
+          "bench": null
+        },
+        "parafoudre": {
+          "libelle": "Parafoudre",
+          "params": {},
+          "bench": null
+        }
+      },
+      "etapes": [
+        {
+          "ref": "prep-identif"
+        },
+        {
+          "ref": "prep-banc"
+        },
+        {
+          "id": "demarrage-auto",
+          "section": "detection",
+          "titre": "Démarrage automatique après coupure",
+          "profils": [
+            "mini-pc"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Débrancher brutalement le mini-PC (arrachement de l'alimentation), le rebrancher, ne rien toucher et chronométrer jusqu'à l'affichage du PSIM sur un autre poste.",
+          "attendu": "Le PSIM redémarre seul, sans identification, et répond en moins de 5 minutes ; la période sans surveillance est journalisée et notifiée.",
+          "mesures": [
+            {
+              "cle": "demarrage_min",
+              "libelle": "Délai de remise en service",
+              "unite": "min",
+              "max": 5
+            }
+          ]
+        },
+        {
+          "id": "charge-poste",
+          "section": "detection",
+          "titre": "Tenue en charge",
+          "profils": [
+            "mini-pc"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Afficher les 4 caméras du pack pendant 4 h avec la détection active. Relever l'utilisation du processeur, de la mémoire et la température du processeur.",
+          "attendu": "Processeur à moins de 70 % en moyenne, mémoire sans fuite, température inférieure à 80 °C, aucune image figée.",
+          "mesures": [
+            {
+              "cle": "cpu_moyen_pct",
+              "libelle": "Processeur moyen",
+              "unite": "%",
+              "max": 70
+            },
+            {
+              "cle": "temp_cpu_c",
+              "libelle": "Température processeur maximale",
+              "unite": "°C",
+              "max": 80
+            }
+          ]
+        },
+        {
+          "ref": "psimrestart",
+          "profils": [
+            "mini-pc"
+          ],
+          "bench": "physique",
+          "attendu": "Le processus est relancé par le superviseur ou la tâche planifiée en moins de 2 minutes ; la période sans surveillance est journalisée ; une notification part.",
+          "mesures": [
+            {
+              "cle": "relance_s",
+              "libelle": "Délai de relance du PSIM",
+              "unite": "s",
+              "max": 120
+            }
+          ]
+        },
+        {
+          "id": "coupure-secteur",
+          "section": "detection",
+          "titre": "Coupure secteur et autonomie",
+          "profils": [
+            "onduleur"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Charge complète branchée, batterie pleine : couper le secteur et chronométrer jusqu'à l'arrêt de la charge. Rétablir le secteur.",
+          "attendu": "Le poste et le switch tiennent au moins 30 minutes ; l'arrêt propre du poste (si configuré) a lieu avant l'épuisement ; au retour du secteur tout redémarre seul.",
+          "mesures": [
+            {
+              "cle": "autonomie_min",
+              "libelle": "Autonomie sur la charge du pack",
+              "unite": "min",
+              "min": 30
+            }
+          ]
+        },
+        {
+          "id": "recharge",
+          "section": "detection",
+          "titre": "Recharge de la batterie",
+          "profils": [
+            "onduleur"
+          ],
+          "obligatoire": false,
+          "bench": "physique",
+          "action": "Après la décharge, mesurer le temps pour retrouver 80 % de charge.",
+          "attendu": "Retour à 80 % en moins de 8 heures.",
+          "mesures": [
+            {
+              "cle": "recharge_h",
+              "libelle": "Délai de recharge à 80 %",
+              "unite": "h",
+              "max": 8
+            }
+          ]
+        },
+        {
+          "id": "routeur-coupure",
+          "section": "liaison",
+          "titre": "Coupure du routeur 4G",
+          "profils": [
+            "routeur-4g"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Couper l'alimentation du routeur 4G 5 minutes, le rétablir sans autre geste. Chronométrer le retour d'Internet (signal de supervision externe reçu).",
+          "attendu": "Le routeur se reconnecte seul ; la supervision externe alerte pendant la coupure puis revient.",
+          "mesures": [
+            {
+              "cle": "reprise_4g_s",
+              "libelle": "Délai de retour d'Internet",
+              "unite": "s",
+              "max": 180
+            }
+          ]
+        },
+        {
+          "id": "routeur-debit",
+          "section": "detection",
+          "titre": "Débit 4G au site",
+          "profils": [
+            "routeur-4g"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Mesurer le débit montant et descendant (test de débit) à trois heures de la journée, au site d'installation (ou équivalent).",
+          "attendu": "Débit montant d'au moins 2 Mbit/s en moyenne.",
+          "mesures": [
+            {
+              "cle": "debit_montant_mbps",
+              "libelle": "Débit montant moyen",
+              "unite": "Mbit/s",
+              "min": 2
+            }
+          ]
+        },
+        {
+          "id": "poe-budget",
+          "section": "detection",
+          "titre": "Budget PoE",
+          "profils": [
+            "switch-poe"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Brancher toutes les caméras du pack à pleine charge (infrarouge allumé) ; relever au wattmètre la puissance totale et comparer au budget PoE annoncé du switch.",
+          "attendu": "Puissance consommée inférieure à 80 % du budget PoE ; aucune caméra ne redémarre.",
+          "mesures": [
+            {
+              "cle": "poe_pct_budget",
+              "libelle": "Puissance PoE / budget",
+              "unite": "%",
+              "max": 80
+            }
+          ]
+        },
+        {
+          "id": "poe-reprise",
+          "section": "liaison",
+          "titre": "Reprise du switch PoE",
+          "profils": [
+            "switch-poe"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Couper puis rétablir l'alimentation du switch ; chronométrer le retour de toutes les caméras dans le PSIM.",
+          "attendu": "Toutes les caméras reviennent seules en moins de 2 minutes.",
+          "mesures": [
+            {
+              "cle": "reprise_poe_s",
+              "libelle": "Délai de retour des caméras",
+              "unite": "s",
+              "max": 120
+            }
+          ]
+        },
+        {
+          "id": "parafoudre-controle",
+          "section": "detection",
+          "titre": "Contrôle du parafoudre",
+          "profils": [
+            "parafoudre"
+          ],
+          "obligatoire": true,
+          "bench": "physique",
+          "action": "Contrôler le montage selon la notice (calibre, câble de terre court et droit), le témoin d'état, et mesurer la résistance de la prise de terre au testeur de terre.",
+          "attendu": "Témoin en bon état ; résistance de terre inférieure ou égale à 10 ohms.",
+          "mesures": [
+            {
+              "cle": "terre_ohm",
+              "libelle": "Résistance de terre",
+              "unite": "Ω",
+              "max": 10
+            }
+          ]
+        },
+        {
+          "ref": "tropical",
+          "profils": [
+            "mini-pc",
+            "onduleur",
+            "routeur-4g",
+            "switch-poe"
+          ],
+          "obligatoire": false,
+          "action": "Placer l'équipement 4 h dans une enceinte à 35 °C et 90 % d'humidité relative si disponible, sinon mesurer sur site dans le local technique le plus chaud (thermo-hygromètre étalonné). Relever la température de l'équipement (sonde ou valeur interne) en fonctionnement à pleine charge.",
+          "attendu": "Aucun redémarrage, aucune dégradation de débit ou d'autonomie, température interne sous la limite du fabricant. Sinon « na » avec la raison."
+        },
+        {
+          "ref": "closeout"
+        }
+      ],
+      "criteres_supplementaires": {
+        "reussite": [],
+        "echec": [
+          "Un équipement d'infrastructure qui redémarre ou se bloque pendant l'essai sans reprise automatique."
+        ]
+      },
+      "bench": null
+    }
+  ]
+}
