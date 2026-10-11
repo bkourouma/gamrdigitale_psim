@@ -22,7 +22,7 @@ export interface PackCheckContext {
   gatewayAccounts: { user: string; detectors: string[] }[];
   /** Destinataires de niveau 1 du .env (tous canaux confondus). */
   envLevel1: number;
-  /** Equipements dont le modele est a qualifier (registre ou pack). */
+  /** Equipements dont le modele n'est pas qualifie au registre de qualification (a qualifier, inconnu ou rejete). */
   unqualified: { deviceId: string; model: string }[];
 }
 

@@ -1,72 +1,74 @@
 /**
- * Qualification des modeles : un modele « qualifie » est passe par l'atelier (essai sur materiel reel). Le registre
- * `qualification/registry.json` (tenu a part) fait foi s'il existe et connait le modele ; sinon on s'en tient au statut
- * declare dans le pack. Un modele a qualifier n'empeche pas de faire un plan, mais `apply` exige `--allow-unqualified`.
+ * Qualification des modeles d'un pack : le registre de l'atelier (qualification/registry.json, lu par l'API de
+ * qualification/registry.ts) fait foi. Un modele n'est « qualifie » que si le registre le dit ; le statut declare dans le
+ * pack n'est qu'une indication (une contradiction est signalee, le registre l'emporte).
  *
- * Formes acceptees du registre (lecture tolerante, le format est fixe par ailleurs) :
- *   { "models": { "<modele>": { "status": "qualified" } } }
- *   { "models": [ { "id": "<modele>", "status": "qualified" } ] }      (ou "model" au lieu de "id")
- *   [ { "id": "<modele>", "status": "qualified" } ]
+ *   - modele a qualifier, ou absent du registre : plan possible, `apply` exige `--allow-unqualified` ;
+ *   - modele rejete par l'atelier : le pack est refuse (il ne doit entrer dans aucun pack) ;
+ *   - registre absent, illisible ou invalide : le pack est refuse (echec ferme, jamais ouvert).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { RegistryError, checkPackModels } from '../../qualification/registry.ts';
+import type { ModelVerdict, Status } from '../../qualification/registry.ts';
 import type { Pack } from './schema.ts';
 
-const QUALIFIED = new Set(['qualified', 'qualifie', 'valide', 'validated']);
-
-export interface Registry {
-  path: string;
-  models: Map<string, string>;
-}
-
-export function readRegistry(path: string): { registry: Registry | null; warning: string | null } {
-  if (!existsSync(path)) return { registry: null, warning: null };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, 'utf8').trimStart());
-  } catch (err) {
-    return { registry: null, warning: `registre de qualification illisible (${path} : ${(err as Error).message}) : statuts declares dans le pack utilises` };
-  }
-  const models = new Map<string, string>();
-  const list = Array.isArray(raw) ? raw : (raw as { models?: unknown } | null)?.models;
-  if (Array.isArray(list)) {
-    for (const e of list) {
-      const entry = e as { id?: unknown; model?: unknown; status?: unknown } | null;
-      const id = typeof entry?.id === 'string' ? entry.id : typeof entry?.model === 'string' ? entry.model : null;
-      if (id && typeof entry?.status === 'string') models.set(id.toLowerCase(), entry.status.toLowerCase());
-    }
-  } else if (list && typeof list === 'object') {
-    for (const [id, e] of Object.entries(list as Record<string, unknown>)) {
-      const status = typeof e === 'string' ? e : (e as { status?: unknown } | null)?.status;
-      if (typeof status === 'string') models.set(id.toLowerCase(), status.toLowerCase());
-    }
-  } else {
-    return { registry: null, warning: `registre de qualification sans liste « models » (${path}) : statuts declares dans le pack utilises` };
-  }
-  return { registry: { path, models }, warning: null };
+export interface UnqualifiedDevice {
+  deviceId: string;
+  /** Modele tel qu'il est ecrit dans le pack. */
+  model: string;
+  /** Statut au registre ('unknown' : modele absent du registre). */
+  status: Status | 'unknown';
 }
 
 export interface QualificationReport {
-  /** Equipements dont le modele n'est pas qualifie. */
-  unqualified: { deviceId: string; model: string; source: 'registre' | 'pack' }[];
+  /** Equipements dont le modele n'est pas qualifie au registre (a qualifier, inconnu ou rejete). */
+  unqualified: UnqualifiedDevice[];
   warnings: string[];
+  /** Raison de refuser le pack (registre inutilisable, modele rejete), sinon null. */
+  blocking: string | null;
+  /** Statut effectif de chaque equipement d'apres le registre (identifiant d'equipement -> qualifie ou non). */
+  effective: Map<string, 'qualified' | 'to_qualify'>;
 }
 
-export function qualify(pack: Pack, registry: Registry | null): QualificationReport {
-  const unqualified: QualificationReport['unqualified'] = [];
+/**
+ * Confronte les modeles du pack au registre. `dir` : dossier de qualification (par defaut qualification/ du depot).
+ * Ne leve jamais : un registre inutilisable donne `blocking` et tous les equipements a qualifier.
+ */
+export function qualify(pack: Pack, dir?: string): QualificationReport {
   const warnings: string[] = [];
-  const contradicted = new Set<string>();
-  for (const d of pack.devices) {
-    const fromRegistry = registry?.models.get(d.model);
-    if (fromRegistry !== undefined) {
-      const ok = QUALIFIED.has(fromRegistry);
-      if (!ok) unqualified.push({ deviceId: d.id, model: d.model, source: 'registre' });
-      if (!ok && d.qualification === 'qualified' && !contradicted.has(d.model)) {
-        contradicted.add(d.model);
-        warnings.push(`modele ${d.model} declare « qualified » dans le pack, mais « ${fromRegistry} » dans le registre : le registre fait foi`);
-      }
-    } else if (d.qualification !== 'qualified') {
-      unqualified.push({ deviceId: d.id, model: d.model, source: 'pack' });
-    }
+  const effective = new Map<string, 'qualified' | 'to_qualify'>();
+  let verdicts: ModelVerdict[];
+  try {
+    verdicts = checkPackModels([...new Set(pack.devices.map((d) => d.model))], dir);
+  } catch (err) {
+    const msg = err instanceof RegistryError ? err.message.split('\n')[0] : (err as Error).message;
+    for (const d of pack.devices) effective.set(d.id, 'to_qualify');
+    return {
+      unqualified: pack.devices.map((d) => ({ deviceId: d.id, model: d.model, status: 'unknown' })),
+      warnings,
+      blocking: `registre de qualification inutilisable (${msg}) : aucun modele ne peut etre considere comme qualifie (npm run qualify -- verify)`,
+      effective,
+    };
   }
-  return { unqualified, warnings };
+  const byName = new Map(verdicts.map((v) => [v.name, v]));
+  const unqualified: UnqualifiedDevice[] = [];
+  const rejected = new Set<string>();
+  const told = new Set<string>();
+  for (const d of pack.devices) {
+    const v = byName.get(d.model)!;
+    effective.set(d.id, v.ok ? 'qualified' : 'to_qualify');
+    if (!v.ok) unqualified.push({ deviceId: d.id, model: d.model, status: v.status });
+    if (told.has(d.model)) continue;
+    told.add(d.model);
+    if (!v.entry) warnings.push(`modele ${d.model} absent du registre de qualification : traite comme a qualifier (l'atelier doit d'abord l'inscrire et le qualifier)`);
+    else if (v.status === 'rejected') rejected.add(d.model);
+    if (v.entry && !v.ok && d.qualification === 'qualified') warnings.push(`modele ${d.model} declare « qualified » dans le pack, mais « ${v.status} » dans le registre : le registre fait foi`);
+    if (v.ok && d.qualification !== 'qualified') warnings.push(`modele ${d.model} declare « ${d.qualification} » dans le pack, mais qualifie au registre (portee : ${v.entry!.scope}) : le registre fait foi`);
+  }
+  const blocking = rejected.size ? `modele(s) rejete(s) par l'atelier, interdit(s) dans un pack : ${[...rejected].join(', ')}` : null;
+  return { unqualified, warnings, blocking, effective };
+}
+
+/** Le pack avec, pour chaque equipement, le statut de qualification du registre (celui qui est enregistre a l'application). */
+export function withRegistryStatus(pack: Pack, q: QualificationReport): Pack {
+  return { ...pack, devices: pack.devices.map((d) => ({ ...d, qualification: q.effective.get(d.id) ?? 'to_qualify' })) };
 }

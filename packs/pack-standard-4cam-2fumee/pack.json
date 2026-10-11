@@ -5,7 +5,7 @@
   "segment": "autre",
   "level": "essentiel",
   "version": "1.0.0",
-  "description": "Reprend la proposition « Pack standard : 4 caméras et 2 détecteurs de fumée » (9 octobre 2026) : 4 caméras Dahua HAC-HFW1500TH-I8 sur un enregistreur Dahua XVR5104HS-I3 (le PSIM lit chaque voie en RTSP et supervise l'enregistreur sur le réseau), 2 détecteurs de fumée Heiman HS1SA-E (Zigbee, par la Passerelle GAMR et sa clé de liaison), et la détection de personnes de l'enregistreur sur la voie de l'entrée, armée la nuit. Seule la lecture d'une voie d'enregistreur Dahua (image et événements) est qualifiée ; caméras, enregistreur XVR5104HS-I3, détecteurs Heiman et passerelle sont à qualifier. Variante possible en attendant la qualification des Heiman : détecteurs de fumée WiFi Tuya (modèle qualifié), voir le pack villa-essentiel. À prévoir hors pack : disque dur de surveillance, alimentation et onduleur.",
+  "description": "Reprend la proposition « Pack standard : 4 caméras et 2 détecteurs de fumée » (9 octobre 2026) : 4 caméras Dahua HAC-HFW1500TH-I8 sur un enregistreur Dahua XVR5104HS-I3 (le PSIM lit chaque voie en RTSP et supervise l'enregistreur sur le réseau), 2 détecteurs de fumée Heiman HS1SA-E (Zigbee, par la Passerelle GAMR et sa clé de liaison), et la détection de personnes de l'enregistreur sur la voie de l'entrée, armée la nuit. Rien n'est encore qualifié dans ce pack : caméras, enregistreur XVR5104HS-I3 et sa détection de personnes, détecteurs Heiman et passerelle sont à qualifier (seule une voie d'un XVR5108HS-I3/T a été essayée sur matériel réel ; le registre de qualification n'en déduit rien pour le XVR5104HS-I3). Variante possible en attendant la qualification des Heiman : détecteurs de fumée WiFi Tuya (modèle qualifié), voir le pack villa-essentiel. À prévoir hors pack : disque dur de surveillance, alimentation et onduleur.",
   "floors": [
     { "id": "rdc", "name": "Rez-de-chaussée", "plan": "plans/rdc.svg" }
   ],
@@ -59,7 +59,7 @@
     },
     {
       "id": "I-ENTREE", "kind": "detector", "name": "Personne détectée à l'entrée", "zone": "Entrée", "x": 54, "y": 8,
-      "model": "dahua-xvr-voie-evenements", "qualification": "qualified",
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
       "category": "intrusion",
       "source": { "type": "dahua", "camera": "CAM-01", "channel": 1, "events": ["SmartMotionHuman"] }
     },

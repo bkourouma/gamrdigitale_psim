@@ -121,8 +121,8 @@ Un modèle `rejected` doit d'abord être remis à `to_qualify` (avec la raison) 
 ### Ligne de commande
 
 ```
-npm run qualify -- check-pack packs/pack-standard.json
-npm run qualify -- check-pack packs/pack-standard.json --strict
+npm run qualify -- check-pack packs/pack-standard-4cam-2fumee/pack.json
+npm run qualify -- check-pack packs/pack-standard-4cam-2fumee/pack.json --strict
 ```
 
 Le pack attendu a la forme minimale `{ "devices": [ { "model": "DH-XVR5104HS-I3" }, … ] }`. Le nom d'un modèle peut être l'identifiant du registre, un alias, ou le fabricant suivi de l'alias, sans souci de casse, d'espaces ni de tirets (`Dahua HAC-HFW1500TH-I8`). La commande liste chaque modèle distinct avec son statut, et **échoue (code 1)** si un modèle n'est pas `qualified` ou est absent du registre. Un pack sans `devices`, ou un appareil sans `model`, est toléré (avertissement) ; `--strict` refuse un appareil sans modèle.

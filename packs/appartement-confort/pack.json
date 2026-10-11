@@ -19,7 +19,7 @@
   "devices": [
     {
       "id": "CAM-ENTREE", "kind": "camera", "name": "Caméra entrée", "zone": "Entrée", "x": 15, "y": 20,
-      "model": "camera-ip-dome-4mp-onvif", "qualification": "to_qualify",
+      "model": "generic-onvif-camera-fixe", "qualification": "to_qualify",
       "source": {
         "type": "onvif", "host": { "$ask": "Adresse IP de la caméra de l'entrée" }, "port": 80,
         "credentials": { "username": { "$ask": "Identifiant de la caméra de l'entrée" }, "password": { "$ask": "Mot de passe de la caméra de l'entrée" } }
@@ -27,28 +27,28 @@
     },
     {
       "id": "C-PORTE", "kind": "detector", "name": "Porte d'entrée", "zone": "Entrée", "x": 8, "y": 30,
-      "model": "contact-porte-zigbee", "qualification": "to_qualify",
+      "model": "generic-contact-ouverture", "qualification": "to_qualify",
       "category": "intrusion", "heartbeatS": 180
     },
     {
       "id": "M-SEJOUR", "kind": "detector", "name": "Mouvement séjour", "zone": "Séjour", "x": 50, "y": 35,
-      "model": "mouvement-interieur-zigbee", "qualification": "to_qualify",
+      "model": "generic-detecteur-mouvement", "qualification": "to_qualify",
       "category": "intrusion", "heartbeatS": 180
     },
     {
       "id": "F-SEJOUR", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 45, "y": 45,
-      "model": "fumee-wifi-tuya-ywbj", "qualification": "qualified",
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
       "category": "fire",
       "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur de fumée (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
     },
     {
       "id": "E-FUITE-SDB", "kind": "detector", "name": "Fuite d'eau salle de bain", "zone": "Salle de bain", "x": 80, "y": 70,
-      "model": "fuite-eau-zigbee", "qualification": "to_qualify",
+      "model": "generic-capteur-fuite", "qualification": "to_qualify",
       "category": "environment", "heartbeatS": 180
     },
     {
       "id": "E-FUITE-CUISINE", "kind": "detector", "name": "Fuite d'eau sous l'évier", "zone": "Cuisine", "x": 75, "y": 25,
-      "model": "fuite-eau-zigbee", "qualification": "to_qualify",
+      "model": "generic-capteur-fuite", "qualification": "to_qualify",
       "category": "environment", "heartbeatS": 180
     },
     {

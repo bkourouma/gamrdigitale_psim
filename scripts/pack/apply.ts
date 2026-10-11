@@ -194,7 +194,7 @@ export function applyPack(db: DatabaseSync, pack: Pack, opts: ApplyOptions): Rep
     const risk = createRiskService(tx, engine, { now });
     const recipients = createRecipientsService({
       db: tx, audit: engine.audit, now, available: { ...opts.channels, callmebot: false },
-      env: opts.envRecipients ?? { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], webhook: [[], []] },
+      env: opts.envRecipients ?? { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] },
     });
     const conflict = (section: Section, ref: string, diffs: string[]): boolean => {
       // Vrai = il faut appliquer la valeur du pack (mode update).

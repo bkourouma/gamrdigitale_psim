@@ -18,10 +18,10 @@ import { appliedPacks, checkPack } from '../scripts/pack/checks.ts';
 import { exportPack } from '../scripts/pack/export.ts';
 import { collectAnswers, loadPack } from '../scripts/pack/load.ts';
 import type { Answers } from '../scripts/pack/load.ts';
-import { qualify, readRegistry } from '../scripts/pack/qualification.ts';
+import { qualify } from '../scripts/pack/qualification.ts';
 import { findSecrets, validatePack } from '../scripts/pack/schema.ts';
 import type { Pack } from '../scripts/pack/schema.ts';
-import { formatReport } from '../scripts/pack.ts';
+import { formatReport, main as packMain } from '../scripts/pack.ts';
 import { verify } from '../server/auditchain.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
@@ -35,7 +35,7 @@ const USERNAME = 'psimlecture';
 const EMAIL = 'proprietaire@exemple.ci';
 const PHONE = '+2250700000002';
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><title>rdc</title></svg>');
-const ALL_CHANNELS = { email: true, telegram: true, whatsapp: true, callmebot: false, webhook: true };
+const ALL_CHANNELS = { email: true, telegram: true, whatsapp: true, callmebot: false, vonage: false, webhook: true };
 
 const ANSWERS: Record<string, string> = {
   'IP enregistreur': '192.168.1.108',
@@ -71,12 +71,12 @@ function basePack(): Record<string, unknown> {
         id: 'CAM-1', kind: 'camera', name: 'Camera entree', zone: 'Entrée', x: 10, y: 10, model: 'dahua-hac-hfw1500th-i8', qualification: 'to_qualify',
         source: { type: 'rtsp', host: { $ask: 'IP enregistreur' }, port: 554, path: '/cam/realmonitor?channel=1&subtype=1', credentials: { username: { $ask: 'Identifiant enregistreur' }, password: { $ask: 'Mot de passe enregistreur' } } },
       },
-      { id: 'CAM-2', kind: 'camera', name: 'Camera sejour', zone: 'Séjour', model: 'camera-ip-onvif', qualification: 'qualified', source: { type: 'onvif', host: '192.168.1.30' } },
-      { id: 'I-1', kind: 'detector', name: 'Personne a l\'entree', zone: 'Entrée', model: 'dahua-xvr-voie-evenements', qualification: 'qualified', category: 'intrusion', source: { type: 'dahua', camera: 'CAM-1', channel: 1, events: ['SmartMotionHuman'] } },
-      { id: 'F-1', kind: 'detector', name: 'Fumee sejour', zone: 'Séjour', x: 40, y: 40, model: 'fumee-wifi-tuya-ywbj', qualification: 'qualified', category: 'fire', source: { type: 'tuya', tuyaId: { $ask: 'Tuya sejour' }, sensorType: 'smoke' } },
+      { id: 'CAM-2', kind: 'camera', name: 'Camera sejour', zone: 'Séjour', model: 'generic-onvif-camera-fixe', qualification: 'to_qualify', source: { type: 'onvif', host: '192.168.1.30' } },
+      { id: 'I-1', kind: 'detector', name: 'Personne a l\'entree', zone: 'Entrée', model: 'dahua-xvr5108hs-i3t-voie', qualification: 'qualified', category: 'intrusion', source: { type: 'dahua', camera: 'CAM-1', channel: 1, events: ['SmartMotionHuman'] } },
+      { id: 'F-1', kind: 'detector', name: 'Fumee sejour', zone: 'Séjour', x: 40, y: 40, model: 'tuya-smoke-wifi', qualification: 'qualified', category: 'fire', source: { type: 'tuya', tuyaId: { $ask: 'Tuya sejour' }, sensorType: 'smoke' } },
       { id: 'F-2', kind: 'detector', name: 'Fumee chambre', zone: 'Chambre', model: 'heiman-hs1sa-e', qualification: 'to_qualify', category: 'fire', heartbeatS: 180 },
-      { id: 'T-1', kind: 'detector', name: 'Temperature baie', zone: 'Technique', model: 'sonde-temperature', qualification: 'qualified', category: 'environment', unit: '°C', warnAt: 30, alarmAt: 40, heartbeatS: 600 },
-      { id: 'R-1', kind: 'detector', name: 'Routeur', zone: 'Technique', model: 'routeur-4g', qualification: 'qualified', category: 'environment', source: { type: 'network', host: '192.168.1.1', port: 80 } },
+      { id: 'T-1', kind: 'detector', name: 'Temperature baie', zone: 'Technique', model: 'generic-capteur-temperature', qualification: 'to_qualify', category: 'environment', unit: '°C', warnAt: 30, alarmAt: 40, heartbeatS: 600 },
+      { id: 'R-1', kind: 'detector', name: 'Routeur', zone: 'Technique', model: 'generic-routeur-4g', qualification: 'to_qualify', category: 'environment', source: { type: 'network', host: '192.168.1.1', port: 80 } },
     ],
     links: { 'F-1': ['CAM-2', 'CAM-1'], 'I-1': ['CAM-1'] },
     arming: [{ zone: 'Entrée', schedule: [{ days: [0, 1, 2, 3, 4, 5, 6], from: '22:00', to: '06:00' }] }],
@@ -169,8 +169,34 @@ describe('pack : format strict et messages situes', () => {
     assert.equal(standard.devices.filter((d) => d.kind === 'camera' && d.model === 'dahua-hac-hfw1500th-i8').length, 4);
     assert.equal(standard.devices.filter((d) => d.model === 'heiman-hs1sa-e').length, 2);
     assert.ok(standard.devices.some((d) => d.model === 'dahua-xvr5104hs-i3'));
-    // Seule la voie d'enregistreur Dahua est qualifiee dans ce pack (le fumee WiFi Tuya l'est dans les autres).
-    assert.deepEqual([...new Set(standard.devices.filter((d) => d.qualification === 'qualified').map((d) => d.model))], ['dahua-xvr-voie-evenements']);
+    // Rien n'est qualifie dans ce pack (XVR5104HS-I3, HAC-HFW1500TH-I8, Heiman : a qualifier) ; le fumee WiFi Tuya l'est dans les autres.
+    assert.deepEqual(standard.devices.filter((d) => d.qualification === 'qualified'), []);
+  });
+
+  it('les modeles des packs livres existent au registre de qualification, qui fait foi', () => {
+    const reg = JSON.parse(readFileSync(join(ROOT, 'qualification', 'registry.json'), 'utf8')) as { entries: { id: string; status: string }[] };
+    const status = new Map(reg.entries.map((e) => [e.id, e.status]));
+    // Regle d'honnetete : seuls les deux materiels essayes en vrai sont qualifies.
+    assert.deepEqual(reg.entries.filter((e) => e.status === 'qualified').map((e) => e.id).sort(), ['dahua-xvr5108hs-i3t-voie', 'tuya-smoke-wifi']);
+    const expected: Record<string, string[]> = {
+      'pack-standard-4cam-2fumee': [],
+      'villa-essentiel': ['F-SEJOUR', 'F-ETAGE'],
+      'appartement-confort': ['F-SEJOUR'],
+    };
+    for (const [name, qualified] of Object.entries(expected)) {
+      const pack = loadPack(join(ROOT, 'packs', name)).pack!;
+      for (const d of pack.devices) {
+        assert.ok(status.has(d.model), `${name} : ${d.model} absent du registre`);
+        assert.equal(d.qualification, status.get(d.model), `${name} : ${d.id} declare ${d.qualification}, registre ${status.get(d.model)}`);
+      }
+      const q = qualify(pack);
+      assert.equal(q.blocking, null, name);
+      assert.deepEqual(q.warnings, [], name);
+      assert.deepEqual(pack.devices.filter((d) => !q.unqualified.some((u) => u.deviceId === d.id)).map((d) => d.id), qualified, name);
+      assert.equal(cli(['check', join(ROOT, 'packs', name)]).status, 0, name);
+    }
+    const standard = qualify(loadPack(join(ROOT, 'packs', 'pack-standard-4cam-2fumee')).pack!);
+    assert.deepEqual([...new Set(standard.unqualified.map((u) => u.model))], ['dahua-hac-hfw1500th-i8', 'dahua-xvr5104hs-i3', 'heiman-hs1sa-e', 'gamr-passerelle']);
   });
 
   it('refuse toute cle inconnue, en situant le chemin', () => {
@@ -321,7 +347,7 @@ describe('pack : plan, application, idempotence, conflits', () => {
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /SIMULATION : rien n'est ecrit/);
     assert.match(r.out, /\+ a creer\s+CAM-1 {2}- {2}camera/);
-    assert.match(r.out, /AVERTISSEMENT : 2 equipement\(s\) d'un modele A QUALIFIER/);
+    assert.match(r.out, /AVERTISSEMENT : 5 equipement\(s\) d'un modele A QUALIFIER/);
     assert.match(r.out, /compte « gw1 » absent dans PSIM_MQTT_GATEWAYS/);
     assert.ok(readFileSync(site.dbFile).equals(before), 'base modifiee par le plan');
     assert.deepEqual(readdirSync(site.dir).filter((f) => !/-(wal|shm)$/.test(f)), files);
@@ -448,7 +474,7 @@ describe('pack : tout ou rien', () => {
     const site = freshSite();
     const l = loaded();
     const snap = dump(site.db);
-    const env = { email: [[EMAIL], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], webhook: [[], []] };
+    const env = { email: [[EMAIL], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] };
     const r = applyPack(site.db, l.pack!, options(site.dir, l, { envRecipients: env }));
     assert.equal(r.committed, false);
     assert.match(r.error!, /deja defini dans le \.env : rien n'a ete applique/);
@@ -548,17 +574,56 @@ describe('pack : export, journal, qualification, verrou, recette', () => {
     site.db.close();
   });
 
-  it('qualification : le registre fait foi ; apply exige --allow-unqualified', () => {
+  it('qualification : le registre fait foi ; apply exige --allow-unqualified', async () => {
     const l = loaded();
-    assert.deepEqual(qualify(l.pack!, null).unqualified.map((u) => u.deviceId), ['CAM-1', 'F-2']);
+    const q0 = qualify(l.pack!);
+    assert.equal(q0.blocking, null);
+    assert.deepEqual(q0.unqualified.map((u) => `${u.deviceId}:${u.status}`), ['CAM-1:to_qualify', 'CAM-2:to_qualify', 'F-2:to_qualify', 'T-1:to_qualify', 'R-1:to_qualify']);
+    assert.deepEqual([q0.effective.get('I-1'), q0.effective.get('F-1'), q0.effective.get('CAM-1')], ['qualified', 'qualified', 'to_qualify']);
+    // Statut declare contredit par le registre, modele absent du registre : signales, le registre l'emporte.
+    const p = basePack();
+    (p.devices as Record<string, unknown>[])[1].qualification = 'qualified';
+    (p.devices as Record<string, unknown>[])[6].model = 'routeur-maison';
+    const q1 = qualify(loaded(p).pack!);
+    assert.match(q1.warnings.join(), /generic-onvif-camera-fixe declare « qualified » dans le pack, mais « to_qualify » dans le registre/);
+    assert.match(q1.warnings.join(), /routeur-maison absent du registre de qualification/);
+    assert.equal(q1.unqualified.find((u) => u.deviceId === 'R-1')!.status, 'unknown');
+
+    // Registre d'essai (copie du vrai) : le Heiman qualifie sur un resultat materiel, puis la camera ONVIF rejetee.
     const dir = mkdtempSync(join(tmpdir(), 'psim-registre-'));
-    const file = join(dir, 'registry.json');
-    writeFileSync(file, JSON.stringify({ models: { 'heiman-hs1sa-e': { status: 'qualified' }, 'camera-ip-onvif': { status: 'to_qualify' } } }));
-    const q = qualify(l.pack!, readRegistry(file).registry);
-    assert.deepEqual(q.unqualified.map((u) => `${u.deviceId}:${u.source}`), ['CAM-1:pack', 'CAM-2:registre']);
-    assert.match(q.warnings.join(), /camera-ip-onvif declare « qualified » dans le pack, mais « to_qualify » dans le registre/);
-    writeFileSync(file, '{ illisible');
-    assert.match(readRegistry(file).warning!, /registre de qualification illisible/);
+    for (const f of ['registry.json', 'fiches.json']) writeFileSync(join(dir, f), readFileSync(join(ROOT, 'qualification', f)));
+    const reg = JSON.parse(readFileSync(join(dir, 'registry.json'), 'utf8')) as { entries: Record<string, unknown>[] };
+    const heiman = reg.entries.find((e) => e.id === 'heiman-hs1sa-e')!;
+    Object.assign(heiman, {
+      status: 'qualified',
+      last_trial: { date: '2026-10-01', reference: 'Essai atelier', psim_version: '0.1.0', gateway_version: '0.1.0', real_hardware: true, conditions: 'Atelier', serial_numbers: ['SN-1'], firmware: null, result_file: 'results/heiman.json', result_sha256: 'a'.repeat(64), legacy: false },
+      history: [{ at: '2026-10-01T10:00:00Z', by: 'Atelier', from: null, to: 'qualified', reason: 'Fiche passee', result_file: 'results/heiman.json' }],
+    });
+    writeFileSync(join(dir, 'registry.json'), JSON.stringify(reg));
+    const q2 = qualify(l.pack!, dir);
+    assert.equal(q2.blocking, null);
+    assert.ok(!q2.unqualified.some((u) => u.deviceId === 'F-2'));
+    assert.match(q2.warnings.join(), /heiman-hs1sa-e declare « to_qualify » dans le pack, mais qualifie au registre/);
+    const camera = reg.entries.find((e) => e.id === 'generic-onvif-camera-fixe')!;
+    Object.assign(camera, { status: 'rejected', notes: 'Flux instable', history: [{ at: '2026-10-02T10:00:00Z', by: 'Atelier', from: 'to_qualify', to: 'rejected', reason: 'Flux instable', result_file: null }] });
+    writeFileSync(join(dir, 'registry.json'), JSON.stringify(reg));
+    assert.match(qualify(l.pack!, dir).blocking!, /rejete\(s\) par l'atelier, interdit\(s\) dans un pack : generic-onvif-camera-fixe/);
+    const run = async (qualificationDir: string) => {
+      const lines: string[] = [];
+      const code = await packMain(['check', writePack(basePack())], { print: (x) => lines.push(x), error: (x) => lines.push(x), qualificationDir });
+      return { code, out: lines.join('\n') };
+    };
+    const rejected = await run(dir);
+    assert.equal(rejected.code, 1);
+    assert.match(rejected.out, /Pack refuse : modele\(s\) rejete\(s\)/);
+    // Registre illisible : echec ferme.
+    writeFileSync(join(dir, 'registry.json'), '{ illisible');
+    assert.match(qualify(l.pack!, dir).blocking!, /registre de qualification inutilisable/);
+    assert.equal(qualify(l.pack!, dir).unqualified.length, 7);
+    const unreadable = await run(dir);
+    assert.equal(unreadable.code, 1);
+    assert.match(unreadable.out, /Pack refuse : registre de qualification inutilisable/);
+    assert.equal((await run(join(ROOT, 'qualification'))).code, 0);
 
     const site = freshSite();
     site.db.close();
@@ -568,7 +633,7 @@ describe('pack : export, journal, qualification, verrou, recette', () => {
     writeFileSync(answers, JSON.stringify(ANSWERS));
     const refused = cli(['apply', packDir, '--data-dir', site.dir, '--answers', answers, '--yes']);
     assert.equal(refused.status, 1, refused.out);
-    assert.match(refused.out, /Application refusee : 2 equipement\(s\) de modele a qualifier/);
+    assert.match(refused.out, /Application refusee : 5 equipement\(s\) de modele a qualifier/);
     assert.ok(readFileSync(site.dbFile).equals(before));
     const ok = cli(['apply', packDir, '--data-dir', site.dir, '--answers', answers, '--yes', '--allow-unqualified', '--by', 'Kone Ibrahim'], { PSIM_SMTP_HOST: 'smtp.exemple.ci', PSIM_SMTP_FROM: 'psim@exemple.ci' });
     assert.equal(ok.status, 0, ok.out);
@@ -608,7 +673,7 @@ describe('pack : export, journal, qualification, verrou, recette', () => {
     const site = freshSite();
     const l = loaded();
     applyPack(site.db, l.pack!, options(site.dir, l));
-    const ctx = { gatewayAccounts: [{ user: 'gw1', detectors: ['F-2', 'T-*'] }], envLevel1: 0, unqualified: qualify(l.pack!, null).unqualified };
+    const ctx = { gatewayAccounts: [{ user: 'gw1', detectors: ['F-2', 'T-*'] }], envLevel1: 0, unqualified: qualify(l.pack!).unqualified };
     const status = (checks: ReturnType<typeof checkPack>) => Object.fromEntries(checks.map((c) => [c.id, c.status]));
     assert.deepEqual(status(checkPack(site.db, l.pack!, ctx)), {
       'pack-devices': 'ok', 'pack-sources': 'ok', 'pack-cameras': 'ok', 'pack-silent': 'warn', 'pack-recipients': 'ok', 'pack-gateway': 'ok', 'pack-models': 'warn', 'pack-applied': 'ok',

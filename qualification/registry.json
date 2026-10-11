@@ -132,6 +132,34 @@
       "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
     },
     {
+      "id": "gamr-passerelle",
+      "family": "socle",
+      "manufacturer": "GAMR",
+      "model": "Passerelle GAMR (boîtier terrain : Zigbee, Modbus, onduleur, SIA, LoRaWAN)",
+      "kind": "generic",
+      "aliases": [
+        "Passerelle GAMR"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Boîtier qui fait tourner la passerelle GAMR : relié au PSIM par MQTT (compte et clé de liaison), signe de vie (module heartbeat) et file d'attente hors ligne."
+      },
+      "fiche": "socle",
+      "profile": "mini-pc",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/gateway.test.ts",
+        "gateway/test/e2e-module-psim.test.ts",
+        "gateway/test/queue.test.ts"
+      ],
+      "history": [],
+      "notes": "Boîtier de la passerelle dans les packs (signe de vie GW-01) : essai en conditions de pack, chaque module raccordé ayant sa propre entrée."
+    },
+    {
       "id": "dahua-xvr5108hs-i3t-voie",
       "family": "video",
       "manufacturer": "Dahua",

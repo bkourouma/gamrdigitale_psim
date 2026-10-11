@@ -141,13 +141,16 @@ async function runChecks(args: string[]): Promise<number> {
 /** Controles « le pack est complet » (voir scripts/pack/checks.ts). */
 async function packChecks(db: DatabaseSync, path: string, config: Awaited<typeof import('../server/config.ts')>['config']): Promise<Check[]> {
   const { loadPack } = await import('./pack/load.ts');
-  const { qualify, readRegistry } = await import('./pack/qualification.ts');
+  const { qualify } = await import('./pack/qualification.ts');
   const { checkPack } = await import('./pack/checks.ts');
   const loaded = loadPack(path);
   if (!loaded.pack) return [{ id: 'pack', title: 'Pack', status: 'fail', detail: `pack illisible : ${loaded.errors.slice(0, 3).join(' | ')}`, fix: `npm run pack -- check ${path}` }];
-  const q = qualify(loaded.pack, readRegistry(join(root, 'qualification', 'registry.json')).registry);
+  // Le registre de qualification fait foi ; inutilisable, ou modele rejete : controle en echec.
+  const q = qualify(loaded.pack, join(root, 'qualification'));
   const envLevel1 = Object.values(config.notify.recipients).reduce((n, levels) => n + (levels[0]?.length ?? 0), 0);
-  return checkPack(db, loaded.pack, { gatewayAccounts: config.mqttGateways, envLevel1, unqualified: q.unqualified });
+  const checks = checkPack(db, loaded.pack, { gatewayAccounts: config.mqttGateways, envLevel1, unqualified: q.unqualified });
+  if (q.blocking) checks.unshift({ id: 'pack-registry', title: 'Registre de qualification', status: 'fail', detail: q.blocking, fix: 'npm run qualify -- verify' });
+  return checks;
 }
 
 /** Pack cite par --pack : ses equipements, son identifiant et sa version (fiche et ecoute limitees au pack). */

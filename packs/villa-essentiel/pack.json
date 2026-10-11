@@ -5,7 +5,7 @@
   "segment": "villa",
   "level": "essentiel",
   "version": "1.0.0",
-  "description": "Voir et être prévenu. Villa à étage : 2 caméras extérieures (portail, jardin) sur un enregistreur Dahua 4 voies supervisé sur le réseau, détection de personnes de l'enregistreur au portail armée la nuit, 2 détecteurs de fumée WiFi Tuya / Smart Life (séjour, couloir de l'étage), lus par le PSIM dans le cloud Tuya sans passerelle. Qualifiés : la voie d'enregistreur Dahua (image et événements) et le détecteur de fumée WiFi Tuya ; caméras et enregistreur 4 voies sont à qualifier. Prérequis : compte Tuya configuré dans le .env (docs/TUYA.md), et les détecteurs appairés dans l'application Smart Life.",
+  "description": "Voir et être prévenu. Villa à étage : 2 caméras extérieures (portail, jardin) sur un enregistreur Dahua 4 voies supervisé sur le réseau, détection de personnes de l'enregistreur au portail armée la nuit, 2 détecteurs de fumée WiFi Tuya / Smart Life (séjour, couloir de l'étage), lus par le PSIM dans le cloud Tuya sans passerelle. Qualifié : le détecteur de fumée WiFi Tuya. Caméras, enregistreur 4 voies XVR5104HS-I3 et sa détection de personnes sont à qualifier (seule une voie d'un XVR5108HS-I3/T a été essayée sur matériel réel ; le registre de qualification n'en déduit rien pour le XVR5104HS-I3). Prérequis : compte Tuya configuré dans le .env (docs/TUYA.md), et les détecteurs appairés dans l'application Smart Life.",
   "floors": [
     { "id": "rdc", "name": "Rez-de-chaussée", "plan": "plans/rdc.svg" },
     { "id": "etage", "name": "Étage", "plan": "plans/etage.svg" }
@@ -42,19 +42,19 @@
     },
     {
       "id": "I-PORTAIL", "kind": "detector", "name": "Personne détectée au portail", "zone": "Portail", "x": 54, "y": 8,
-      "model": "dahua-xvr-voie-evenements", "qualification": "qualified",
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
       "category": "intrusion",
       "source": { "type": "dahua", "camera": "CAM-PORTAIL", "channel": 1, "events": ["SmartMotionHuman"] }
     },
     {
       "id": "F-SEJOUR", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 40, "y": 40,
-      "model": "fumee-wifi-tuya-ywbj", "qualification": "qualified",
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
       "category": "fire",
       "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur du séjour (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
     },
     {
       "id": "F-ETAGE", "kind": "detector", "name": "Fumée couloir de l'étage", "zone": "Étage - Couloir", "x": 50, "y": 49,
-      "model": "fumee-wifi-tuya-ywbj", "qualification": "qualified",
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
       "category": "fire",
       "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur de l'étage (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
     }

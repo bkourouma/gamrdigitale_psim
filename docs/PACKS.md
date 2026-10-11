@@ -51,7 +51,7 @@ packs/villa-essentiel/
 
 ```json
 { "id": "F-SEJOUR", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 40, "y": 40,
-  "model": "fumee-wifi-tuya-ywbj", "qualification": "qualified",
+  "model": "tuya-smoke-wifi", "qualification": "qualified",
   "category": "fire",
   "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur du séjour" }, "sensorType": "smoke" } }
 ```
@@ -62,8 +62,8 @@ packs/villa-essentiel/
 | `kind` | `detector` ou `camera`. |
 | `name`, `zone`, `floor` | Nom affiché, zone (déclarée dans `zones`) ; l'étage se déduit de la zone (`floor` seulement pour un équipement sans zone). |
 | `x`, `y` | Position sur le plan de l'étage, en % (50 par défaut). |
-| `model` | **Référence du modèle au catalogue** (`dahua-hac-hfw1500th-i8`, `heiman-hs1sa-e`…), en minuscules. |
-| `qualification` | `qualified` (essayé en atelier avec le PSIM) ou `to_qualify`. Voir § 5. |
+| `model` | **Identifiant du modèle au registre de qualification** (`qualification/registry.json` : `dahua-hac-hfw1500th-i8`, `heiman-hs1sa-e`, `tuya-smoke-wifi`…) ; un alias du registre est accepté. Un modèle absent du registre est traité comme à qualifier. |
+| `qualification` | `qualified` ou `to_qualify` : indication seulement, **le registre de qualification fait foi** (une contradiction est signalée). Voir § 5. |
 | `category` | Détecteurs : `fire`, `intrusion`, `access`, `environment`, `energy`, `people` (`fire` par défaut). |
 | `unit`, `warnAt`, `alarmAt`, `direction` | Capteurs à mesure : unité, seuils de préalarme et d'alarme, `above` (alarme au-dessus) ou `below`. |
 | `heartbeatS` | Délai de silence avant « hors ligne », en secondes ; `null` = délai général du PSIM, `0` = non supervisé. Par défaut : délai général pour l'incendie, non supervisé pour le reste. |
@@ -197,7 +197,8 @@ Ce qui existe dans le PSIM et n'est pas dans le pack n'est **jamais** touché. U
 Seuls deux matériels réels ont été validés avec le PSIM : **une voie d'enregistreur Dahua** (image RTSP et événements de détection, sur un `DH-XVR5108HS-I3/T`) et **un détecteur de fumée WiFi Tuya** (catégorie Tuya `ywbj`). Tout le reste a été éprouvé avec des équipements simulés.
 
 - Un modèle est `qualified` **seulement** après une recette en atelier avec le PSIM : déclenchement, retour à la normale, coupure (pile, réseau, alimentation) et détection du silence, image, notification reçue. Noter le résultat (modèle, version de micrologiciel, date, technicien).
-- Un **registre de qualification** (`qualification/registry.json`, tenu à part) fait foi : s'il connaît le modèle, son statut l'emporte sur celui déclaré dans le pack (un avertissement signale la contradiction). Sinon, le statut déclaré dans le pack est utilisé.
+- Le **registre de qualification** (`qualification/registry.json`, tenu par `npm run qualify`, voir [QUALIFICATION.md](QUALIFICATION.md)) fait foi : l'importeur l'interroge par son API (`checkPackModels`). Seul un modèle `qualified` au registre est qualifié ; le statut déclaré dans le pack n'est qu'une indication (une contradiction est signalée) et c'est le statut du registre qui est enregistré à l'application. Un modèle absent du registre est à qualifier. Un modèle `rejected` au registre, ou un registre absent, illisible ou invalide, fait **refuser** le pack (check, plan et apply) : échec fermé.
+- Contrôle croisé : `npm run qualify -- check-pack packs/<pack>/pack.json` liste chaque modèle avec son statut et sa portée.
 - Un pack avec des modèles `to_qualify` se **planifie** normalement (avertissement visible) ; l'**appliquer** exige `--allow-unqualified` : c'est un engagement à faire, sur site, la recette renforcée de ces modèles, et c'est inscrit au journal (« N équipement(s) de modèle à qualifier accepté(s) »).
 - Ne jamais passer un modèle en `qualified` dans un pack pour « faire passer » l'application : la fiche de recette affiche le modèle et son statut devant le client.
 - Même modèle, autre version (enregistreur 4 voies au lieu de 8, autre micrologiciel) : `to_qualify` tant que l'atelier ne l'a pas vu.
@@ -246,7 +247,7 @@ Extrait de `packs/pack-standard-4cam-2fumee/pack.json` (le format JSON n'admet p
       "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify", "category": "environment",
       "source": { "type": "network", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 80 } },  // l'enregistreur répond-il ?
     { "id": "I-ENTREE", "kind": "detector", "name": "Personne détectée à l'entrée", "zone": "Entrée",
-      "model": "dahua-xvr-voie-evenements", "qualification": "qualified",     // la voie Dahua : seule pièce qualifiée ici
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",           // événements de l'enregistreur : à qualifier (seule une voie de XVR5108HS-I3/T a été essayée)
       "category": "intrusion",
       "source": { "type": "dahua", "camera": "CAM-01", "channel": 1, "events": ["SmartMotionHuman"] } },
     { "id": "F-01", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour",

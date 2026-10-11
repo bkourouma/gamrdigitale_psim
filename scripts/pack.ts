@@ -40,7 +40,7 @@ import type { Action, Mode, Report, Section } from './pack/apply.ts';
 import { exportPack } from './pack/export.ts';
 import { checkAnswer, collectAnswers, loadPack } from './pack/load.ts';
 import type { Answers, LoadedPack } from './pack/load.ts';
-import { qualify, readRegistry } from './pack/qualification.ts';
+import { qualify, withRegistryStatus } from './pack/qualification.ts';
 import type { QualificationReport } from './pack/qualification.ts';
 import { LEVELS, SEGMENTS } from './pack/schema.ts';
 import type { Pack, Question } from './pack/schema.ts';
@@ -53,8 +53,8 @@ export interface Io {
   /** Question au clavier ; absente = pas de terminal (les reponses doivent venir d'un fichier). */
   ask: ((prompt: string, hidden: boolean) => Promise<string>) | null;
   env: NodeJS.ProcessEnv;
-  /** Registre de qualification (par defaut qualification/registry.json a la racine du depot). */
-  registry: string;
+  /** Dossier de qualification dont le registre fait foi (par defaut qualification/ a la racine du depot). */
+  qualificationDir: string;
 }
 
 const SECTIONS: Record<Section, string> = {
@@ -107,9 +107,9 @@ function describePack(pack: Pack, loaded: LoadedPack): string[] {
   ];
 }
 
-function qualificationLines(q: QualificationReport, registryWarning: string | null): string[] {
+function qualificationLines(q: QualificationReport): string[] {
   const lines: string[] = [];
-  if (registryWarning) lines.push(`  ! ${registryWarning}`);
+  if (q.blocking) lines.push(`  ! ${q.blocking}`);
   for (const w of q.warnings) lines.push(`  ! ${w}`);
   if (q.unqualified.length) {
     const byModel = new Map<string, string[]>();
@@ -145,6 +145,7 @@ function channelsOf(config: Env['config']): Record<ChannelId, boolean> {
     telegram: Boolean(n.telegram.token),
     whatsapp: Boolean(n.whatsapp.token && n.whatsapp.phoneId),
     callmebot: false,
+    vonage: Boolean(n.vonage.applicationId && n.vonage.privateKey && n.vonage.from),
     webhook: true,
   };
 }
@@ -205,7 +206,7 @@ function keyFor(env: Env, create: boolean): { key: Buffer; real: boolean } {
   return { key: randomBytes(32), real: false };
 }
 
-async function load(path: string | undefined, io: Io): Promise<{ loaded: LoadedPack; pack: Pack; q: QualificationReport; registryWarning: string | null } | null> {
+async function load(path: string | undefined, io: Io): Promise<{ loaded: LoadedPack; pack: Pack; q: QualificationReport } | null> {
   if (!path || path.startsWith('--')) {
     io.error('Chemin du pack manquant (dossier contenant pack.json, ou le fichier lui-meme).');
     return null;
@@ -216,8 +217,14 @@ async function load(path: string | undefined, io: Io): Promise<{ loaded: LoadedP
     for (const e of loaded.errors) io.error(`  - ${e}`);
     return null;
   }
-  const { registry, warning } = readRegistry(io.registry);
-  return { loaded, pack: loaded.pack, q: qualify(loaded.pack, registry), registryWarning: warning };
+  // Le registre de qualification fait foi : statut effectif de chaque equipement, et refus ferme si le registre est
+  // inutilisable ou si un modele est rejete par l'atelier.
+  const q = qualify(loaded.pack, io.qualificationDir);
+  if (q.blocking) {
+    io.error(`Pack refuse : ${q.blocking}`);
+    return null;
+  }
+  return { loaded, pack: withRegistryStatus(loaded.pack, q), q };
 }
 
 async function cmdCheck(args: string[], io: Io): Promise<number> {
@@ -225,7 +232,7 @@ async function cmdCheck(args: string[], io: Io): Promise<number> {
   if (!l) return 1;
   for (const line of describePack(l.pack, l.loaded)) io.print(line);
   io.print('Format, references et absence de secret : OK');
-  for (const line of qualificationLines(l.q, l.registryWarning)) io.print(line);
+  for (const line of qualificationLines(l.q)) io.print(line);
   for (const line of questionLines(l.loaded.questions)) io.print(line);
   return 0;
 }
@@ -322,7 +329,7 @@ async function cmdPlan(args: string[], io: Io): Promise<number> {
   header(p, io, true);
   const report = simulate(p);
   io.print(formatReport(report, false));
-  const extra = [...qualificationLines(p.l.q, p.l.registryWarning), ...siteNotes(p.l.pack, p.env.config)];
+  const extra = [...qualificationLines(p.l.q), ...siteNotes(p.l.pack, p.env.config)];
   if (extra.length) io.print(['', 'A SAVOIR', ...extra].join('\n'));
   const unknown = p.questions.filter((q) => !p.answers.has(q.key));
   if (unknown.length) io.print(['', ...questionLines(unknown), '  (simulation faite avec des valeurs fictives ; apply les demandera)'].join('\n'));
@@ -349,7 +356,7 @@ async function cmdApply(args: string[], io: Io): Promise<number> {
   const pre = await load(args[0], io);
   if (!pre) return 1;
   if (pre.q.unqualified.length && !args.includes('--allow-unqualified')) {
-    for (const line of qualificationLines(pre.q, pre.registryWarning)) io.error(line);
+    for (const line of qualificationLines(pre.q)) io.error(line);
     io.error(`Application refusee : ${pre.q.unqualified.length} equipement(s) de modele a qualifier. Lire le plan (npm run pack -- plan ${args[0]}), puis relancer avec --allow-unqualified si l'essai sur site est prevu.`);
     return 1;
   }
@@ -370,7 +377,7 @@ async function cmdApply(args: string[], io: Io): Promise<number> {
   io.print('PLAN (simulation sur une copie de la base) :');
   const plan = simulate(p);
   io.print(formatReport(plan, false));
-  const extra = [...qualificationLines(p.l.q, p.l.registryWarning), ...siteNotes(p.l.pack, p.env.config)];
+  const extra = [...qualificationLines(p.l.q), ...siteNotes(p.l.pack, p.env.config)];
   if (extra.length) io.print(['', 'A SAVOIR', ...extra].join('\n'));
   const problem = verdict(plan, p.mode);
   if (problem) {
@@ -530,7 +537,7 @@ export async function main(args: string[], partial: Partial<Io> = {}): Promise<n
     error: (l) => console.error(l),
     ask: process.stdin.isTTY ? (prompt, hidden) => (hidden ? readHidden(prompt) : readLine(prompt)) : null,
     env: process.env,
-    registry: join(ROOT, 'qualification', 'registry.json'),
+    qualificationDir: join(ROOT, 'qualification'),
     ...partial,
   };
   const [command, ...rest] = args;
