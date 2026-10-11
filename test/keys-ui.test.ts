@@ -16,7 +16,8 @@ import { PsimError } from '../server/errors.ts';
 import { cleanPatterns } from '../server/devicekeys.ts';
 
 const WEB = join(import.meta.dirname, '..', 'web');
-const read = (file: string) => readFileSync(join(WEB, file), 'utf8');
+// Fins de ligne normalisees : le depot est extrait en CRLF sous Windows (core.autocrlf), les motifs ci-dessous sont ecrits en LF.
+const read = (file: string) => readFileSync(join(WEB, file), 'utf8').replace(/\r\n/g, '\n');
 const SERVER_DEVICEIMAGES = readFileSync(join(import.meta.dirname, '..', 'server', 'deviceimages.ts'), 'utf8');
 
 interface Data {
