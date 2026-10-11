@@ -462,7 +462,11 @@ export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipi
       }
     },
     async send(message, url) {
-      const body = JSON.stringify({ event: message.kind, incidentId: message.incidentId, subject: message.subject, text: message.text, ...message.data });
+      // `event` = TYPE DE MESSAGE (opened, escalated...), contrat historique des recepteurs : reimpose apres les donnees,
+      // aucune donnee d'incident ne peut l'ecraser. Le motif de l'incident est publie dans `reason` / `reasonLabel`.
+      const payload: Record<string, unknown> = { event: message.kind, incidentId: message.incidentId, subject: message.subject, text: message.text, ...message.data };
+      payload.event = message.kind;
+      const body = JSON.stringify(payload);
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (cfg.secret) headers['X-PSIM-Signature'] = `sha256=${createHmac('sha256', cfg.secret).update(body).digest('hex')}`;
       let res: Response;
@@ -593,7 +597,10 @@ export function createNotifier(deps: NotifierDeps) {
       data: {
         severity: incident.severity,
         category: incident.category,
-        event: incident.event,
+        // Motif de l'incident (nom en code, ex. `gas`, ou null) et son libelle lisible sans accent ; jamais sous la cle `event`,
+        // qui designe le type de message dans le corps du webhook.
+        reason: incident.event,
+        reasonLabel: motive,
         value: incident.lastValue,
         confirmed,
         status: incident.status,
