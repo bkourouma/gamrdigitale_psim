@@ -83,6 +83,7 @@ Pour chaque menace : ce que l'attaquant veut, ce qui l'en empêche, ce qui reste
 | Annulation | `pending` → `cancelled` (jamais envoyée) ; `sent` / `acked` avec durée en cours → **arrêt anticipé** : l'action sûre part tout de suite, le retour planifié est retiré, l'état de la commande d'origine n'est pas réécrit |
 | HTTP | un seul essai, jamais rejoué ; redirections refusées ; accusé = code 2xx ; délai dépassé = `failed` « exécution incertaine » ; corps de réponse lu au plus 4 Ko et jamais journalisé |
 | SSRF | refus permanent : `169.254.0.0/16`, `fe80::/10`, `100.100.100.200`, `fd00:ec2::254`, `metadata.google.internal`, `0.0.0.0/8`, `127.0.0.0/8`, `::1`, multidiffusion, diffusion ; acceptés par défaut : `10/8`, `172.16/12`, `192.168/16`, `fc00::/7` ; `PSIM_ACTUATOR_HTTP_HOSTS` (liste d'hôtes ou d'adresses) remplace ce défaut — la boucle locale n'est possible que nommée explicitement (essais) ; la vérification porte sur l'adresse **résolue** (pas de contournement par DNS) |
+| Compte de passerelle | `PSIM_MQTT_GATEWAYS=[{"user":"gw1","password":"...","detectors":["D-*"],"actuators":["SIR-01","R-*"]}]` ; un compte réservé aux actionneurs peut omettre `detectors` |
 | MQTT, droits | compte principal : ni abonnement ni publication sur `psim/actuators/...` ; compte de passerelle : abonnement exact à `psim/actuators/<id>/command` pour SES ids (liste `actuators` de `PSIM_MQTT_GATEWAYS`, préfixes `X-*` admis, `*` seul refusé), publication de `psim/actuators/<id>/ack` pour ces mêmes ids, rien d'autre ; filtres `+` / `#` refusés ; abonnements forcés en QoS 0 ; `retain` toujours retiré ; seul le PSIM (publication interne) publie des ordres |
 
 ---
@@ -175,7 +176,8 @@ hexadécimaux affichés à la création de l'actionneur.
    tenir une gâche ouverte une heure).
 6. Exécuter. Si `durationS` est présent : revenir **localement** à l'état de repos au bout de `durationS`, **quoi qu'il
    arrive** (liaison perdue, PSIM arrêté). Sans `durationS` (action `unbounded` configurée par l'admin) : tenir jusqu'à
-   l'ordre contraire.
+   l'ordre contraire. Un nouvel ordre sur le même actionneur **remplace** la temporisation en cours (le PSIM fait de
+   même : le retour automatique prévu pour l'ordre précédent est retiré).
 7. Accuser dans le délai (`ackTimeoutS`, 5 s par défaut) ; ne jamais réessayer un ordre qui a échoué.
 
 ### 5.2 Accusé : équipement → PSIM

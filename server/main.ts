@@ -41,6 +41,8 @@ import { createSnapshotService } from './snapshots.ts';
 import type { SnapshotService } from './snapshots.ts';
 import { createDeviceKeys } from './devicekeys.ts';
 import { createDeviceImages } from './deviceimages.ts';
+import { createActuators } from './actuators.ts';
+import { parseAllowList } from './actuatorhttp.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import { createSystemStatus } from './system.ts';
 import type { BackupStatus } from './system.ts';
@@ -258,6 +260,18 @@ deviceImages = createDeviceImages({
   publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
 });
 deviceImages.start();
+// Commandes des equipements (sirenes, relais, gaches...) : voir docs/COMMANDES.md. Au demarrage, aucune commande n'est rejouee.
+const actuators = createActuators({
+  db,
+  key: secretKey,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  publish,
+  httpAllow: parseAllowList(config.actuatorHttpHosts),
+});
+// Incident clos : ses commandes en attente sont annulees, ses commandes temporisees en cours ramenees a l'etat sur.
+bus.on('event', (event: PsimEvent) => {
+  if (event.type === 'incident' && event.incident.status === 'closed') actuators.incidentChanged(event.incident.id, 'closed');
+});
 notifier = createNotifier({
   db,
   engine,
@@ -342,11 +356,14 @@ const broker = await startBroker(engine, {
   tls: mqttTlsFiles,
   gateways: config.mqttGateways,
   onGateway: (user, connected, client) => gatewayLink?.connection(user, connected, client),
+  onActuatorAck: (id, payload) => actuators.handleAck(id, payload),
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
   releaseLock();
   process.exit(1);
 });
+
+actuators.attachMqtt({ listeners: (id) => broker.actuatorListeners(id), publishCommand: (id, payload) => broker.publishCommand(id, payload) });
 
 const system = createSystemStatus({
   db,
@@ -507,6 +524,7 @@ const app = createApp({
   triggerSim: (id, payload) => broker.publishDetector(id, payload),
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
   deviceImages,
+  actuators,
 });
 
 const server: Server = createWebServer(app, tlsFiles);
@@ -581,6 +599,7 @@ const tickTimer = setInterval(() => {
   try {
     arming?.tick(); // armements et desarmements dus au planning
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
+    actuators.tick(); // commandes sans accuse, retours automatiques a l'etat sur
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
       sweepSockets();
