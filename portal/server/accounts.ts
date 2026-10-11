@@ -5,6 +5,11 @@
  * donnees passe par `visibleSites` / `canSee`, qui partent du compte (role, organisation, site) lu en base a CHAQUE requete,
  * jamais d'une valeur fournie par le navigateur. Un site qu'on n'a pas le droit de voir est « introuvable » (404), pas
  * « interdit » (403) : on ne revele pas qu'il existe.
+ *
+ * Niveau groupe : un directeur peut etre limite a un ou plusieurs groupes (directeur regional) ; `visibleSites` et
+ * `visibleGroups` appliquent cette limite. Limite a un groupe, il voit ses sous-groupes ; limite a un sous-groupe, rien
+ * au-dessus. Un site sans groupe n'est vu que d'un directeur non limite. Un compte limite mais sans aucun groupe ne voit RIEN :
+ * jamais « toute l'organisation » par defaut. Un groupe hors perimetre est « introuvable » comme un site.
  */
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -24,6 +29,11 @@ export interface Principal {
   siteId: string | null;
   displayName: string;
   mustChangePassword: boolean;
+  /**
+   * Groupes auxquels un directeur est limite (identifiants), `null` : aucune limite de groupe. Tableau vide : compte limite
+   * sans groupe, il ne voit rien. Lu en base a chaque requete, comme le reste.
+   */
+  groupScope: number[] | null;
 }
 
 const hashPassword = (password: string, salt: string): Buffer => scryptSync(password, salt, 64);
@@ -58,6 +68,8 @@ export interface NewUser {
   orgId?: number | null;
   siteId?: string | null;
   displayName?: string;
+  /** Directeur seulement : limite le compte a ces groupes (identifiants). Absent : toute l'organisation. */
+  groupIds?: number[];
 }
 
 /** Cree un compte (mot de passe initial a changer a la premiere connexion). */
@@ -65,18 +77,29 @@ export function createUser(db: DatabaseSync, user: NewUser, password: string, no
   if (!USERNAME_PATTERN.test(user.username)) throw new Error("nom d'utilisateur invalide : 4 a 40 caracteres, minuscules, chiffres, . _ -");
   const problem = validatePassword(password, user.username);
   if (problem) throw new Error(`mot de passe ${problem}`);
+  if (user.groupIds !== undefined && user.role !== 'director') throw new Error('seul un directeur peut etre limite a des groupes');
+  if (user.groupIds !== undefined && user.groupIds.length === 0) throw new Error('au moins un groupe est necessaire pour limiter un compte');
   const salt = randomBytes(16).toString('hex');
-  db.prepare('INSERT INTO portal_user (username, role, org_id, site_id, display_name, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-    user.username,
-    user.role,
-    user.role === 'admin' ? null : (user.orgId ?? null),
-    user.role === 'site_manager' ? (user.siteId ?? null) : null,
-    user.displayName ?? user.username,
-    salt,
-    hashPassword(password, salt).toString('hex'),
-    now,
-  );
-  writeAudit(db, 'cli', 'user_created', `${user.username} (${user.role})`, now);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('INSERT INTO portal_user (username, role, org_id, site_id, display_name, salt, hash, created_at, group_limited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      user.username,
+      user.role,
+      user.role === 'admin' ? null : (user.orgId ?? null),
+      user.role === 'site_manager' ? (user.siteId ?? null) : null,
+      user.displayName ?? user.username,
+      salt,
+      hashPassword(password, salt).toString('hex'),
+      now,
+      user.groupIds ? 1 : 0,
+    );
+    for (const id of new Set(user.groupIds ?? [])) db.prepare('INSERT INTO portal_user_group (username, group_id) VALUES (?, ?)').run(user.username, id);
+    writeAudit(db, 'cli', 'user_created', `${user.username} (${user.role})${user.groupIds ? ` limite a ${user.groupIds.length} groupe(s)` : ''}`, now);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 /** Change le mot de passe ; toutes les sessions ouvertes du compte sont invalidees. */
@@ -152,28 +175,73 @@ export function principalFor(db: DatabaseSync, token: string | undefined, now = 
   if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
   const row = db
     .prepare(
-      `SELECT u.username, u.role, u.org_id, u.site_id, u.display_name, u.active, u.must_change_password, u.session_epoch, s.epoch, s.expires_at
+      `SELECT u.username, u.role, u.org_id, u.site_id, u.display_name, u.active, u.must_change_password, u.session_epoch, u.group_limited, s.epoch, s.expires_at
        FROM session s JOIN portal_user u ON u.username = s.username WHERE s.token_hash = ?`,
     )
-    .get(tokenHash(token)) as { username: string; role: Role; org_id: number | null; site_id: string | null; display_name: string; active: number; must_change_password: number; session_epoch: number; epoch: number; expires_at: number } | undefined;
+    .get(tokenHash(token)) as { username: string; role: Role; org_id: number | null; site_id: string | null; display_name: string; active: number; must_change_password: number; session_epoch: number; group_limited: number; epoch: number; expires_at: number } | undefined;
   if (!row || row.expires_at < now || row.active !== 1 || row.epoch !== row.session_epoch) return null;
-  return { username: row.username, role: row.role, orgId: row.org_id, siteId: row.site_id, displayName: row.display_name, mustChangePassword: row.must_change_password === 1 };
+  // Limite = marque posee OU au moins un groupe note : la lecture la plus stricte l'emporte si les deux divergeaient.
+  const groups = row.role === 'director' ? (db.prepare('SELECT group_id FROM portal_user_group WHERE username = ?').all(row.username) as { group_id: number }[]).map((g) => g.group_id) : [];
+  const limited = row.role === 'director' && (row.group_limited === 1 || groups.length > 0);
+  return { username: row.username, role: row.role, orgId: row.org_id, siteId: row.site_id, displayName: row.display_name, mustChangePassword: row.must_change_password === 1, groupScope: limited ? groups : null };
 }
 
 // ---------------------------------------------------------------- portee
 
 export interface VisibleSite extends SiteRow {
   org_name: string;
+  group_id: number | null;
+}
+
+export interface GroupRow {
+  id: number;
+  org_id: number;
+  org_name: string;
+  code: string;
+  name: string;
+  parent_id: number | null;
+}
+
+/**
+ * Les groupes (et sous-groupes) que le compte peut voir. `null` : aucune limite de groupe. Limite a un groupe, il voit aussi
+ * ses sous-groupes (y compris ceux crees plus tard) ; limite a un sous-groupe, uniquement celui-la.
+ */
+export function allowedGroupIds(db: DatabaseSync, p: Principal): number[] | null {
+  if (p.role !== 'director' || p.groupScope === null) return null;
+  if (p.groupScope.length === 0) return [];
+  const marks = p.groupScope.map(() => '?').join(', ');
+  const rows = db.prepare(`SELECT id FROM site_group WHERE org_id = ? AND (id IN (${marks}) OR parent_id IN (${marks}))`).all(p.orgId, ...p.groupScope, ...p.groupScope) as { id: number }[];
+  return rows.map((r) => r.id);
 }
 
 /** Les sites qu'un compte a le droit de voir : jamais d'autres. */
 export function visibleSites(db: DatabaseSync, p: Principal): VisibleSite[] {
-  const base = 'SELECT s.id, s.org_id, s.name, s.key_version, s.active, s.last_received_at, o.name AS org_name FROM site s JOIN organization o ON o.id = s.org_id WHERE s.active = 1';
+  const base = 'SELECT s.id, s.org_id, s.name, s.key_version, s.active, s.last_received_at, s.group_id, o.name AS org_name FROM site s JOIN organization o ON o.id = s.org_id WHERE s.active = 1';
   if (p.role === 'admin') return db.prepare(`${base} ORDER BY o.name, s.name`).all() as unknown as VisibleSite[];
-  if (p.role === 'director') return db.prepare(`${base} AND s.org_id = ? ORDER BY s.name`).all(p.orgId) as unknown as VisibleSite[];
+  if (p.role === 'director') {
+    const allowed = allowedGroupIds(db, p);
+    if (allowed === null) return db.prepare(`${base} AND s.org_id = ? ORDER BY s.name`).all(p.orgId) as unknown as VisibleSite[];
+    if (allowed.length === 0) return [];
+    return db.prepare(`${base} AND s.org_id = ? AND s.group_id IN (${allowed.map(() => '?').join(', ')}) ORDER BY s.name`).all(p.orgId, ...allowed) as unknown as VisibleSite[];
+  }
   return db.prepare(`${base} AND s.id = ?`).all(p.siteId) as unknown as VisibleSite[];
 }
 
 export function visibleSite(db: DatabaseSync, p: Principal, siteId: string): VisibleSite | null {
   return visibleSites(db, p).find((s) => s.id === siteId) ?? null;
+}
+
+/** Les groupes que le compte voit. Un responsable de site n'en voit aucun : son perimetre est un seul site. */
+export function visibleGroups(db: DatabaseSync, p: Principal): GroupRow[] {
+  const base = 'SELECT g.id, g.org_id, o.name AS org_name, g.code, g.name, g.parent_id FROM site_group g JOIN organization o ON o.id = g.org_id';
+  if (p.role === 'admin') return db.prepare(`${base} ORDER BY o.name, g.name`).all() as unknown as GroupRow[];
+  if (p.role !== 'director') return [];
+  const allowed = allowedGroupIds(db, p);
+  if (allowed === null) return db.prepare(`${base} WHERE g.org_id = ? ORDER BY g.name`).all(p.orgId) as unknown as GroupRow[];
+  if (allowed.length === 0) return [];
+  return db.prepare(`${base} WHERE g.org_id = ? AND g.id IN (${allowed.map(() => '?').join(', ')}) ORDER BY g.name`).all(p.orgId, ...allowed) as unknown as GroupRow[];
+}
+
+export function visibleGroup(db: DatabaseSync, p: Principal, groupId: number): GroupRow | null {
+  return visibleGroups(db, p).find((g) => g.id === groupId) ?? null;
 }
