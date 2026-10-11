@@ -12,7 +12,7 @@ import { createThermometer, levelOf } from './gauge.js';
 import { createReportsView } from './reports.js';
 import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
-import { $, h, icon, api, toast, S, on, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
+import { $, h, icon, api, toast, S, on, emit, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
 import { renderIncidents, tickIncidents, ariaTable } from './incidents.js';
@@ -20,6 +20,7 @@ import { renderJournal } from './journal.js';
 import { loadSystem } from './system.js';
 import { initNotifications, loadNotifStatus } from './notifications.js';
 import { renderAdmin } from './equipment.js';
+import { loadActuatorsAdmin } from './commands.js';
 
 // ---------------------------------------------------------------- thème (Jour, Nuit, Automatique)
 
@@ -162,6 +163,7 @@ function enter(view) {
     $('equip-plan-slot').append(planPanel);
     renderPlan();
     renderAdmin();
+    loadActuatorsAdmin(); // commandes des equipements (sirenes, relais, gaches...)
   } else if (view === 'cameras') {
     $('cameras-video-slot').append(videoPanel);
     renderWall();
@@ -395,6 +397,13 @@ function onMessage(msg) {
       S.audit.unshift(msg.entry);
       S.audit.length = Math.min(S.audit.length, 100);
       renderJournal();
+      break;
+    case 'command': // etat d'une commande d'equipement (commands.js)
+      emit('command', msg.command);
+      break;
+    case 'actuators':
+      emit('actuators');
+      if (S.view === 'equipements') loadActuatorsAdmin();
       break;
   }
 }

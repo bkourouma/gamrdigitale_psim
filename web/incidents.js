@@ -12,6 +12,7 @@
 import { CATEGORY_LABEL, eventLabel, formatValue, qualificationLabel, realEventLabel } from './sources.js';
 import { CATEGORY_ICON } from './plan.js';
 import { $, h, icon, api, toast, S, time, elapsed, emit, go, activeIncidents, focusedIncident, followAlarm, isActive, isFiring, devicesOf, STATUS_LABEL, render } from './core.js';
+import { commandsButton } from './commands.js';
 
 /** L'attente se lit sur une barre qui se remplit en 5 minutes (un repère par minute). */
 const WAIT_SCALE_MS = 5 * 60 * 1000;
@@ -305,7 +306,7 @@ function buildCard(incident) {
       h('p', { class: 'inc-meta' }, h('span', {}, icon('pin', 'icon-sm'), refs.place), h('span', {}, icon('clock', 'icon-sm'), refs.opened), refs.measure),
       h('div', { class: 'inc-wait' }, refs.waitLine, refs.bar, refs.escalated),
     ),
-    h('div', { class: 'inc-main' }, refs.conf, refs.advice, refs.shotsBlock, h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li)),
+    h('div', { class: 'inc-main' }, refs.conf, refs.advice, refs.shotsBlock, commandsButton(current), h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li)),
   );
 
   async function acknowledge() {
