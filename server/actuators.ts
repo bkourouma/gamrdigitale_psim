@@ -815,7 +815,11 @@ export function createActuators(deps: ActuatorsDeps) {
 
   // ---------------------------------------------------------------- controle periodique et demarrage
 
+  // Controle periodique (chaque seconde) : une seule requete preparee une fois quand il n'y a rien a suivre (cas courant).
+  const anyWork = db.prepare("SELECT 1 AS x FROM actuator_command WHERE state IN ('pending', 'sent') OR (off_due_at IS NOT NULL AND off_cmd_id IS NULL) LIMIT 1");
+
   function tick(): void {
+    if (anyWork.get() === undefined) return;
     const t = now();
     // Sans accuse a l'echeance : echec, jamais « fait » par supposition (HTTP : sa propre echeance, celle-ci en filet).
     for (const c of db.prepare("SELECT c.id, c.actuator_id, c.ack_deadline, a.transport FROM actuator_command c LEFT JOIN actuator a ON a.id = c.actuator_id WHERE c.state = 'sent'").all() as Row[]) {
