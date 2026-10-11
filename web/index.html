@@ -16,6 +16,7 @@
   <link rel="stylesheet" href="prevention.css">
   <link rel="stylesheet" href="admin.css">
   <link rel="stylesheet" href="equipment.css">
+  <link rel="stylesheet" href="keys.css">
 </head>
 <body>
   <a class="skip" href="#main" hidden>Aller au contenu</a>
@@ -88,6 +89,7 @@
           <a class="nav-item" href="#/equipements" data-view="equipements"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg><span>Équipements et plan</span></a>
           <a class="nav-item" href="#/notifications" data-view="notifications"><svg class="icon" aria-hidden="true"><use href="icons.svg#megaphone"/></svg><span>Personnes prévenues</span></a>
           <a class="nav-item" href="#/utilisateurs" data-view="utilisateurs"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg><span>Utilisateurs</span></a>
+          <a class="nav-item" href="#/cles" data-view="cles"><svg class="icon" aria-hidden="true"><use href="icons.svg#key"/></svg><span>Clés et passerelles</span></a>
           <a class="nav-item" href="#/systeme" data-view="systeme"><svg class="icon" aria-hidden="true"><use href="icons.svg#server"/></svg><span>Système</span><span id="nav-count-systeme" class="nav-count is-warning" hidden></span></a>
           <a id="nav-simulateur" class="nav-item" href="#/simulateur" data-view="simulateur" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#sliders"/></svg><span>Simulateur</span></a>
         </div>
@@ -471,6 +473,34 @@
           <section class="panel" aria-labelledby="users-create-title">
             <div class="panel-head"><h2 id="users-create-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Créer un compte</h2></div>
             <div class="panel-body"><div id="users-create"></div></div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Clés et passerelles -->
+        <section class="view view-cles is-narrow" id="view-cles" aria-labelledby="view-title" hidden>
+          <section class="panel" aria-labelledby="gw-title">
+            <div class="panel-head">
+              <h2 id="gw-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#signal"/></svg>Passerelles</h2>
+              <div class="actions sys-refresh">
+                <span id="gw-updated" class="panel-note"></span>
+                <button id="gw-refresh" class="btn btn-sm btn-ghost" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"/></svg>Actualiser</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div id="gw-list" class="gw-list"><p class="muted">Chargement…</p></div>
+              <p class="panel-note">Une passerelle relaie vers le PSIM des capteurs qui ne parlent pas directement MQTT. Si elle se coupe, ses capteurs ne sont plus surveillés ; l'alerte apparaît aussi dans <a href="#/systeme">Système</a>.</p>
+            </div>
+          </section>
+          <section class="panel" aria-labelledby="keys-title">
+            <div class="panel-head"><h2 id="keys-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#key"/></svg>Clés des équipements</h2></div>
+            <div class="panel-body">
+              <div id="keys-list" class="keys-list"><p class="muted">Chargement…</p></div>
+              <p class="panel-note">Chaque clé n'ouvre que ses propres équipements. Le PSIM ne garde que son empreinte : une clé perdue se remplace, elle ne se retrouve pas.</p>
+            </div>
+          </section>
+          <section class="panel" aria-labelledby="keys-create-title">
+            <div class="panel-head"><h2 id="keys-create-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Créer une clé</h2></div>
+            <div class="panel-body"><div id="keys-create"></div><datalist id="keys-device-options"></datalist></div>
           </section>
         </section>
 

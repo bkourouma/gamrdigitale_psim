@@ -196,7 +196,7 @@ components:
 
 # Système de design : GAMR-DIGITALE PSIM et portail client
 
-Sources (build livré) : `web/base.css` (jetons, thèmes, composants partagés, copié dans `portal/web/base.css`), `web/shell.css` (cadre, rail, feuille, connexion), `web/surveillance.css` (plan, légende, vue éclatée, mur vidéo), `web/alarms.css` (fiche d'alarme, alarmes, journal), `web/risk.css` (Risques), `web/prevention.css` (Armement, Rapports), `web/admin.css` (Administration), `web/equipment.css` (Équipements, Simulateur), `web/gauge.js`, `web/icons.svg`, `web/logo.svg`, `portal/web/portal.css`. Les règles ci-dessous décrivent ce que ces fichiers font aujourd'hui.
+Sources (build livré) : `web/base.css` (jetons, thèmes, composants partagés, copié dans `portal/web/base.css`), `web/shell.css` (cadre, rail, feuille, connexion), `web/surveillance.css` (plan, légende, vue éclatée, mur vidéo), `web/alarms.css` (fiche d'alarme, alarmes, journal), `web/risk.css` (Risques), `web/prevention.css` (Armement, Rapports), `web/admin.css` (Administration), `web/equipment.css` (Équipements, Simulateur), `web/keys.css` (Clés et passerelles), `web/gauge.js`, `web/icons.svg`, `web/logo.svg`, `portal/web/portal.css`. Les règles ci-dessous décrivent ce que ces fichiers font aujourd'hui.
 
 ## Overview
 

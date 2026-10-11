@@ -12,6 +12,7 @@ import { createThermometer, levelOf } from './gauge.js';
 import { createReportsView } from './reports.js';
 import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
+import { createKeysAdmin } from './keys.js';
 import { $, h, icon, api, toast, S, on, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
@@ -81,6 +82,14 @@ const usersAdmin = createUsersAdmin({
   onRecipientsChanged: () => loadNotifStatus({ recipients: true }), // après un ajout, une modification : la liste est rechargée
   getZones: () => [...new Set([...S.devices.values()].filter((d) => d.kind === 'detector' && d.zone).map((d) => d.zone))],
 });
+const keysAdmin = createKeysAdmin({
+  api,
+  h,
+  toast,
+  dialogs,
+  getMe: () => S.me,
+  getDevices: () => [...S.devices.values()].filter((d) => d.kind === 'detector').map((d) => ({ id: d.id, name: d.name })),
+});
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
 
@@ -114,6 +123,7 @@ const ROUTES = {
   equipements: { title: 'Équipements et plan', sub: 'Placer, régler et ajouter les détecteurs et les caméras', admin: true },
   notifications: { title: 'Personnes prévenues', sub: "Qui reçoit les alarmes hors de l'écran, et par quel canal", admin: true },
   utilisateurs: { title: 'Utilisateurs', sub: 'Comptes, rôles et accès', admin: true },
+  cles: { title: 'Clés et passerelles', sub: 'Clés des équipements qui envoient des images, et état des passerelles', admin: true },
   systeme: { title: 'Système', sub: 'Santé du PSIM, sauvegardes et intégrité du journal', admin: true },
   simulateur: { title: 'Simulateur', sub: 'Essais : chaque bouton agit comme un vrai détecteur', admin: true, sim: true },
 };
@@ -148,6 +158,8 @@ function leave(view) {
     renderAdmin();
   } else if (view === 'cameras') {
     $('video-home').append(videoPanel);
+  } else if (view === 'cles') {
+    keysAdmin.hide();
   } else if (view === 'risques') {
     riskView.hide();
     loadRailGauge(); // une évaluation vient peut-être de changer l'indice
@@ -176,6 +188,8 @@ function enter(view) {
     // L'état des canaux est relu à chaque entrée ; la liste des destinataires seulement si aucun formulaire n'y est
     // commencé (elle est de toute façon rechargée après chaque ajout ou modification).
     loadNotifStatus({ recipients: !hasUnsavedInput($('recipients-box')) });
+  } else if (view === 'cles') {
+    keysAdmin.show();
   } else if (view === 'systeme') {
     loadSystem();
   } else if (view === 'simulateur') {
@@ -496,7 +510,7 @@ function showLogin() {
 function clearAccountTraces() {
   $('system-counter').hidden = true;
   $('nav-count-systeme').hidden = true;
-  for (const id of ['users-list', 'notif-status', 'sys-status']) $(id).replaceChildren(h('p', { class: 'muted', text: 'Chargement…' }));
+  for (const id of ['users-list', 'notif-status', 'sys-status', 'gw-list', 'keys-list']) $(id).replaceChildren(h('p', { class: 'muted', text: 'Chargement…' }));
   for (const id of ['recipients-box', 'notif-results', 'sys-warnings']) $(id).replaceChildren();
   const editor = $('device-editor');
   editor.replaceChildren();

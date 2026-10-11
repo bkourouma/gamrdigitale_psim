@@ -342,6 +342,7 @@ const broker = await startBroker(engine, {
   tls: mqttTlsFiles,
   gateways: config.mqttGateways,
   onGateway: (user, connected, client) => gatewayLink?.connection(user, connected, client),
+  onGatewayMessage: (user) => gatewayLink?.message(user),
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
   releaseLock();
