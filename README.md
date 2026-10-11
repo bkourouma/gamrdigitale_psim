@@ -570,6 +570,21 @@ caméras (simulées) ◄── mur vidéo             │
 
 Message MQTT attendu sur `psim/detectors/<id>/state` : `{"state": "normal" | "prealarm" | "alarm" | "fault" | "offline"}`, ou `{"event": …}` / `{"value": …}` pour les autres sources (voir plus haut).
 
+## Qualification en atelier du matériel
+
+**Aucune référence n'entre dans un pack sans recette en atelier** : chaque équipement du catalogue est marqué `qualified`, `to_qualify` ou `rejected` dans `qualification/registry.json`. État honnête aujourd'hui : seuls **une voie d'un enregistreur Dahua DH-XVR5108HS-I3/T** et **un détecteur de fumée WiFi Tuya** sont qualifiés (portée précise écrite au registre) ; tout le reste, y compris les modèles cités dans les packs (XVR5104HS-I3, HAC-HFW1500TH-I8, Heiman HS1SA-E), est **à qualifier** : le tout a été éprouvé avec des équipements simulés, ce qui ne qualifie rien.
+
+```
+npm run qualify -- list [--status to_qualify]     statuts de tous les modèles
+npm run qualify -- sheet <id>                     fiche de recette vierge (HTML imprimable + Markdown)
+npm run qualify -- record <id> --file saisie.json résultat d'essai (ne change pas le statut)
+npm run qualify -- promote <id> --result … --by … --scope …   qualifie si tout est « pass » sur matériel réel
+npm run qualify -- check-pack packs/mon-pack.json signale les modèles non qualifiés d'un pack
+npm run bench -- --all                            rejoue les fiches contre un PSIM simulé (vérifie les fiches, pas le matériel)
+```
+
+Les fiches par famille sont dans [docs/qualification/](docs/qualification/) ; le processus complet (qui signe, où ranger les résultats, API `isQualified`) dans [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
+
 ## Mise en service sur site
 
 Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équipement réel n'a été testé**. Pour que la première rencontre avec le matériel réel soit méthodique, le PSIM livre un **guide** ([docs/MISE-EN-SERVICE.md](docs/MISE-EN-SERVICE.md) : de la machine vide à la recette signée) et trois outils, en lecture seule, qui n'envoient aucune alerte :
