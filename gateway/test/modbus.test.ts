@@ -985,17 +985,32 @@ describe('modbus : module', () => {
     });
   });
 
-  it('temporisation exponentielle entre les tentatives de reconnexion', async () => {
+  it('temporisation exponentielle entre les tentatives de reconnexion', async (t) => {
     await withServer(async (f) => {
       f.s.mode = 'close';
+      // Pas de rapport entre intervalles mesures a l'horloge murale : sous charge (processeur ssature, autres tests en
+      // parallele) un intervalle reel s'allonge d'un delai imprevisible, ce qui faisait echouer l'ancien controle
+      // « g[1] > g[0] * 1.5 » (133 ms contre 101 x 1,5). On releve les delais DEMANDES au minuteur par l'equipement
+      // (deterministes), le vrai minuteur continuant d'agir.
+      const ATTENDUS = [60, 120, 240, 480]; // reconnectMinMs * 2^n, plafonne a reconnectMaxMs (1000)
+      const demandes: number[] = [];
+      const vrai = globalThis.setTimeout;
+      t.mock.method(globalThis, 'setTimeout', ((fn: () => void, ms?: number, ...args: unknown[]) => {
+        // 200 = timeoutMs de la liaison (dev), hors sujet ; les attentes de 10 ms du test sont sous le seuil.
+        if (typeof ms === 'number' && ms >= 60 && ms <= 1000 && ms !== 200) demandes.push(ms);
+        return vrai(fn, ms, ...args);
+      }) as typeof setTimeout);
       const d = dev(f.port, [{ ...intrusion, id: 'x' }], { pollMs: 10, reconnectMinMs: 60, reconnectMaxMs: 1000, failThreshold: 50 });
       await runModule([d], async () => {
-        await until(() => f.connects.length >= 5, 5000);
+        await until(() => f.connects.length >= 5, 8000);
       });
-      const g = f.connects.slice(1).map((t, i) => t - f.connects[i]);
-      assert.ok(g[0] >= 50, `1er intervalle ${g[0]}`);
-      assert.ok(g[1] > g[0] * 1.5, `${g[1]} vs ${g[0]}`);
-      assert.ok(g[2] > g[1] * 1.5, `${g[2]} vs ${g[1]}`);
+      t.mock.restoreAll();
+      assert.deepEqual(demandes.slice(0, ATTENDUS.length), ATTENDUS, 'delais demandes : doublement a chaque echec de liaison');
+      // Controle en temps reel, robuste : un minuteur ne se declenche jamais AVANT son echeance et la charge ne fait
+      // qu'allonger un intervalle. Chaque intervalle reel vaut donc au moins le delai demande (marge de 8 ms d'arrondi) ;
+      // sans temporisation exponentielle les intervalles resteraient proches de 60 ms et les suivants echoueraient.
+      const g = f.connects.slice(1).map((c, i) => c - f.connects[i]);
+      ATTENDUS.forEach((min, i) => assert.ok(g[i] >= min - 8, `intervalle ${i + 1} : ${g[i]} ms pour au moins ${min} ms`));
     });
   });
 
