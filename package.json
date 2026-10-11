@@ -31,6 +31,8 @@
     "qualify": "node scripts/qualify.ts",
     "bench": "node scripts/bench.ts",
     "init-production": "node scripts/init-production.ts",
+    "pack": "node --env-file-if-exists=.env scripts/pack.ts",
+    "pack:prod": "node --env-file=.env.production scripts/pack.ts",
     "start:prod": "node --env-file=.env.production server/index.ts",
     "supervise:prod": "node --env-file=.env.production scripts/supervise.ts",
     "check-config:prod": "node --env-file=.env.production scripts/check-config.ts",

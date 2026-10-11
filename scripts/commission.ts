@@ -12,6 +12,8 @@
  *   npm run commission -- watch              ecoute les detecteurs : montre ce que le PSIM comprend de chaque message
  *        options : --minutes 10 (duree)  --until-all (s'arrete quand tous ont parle)  --allow-missing
  *   npm run commission -- sheet --out recette.html     fiche de recette imprimable (une ligne par equipement)
+ *   --pack <pack> (avec check, watch ou sheet)  recette d'un pack (docs/PACKS.md) : controle « le pack est complet »,
+ *                                            ecoute de ses seuls detecteurs, fiche limitee a ses equipements et citant sa version
  *
  * Aucune commande n'envoie d'alerte reelle ni ne modifie les donnees du PSIM (lecture seule de la base). Les messages de
  * test ne partent que sur demande explicite. Code de sortie 1 s'il y a au moins un echec.
@@ -27,6 +29,7 @@ import { buildSheet } from './commission/sheet.ts';
 import type { SheetDevice } from './commission/sheet.ts';
 import { createWatcher, formatSummary } from './commission/watch.ts';
 import type { WatchDevice } from './commission/watch.ts';
+import { appliedPacks } from './pack/checks.ts';
 
 type Row = Record<string, unknown>;
 
@@ -112,6 +115,7 @@ async function runChecks(args: string[]): Promise<number> {
   } else {
     try {
       checks.push(...checkInventory(db));
+      if (optionValue(args, '--pack')) checks.push(...(await packChecks(db, optionValue(args, '--pack')!, config)));
       checks.push(checkJournal(db));
       if (!args.includes('--skip-cameras')) {
         let tester: Parameters<typeof checkCameras>[1] = null;
@@ -134,7 +138,32 @@ async function runChecks(args: string[]): Promise<number> {
   return exitCodeFor(checks);
 }
 
-function readDevices(dataDir: string): { detectors: WatchDevice[]; sheet: SheetDevice[]; site: string } | null {
+/** Controles « le pack est complet » (voir scripts/pack/checks.ts). */
+async function packChecks(db: DatabaseSync, path: string, config: Awaited<typeof import('../server/config.ts')>['config']): Promise<Check[]> {
+  const { loadPack } = await import('./pack/load.ts');
+  const { qualify, readRegistry } = await import('./pack/qualification.ts');
+  const { checkPack } = await import('./pack/checks.ts');
+  const loaded = loadPack(path);
+  if (!loaded.pack) return [{ id: 'pack', title: 'Pack', status: 'fail', detail: `pack illisible : ${loaded.errors.slice(0, 3).join(' | ')}`, fix: `npm run pack -- check ${path}` }];
+  const q = qualify(loaded.pack, readRegistry(join(root, 'qualification', 'registry.json')).registry);
+  const envLevel1 = Object.values(config.notify.recipients).reduce((n, levels) => n + (levels[0]?.length ?? 0), 0);
+  return checkPack(db, loaded.pack, { gatewayAccounts: config.mqttGateways, envLevel1, unqualified: q.unqualified });
+}
+
+/** Pack cite par --pack : ses equipements, son identifiant et sa version (fiche et ecoute limitees au pack). */
+async function packScope(args: string[]): Promise<{ ids: Set<string>; id: string; version: string; name: string } | null | 'error'> {
+  const path = optionValue(args, '--pack');
+  if (!path) return null;
+  const { loadPack } = await import('./pack/load.ts');
+  const loaded = loadPack(path);
+  if (!loaded.pack) {
+    console.error(`Pack illisible (${path}) : ${loaded.errors.slice(0, 3).join(' | ')}`);
+    return 'error';
+  }
+  return { ids: new Set(loaded.pack.devices.map((d) => d.id)), id: loaded.pack.id, version: loaded.pack.version, name: loaded.pack.name };
+}
+
+function readDevices(dataDir: string): { detectors: WatchDevice[]; sheet: SheetDevice[]; site: string; packs: { id: string; version: string; at: number; by: string | null }[] } | null {
   const db = openReadOnly(dataDir);
   if (!db) return null;
   try {
@@ -148,15 +177,20 @@ function readDevices(dataDir: string): { detectors: WatchDevice[]; sheet: SheetD
     // Plusieurs etages : la recette verifie aussi le rattachement de chaque equipement a son etage (c'est lui qui dit ou aller).
     const floors = schemaProblem(db) ? [] : (db.prepare('SELECT id, name FROM floor ORDER BY position, id').all() as Row[]);
     const floorOf = (r: Row) => (floors.length > 1 ? ((floors.find((f) => f.id === r.floor_id) ?? floors[0]).name as string) : undefined);
+    // Equipements poses par un pack : modele catalogue et statut de qualification (table creee par `npm run pack -- apply`).
+    const models = db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'pack_device'").get()
+      ? new Map((db.prepare('SELECT device_id, model, qualification FROM pack_device').all() as Row[]).map((m) => [m.device_id as string, `${m.model}${m.qualification === 'qualified' ? '' : ' (a qualifier)'}`]))
+      : new Map<string, string>();
     return {
       site,
+      packs: appliedPacks(db),
       detectors: rows.filter((r) => r.kind === 'detector').map((r) => ({
         id: r.id as string, name: r.name as string, zone: r.zone as string, floor: floorOf(r), category: ((r.category as string) ?? 'fire') as WatchDevice['category'],
         warnAt: (r.warn_at as number | null) ?? null, alarmAt: (r.alarm_at as number | null) ?? null, direction: ((r.direction as string) ?? 'above') as WatchDevice['direction'], valueUnit: (r.value_unit as string | null) ?? null,
       })),
       sheet: rows.map((r) => ({
         id: r.id as string, kind: r.kind as 'detector' | 'camera', name: r.name as string, zone: r.zone as string, floor: floorOf(r), category: ((r.category as string) ?? 'fire') as SheetDevice['category'],
-        source: r.kind === 'camera' ? (sources.get(r.id as string) ?? 'simulee') : undefined, links: links.get(r.id as string),
+        source: r.kind === 'camera' ? (sources.get(r.id as string) ?? 'simulee') : undefined, links: links.get(r.id as string), model: models.get(r.id as string),
       })),
     };
   } finally {
@@ -172,6 +206,9 @@ async function runWatch(args: string[]): Promise<number> {
     console.error('Aucune base : demarrer le PSIM une premiere fois, declarer les detecteurs, puis relancer.');
     return 2;
   }
+  const scope = await packScope(args);
+  if (scope === 'error') return 2;
+  if (scope) data.detectors = data.detectors.filter((d) => scope.ids.has(d.id));
   const minutes = Number(optionValue(args, '--minutes') ?? 10);
   if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 240) {
     console.error('--minutes : un nombre entre 1 et 240');
@@ -222,11 +259,17 @@ async function runSheetWithConfig(args: string[]): Promise<number> {
     console.error('Aucune base : demarrer le PSIM une premiere fois et declarer les equipements.');
     return 2;
   }
-  return writeSheet(data, args);
+  const scope = await packScope(args);
+  if (scope === 'error') return 2;
+  return writeSheet(data, args, scope);
 }
 
-function writeSheet(data: NonNullable<ReturnType<typeof readDevices>>, args: string[]): number {
-  const html = buildSheet({ site: data.site, generatedAt: Date.now(), devices: data.sheet });
+function writeSheet(data: NonNullable<ReturnType<typeof readDevices>>, args: string[], scope: { ids: Set<string>; id: string; version: string; name: string } | null = null): number {
+  // Recette d'un pack : ses seuls equipements, et le pack cite en tete (avec la date d'application lue au journal).
+  if (scope) data.sheet = data.sheet.filter((d) => scope.ids.has(d.id));
+  const applied = scope ? data.packs.find((p) => p.id === scope.id && p.version === scope.version) : undefined;
+  const pack = scope ? { id: scope.id, version: scope.version, name: scope.name, appliedAt: applied?.at ?? null, by: applied?.by ?? null } : null;
+  const html = buildSheet({ site: data.site, generatedAt: Date.now(), devices: data.sheet, pack, packs: data.packs.map((p) => ({ id: p.id, version: p.version, appliedAt: p.at, by: p.by })) });
   const out = optionValue(args, '--out');
   if (out) {
     writeFileSync(out, html, 'utf8');
