@@ -275,6 +275,8 @@ npm run device-key -- rotate 3 --grace 60   # nouvelle clé ; l'ancienne reste v
 npm run device-key -- revoke 3
 ```
 
+**Où cliquer** : menu **Administration → Clés et passerelles** (administrateurs seulement) : créer une clé (nom + équipements), la copier (affichée une seule fois, avec un exemple `curl`), la remplacer avec un délai de grâce, la révoquer ; la même page montre l'état des passerelles MQTT (connectée ou non, dernier message reçu, capteurs non surveillés). Détail : [docs/PASSERELLE.md](docs/PASSERELLE.md).
+
 Même chose en API d'administration (session administrateur) : `GET /api/device-keys`, `POST /api/device-keys` `{"label", "devices": ["I-01"]}`, `POST /api/device-keys/<n>/rotate` `{"graceMinutes": 60}`, `DELETE /api/device-keys/<n>`. Création, rotation, révocation et refus sont inscrits au journal, sans jamais la clé.
 
 **Scellement** : toute image d'incident (caméra liée ou équipement) inscrit au journal une entrée « Image enregistrée et scellée » avec son empreinte SHA-256 et sa taille ; une image arrivée sans incident est scellée dès son arrivée (« en attente »), puis à son rattachement. `npm run verify-journal -- --images` recalcule l'empreinte de chaque fichier et signale toute image **modifiée**, **manquante**, supprimée hors purge, ou dont l'empreinte a été changée en base. Les images antérieures à cette version ne sont pas protégées (comptées à part).

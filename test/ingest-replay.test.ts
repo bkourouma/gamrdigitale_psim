@@ -299,7 +299,7 @@ describe('passerelle : sa coupure ne fait pas declarer ses capteurs muets un par
     assert.equal(row('D-03').status, 'alarm');
     assert.equal(openState('D-01')?.state, 'unmonitored');
     assert.equal(openState('D-01')?.started_at, T + 10 * S, 'non surveille depuis la deconnexion');
-    assert.deepEqual(link.status(), [{ user: 'gw1', connected: false, since: T + 10 * S, down: true, unmonitored: 2 }]);
+    assert.deepEqual(link.status(), [{ user: 'gw1', connected: false, since: T + 10 * S, down: true, unmonitored: 2, detectors: ['D-01', 'D-02', 'D-03'], represents: ['D-01', 'D-02', 'D-03'], lastMessageAt: null }]);
   });
 
   it("ecran Systeme : un seul avertissement pour la passerelle, ses capteurs ne sont pas comptes « hors service » un par un", () => {

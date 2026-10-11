@@ -38,6 +38,17 @@ Si la passerelle n'est **pas sur le même poste** que le PSIM, le broker du PSIM
 
 Enfin, **déclarer chaque équipement dans le PSIM** (menu Équipements), avec exactement le même identifiant que celui configuré dans la passerelle. Un message pour un identifiant inconnu du PSIM est ignoré.
 
+### Voir l'état des passerelles (menu Administration → Clés et passerelles)
+
+Dès que le compte existe, la passerelle apparaît dans le menu **Administration → Clés et passerelles**, section **Passerelles** (réservée aux administrateurs). Pour chaque compte :
+
+- **Autorisée pour** : les identifiants et préfixes déclarés dans `PSIM_MQTT_GATEWAYS` ; **Détecteurs représentés** : ceux, parmi eux, qui existent vraiment dans le PSIM (hors capteurs lus par le PSIM lui-même). « Aucun détecteur du PSIM pour l'instant » veut dire que les identifiants déclarés ne correspondent à rien : déclarer les équipements dans *Équipements et plan* avec exactement ces identifiants.
+- **Liaison** : *Connectée* (depuis quand), *Déconnectée* (pas encore déclarée coupée : elle a jusqu'à `PSIM_GATEWAY_TIMEOUT_S` pour revenir), ou *Liaison coupée* (au-delà : ses capteurs sont « non surveillés », un seul avertissement dans l'écran Système).
+- **Dernier message reçu** : l'heure du dernier message d'état publié par ce compte. Cette date n'est gardée qu'en mémoire : après un redémarrage du PSIM, « Aucun depuis le démarrage du PSIM » s'affiche jusqu'au premier message.
+- **Capteurs non surveillés** : combien de capteurs sont dans ce cas à cause de la coupure ; ils redeviennent surveillés au retour de la passerelle.
+
+La liste se rafraîchit toute seule toutes les 15 secondes. Elle lit `GET /api/system` (champ `gateways` : `detectors`, `represents` et `lastMessageAt` s'ajoutent à `user`, `connected`, `since`, `down` et `unmonitored` ; rien n'a été retiré).
+
 ## 2. Installer la passerelle
 
 La passerelle est livrée avec le PSIM (dossier `gateway\`). Node.js 24 ou plus est déjà installé pour le PSIM.
@@ -209,3 +220,15 @@ Le contrat entre le socle et les modules est dans `gateway/src/module.ts` (à ne
 **`msgId`** : le PSIM n'accepte que 1 à 64 caractères parmi lettres, chiffres, `.`, `_`, `:` et `-`. Un module qui fabrique ses propres `msgId` (pour l'anti-doublon après un renvoi) utilise `makeMsgId(...morceaux)` de `gateway/src/msgid.ts` : accents et caractères interdits nettoyés, longueur bornée par une empreinte courte de l'original, résultat **déterministe** (même message, même `msgId`). Par sécurité, le socle nettoie de la même façon un `msgId` hors format (avec un avertissement dans le journal) au lieu de rejeter le message. Un `msgId` doit rester unique dans le temps : y mettre l'heure de l'événement, pas seulement un compteur qui peut repartir de zéro (compteur LoRaWAN après un nouveau `join`, séquence SIA…), sinon le PSIM prendrait le nouveau message pour un doublon pendant 7 jours.
 
 Essais : `npm test` (les essais de la passerelle sont dans `gateway/test/`, contre le vrai broker du PSIM) ; `npm run typecheck` (couvre `gateway/`).
+
+## 7. Clés des équipements qui envoient leurs images (HTTP)
+
+Un équipement qui parle HTTP (caméra 4G, boîtier) et non MQTT n'utilise pas de compte de passerelle mais une **clé par équipement** (`psk_<n>_…`). Elles se gèrent dans **Administration → Clés et passerelles**, section **Clés des équipements** :
+
+- **Créer une clé** : un nom (pour la reconnaître), puis les équipements concernés : un identifiant exact (`I-01`) ou un début d'identifiant terminé par `*` (`D-*`) ; le signe `*` seul est refusé. Touchez **Créer la clé**.
+- **La clé n'est affichée qu'une seule fois**, dans une fenêtre dédiée avec les boutons **Copier la clé** et **Copier la commande** (exemple `curl` prêt à coller pour envoyer une image). La fenêtre ne se ferme que par son bouton : un clic à côté ou la touche Échap ne la ferment pas. Rien n'est gardé dans la page, l'adresse, l'historique ni le stockage du navigateur ; le PSIM n'en garde que l'empreinte. Une clé perdue se remplace, elle ne se retrouve pas.
+- **Remplacer** : crée une nouvelle clé pour les mêmes équipements ; l'ancienne reste valable le délai choisi (tout de suite, 15 min, 1 h, 4 h, 24 h) le temps de reconfigurer l'équipement sur le terrain. Pendant ce délai, la ligne de l'ancienne clé indique *En rotation* et sa fin de validité.
+- **Révoquer** : coupe la clé tout de suite, après confirmation. Les clés révoquées restent listées (repliées) pour l'historique.
+- La liste montre aussi les équipements couverts, la date de création, la **dernière utilisation** et l'état (*Active*, *En rotation*, *Révoquée*).
+
+Même chose en ligne de commande (`npm run device-key`) et en API : voir le README, « Clés par équipement ».

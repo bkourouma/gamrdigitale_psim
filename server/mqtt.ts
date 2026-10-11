@@ -62,6 +62,8 @@ export async function startBroker(
     gateways?: Gateway[];
     /** Connexion / deconnexion d'un client authentifie avec un compte de passerelle (voir gatewaylink.ts). Jamais bloquant. */
     onGateway?: (user: string, connected: boolean, client: object) => void;
+    /** Message publie par un client d'un compte de passerelle (ecran « Cles et passerelles » : dernier message recu). */
+    onGatewayMessage?: (user: string) => void;
   },
 ): Promise<Broker> {
   const aedes = await Aedes.createBroker({ connectTimeout: 10_000, maxClientsIdLength: 64 });
@@ -129,9 +131,17 @@ export async function startBroker(
   aedes.on('client', (client) => gatewayEvent(client, true));
   aedes.on('clientDisconnect', (client) => gatewayEvent(client, false));
 
-  aedes.on('publish', (packet) => {
+  aedes.on('publish', (packet, client) => {
     const match = TOPIC.exec(packet.topic);
     if (!match) return;
+    const gatewayUser = client ? (client as unknown as PsimClient).psimGateway : undefined;
+    if (gatewayUser && opts.onGatewayMessage) {
+      try {
+        opts.onGatewayMessage(gatewayUser);
+      } catch (err) {
+        console.error('[mqtt] message passerelle :', err);
+      }
+    }
     const raw = packet.payload as Buffer;
     if (raw.length > MAX_PAYLOAD_BYTES) return;
     let parsed: unknown;
