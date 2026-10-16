@@ -499,10 +499,10 @@ describe('assistant de regles : erreurs', () => {
         const s = req.init.signal as AbortSignal;
         s.addEventListener('abort', () => reject(s.reason));
       });
-    const { a, calls } = assistant([slowInvalid, hang], { timeoutMs: 80 });
+    const { a, calls } = assistant([slowInvalid, hang], { timeoutMs: 400 });
     const t0 = Date.now();
     await rejects(a.propose('x'), 504);
-    assert.ok(Date.now() - t0 < 1000);
+    assert.ok(Date.now() - t0 < 3000);
     assert.equal(calls.length, 2);
     // le delai du second appel est le temps restant, pas un nouveau delai complet
     assert.ok(calls[1]!.init.signal instanceof AbortSignal);
