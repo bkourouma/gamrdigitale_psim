@@ -210,3 +210,20 @@ pas (409, l'écran propose « Désactiver ») ; `when.armed` simulé avec l'arme
 entre deux démarrages ; purge de présence au démarrage puis toutes les 6 h ; `DELETE /api/devices/:id` d'un détecteur de
 règle → 409 ; `days` entier 1..30. Ouverts : le 409 est reconnu à l'écran par son message (exposer le statut HTTP dans
 `web/core.js` serait plus sûr) ; un enregistreur sans détecteur lié est observé sur le port 80 seulement.
+
+## Lot V4 — constat sur le XVR (16 octobre 2026) et caméra visage dédiée
+
+Constaté dans l'interface web du XVR (lecture seule, rien modifié) : *Mode AI* est **global à l'enregistreur** (valeur *SMD*,
+menu grisé tant que l'amélioration de l'encodage est active). Passer en reconnaissance faciale couperait la détection de
+personne sur les 8 voies. Conformément à la décision de l'utilisateur, **l'enregistreur reste en SMD** et la reconnaissance
+faciale passe par une **caméra IP Dahua à reconnaissance faciale embarquée** (base de visages dans la caméra) :
+
+- Elle est branchée **sur le réseau**, et **pas** ajoutée à l'enregistreur comme voie IP (la fiche du XVR : avec des voies IP,
+  les fonctions IA avancées sont désactivées). Son enregistrement vidéo se fait sur sa carte mémoire.
+- Le PSIM la déclare comme une caméra ordinaire (`camera_source` : son adresse, `rtsp_path` contenant `channel=1`) : le flux
+  d'événements de `dahua.ts` s'y connecte comme à un enregistreur (`observeAll`), `faces.ts`/`faceobs.ts` lisent ses
+  `FaceRecognition`, et les bases se lisent par `findGroup` sur la caméra elle-même. Aucun nouveau code n'est prévu ;
+  à qualifier avec le vrai matériel (format des événements, `findGroup`).
+- Choix du modèle : une caméra de la gamme Dahua à reconnaissance faciale embarquée (base de visages dans la caméra),
+  placée au point de passage (portail ou entrée), à hauteur de visage, 2 à 4 m ; référence exacte à confirmer avec le
+  fournisseur et à inscrire au registre de qualification. Essai familial seulement (décision du 16 octobre).

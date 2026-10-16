@@ -66,6 +66,15 @@ Aujourd'hui, la détection de personne (SMD Plus, événement `SmartMotionHuman`
 
 La fiche dit que la reconnaissance faciale « prend effet quand *Face* est choisi dans AI Mode » et que SMD Plus « prend effet quand *SMD* ou *IVS&SMD* est choisi ». Ce sont **trois modes qui s'excluent** (*Face*, *SMD*, *IVS&SMD*) : avec *Face*, SMD Plus ne « prend pas effet ». Il est donc **très probable** que choisir *Face* coupe SMD Plus.
 
+> **Constaté le 16 octobre 2026 sur le XVR de la Résidence KOUROUMA (logiciel 4.000 du 5 juillet 2025)** : dans
+> l'interface web, *IA → Paramètres → Mode AI* est **un seul menu pour tout l'enregistreur** (valeur actuelle *SMD*), et
+> *Aperçu des fonctions d'IA* montre SMD actif sur les 8 voies. Le menu est grisé : « La fonction peut être activée après
+> avoir désactivé l'amélioration de l'encodage ». **Choisir la reconnaissance faciale couperait donc la détection de
+> personne sur les 8 voies.** Décision de l'utilisateur : on ne bascule pas l'enregistreur ; la reconnaissance faciale
+> passe par une **caméra IP Dahua à reconnaissance faciale embarquée** (voir la section « Caméra visage dédiée » du contrat
+> `docs/PRESENCE-REGLES.md`). Rien n'a été modifié sur l'enregistreur. Les procédures 2.3 et suivantes ne s'appliquent
+> donc pas à ce site ; elles restent utiles pour un enregistreur dont le mode IA serait réglable voie par voie.
+
 **Point non établi, et c'est le plus important : ce réglage « AI Mode » est-il propre à chaque voie, ou commun à tout l'enregistreur ?** La fiche ne le dit pas. Deux indices vont dans des sens différents :
 
 - la fiche limite la reconnaissance à **2 voies** : cela laisse penser que *Face* est attribué voie par voie ;
