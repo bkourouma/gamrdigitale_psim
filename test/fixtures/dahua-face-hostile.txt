@@ -1,0 +1,27 @@
+Code=FaceRecognition;action=Pulse;index=0;data={
+  "__proto__" : { "Name" : "Intrus", "Candidates" : [ { "Similarity" : 100, "Person" : { "UID" : "666", "Name" : "Pirate" } } ] },
+  "constructor" : { "prototype" : { "Name" : "Pirate" } },
+  "SceneImage" : "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL",
+  "Candidates" : [
+    {
+      "Similarity" : 9999,
+      "Person" : { "UID" : "1", "Name" : "A\u0007B\u202eC\u200bD  \n  E<script>x</script>", "GroupID" : 7, "GroupName" : "Base \u0000 piege" }
+    },
+    {
+      "Similarity" : "100",
+      "Person" : { "UID" : "2", "Name" : "Deuxieme" }
+    },
+    {
+      "Similarity" : -5,
+      "Person" : { "UID" : "3", "Name" : "Troisieme" }
+    },
+    {
+      "Similarity" : 77,
+      "Person" : {
+        "UID" : "4",
+        "Name" : "Quatrieme Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Tres Long",
+        "Image" : [ { "FilePath" : "/var/sda/xfs/photo.jpg", "Length" : 0, "Offset" : 0 } ]
+      }
+    }
+  ]
+}

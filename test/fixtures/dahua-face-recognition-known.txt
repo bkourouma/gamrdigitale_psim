@@ -1,0 +1,53 @@
+Code=FaceRecognition;action=Pulse;index=4;data={
+  "IsGlobalScene" : true,
+  "Object" : {
+    "ObjectID" : 370,
+    "ObjectType" : "HumanFace",
+    "Action" : "Appear",
+    "BoundingBox" : [ 0, 0, 2320, 5368 ],
+    "Image" : { "Offset" : 76076, "Length" : 60615, "Width" : 544, "Height" : 708 },
+    "Sex" : "Man",
+    "Age" : 41,
+    "Candidates" : [
+      {
+        "Similarity" : 91,
+        "Person" : { "UID" : "5", "PersonID" : 5.0, "GroupID" : "1", "Name" : "Jean Exemple", "GroupName" : "Residents et personnel", "Sex" : "Male", "ID" : "NUMERO-DE-PIECE-FICTIF", "Comment" : null }
+      }
+    ]
+  },
+  "Face" : {
+    "ObjectID" : 370,
+    "ObjectType" : "HumanFace",
+    "Candidates" : [
+      {
+        "Similarity" : 91,
+        "Person" : { "UID" : "5", "PersonID" : 5.0, "GroupID" : "1", "Name" : "Jean Exemple", "GroupName" : "Residents et personnel" }
+      }
+    ]
+  },
+  "Code" : "FaceRecognition",
+  "Name" : "Face Recognition",
+  "UTC" : 1776716946,
+  "UTCMS" : 0,
+  "Mode" : 0,
+  "Sequence" : 579715,
+  "Class" : "FaceAnalysis",
+  "Candidates" : [
+    {
+      "Similarity" : 91,
+      "Person" : {
+        "UID" : "5",
+        "PersonID" : 5.0,
+        "GroupID" : "1",
+        "Name" : "Jean Exemple",
+        "GroupName" : "Residents et personnel",
+        "Sex" : "Male",
+        "Birthday" : null,
+        "ID" : "NUMERO-DE-PIECE-FICTIF",
+        "PicLen" : 49742,
+        "PicUrl" : "/var/sda/xfs/data/appdata/database/FaceRecognition/1/5.jpg"
+      }
+    }
+  ],
+  "ImageInfo" : { "IsDetected" : true, "Offset" : 0, "Length" : 76076, "Height" : 720, "Width" : 1280 }
+}
