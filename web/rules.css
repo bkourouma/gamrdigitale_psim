@@ -76,6 +76,43 @@
 .rl-cooldown { max-width: 520px; }
 .rl-cooldown input { max-width: 160px; }
 
+/* Un choix qui n'est pas possible (« reste plus de N minutes » pour un visage) : grisé ET expliqué par son texte. */
+.rl-choice.is-disabled { cursor: not-allowed; border-style: dashed; background: var(--surface-2); color: var(--ink-2); }
+.rl-choice.is-disabled:hover { border-color: var(--line-strong); }
+.rl-choice.is-disabled .rl-choice-label { color: var(--ink-2); }
+.rl-choice.is-disabled input { cursor: not-allowed; }
+.rl-change-note { max-width: 70ch; font-weight: 600; color: var(--ink); }
+.rl-change-note:empty { display: none; }
+.rl-who-caution { max-width: 70ch; }
+
+/* « Qui » : la liste de visages (menu, lecture en cours, erreur, aucune liste, remarques sur les caméras muettes). */
+.rl-faces { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.rl-faces-field { max-width: 460px; }
+.rl-faces-status { display: flex; align-items: center; gap: var(--s2); }
+.rl-faces-fail-body { display: grid; gap: var(--s2); justify-items: start; min-width: 0; }
+.rl-faces-fail-body p, .rl-faces .notice p { overflow-wrap: anywhere; }
+.rl-faces-notes { display: grid; gap: var(--s1); margin: 0; padding: 0; list-style: none; color: var(--ink-2); overflow-wrap: anywhere; }
+.rl-faces > .btn { justify-self: start; }
+.rl-faces select[disabled] { cursor: progress; }
+
+/* Zone de l'assistant : une phrase, une proposition à relire (elle remplit le formulaire, elle n'enregistre rien). */
+.rl-assist { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4); border: 1px solid var(--tube); border-radius: var(--r-md); background: var(--sky); }
+.rl-assist h3 { display: flex; align-items: center; gap: var(--s2); color: var(--brand-ink); }
+.rl-assist h3 label { font: inherit; color: inherit; }
+.rl-assist > .hint { max-width: 70ch; }
+.rl-assist textarea { min-height: 96px; }
+.rl-assist-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.rl-assist-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.rl-assist-ask-body, .rl-assist-proposal-body { display: grid; gap: var(--s2); min-width: 0; flex: 1 1 auto; }
+.rl-assist-question { font-size: var(--fs-md); font-weight: 700; color: var(--ink); overflow-wrap: anywhere; border-radius: var(--r-xs); }
+.rl-assist-reply { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.rl-assist-reply input { flex: 1 1 220px; width: auto; }
+.rl-assist-summary { font-size: var(--fs-md); font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.rl-assist-issues { display: grid; gap: var(--s1); margin: 0; padding-left: var(--s5); font-weight: 600; overflow-wrap: anywhere; }
+.rl-assist-issues:empty { display: none; }
+.rl-assist-proposal:focus { outline: none; }
+.rl-assist-proposal:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
 /* Caméras ou zones à cocher. */
 .rl-picks { display: grid; gap: var(--s2); min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
 .rl-picks > .notice { grid-column: 1 / -1; }
@@ -156,6 +193,11 @@
   .rl-list-panel .panel-body, .rl-form .panel-body { padding-left: var(--s4); padding-right: var(--s4); }
   .rl-rule-actions .btn { flex: 1 1 auto; }
   .rl-form-foot .btn { flex: 1 1 auto; }
+  .rl-assist { padding: var(--s3); }
+  .rl-assist-row .btn, .rl-assist-reply .btn, .rl-faces .btn { flex: 1 1 auto; }
+  .rl-assist-count { margin-left: 0; }
+  .rl-faces { padding: var(--s3) var(--s2); }
+  .rl-faces > .btn { justify-self: stretch; }
 }
 
 @media (prefers-reduced-motion: reduce) {

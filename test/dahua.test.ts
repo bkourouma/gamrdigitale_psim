@@ -474,6 +474,36 @@ describe('Dahua : observations sur toutes les voies (presence)', () => {
     await until(() => xvr.connected() === 0);
   });
 
+  it("faceHosts : un appareil par hote (premiere camera par identifiant), port 80 sans detecteur, port du detecteur sinon ; sans identifiants lisibles ou sans voie : ignore", () => {
+    const t = setup();
+    const key = randomBytes(32);
+    const add = (id: string, host: string, path: string | null, user: string | null = USER, password: string | null = PASSWORD) =>
+      t.db.prepare("INSERT OR REPLACE INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES (?, 'rtsp', ?, 554, ?, ?, ?)").run(id, host, path, user, password === null ? null : seal(key, password));
+    // Deux cameras (C-01, C-02) deja sur 127.0.0.1 avec la cle de setup(), illisible ici : on les refait avec notre cle.
+    t.db.prepare("DELETE FROM camera_source").run();
+    t.dahua.stop();
+    // Aucune connexion reelle : ces adresses sont fictives.
+    const dahua = createDahuaEvents({ db: t.db, engine: t.engine, key, log: () => {}, isArmed: () => true, open: () => ({ ready: new Promise<void>(() => {}), stop: () => {} }) });
+    try {
+      assert.deepEqual(dahua.faceHosts(), [], 'aucune camera reelle');
+      add('C-02', '10.0.0.2', '/cam/realmonitor?channel=3&subtype=1');
+      add('C-01', '10.0.0.2', '/cam/realmonitor?channel=1&subtype=1'); // meme hote : la premiere par identifiant est retenue
+      add('C-03', '10.0.0.3', '/stream1'); // pas de « channel=N » : pas un appareil a voies
+      add('C-04', '10.0.0.4', '/cam/realmonitor?channel=1', null, null); // sans identifiants
+      add('C-05', '10.0.0.5', '/cam/realmonitor?channel=1');
+      const hosts = dahua.faceHosts();
+      assert.deepEqual(hosts.map((h) => [h.cameraId, h.creds.host, h.creds.port, h.creds.username, h.creds.password]), [
+        ['C-01', '10.0.0.2', 80, USER, PASSWORD],
+        ['C-05', '10.0.0.5', 80, USER, PASSWORD],
+      ]);
+      // Un hote deja relie a un detecteur garde le port de ce detecteur.
+      dahua.setSource('admin', 'I-01', { cameraId: 'C-05', channel: 1, events: ['SmartMotionHuman'], httpPort: 8081 });
+      assert.deepEqual(dahua.faceHosts().map((h) => [h.cameraId, h.creds.port]), [['C-01', 80], ['C-05', 8081]]);
+    } finally {
+      dahua.stop();
+    }
+  });
+
   it("onLinkLost : a la coupure du flux, puis a l'arret apres la reconnexion", async () => {
     const t = setup({ observeAll: true });
     t.dahua.reload();

@@ -792,7 +792,7 @@ describe('RULE_SPEC_JSON_SCHEMA', () => {
 
 describe("configuration de l'assistant (PSIM_ASSIST_API_KEY, PSIM_ASSIST_MODEL)", () => {
   /** Relit config.ts avec un environnement donne (URL distincte => module neuf), puis restaure l'environnement. */
-  async function configWith(vars: Record<string, string | undefined>): Promise<{ apiKey: string; model: string }> {
+  async function configWith(vars: Record<string, string | undefined>): Promise<{ apiKey: string; model: string; apiUrl: string }> {
     const saved: Record<string, string | undefined> = {};
     for (const k of Object.keys(vars)) {
       saved[k] = process.env[k];
@@ -800,7 +800,7 @@ describe("configuration de l'assistant (PSIM_ASSIST_API_KEY, PSIM_ASSIST_MODEL)"
       else process.env[k] = vars[k];
     }
     try {
-      const mod = (await import(`../server/config.ts?assist=${Math.random()}`)) as { config: { assist: { apiKey: string; model: string } } };
+      const mod = (await import(`../server/config.ts?assist=${Math.random()}`)) as { config: { assist: { apiKey: string; model: string; apiUrl: string } } };
       return mod.config.assist;
     } finally {
       for (const k of Object.keys(saved)) {
@@ -811,12 +811,21 @@ describe("configuration de l'assistant (PSIM_ASSIST_API_KEY, PSIM_ASSIST_MODEL)"
   }
 
   it('cle absente ou vide = non configure ; modele par defaut claude-sonnet-5-5', async () => {
-    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: undefined, PSIM_ASSIST_MODEL: undefined }), { apiKey: '', model: 'claude-sonnet-5-5' });
-    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: '   ', PSIM_ASSIST_MODEL: '' }), { apiKey: '', model: 'claude-sonnet-5-5' });
+    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: undefined, PSIM_ASSIST_MODEL: undefined, PSIM_ASSIST_API_URL: undefined }), { apiKey: '', model: 'claude-sonnet-5-5', apiUrl: 'https://api.anthropic.com/v1/messages' });
+    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: '   ', PSIM_ASSIST_MODEL: '', PSIM_ASSIST_API_URL: '  ' }), { apiKey: '', model: 'claude-sonnet-5-5', apiUrl: 'https://api.anthropic.com/v1/messages' });
   });
 
   it('cle et modele lus et nettoyes ; modele vide retombe sur le defaut', async () => {
-    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: `  ${KEY} `, PSIM_ASSIST_MODEL: ' claude-autre ' }), { apiKey: KEY, model: 'claude-autre' });
+    assert.deepEqual(await configWith({ PSIM_ASSIST_API_KEY: `  ${KEY} `, PSIM_ASSIST_MODEL: ' claude-autre ', PSIM_ASSIST_API_URL: undefined }), { apiKey: KEY, model: 'claude-autre', apiUrl: 'https://api.anthropic.com/v1/messages' });
     assert.equal((await configWith({ PSIM_ASSIST_API_KEY: KEY, PSIM_ASSIST_MODEL: '  ' })).model, 'claude-sonnet-5-5');
+  });
+
+  it("PSIM_ASSIST_API_URL : https partout, http seulement vers cette machine ; l'erreur ne contient jamais la cle", async () => {
+    for (const url of ['https://api.exemple.test/v1/messages', 'http://127.0.0.1:4321/v1/messages', 'http://localhost:4321/x', 'http://[::1]:4321/x']) {
+      assert.equal((await configWith({ PSIM_ASSIST_API_KEY: KEY, PSIM_ASSIST_API_URL: url })).apiUrl, url);
+    }
+    for (const url of ['http://api.exemple.test/v1/messages', 'http://127.0.0.1.exemple.test/x', 'ftp://127.0.0.1/x', 'pas une adresse']) {
+      await assert.rejects(configWith({ PSIM_ASSIST_API_KEY: KEY, PSIM_ASSIST_API_URL: url }), (e: Error) => /PSIM_ASSIST_API_URL/.test(e.message) && !e.message.includes(KEY));
+    }
   });
 });

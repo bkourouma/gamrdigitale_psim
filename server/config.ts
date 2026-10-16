@@ -121,6 +121,21 @@ export const TUYA_REGIONS: Record<string, string> = {
   cn: 'https://openapi.tuyacn.com', // Chine
 };
 
+/** Adresse de l'API de l'assistant : https partout, ou http vers cette machine seulement (faux service d'essai). */
+function assistApiUrl(): string {
+  const raw = (env.PSIM_ASSIST_API_URL ?? '').trim();
+  if (!raw) return 'https://api.anthropic.com/v1/messages';
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("PSIM_ASSIST_API_URL n'est pas une adresse valide (attendu : https://...).");
+  }
+  const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && local)) return raw;
+  throw new Error('PSIM_ASSIST_API_URL : une adresse https:// est exigee (http:// seulement vers 127.0.0.1, localhost ou [::1], pour les essais).');
+}
+
 export const config = {
   production,
   port: num('PSIM_PORT', 3033, 0, 65535),
@@ -283,7 +298,7 @@ export const config = {
   })(),
   // Assistant de regles (ecran « Regles », zone « Decrivez la regle en une phrase ») : cle de l'API Anthropic, dans le .env seulement.
   // Cle vide ou absente = assistant non configure (la zone n'est pas affichee). Seules des phrases et des noms sont envoyes, jamais d'image.
-  assist: { apiKey: (env.PSIM_ASSIST_API_KEY ?? '').trim(), model: (env.PSIM_ASSIST_MODEL ?? '').trim() || 'claude-sonnet-5-5' },
+  assist: { apiKey: (env.PSIM_ASSIST_API_KEY ?? '').trim(), model: (env.PSIM_ASSIST_MODEL ?? '').trim() || 'claude-sonnet-5-5', apiUrl: assistApiUrl() },
   // Entree HTTP pour les systemes qui poussent leurs evenements (controle d'acces, passerelles IoT) : POST /api/ingest/<id>
   // avec « Authorization: Bearer <jeton> ». Desactivee si le jeton est vide. 24 caracteres minimum (verifie au demarrage).
   ingestToken: env.PSIM_INGEST_TOKEN ?? '',

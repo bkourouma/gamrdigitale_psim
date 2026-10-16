@@ -5,6 +5,10 @@
  * montre la liste des règles (une phrase en français, un interrupteur actif / inactif), un formulaire à cinq cases avec
  * la phrase qui se compose en direct, et un essai sur le passé AVANT d'enregistrer (il ne modifie rien).
  *
+ * « Qui » : n'importe qui (présence), une personne d'une liste de visages ou un visage inconnu (reconnaissance faciale de
+ * l'enregistreur). Une règle visage ne se déclenche qu'à l'apparition d'un visage et reste prudente (avertissement).
+ * Une zone « Décrivez la règle en une phrase » (si l'assistant est configuré) REMPLIT le formulaire : elle n'enregistre jamais.
+ *
  * Ce fichier n'importe rien : ses fonctions pures (construction de la règle depuis le formulaire, vérification, phrase,
  * formatage des déclenchements d'un essai) se testent sans navigateur. Le serveur (server/rules.ts) reste la référence :
  * mêmes bornes, même formulation de la phrase ; il revérifie tout à l'enregistrement.
@@ -25,6 +29,19 @@ export const MAX_PLACES = 50;
 export const DEFAULT_COOLDOWN = 10;
 export const TRIAL_DAYS = [1, 3, 7, 14, 30];
 export const DEFAULT_TRIAL_DAYS = 7;
+/** Identité de visage : mêmes bornes que server/rules.ts. */
+export const MAX_FACE_ID = 64;
+export const MAX_FACE_NAME = 80;
+/** Assistant : phrase d'origine et tours renvoyés au serveur (mêmes bornes que server/rules.ts et server/ruleassist.ts). */
+export const MAX_SOURCE_TEXT = 1000;
+export const MAX_ASSIST_TURN = 500;
+export const MAX_ASSIST_HISTORY = 10;
+
+// Textes autour de la reconnaissance faciale (gravité prudente, aucune liste, durée impossible).
+export const RELIABILITY_NOTE = 'recommandé tant que l’essai de fiabilité n’est pas terminé';
+export const CAUTION_NOTE = 'une reconnaissance peut se tromper : un humain doit vérifier avant d’agir';
+export const NO_LIST_NOTE = 'Aucune liste de visages : ajoutez une caméra à reconnaissance faciale et créez-y une base.';
+export const STAYS_FACE_NOTE = 'Pas proposé pour un visage : un visage est vu à un instant, pas pendant une durée.';
 
 const DAY_SHORT = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
 const DAY_LONG = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
@@ -52,6 +69,7 @@ const intIn = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 export function defaultForm() {
   return {
     name: '',
+    who: { type: 'anyone' }, // { type: 'anyone' | 'unknown' } | { type: 'list', listId, listName } | { type: 'person', personId, personName }
     whereMode: 'cameras', // 'cameras' | 'zones'
     cameras: [],
     zones: [],
@@ -67,12 +85,130 @@ export function defaultForm() {
 
 const cloneWindows = (windows) => (windows ?? []).map((w) => ({ days: [...w.days], from: w.from, to: w.to }));
 
+// -- Qui : n'importe qui ou une identité de visage
+
+const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/u;
+/** Texte d'identité comme le serveur le range : NFC, espaces rognés et réduits à un seul. */
+const faceText = (v) => String(v ?? '').normalize('NFC').trim().replace(/\s+/gu, ' ');
+
+/** Vrai pour une règle de reconnaissance faciale (liste, personne, visage inconnu). */
+export const isFaceWho = (who) => ['list', 'person', 'unknown'].includes(who?.type);
+
+/** Copie d'un « Qui » (jamais partagée avec le formulaire). Une forme inconnue vaut « n'importe qui ». */
+export function cloneWho(who) {
+  switch (who?.type) {
+    case 'list':
+      return { type: 'list', listId: String(who.listId ?? ''), listName: String(who.listName ?? '') };
+    case 'person':
+      return { type: 'person', personId: String(who.personId ?? ''), personName: String(who.personName ?? '') };
+    case 'unknown':
+      return { type: 'unknown' };
+    default:
+      return { type: 'anyone' };
+  }
+}
+
+/** Le « Qui » envoyé au serveur : textes d'identité rangés comme lui (il les normalise de la même façon). */
+export function buildWho(who) {
+  const w = cloneWho(who);
+  if (w.type === 'list') return { type: 'list', listId: faceText(w.listId), listName: faceText(w.listName) };
+  if (w.type === 'person') return { type: 'person', personId: faceText(w.personId), personName: faceText(w.personName) };
+  return w;
+}
+
+/** « Si » après un changement de « Qui » : pour un visage, « reste plus de N minutes » n'existe pas, on revient à « apparaît ». */
+export function triggerForWho(who, triggerMode) {
+  const changed = isFaceWho(who) && triggerMode === 'stays';
+  return { triggerMode: changed ? 'appears' : triggerMode, changed };
+}
+
+/**
+ * Gravité après un changement de « Qui ». Elle ne bouge que si l'utilisateur vient de passer de « n'importe qui » à un
+ * visage sans avoir touché à la gravité : un signalement (avertissement) plutôt qu'une alarme, tant que l'essai de
+ * fiabilité n'est pas terminé. Les règles « n'importe qui » gardent leur gravité.
+ */
+export function severityForWho({ from, to, severity, touched }) {
+  const changed = from === 'anyone' && ['list', 'person', 'unknown'].includes(to) && !touched && severity === 'critical';
+  return { severity: changed ? 'warning' : severity, changed };
+}
+
+/**
+ * Retour à « n'importe qui » : ce que l'écran avait changé tout seul au passage à un visage est remis comme avant
+ * (« reste plus de N », gravité), sauf la gravité que l'utilisateur a choisie entre-temps.
+ * `autoTrigger` : vrai si « reste plus de N » avait été ramené à « apparaît » ; `autoSeverity` : la gravité d'avant, ou null.
+ */
+export function restoreForAnyone({ triggerMode, severity, autoTrigger, autoSeverity, touched }) {
+  return {
+    triggerMode: autoTrigger && triggerMode === 'appears' ? 'stays' : triggerMode,
+    severity: autoSeverity && !touched ? autoSeverity : severity,
+  };
+}
+
+/** Explications des deux gravités, selon qu'il s'agit d'un visage ou non. */
+export function severityTexts(face) {
+  if (!face) return { warning: 'Une alerte à regarder, moins urgente.', critical: 'Une alarme rouge, la plus urgente : à traiter tout de suite.' };
+  return {
+    warning: `Un signalement à vérifier par une personne : ${RELIABILITY_NOTE}.`,
+    critical: `Une alarme rouge, la plus urgente. Attention, ${CAUTION_NOTE}.`,
+  };
+}
+
+/** Libellé et explication de « Si … apparaît » selon le « Qui ». */
+export function appearsTexts(who) {
+  switch (who?.type) {
+    case 'unknown':
+      return { label: 'Un visage est vu', desc: 'Dès qu’un visage que l’enregistreur ne reconnaît pas est vu.' };
+    case 'list':
+      return { label: 'Un visage est vu', desc: 'Dès qu’une personne de la liste choisie est reconnue.' };
+    case 'person':
+      return { label: 'Un visage est vu', desc: 'Dès que cette personne est reconnue.' };
+    default:
+      return { label: 'Quelqu’un apparaît', desc: 'Dès qu’une personne est vue.' };
+  }
+}
+
+/**
+ * Entrées du menu des listes de visages. `lists` : [{ id, name, cameraId, cameraName }] lues sur l'enregistreur.
+ * Le nom de la caméra source n'est précisé que s'il y a plusieurs sources. Une liste déjà choisie qui n'est plus dans la
+ * lecture reste proposée (« Liste non retrouvée ») avec son nom enregistré.
+ */
+export function listChoices(lists, ...whos) {
+  const sources = new Set(lists.map((l) => l.cameraId ?? l.cameraName ?? ''));
+  const several = sources.size > 1;
+  const items = lists.map((l) => ({ id: String(l.id), label: l.name || String(l.id), note: several ? l.cameraName || l.cameraId || '' : '', missing: false }));
+  // `whos` : le choix en cours, et la liste enregistrée avec la règle (elle reste proposée même si l'enregistreur ne la montre plus).
+  for (const who of whos) {
+    if (who?.type === 'list' && who.listId && !items.some((i) => i.id === who.listId)) {
+      items.push({ id: who.listId, label: who.listName || who.listId, note: 'Liste non retrouvée', missing: true });
+    }
+  }
+  return items;
+}
+
+/** Index de l'entrée choisie dans `items` (identifiant ET nom d'abord, car deux caméras peuvent numéroter pareil), ou -1. */
+export function selectedListIndex(items, who) {
+  if (who?.type !== 'list' || !who.listId) return -1;
+  const exact = items.findIndex((i) => i.id === who.listId && i.label === who.listName);
+  return exact >= 0 ? exact : items.findIndex((i) => i.id === who.listId);
+}
+
+/** Ce que montre la zone des listes : lecture en cours, erreur, aucune liste, ou le menu. `faces` : { status, lists, notes }. */
+export function facesView(faces, who, stored = null) {
+  const items = listChoices(faces.lists ?? [], who, stored);
+  const notes = (faces.notes ?? []).filter((n) => typeof n === 'string' && n.trim() !== '');
+  if (faces.status === 'loading' || (faces.status === 'idle' && items.length === 0)) return { kind: 'loading', items, notes: [] };
+  if (faces.status === 'error') return { kind: 'error', items, notes: [] };
+  if (items.length === 0) return { kind: 'empty', items, notes };
+  return { kind: 'select', items, notes };
+}
+
 /** Formulaire prérempli depuis une règle enregistrée (Modifier). */
 export function formFromRule(rule) {
   const s = rule.spec;
   const form = defaultForm();
   form.name = rule.name;
   form.enabled = rule.enabled;
+  form.who = cloneWho(s.who);
   if ('zones' in s.where) {
     form.whereMode = 'zones';
     form.zones = [...s.where.zones];
@@ -97,7 +233,7 @@ export function buildSpec(form) {
     when = { type: 'windows', windows: form.windows.map((w) => ({ days: [...new Set(w.days)].sort((a, b) => a - b), from: w.from, to: w.to })) };
   } else when = { type: form.whenMode === 'armed' ? 'armed' : 'always' };
   const trigger = form.triggerMode === 'stays' ? { type: 'stays', minutes: asInt(form.minutes) } : { type: 'appears' };
-  return { who: { type: 'anyone' }, where, when, trigger, then: { severity: form.severity === 'critical' ? 'critical' : 'warning' }, cooldownMinutes: asInt(form.cooldown) };
+  return { who: buildWho(form.who), where, when, trigger, then: { severity: form.severity === 'critical' ? 'critical' : 'warning' }, cooldownMinutes: asInt(form.cooldown) };
 }
 
 /** Forme comparable d'un formulaire : sert à savoir s'il reste des modifications à enregistrer. */
@@ -124,7 +260,7 @@ export function nightNote(w) {
 
 /**
  * Tout ce qui empêche d'enregistrer, dans l'ordre de l'écran : [{ key, message }].
- * key : 'name', 'where', 'windows', 'window:<n>' (n à partir de 0), 'minutes', 'cooldown'.
+ * key : 'name', 'who', 'where', 'windows', 'window:<n>' (n à partir de 0), 'trigger', 'minutes', 'cooldown'.
  * `ctx` (facultatif) : { cameraIds: Set, zones: Set } pour refuser un choix qui n'existe plus.
  */
 export function formProblems(form, ctx = null) {
@@ -132,6 +268,15 @@ export function formProblems(form, ctx = null) {
   const name = form.name.trim();
   if (!name) out.push({ key: 'name', message: 'Donnez un nom à la règle, pour la retrouver dans la liste.' });
   else if (name.length > MAX_NAME) out.push({ key: 'name', message: `Le nom est trop long : ${MAX_NAME} caractères au plus.` });
+
+  const who = cloneWho(form.who);
+  if (who.type === 'list' || who.type === 'person') {
+    const [id, label] = who.type === 'list' ? [faceText(who.listId), 'la liste'] : [faceText(who.personId), 'la personne'];
+    const shownName = faceText(who.type === 'list' ? who.listName : who.personName);
+    if (!id) out.push({ key: 'who', message: who.type === 'list' ? 'Choisissez une liste de visages.' : 'Choisissez une personne.' });
+    else if (id.length > MAX_FACE_ID || shownName.length > MAX_FACE_NAME || !shownName) out.push({ key: 'who', message: `Le nom ou l’identifiant de ${label} est invalide (${MAX_FACE_NAME} caractères au plus pour le nom).` });
+    else if (FORBIDDEN_CHARS.test(id) || FORBIDDEN_CHARS.test(shownName)) out.push({ key: 'who', message: `Le nom de ${label} contient un caractère invisible : choisissez-la à nouveau.` });
+  }
 
   const zones = form.whereMode === 'zones';
   const chosen = zones ? form.zones : form.cameras;
@@ -152,7 +297,9 @@ export function formProblems(form, ctx = null) {
     });
   }
 
-  if (form.triggerMode === 'stays' && !intIn(asInt(form.minutes), 1, MAX_MINUTES)) {
+  if (form.triggerMode === 'stays' && isFaceWho(who)) {
+    out.push({ key: 'trigger', message: 'Pour un visage, seul « un visage est vu » est possible : choisissez cette condition.' });
+  } else if (form.triggerMode === 'stays' && !intIn(asInt(form.minutes), 1, MAX_MINUTES)) {
     out.push({ key: 'minutes', message: `Indiquez un nombre entier de minutes, entre 1 et ${MAX_MINUTES}.` });
   }
   if (!intIn(asInt(form.cooldown), 0, MAX_MINUTES)) {
@@ -199,7 +346,11 @@ export function windowText(w) {
 /** La phrase d'une règle (RuleSpec), comme le serveur l'écrit. `cameraName(id)` donne le nom d'une caméra. */
 export function describeSpec(spec, cameraName = (id) => id) {
   const action = spec.then.severity === 'critical' ? 'Prévenir (alerte critique)' : 'Prévenir (avertissement)';
-  const cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${minutesText(spec.trigger.minutes)}`;
+  let cause;
+  if (spec.who?.type === 'unknown') cause = 'si un visage inconnu est vu';
+  else if (spec.who?.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » est reconnue`;
+  else if (spec.who?.type === 'person') cause = `si la personne « ${spec.who.personName} » est reconnue`;
+  else cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${minutesText(spec.trigger.minutes)}`;
   let where;
   if ('cameras' in spec.where) {
     const names = spec.where.cameras.map((id) => `« ${cameraName(id)} »`);
@@ -246,6 +397,88 @@ export function placeItems(cameras, form) {
 export function scopeCameras(spec, cameras) {
   if ('cameras' in spec.where) return spec.where.cameras;
   return cameras.filter((c) => spec.where.zones.includes(c.zone)).map((c) => c.id);
+}
+
+// ---------------------------------------------------------------- assistant : proposition -> formulaire, échange
+
+const quoted = (items) => items.map((i) => `« ${i} »`).join(', ');
+
+/**
+ * Le formulaire que décrit une proposition de l'assistant ({ name, spec, summary }), et ce qui n'a pas pu être repris :
+ * { form, issues }. Les cases sont celles du formulaire : une caméra, une zone ou une liste que cet écran ne connaît pas n'est
+ * PAS reprise (la case reste à compléter) et `issues` le dit en français. `ctx` : { cameraIds: Set, zones: Set,
+ * lists: [{ id, name }] | null } ; une valeur absente (ou lists à null : listes pas encore lues) désactive la vérification.
+ * Le choix « activer dès l'enregistrement » n'est jamais celui de l'assistant (à la charge de l'appelant).
+ */
+export function formFromProposal(proposal, ctx = {}) {
+  const spec = proposal?.spec ?? {};
+  const issues = [];
+  const form = defaultForm();
+  form.name = faceText(proposal?.name).slice(0, MAX_NAME);
+
+  form.who = cloneWho(spec.who);
+  if (form.who.type === 'list' && Array.isArray(ctx.lists) && !ctx.lists.some((l) => String(l.id) === form.who.listId)) {
+    issues.push(`La liste « ${form.who.listName} » n’existe pas dans les listes lues sur l’enregistreur. Choisissez-la dans la case « Qui ».`);
+    form.who = { type: 'list', listId: '', listName: '' };
+  }
+
+  const where = spec.where ?? {};
+  if (Array.isArray(where.zones)) {
+    form.whereMode = 'zones';
+    const known = ctx.zones ? where.zones.filter((z) => ctx.zones.has(z)) : [...where.zones];
+    const gone = where.zones.filter((z) => !known.includes(z));
+    form.zones = known;
+    if (gone.length) issues.push(`${gone.length > 1 ? 'Zones inconnues' : 'Zone inconnue'} sur cet écran : ${quoted(gone)}. Choisissez les zones dans la case « Où ».`);
+  } else {
+    const wanted = Array.isArray(where.cameras) ? where.cameras : [];
+    const known = ctx.cameraIds ? wanted.filter((c) => ctx.cameraIds.has(c)) : [...wanted];
+    const gone = wanted.filter((c) => !known.includes(c));
+    form.cameras = known;
+    if (gone.length) issues.push(`${gone.length > 1 ? 'Caméras inconnues' : 'Caméra inconnue'} sur cet écran : ${quoted(gone)}. Choisissez les caméras dans la case « Où ».`);
+  }
+
+  const when = spec.when ?? {};
+  if (when.type === 'windows') {
+    form.whenMode = 'windows';
+    form.windows = cloneWindows(when.windows);
+  } else form.whenMode = when.type === 'armed' ? 'armed' : 'always';
+
+  const trigger = spec.trigger ?? {};
+  form.triggerMode = trigger.type === 'stays' ? 'stays' : 'appears';
+  if (trigger.type === 'stays') form.minutes = String(trigger.minutes);
+  form.severity = spec.then?.severity === 'critical' ? 'critical' : 'warning';
+  form.cooldown = String(spec.cooldownMinutes ?? DEFAULT_COOLDOWN);
+  return { form, issues };
+}
+
+/** Les derniers tours de l'échange, tels que le serveur les reçoit (borne de longueur et de nombre comme lui). */
+export function historyForAssist(turns) {
+  return (turns ?? [])
+    .filter((t) => (t.role === 'user' || t.role === 'assistant') && typeof t.text === 'string' && t.text.trim() !== '')
+    .slice(-MAX_ASSIST_HISTORY)
+    .map((t) => ({ role: t.role, text: t.text.trim().slice(0, MAX_ASSIST_TURN) }));
+}
+
+/** La phrase d'origine gardée avec la règle : ce que l'utilisateur a écrit durant l'échange (≤ 1000 caractères). */
+export function sourceTextOf(turns) {
+  return (turns ?? [])
+    .filter((t) => t.role === 'user')
+    .map((t) => t.text.trim())
+    .filter(Boolean)
+    .join(' — ')
+    .slice(0, MAX_SOURCE_TEXT);
+}
+
+/**
+ * Suite d'un échange avec l'assistant : `turns` (tours précédents), `sent` (ce que l'utilisateur vient d'envoyer),
+ * `result` (réponse du serveur). Une question prolonge l'échange ; une règle ou un refus le termine.
+ * Renvoie { turns, sourceText } (sourceText : seulement pour une règle).
+ */
+export function nextAssistTurns(turns, sent, result) {
+  const user = { role: 'user', text: String(sent ?? '') };
+  if (result?.kind === 'question') return { turns: [...(turns ?? []), user, { role: 'assistant', text: String(result.question ?? '') }], sourceText: '' };
+  if (result?.kind === 'rule') return { turns: [], sourceText: sourceTextOf([...(turns ?? []), user]) };
+  return { turns: [], sourceText: '' };
 }
 
 // ---------------------------------------------------------------- essai sur le passé : formatage
@@ -321,6 +554,14 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
   let shownFor = null;
   let seq = 0;
   const cards = new Map(); // id -> carte, gardée d'un rendu à l'autre
+  // Listes de visages lues sur les caméras (en mémoire pour la session de l'écran) et état de l'assistant (null : pas encore su).
+  const freshFaces = () => ({ status: 'idle', lists: [], notes: [], hosts: 0, error: '', at: 0 });
+  const FACES_FRESH_MS = 5 * 60_000;
+  let faces = freshFaces();
+  let facesSeq = 0;
+  let facesPending = null;
+  let assistConfigured = null;
+  let assistProbing = false;
 
   const isAdmin = () => getMe()?.role === 'admin';
   /**
@@ -636,6 +877,19 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     let trialSeq = 0;
     let trialStale = false;
     const liveTags = new Map(); // caméra -> étiquette « vu en ce moment »
+    // « Qui » : la liste et la personne d'avant restent disponibles quand on change de choix (rien ne se perd en tâtonnant).
+    let lastList = null;
+    let storedList = null; // la liste enregistrée avec la règle ouverte (ou reprise d'une proposition)
+    let keptPerson = null;
+    let severityTouched = false; // la gravité a été choisie à la main (ou par une proposition de l'assistant)
+    let autoTrigger = false; // « reste plus de N » ramené à « apparaît » par le passage à un visage (à remettre au retour)
+    let autoSeverity = null; // gravité d'avant le passage automatique à « avertissement »
+    // Assistant : tours de l'échange, phrase d'origine à transmettre à la création, dernière saisie remplie par une proposition.
+    let assistTurns = [];
+    let assistBusy = false;
+    let assistSeq = 0;
+    let proposalSource = null;
+    let appliedKey = null;
 
     const field = (label, input, hint, err) => {
       const hintEl = hint ? h('span', { class: 'hint', id: `${input.id}-hint`, text: hint }) : null;
@@ -646,8 +900,10 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     /** Choix (radio) avec son libellé, et si besoin une explication. */
     const choice = (group, value, label, { desc = null, glyph = null } = {}) => {
       const input = h('input', { type: 'radio', name: group, value });
-      const el = h('label', { class: 'rl-choice' }, input, h('span', { class: 'rl-choice-text' }, h('span', { class: 'rl-choice-label' }, glyph ? icon(glyph) : null, label), desc ? h('span', { class: 'hint', text: desc }) : null));
-      return { el, input };
+      const name = h('span', { class: 'rl-choice-name', text: label });
+      const hint = desc ? h('span', { class: 'hint', text: desc }) : null;
+      const el = h('label', { class: 'rl-choice' }, input, h('span', { class: 'rl-choice-text' }, h('span', { class: 'rl-choice-label' }, glyph ? icon(glyph) : null, name), hint));
+      return { el, input, name, hint };
     };
 
     // -- titre, avertissements
@@ -661,10 +917,65 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     const nameInput = h('input', { id: `${id}-name`, maxlength: String(MAX_NAME), autocomplete: 'off', required: true, placeholder: 'ex. Cour de nuit' });
     const nameField = field('Nom de la règle', nameInput, 'Pour la retrouver dans la liste et dans le journal.', nameErr);
 
+    // -- Assistant : « Décrivez la règle en une phrase » (zone affichée seulement si l'assistant est configuré)
+    const assistText = h('textarea', { id: `${id}-assist`, rows: '3', maxlength: String(MAX_SOURCE_TEXT), placeholder: 'ex. Me prévenir si un visage inconnu est vu devant le portail la nuit', 'aria-describedby': `${id}-assist-count ${id}-assist-hint` });
+    const assistCount = h('span', { class: 'hint rl-assist-count', id: `${id}-assist-count`, text: `0 / ${MAX_SOURCE_TEXT}` });
+    const assistSend = h('button', { class: 'btn btn-primary', type: 'button' }, icon('rules'), 'Proposer une règle');
+    const assistError = h('p', { class: 'form-error', role: 'alert' });
+    const assistQuestionText = h('p', { class: 'rl-assist-question', id: `${id}-assist-q`, tabindex: '-1' });
+    const assistAnswer = h('input', { id: `${id}-assist-a`, maxlength: String(MAX_ASSIST_TURN), autocomplete: 'off', 'aria-describedby': `${id}-assist-q`, placeholder: 'Votre réponse' });
+    const assistReply = h('button', { class: 'btn btn-primary', type: 'button', text: 'Répondre' });
+    const assistAsk = h(
+      'div',
+      { class: 'notice is-info rl-assist-ask', role: 'group', 'aria-label': 'Question de l’assistant', hidden: true },
+      icon('chat'),
+      h('div', { class: 'rl-assist-ask-body' }, assistQuestionText, h('div', { class: 'field' }, h('label', { for: assistAnswer.id, text: 'Votre réponse' }), h('div', { class: 'rl-assist-reply' }, assistAnswer, assistReply))),
+    );
+    const assistRefusedText = h('p');
+    const assistRefused = h('div', { class: 'notice is-warning', role: 'status', hidden: true }, icon('state-warning'), assistRefusedText);
+    const assistProposalIssues = h('ul', { class: 'rl-assist-issues' });
+    const assistProposalSummary = h('p', { class: 'rl-assist-summary' });
+    const assistProposal = h(
+      'div',
+      { class: 'notice is-info rl-assist-proposal', role: 'status', tabindex: '-1', hidden: true },
+      icon('info'),
+      h('div', { class: 'rl-assist-proposal-body' }, h('p', {}, h('strong', { text: 'Proposition de l’assistant : relisez chaque case, puis enregistrez.' })), assistProposalSummary, assistProposalIssues),
+    );
+    const assistBox = h(
+      'section',
+      { class: 'rl-assist', 'aria-labelledby': `${id}-assist-title`, hidden: true },
+      h('h3', { id: `${id}-assist-title` }, icon('rules'), h('label', { for: assistText.id, text: 'Décrivez la règle en une phrase' })),
+      assistText,
+      h('p', { class: 'hint', id: `${id}-assist-hint`, text: 'L’assistant propose une règle, il ne l’enregistre jamais : vous relisez chaque case, puis vous enregistrez. Votre phrase et les noms de vos caméras, zones et listes de visages sont envoyés à un service d’intelligence artificielle ; aucune image n’est envoyée.' }),
+      h('div', { class: 'rl-assist-row' }, assistSend, assistCount),
+      assistError,
+      assistAsk,
+      assistRefused,
+      assistProposal,
+    );
+
     // -- Qui
-    const who = choice(`${id}-who`, 'anyone', 'N’importe qui');
-    who.input.checked = true;
-    const whoBox = box('who', 'Qui', 'Qui est concerné ?', who.el, h('p', { class: 'hint', text: 'Bientôt : une personne précise, une liste de personnes ou un visage inconnu.' }));
+    const whoGroup = `${id}-who`;
+    const whoAnyone = choice(whoGroup, 'anyone', 'N’importe qui', { desc: 'Toute personne vue par la caméra, reconnue ou non.' });
+    const whoList = choice(whoGroup, 'list', 'Une personne de la liste…', { desc: 'Une personne dont le visage est enregistré dans une liste de l’enregistreur.' });
+    const whoUnknown = choice(whoGroup, 'unknown', 'Un visage inconnu', { desc: 'Un visage que l’enregistreur ne reconnaît pas.' });
+    const whoPerson = choice(whoGroup, 'person', 'Une personne précise', { desc: 'Cette règle vise une personne précise. Elle s’affiche telle qu’elle a été enregistrée ; elle ne se choisit pas depuis cet écran.' });
+    whoPerson.el.hidden = true;
+    whoAnyone.input.checked = true;
+    const whoErr = h('p', { class: 'form-error', id: `${id}-who-err` });
+    // La liste de visages : menu, lecture en cours, erreur avec « Réessayer », ou « aucune liste ».
+    const facesSelect = h('select', { id: `${id}-faces`, 'aria-describedby': whoErr.id });
+    const facesLoading = h('p', { class: 'hint rl-faces-status', role: 'status', hidden: true, text: 'Lecture des listes de visages sur les caméras…' });
+    const facesFailText = h('p');
+    const facesRetry = h('button', { class: 'btn btn-sm', type: 'button' }, icon('refresh'), 'Réessayer');
+    const facesFail = h('div', { class: 'notice is-warning', role: 'alert', hidden: true }, icon('state-warning'), h('div', { class: 'rl-faces-fail-body' }, facesFailText, facesRetry));
+    const facesEmpty = h('div', { class: 'notice is-warning', hidden: true }, icon('state-warning'), h('p', { text: NO_LIST_NOTE }));
+    const facesNotes = h('ul', { class: 'hint rl-faces-notes', hidden: true });
+    const facesReload = h('button', { class: 'btn btn-sm btn-ghost', type: 'button' }, icon('refresh'), 'Relire les listes');
+    const facesField = h('div', { class: 'field rl-faces-field' }, h('label', { for: facesSelect.id, text: 'Liste de visages' }), facesSelect);
+    const facesBox = h('div', { class: 'rl-faces', hidden: true }, facesField, facesLoading, facesFail, facesEmpty, facesNotes, facesReload);
+    const whoCaution = h('p', { class: 'hint rl-who-caution', hidden: true, text: 'Un visage reconnu est une présomption, pas une preuve : un humain doit vérifier avant d’agir.' });
+    const whoBox = box('who', 'Qui', 'Qui est concerné ?', h('div', { class: 'rl-choices is-column' }, whoAnyone.el, whoList.el, whoUnknown.el, whoPerson.el), facesBox, whoCaution, whoErr);
 
     // -- Où
     const whereGroup = `${id}-where`;
@@ -702,17 +1013,21 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     const minutesErr = h('p', { class: 'form-error', id: `${id}-minutes-err` });
     const minutesInput = h('input', { id: `${id}-minutes`, type: 'number', inputmode: 'numeric', min: '1', max: String(MAX_MINUTES), step: '1', class: 'rl-num', 'aria-label': 'Nombre de minutes', 'aria-describedby': minutesErr.id });
     const ifStaysInput = h('input', { type: 'radio', name: ifGroup, value: 'stays' });
+    const STAYS_HINT = 'Seulement si la personne est encore là après ce délai. Une absence de moins d’une minute ne compte pas.';
+    const staysHint = h('span', { class: 'hint', text: STAYS_HINT });
     const ifStays = {
       input: ifStaysInput,
-      el: h('label', { class: 'rl-choice' }, ifStaysInput, h('span', { class: 'rl-choice-text' }, h('span', { class: 'rl-choice-label rl-inline' }, 'Quelqu’un reste plus de', h('span', { class: 'rl-num-wrap' }, minutesInput), 'minutes'), h('span', { class: 'hint', text: 'Seulement si la personne est encore là après ce délai. Une absence de moins d’une minute ne compte pas.' }))),
+      el: h('label', { class: 'rl-choice' }, ifStaysInput, h('span', { class: 'rl-choice-text' }, h('span', { class: 'rl-choice-label rl-inline' }, 'Quelqu’un reste plus de', h('span', { class: 'rl-num-wrap' }, minutesInput), 'minutes'), staysHint)),
     };
-    const ifBox = box('if', 'Si', 'Quelle condition ?', h('div', { class: 'rl-choices is-column' }, ifAppears.el, ifStays.el), minutesErr);
+    const ifNote = h('p', { class: 'hint rl-change-note', role: 'status' });
+    const ifBox = box('if', 'Si', 'Quelle condition ?', h('div', { class: 'rl-choices is-column' }, ifAppears.el, ifStays.el), ifNote, minutesErr);
 
     // -- Alors
     const thenGroup = `${id}-then`;
     const thenWarn = choice(thenGroup, 'warning', 'Avertissement', { glyph: 'state-warning', desc: 'Une alerte à regarder, moins urgente.' });
     const thenCrit = choice(thenGroup, 'critical', 'Alerte critique', { glyph: 'state-alarm', desc: 'Une alarme rouge, la plus urgente : à traiter tout de suite.' });
-    const thenBox = box('then', 'Alors', 'Que fait le PSIM ?', h('div', { class: 'rl-choices is-column' }, thenWarn.el, thenCrit.el));
+    const thenNote = h('p', { class: 'hint rl-change-note', role: 'status' });
+    const thenBox = box('then', 'Alors', 'Que fait le PSIM ?', h('div', { class: 'rl-choices is-column' }, thenWarn.el, thenCrit.el), thenNote);
 
     // -- repos
     const cooldownErr = h('p', { class: 'form-error', id: `${id}-cooldown-err` });
@@ -769,6 +1084,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
         'div',
         { class: 'panel-body' },
         conflictNote,
+        assistBox,
         nameField,
         h('p', { class: 'hint rl-boxes-lead', text: 'Une règle se lit en cinq cases : Qui, Où, Quand, Si, Alors.' }),
         h('div', { class: 'rl-boxes' }, whoBox, whereBox, whenBox, ifBox, thenBox),
@@ -786,6 +1102,8 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
 
     const targets = () => ({
       name: { input: nameInput, err: nameErr },
+      who: { input: state.who.type === 'list' ? facesSelect : whoAnyone.input, err: whoErr },
+      trigger: { input: ifAppears.input, err: minutesErr },
       where: { input: picks.querySelector('input') ?? (state.whereMode === 'zones' ? whereZones.input : whereCams.input), err: whereErr },
       windows: { input: addWindow, err: windowsErr },
       minutes: { input: minutesInput, err: minutesErr },
@@ -1015,6 +1333,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     for (const [c, mode] of [[ifAppears, 'appears'], [ifStays, 'stays']]) {
       c.input.addEventListener('change', () => {
         state.triggerMode = mode;
+        ifNote.textContent = '';
         changed();
       });
     }
@@ -1029,9 +1348,152 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     for (const [c, severity] of [[thenWarn, 'warning'], [thenCrit, 'critical']]) {
       c.input.addEventListener('change', () => {
         state.severity = severity;
+        severityTouched = true;
+        thenNote.textContent = '';
         changed();
       });
     }
+
+    // -- Qui : le choix, la liste de visages, ce qui en découle dans « Si » et « Alors »
+    const WHO_CHOICES = [[whoAnyone, 'anyone'], [whoList, 'list'], [whoUnknown, 'unknown'], [whoPerson, 'person']];
+
+    /** Mémorise la liste et la personne de la règle ouverte, pour les retrouver si on change puis revient. */
+    function rememberWho() {
+      lastList = state.who.type === 'list' && state.who.listId ? cloneWho(state.who) : null;
+      storedList = lastList ? cloneWho(lastList) : null;
+      keptPerson = state.who.type === 'person' ? cloneWho(state.who) : null;
+    }
+
+    /** « Si » et « Alors » suivent le « Qui » : textes, choix possibles, explications. */
+    function drawWhoEffects() {
+      const face = isFaceWho(state.who);
+      const appears = appearsTexts(state.who);
+      ifAppears.name.textContent = appears.label;
+      ifAppears.hint.textContent = appears.desc;
+      ifStays.input.disabled = face;
+      minutesInput.disabled = face;
+      ifStays.el.classList.toggle('is-disabled', face);
+      staysHint.textContent = face ? STAYS_FACE_NOTE : 'Seulement si la personne est encore là après ce délai. Une absence de moins d’une minute ne compte pas.';
+      ifAppears.input.checked = state.triggerMode === 'appears';
+      ifStays.input.checked = state.triggerMode === 'stays';
+      const texts = severityTexts(face);
+      thenWarn.hint.textContent = texts.warning;
+      thenCrit.hint.textContent = texts.critical;
+      thenWarn.input.checked = state.severity === 'warning';
+      thenCrit.input.checked = state.severity === 'critical';
+    }
+
+    /** La zone des listes de visages : menu, lecture en cours, erreur avec « Réessayer », ou « aucune liste ». */
+    function drawFaces() {
+      const isList = state.who.type === 'list';
+      facesBox.hidden = !isList;
+      if (!isList) return;
+      const view = facesView(faces, state.who, storedList);
+      const index = selectedListIndex(view.items, state.who);
+      facesSelect.replaceChildren(
+        h('option', { value: '', text: 'Choisissez une liste…' }),
+        ...view.items.map((item, i) => h('option', { value: String(i), text: item.note ? `${item.label} (${item.note})` : item.label })),
+      );
+      facesSelect.value = index >= 0 ? String(index) : '';
+      facesSelect.disabled = view.kind === 'loading' || (view.kind === 'empty');
+      facesField.hidden = view.kind === 'empty' || (view.kind === 'error' && view.items.length === 0);
+      facesLoading.hidden = view.kind !== 'loading';
+      facesFail.hidden = view.kind !== 'error';
+      if (view.kind === 'error') facesFailText.replaceChildren(h('strong', { text: 'Les listes de visages n’ont pas pu être lues. ' }), sentence(faces.error));
+      facesEmpty.hidden = view.kind !== 'empty';
+      facesNotes.replaceChildren(...view.notes.map((n) => h('li', { text: n })));
+      facesNotes.hidden = view.notes.length === 0;
+      facesReload.hidden = view.kind !== 'select' && view.kind !== 'empty';
+      facesSelect.toggleAttribute('aria-busy', view.kind === 'loading');
+    }
+
+    /** Lit les listes de visages sur les caméras (en mémoire quelques minutes). Ne lève jamais : l'échec est affiché. */
+    function loadFaces(force = false) {
+      if (faces.status === 'loading' && facesPending) return facesPending;
+      if (!force && faces.status === 'ok' && Date.now() - faces.at < FACES_FRESH_MS) return Promise.resolve();
+      const n = ++facesSeq;
+      faces = { ...faces, status: 'loading', error: '' };
+      drawFaces();
+      facesPending = (async () => {
+        try {
+          const data = await api('/api/faces/lists');
+          if (n !== facesSeq) return;
+          faces = { status: 'ok', lists: Array.isArray(data?.lists) ? data.lists : [], notes: Array.isArray(data?.notes) ? data.notes : [], hosts: Number(data?.hosts) || 0, error: '', at: Date.now() };
+        } catch (err) {
+          if (n !== facesSeq) return;
+          faces = { ...faces, status: 'error', error: err?.message || 'Le PSIM n’a pas pu interroger les caméras' };
+        }
+        facesPending = null;
+        drawFaces();
+      })();
+      return facesPending;
+    }
+
+    function drawWho() {
+      const type = state.who.type;
+      for (const [c, t] of WHO_CHOICES) c.input.checked = type === t;
+      whoPerson.el.hidden = !(type === 'person' || keptPerson);
+      if (!whoPerson.el.hidden) {
+        const person = keptPerson ?? state.who;
+        whoPerson.name.textContent = `Une personne précise : « ${person.personName} »`;
+      }
+      whoCaution.hidden = type === 'anyone';
+      drawFaces();
+      drawWhoEffects();
+    }
+
+    function chooseWho(type) {
+      const prev = state.who.type;
+      if (type === prev) return;
+      if (prev === 'list' && state.who.listId) lastList = cloneWho(state.who);
+      const next = type === 'list' ? (lastList ? cloneWho(lastList) : { type: 'list', listId: '', listName: '' }) : type === 'person' ? cloneWho(keptPerson) : { type };
+      state.who = next;
+      const trigger = triggerForWho(next, state.triggerMode);
+      state.triggerMode = trigger.triggerMode;
+      if (trigger.changed) {
+        autoTrigger = true;
+        ifNote.textContent = 'La condition est passée à « un visage est vu » : « reste plus de N minutes » n’existe pas pour un visage.';
+      }
+      const sev = severityForWho({ from: prev, to: type, severity: state.severity, touched: severityTouched });
+      if (sev.changed) {
+        autoSeverity = state.severity;
+        thenNote.textContent = `La gravité est passée à « avertissement » pour un visage (${RELIABILITY_NOTE}). Vous pouvez la changer.`;
+      }
+      state.severity = sev.severity;
+      if (type === 'anyone') {
+        const back = restoreForAnyone({ triggerMode: state.triggerMode, severity: state.severity, autoTrigger, autoSeverity, touched: severityTouched });
+        state.triggerMode = back.triggerMode;
+        state.severity = back.severity;
+        autoTrigger = false;
+        autoSeverity = null;
+        ifNote.textContent = '';
+        thenNote.textContent = '';
+      }
+      drawWho();
+      changed();
+      if (type === 'list') loadFaces();
+    }
+    for (const [c, t] of WHO_CHOICES) c.input.addEventListener('change', () => chooseWho(t));
+
+    facesSelect.addEventListener('change', () => {
+      const view = facesView(faces, state.who, storedList);
+      const item = view.items[Number(facesSelect.value)];
+      state.who = item && facesSelect.value !== '' ? { type: 'list', listId: item.id, listName: item.label } : { type: 'list', listId: '', listName: '' };
+      lastList = state.who.listId ? cloneWho(state.who) : lastList;
+      changed();
+    });
+    facesRetry.addEventListener('click', async () => {
+      busy(facesRetry, true);
+      await loadFaces(true);
+      busy(facesRetry, false);
+      (facesFail.hidden ? facesSelect : facesRetry).focus();
+    });
+    facesReload.addEventListener('click', async () => {
+      busy(facesReload, true);
+      await loadFaces(true);
+      busy(facesReload, false);
+      facesReload.focus();
+    });
     cooldownInput.addEventListener('input', () => {
       state.cooldown = cooldownInput.value;
       changed();
@@ -1042,6 +1504,160 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     });
     trialDays.addEventListener('change', drawTrialButton);
 
+    // ---------------------------------------------------------- assistant : une phrase -> une proposition à relire
+
+    const assistParts = [assistError, assistAsk, assistRefused, assistProposal];
+
+    /** La zone n'existe que si le serveur dit que l'assistant est configuré ; sinon elle reste masquée, sans bruit. */
+    function drawAssist() {
+      assistBox.hidden = assistConfigured !== true;
+    }
+
+    /** Lit une fois (par session de l'écran) si l'assistant est configuré ; un échec masque la zone, on réessaiera à l'ouverture suivante. */
+    async function ensureAssist() {
+      if (assistConfigured !== null || assistProbing) return;
+      assistProbing = true;
+      try {
+        const res = await api('/api/rules/assist');
+        assistConfigured = res?.configured === true;
+      } catch {
+        assistConfigured = null;
+      }
+      assistProbing = false;
+      drawAssist();
+    }
+
+    function clearAssistMessages() {
+      assistError.textContent = '';
+      for (const part of assistParts) if (part !== assistError) part.hidden = true;
+    }
+
+    /** Nouvelle saisie ou formulaire fermé : l'échange recommence à zéro et une réponse en route n'est plus affichée. */
+    function resetAssist() {
+      assistSeq++;
+      assistTurns = [];
+      assistBusy = false;
+      proposalSource = null;
+      appliedKey = null;
+      assistText.value = '';
+      assistAnswer.value = '';
+      assistCount.textContent = `0 / ${MAX_SOURCE_TEXT}`;
+      busy(assistSend, false);
+      busy(assistReply, false);
+      clearAssistMessages();
+    }
+
+    function setAssistBusy(on) {
+      assistBusy = on;
+      busy(assistSend, on);
+      busy(assistReply, on);
+      assistText.readOnly = on;
+      assistAnswer.readOnly = on;
+    }
+
+    /** Remplit le formulaire avec la proposition. Rien n'est enregistré : l'utilisateur relit, puis enregistre. */
+    async function applyProposal(res, sourceText, n) {
+      if (res.spec?.who?.type === 'list') await loadFaces();
+      if (n !== assistSeq) return;
+      const known = ctx();
+      const { form: next, issues } = formFromProposal(res, { cameraIds: known.cameraIds, zones: known.zones, lists: faces.status === 'ok' ? faces.lists : null });
+      const dirty = formKey(state) !== (appliedKey ?? baseKey);
+      if (dirty) {
+        const ok = await dialogs.confirm({
+          heading: 'Remplacer votre saisie par la proposition ?',
+          message: 'La proposition de l’assistant remplace toutes les cases du formulaire. Ce que vous avez saisi à la main sera perdu.',
+          confirmLabel: 'Utiliser la proposition',
+          danger: false,
+        });
+        if (n !== assistSeq) return;
+        if (!ok) {
+          assistRefusedText.textContent = 'Proposition non utilisée : votre saisie est conservée.';
+          assistRefused.hidden = false;
+          focusSoon(assistText);
+          return;
+        }
+      }
+      next.enabled = state.enabled; // l'activation immédiate reste le choix de l'utilisateur
+      state = next;
+      rememberWho();
+      severityTouched = true; // la gravité vient de la proposition : aucun changement automatique par-dessus
+      autoTrigger = false;
+      autoSeverity = null;
+      ifNote.textContent = '';
+      thenNote.textContent = '';
+      proposalSource = editing ? null : sourceText || null; // le serveur n'accepte la phrase d'origine qu'à la création
+      showErrors = false;
+      clearErrors();
+      paint();
+      appliedKey = formKey(state);
+      changed();
+      assistProposalSummary.textContent = res.summary ?? '';
+      assistProposalSummary.hidden = !res.summary;
+      assistProposalIssues.replaceChildren(...issues.map((text) => h('li', { text })));
+      assistProposalIssues.hidden = issues.length === 0;
+      assistProposal.hidden = false;
+      if (state.who.type === 'list') loadFaces();
+      focusSoon(assistProposal);
+    }
+
+    /** Envoie une phrase (ou une réponse à une question) à l'assistant et affiche ce qu'il répond. */
+    async function askAssistant(text, isAnswer) {
+      if (assistBusy) return;
+      const phrase = text.trim();
+      clearAssistMessages();
+      if (!phrase) {
+        assistError.textContent = isAnswer ? 'Écrivez votre réponse.' : 'Écrivez d’abord une phrase qui décrit la règle.';
+        (isAnswer ? assistAnswer : assistText).focus();
+        return;
+      }
+      if (!isAnswer) assistTurns = [];
+      const n = ++assistSeq;
+      setAssistBusy(true);
+      try {
+        const body = { text: phrase };
+        const history = historyForAssist(assistTurns);
+        if (history.length) body.history = history;
+        const res = await api('/api/rules/assist', { method: 'POST', body });
+        if (n !== assistSeq) return;
+        const next = nextAssistTurns(assistTurns, phrase, res);
+        assistTurns = next.turns;
+        setAssistBusy(false);
+        if (res?.kind === 'question') {
+          assistQuestionText.textContent = String(res.question ?? '');
+          assistAnswer.value = '';
+          assistAsk.hidden = false;
+          focusSoon(assistAnswer);
+        } else if (res?.kind === 'refused') {
+          assistRefusedText.textContent = sentence(res.reason);
+          assistRefused.hidden = false;
+        } else if (res?.kind === 'rule') {
+          await applyProposal(res, next.sourceText, n);
+        } else assistError.textContent = 'L’assistant a donné une réponse que l’écran ne comprend pas. Reformulez votre phrase.';
+      } catch (err) {
+        if (n !== assistSeq) return;
+        setAssistBusy(false);
+        assistError.textContent = err?.message ? sentence(err.message) : 'L’assistant n’a pas pu répondre. Réessayez dans un instant.';
+      }
+    }
+
+    assistText.addEventListener('input', () => {
+      assistCount.textContent = `${assistText.value.length} / ${MAX_SOURCE_TEXT}`;
+    });
+    assistText.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        assistSend.click();
+      }
+    });
+    assistAnswer.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault(); // Entrée envoie la réponse, elle n'enregistre pas la règle
+        assistReply.click();
+      }
+    });
+    assistSend.addEventListener('click', () => askAssistant(assistText.value, false));
+    assistReply.addEventListener('click', () => askAssistant(assistAnswer.value, true));
+
     /** Tous les champs reprennent la valeur de l'état. */
     function paint() {
       nameInput.value = state.name;
@@ -1050,14 +1666,12 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       whenAlways.input.checked = state.whenMode === 'always';
       whenWindows.input.checked = state.whenMode === 'windows';
       whenArmed.input.checked = state.whenMode === 'armed';
-      ifAppears.input.checked = state.triggerMode === 'appears';
-      ifStays.input.checked = state.triggerMode === 'stays';
       minutesInput.value = state.minutes;
-      thenWarn.input.checked = state.severity === 'warning';
-      thenCrit.input.checked = state.severity === 'critical';
       cooldownInput.value = state.cooldown;
       enabledInput.checked = state.enabled;
       enabledField.hidden = editing !== null;
+      drawWho();
+      drawAssist();
       drawPlaces(true);
       drawWhen();
       drawSentence();
@@ -1170,8 +1784,10 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       busy(save, true);
       for (const b of el.querySelectorAll('button')) if (b !== save) b.disabled = true;
       const body = { name: state.name.trim(), spec: buildSpec(state) };
+      // La phrase d'origine (zone de l'assistant) accompagne la création seulement : le serveur ne l'accepte pas à la modification.
+      const created = { ...body, enabled: state.enabled, ...(proposalSource ? { sourceText: proposalSource } : {}) };
       try {
-        const saved = editing ? await api(`/api/rules/${editing.id}`, { method: 'PUT', body }) : await api('/api/rules', { method: 'POST', body: { ...body, enabled: state.enabled } });
+        const saved = editing ? await api(`/api/rules/${editing.id}`, { method: 'PUT', body }) : await api('/api/rules', { method: 'POST', body: created });
         saving = false;
         for (const b of el.querySelectorAll('button')) b.disabled = false;
         busy(save, false);
@@ -1216,6 +1832,13 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       showErrors = false;
       clearErrors();
       resetTrial();
+      resetAssist();
+      rememberWho();
+      severityTouched = false;
+      autoTrigger = false;
+      autoSeverity = null;
+      ifNote.textContent = '';
+      thenNote.textContent = '';
       conflictNote.hidden = true;
       title.textContent = rule ? `Modifier la règle « ${rule.name} »` : 'Nouvelle règle';
       paint();
@@ -1223,6 +1846,8 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       el.hidden = false;
       formSlot.hidden = false;
       for (const card of cards.values()) card.markEditing(Boolean(rule) && card.id === rule.id);
+      ensureAssist();
+      if (state.who.type === 'list') loadFaces();
       focusSoon(title);
       el.scrollIntoView?.({ block: 'start', behavior: 'auto' });
     }
@@ -1233,6 +1858,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       el.hidden = true;
       formSlot.hidden = true;
       resetTrial();
+      resetAssist();
       showErrors = false;
       clearErrors();
       for (const card of cards.values()) card.markEditing(false);
@@ -1272,6 +1898,13 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
         if (open) close(false);
         state = defaultForm();
         editing = null;
+        resetAssist();
+        rememberWho();
+        severityTouched = false;
+        autoTrigger = false;
+        autoSeverity = null;
+        ifNote.textContent = '';
+        thenNote.textContent = '';
         paint();
       },
     };
@@ -1305,6 +1938,12 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
   }
 
   function reset() {
+    // Rien de la session précédente : ni les listes de visages lues, ni le « configuré » de l'assistant.
+    faces = freshFaces();
+    facesSeq++;
+    facesPending = null;
+    assistConfigured = null;
+    assistProbing = false;
     form.reset();
     rules = [];
     presence = {};

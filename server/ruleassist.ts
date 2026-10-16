@@ -261,6 +261,8 @@ export function createRuleAssistant<S = RuleSpec>(deps: {
   apiKey: string | null | undefined;
   model?: string;
   fetch?: typeof fetch;
+  /** Adresse du service (defaut : l'API Anthropic) ; reservee aux essais (faux service local). */
+  url?: string;
   validate: (input: unknown) => S;
   describe: (spec: S) => string;
   context: () => AssistantContext;
@@ -296,7 +298,7 @@ export function createRuleAssistant<S = RuleSpec>(deps: {
     };
     let res: Response;
     try {
-      res = await doFetch(URL_MESSAGES, {
+      res = await doFetch(deps.url || URL_MESSAGES, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify(payload),

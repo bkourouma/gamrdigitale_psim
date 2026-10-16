@@ -30,6 +30,7 @@ import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.
 import { createArming } from './arming.ts';
 import { createFloors } from './floors.ts';
 import { createDahuaEvents } from './dahua.ts';
+import { createFaceObs } from './faceobs.ts';
 import { createPresence } from './presence.ts';
 import { createRules } from './rules.ts';
 import { createTuya } from './tuya.ts';
@@ -225,13 +226,28 @@ const video = createVideoService({
 // Construits AVANT la lecture des appareils : le premier flux ouvert peut deja livrer des observations.
 const presence = createPresence({ db, retentionDays: 30 });
 presence.purge();
-const rules = createRules({ db, engine, presence, isArmed: (zone) => arming?.isArmed(zone) ?? true });
+// Visages vus (reconnus / inconnus) par les cameras a reconnaissance faciale : alimentent les regles d'identite. Ni photo ni empreinte.
+const faceObs = createFaceObs({ db, retentionDays: 30 });
+faceObs.purge();
+const rules = createRules({ db, engine, presence, faces: faceObs, isArmed: (zone) => arming?.isArmed(zone) ?? true });
 const dahua = createDahuaEvents({
   db,
   engine,
   key: secretKey,
   isArmed: (zone) => arming?.isArmed(zone) ?? true,
-  onObservation: (o) => presence.observe(o),
+  onObservation: (o) => {
+    // L'un ne doit jamais empecher l'autre : la presence et les visages sont lus separement.
+    try {
+      presence.observe(o);
+    } catch (err) {
+      console.error('[psim] observation de presence :', err);
+    }
+    try {
+      faceObs.observe(o);
+    } catch (err) {
+      console.error('[psim] observation de visage :', err);
+    }
+  },
   onLinkLost: (host) => presence.linkLost(host),
   // Une regle active a besoin de voir toutes les voies de l'enregistreur, pas seulement celles d'un detecteur d'intrusion.
   observeAll: () => rules.list().some((r) => r.enabled),
@@ -285,7 +301,7 @@ notifier = createNotifier({
   publicUrl: notify.publicUrl,
   readSnapshot: (id) => snapshots?.read(id) ?? null,
   // Cles WhatsApp et Vonage comprises : jamais dans les journaux, meme si un service les renvoyait dans un message d'erreur.
-  secrets: [notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, notify.vonage.privateKey, ...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
+  secrets: [config.assist.apiKey, notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, notify.vonage.privateKey, ...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
 });
 // Actions de securite sur les comptes : inscrites au journal ET notifiees (un pirate qui enrole sa propre 2FA ne passe pas inapercu).
 const SECURITY_ACTIONS = new Set(['totp_enabled', 'totp_disabled', 'totp_reset', 'recovery_code_used', 'user_created', 'user_updated', 'user_deleted', 'password_reset']);
@@ -318,6 +334,11 @@ const purgeTimer = setInterval(() => {
     presence.purge(); // historique de presence : 30 jours
   } catch (err) {
     console.error('[psim] purge de la presence :', err);
+  }
+  try {
+    faceObs.purge(); // visages vus : 30 jours
+  } catch (err) {
+    console.error('[psim] purge des visages vus :', err);
   }
 }, 6 * 3600 * 1000);
 
@@ -501,6 +522,8 @@ const app = createApp({
   dahua,
   rules,
   presence,
+  faceObs,
+  assist: config.assist,
   tuya,
   video,
   snapshots,

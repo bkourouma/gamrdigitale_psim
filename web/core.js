@@ -188,6 +188,12 @@ export const ACTION_LABEL = {
   detector_source_removed: 'Source du détecteur retirée',
   tuya_source_updated: 'Capteur Tuya : source modifiée',
   tuya_source_removed: 'Capteur Tuya : source retirée',
+  rule_created: 'Règle créée',
+  rule_updated: 'Règle modifiée',
+  rule_enabled: 'Règle activée',
+  rule_disabled: 'Règle désactivée',
+  rule_deleted: 'Règle supprimée',
+  rule_assist: "Proposition de l'assistant de règles",
 };
 
 // ---------------------------------------------------------------- bus d'évènements
