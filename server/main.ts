@@ -30,6 +30,8 @@ import { MIN_INGEST_TOKEN_LENGTH, formatFindings, preflight } from './preflight.
 import { createArming } from './arming.ts';
 import { createFloors } from './floors.ts';
 import { createDahuaEvents } from './dahua.ts';
+import { createPresence } from './presence.ts';
+import { createRules } from './rules.ts';
 import { createTuya } from './tuya.ts';
 import type { Arming } from './arming.ts';
 import { createProofService } from './proofpack.ts';
@@ -219,7 +221,21 @@ const video = createVideoService({
   ffmpegPath: config.ffmpegPath,
 });
 // Detection des appareils Dahua -> detecteurs d'intrusion. Relue a chaque changement de configuration (source, camera).
-const dahua = createDahuaEvents({ db, engine, key: secretKey, isArmed: (zone) => arming?.isArmed(zone) ?? true });
+// Presence (quelqu'un est vu devant une camera) et regles de presence : chaque regle est un detecteur virtuel R-<id>.
+// Construits AVANT la lecture des appareils : le premier flux ouvert peut deja livrer des observations.
+const presence = createPresence({ db, retentionDays: 30 });
+presence.purge();
+const rules = createRules({ db, engine, presence, isArmed: (zone) => arming?.isArmed(zone) ?? true });
+const dahua = createDahuaEvents({
+  db,
+  engine,
+  key: secretKey,
+  isArmed: (zone) => arming?.isArmed(zone) ?? true,
+  onObservation: (o) => presence.observe(o),
+  onLinkLost: (host) => presence.linkLost(host),
+  // Une regle active a besoin de voir toutes les voies de l'enregistreur, pas seulement celles d'un detecteur d'intrusion.
+  observeAll: () => rules.list().some((r) => r.enabled),
+});
 dahua.reload();
 // Detecteurs de fumee WiFi Tuya / Smart Life -> detecteurs incendie, lus dans le cloud Tuya (docs/TUYA.md).
 const tuya = createTuya({
@@ -298,6 +314,11 @@ const HISTORY_KEEP_MS = 400 * 24 * 3600 * 1000; // plus d'un an : de quoi compar
 const purgeTimer = setInterval(() => {
   snapshots?.purge(config.snapshotDays);
   purgeHistory(db, Date.now() - HISTORY_KEEP_MS);
+  try {
+    presence.purge(); // historique de presence : 30 jours
+  } catch (err) {
+    console.error('[psim] purge de la presence :', err);
+  }
 }, 6 * 3600 * 1000);
 
 // ---------------------------------------------------------------- sauvegarde automatique
@@ -478,6 +499,8 @@ const app = createApp({
   engine,
   floors,
   dahua,
+  rules,
+  presence,
   tuya,
   video,
   snapshots,
@@ -584,6 +607,7 @@ const tickTimer = setInterval(() => {
   notifier?.tick();
   try {
     arming?.tick(); // armements et desarmements dus au planning
+    rules.tick(); // regles de presence : durees, plages horaires, repos
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
@@ -679,6 +703,7 @@ async function shutdown() {
   portal.stop();
   cameraHealth.stop();
   networkHealth.stop();
+  rules.close(); // avant l'arret des flux : leur coupure ne doit plus declencher ni terminer une regle
   dahua.stop();
   tuya.stop();
   deviceImages?.stop();

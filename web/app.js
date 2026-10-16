@@ -13,6 +13,7 @@ import { createReportsView } from './reports.js';
 import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
 import { createKeysAdmin } from './keys.js';
+import { createRulesView } from './rules.js';
 import { $, h, icon, api, toast, S, on, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
@@ -90,6 +91,16 @@ const keysAdmin = createKeysAdmin({
   getMe: () => S.me,
   getDevices: () => [...S.devices.values()].filter((d) => d.kind === 'detector').map((d) => ({ id: d.id, name: d.name })),
 });
+// Règles de présence : les caméras viennent de l'état déjà en mémoire (nom, zone) ; la liste des règles, du serveur.
+const rulesView = createRulesView({
+  api,
+  h,
+  icon,
+  toast,
+  dialogs,
+  getMe: () => S.me,
+  getDevices: () => devicesOf('camera').map((d) => ({ id: d.id, name: d.name, zone: d.zone || '' })),
+});
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
 
@@ -122,6 +133,7 @@ const ROUTES = {
   journal: { title: 'Journal', sub: 'Toutes les actions, des personnes et du système' },
   equipements: { title: 'Équipements et plan', sub: 'Placer, régler et ajouter les détecteurs et les caméras', admin: true },
   notifications: { title: 'Personnes prévenues', sub: "Qui reçoit les alarmes hors de l'écran, et par quel canal", admin: true },
+  regles: { title: 'Règles', sub: "Prévenir quand quelqu'un est vu par une caméra : où, quand et à quelle condition", admin: true },
   utilisateurs: { title: 'Utilisateurs', sub: 'Comptes, rôles et accès', admin: true },
   cles: { title: 'Clés et passerelles', sub: 'Clés des équipements qui envoient des images, et état des passerelles', admin: true },
   systeme: { title: 'Système', sub: 'Santé du PSIM, sauvegardes et intégrité du journal', admin: true },
@@ -160,6 +172,8 @@ function leave(view) {
     $('video-home').append(videoPanel);
   } else if (view === 'cles') {
     keysAdmin.hide();
+  } else if (view === 'regles') {
+    rulesView.hide(); // le brouillon reste : l'écran est masqué, pas détruit
   } else if (view === 'risques') {
     riskView.hide();
     loadRailGauge(); // une évaluation vient peut-être de changer l'indice
@@ -190,6 +204,8 @@ function enter(view) {
     loadNotifStatus({ recipients: !hasUnsavedInput($('recipients-box')) });
   } else if (view === 'cles') {
     keysAdmin.show();
+  } else if (view === 'regles') {
+    rulesView.show(); // relit la liste ; un formulaire commencé n'est jamais remplacé
   } else if (view === 'systeme') {
     loadSystem();
   } else if (view === 'simulateur') {
@@ -341,6 +357,7 @@ function applySnapshot(snap) {
   for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
+  rulesView.refreshChoices(); // caméras ajoutées, renommées ou retirées pendant la saisie d'une règle
   S.arming = snap.arming ?? {};
   armingView.load(); // état détaillé des zones d'intrusion (planning, dérogations)
   S.incidents = new Map(snap.incidents.map((i) => [i.id, i]));
@@ -512,6 +529,7 @@ function clearAccountTraces() {
   $('nav-count-systeme').hidden = true;
   for (const id of ['users-list', 'notif-status', 'sys-status', 'gw-list', 'keys-list']) $(id).replaceChildren(h('p', { class: 'muted', text: 'Chargement…' }));
   for (const id of ['recipients-box', 'notif-results', 'sys-warnings']) $(id).replaceChildren();
+  rulesView.reset(); // liste et brouillon de règle du compte précédent
   const editor = $('device-editor');
   editor.replaceChildren();
   delete editor.dataset.for;

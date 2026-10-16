@@ -27,6 +27,8 @@ import { PsimError } from './engine.ts';
 import { PLAN_TYPES } from './floors.ts';
 import type { Floors } from './floors.ts';
 import type { DahuaEvents } from './dahua.ts';
+import type { Presence } from './presence.ts';
+import type { Rules } from './rules.ts';
 import type { TuyaService } from './tuya.ts';
 import { createNetworkTargets } from './networkhealth.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -50,6 +52,9 @@ export interface ApiDeps {
   engine: Engine;
   floors: Floors;
   dahua: DahuaEvents;
+  /** Regles de presence (detecteurs virtuels R-<id>) et presence courante des cameras. */
+  rules: Rules;
+  presence: Presence;
   tuya: TuyaService;
   video: VideoService;
   snapshots: SnapshotService;
@@ -469,6 +474,10 @@ export function createApp(deps: ApiDeps) {
   });
   app.delete('/api/devices/:id', adminOnly, (req, res) => {
     const id = String(req.params.id);
+    // Le detecteur virtuel d'une regle de presence vit et meurt avec sa regle : le supprimer ici la laisserait orpheline.
+    if (db.prepare('SELECT 1 AS x FROM presence_rule WHERE device_id = ?').get(id)) {
+      throw new PsimError(409, 'Ce detecteur appartient a une regle de presence : modifier ou supprimer la regle');
+    }
     engine.deleteDevice(actorOf(req), id);
     deps.video.closeFeed(id);
     res.status(204).end();
@@ -476,6 +485,61 @@ export function createApp(deps: ApiDeps) {
   app.put('/api/devices/:id/links', adminOnly, json, (req, res) => {
     const { cameraIds } = (req.body ?? {}) as { cameraIds?: unknown };
     res.json({ cameraIds: engine.setLinks(actorOf(req), String(req.params.id), cameraIds) });
+  });
+
+  // ---- Regles de presence (administrateur : ecriture ; tout utilisateur connecte : lecture) --------------
+
+  /** Identifiant numerique d'une regle ; tout le reste (texte, 0, negatif, trop grand) est « introuvable ». */
+  const ruleId = (req: Request): number => {
+    const text = String(req.params.id);
+    const id = /^[0-9]{1,15}$/.test(text) ? Number(text) : 0;
+    if (!Number.isSafeInteger(id) || id < 1) throw new PsimError(404, 'Regle introuvable');
+    return id;
+  };
+  /** Corps d'une demande : l'absence de corps devient un objet vide (le module des regles dit ce qui manque). */
+  const ruleBody = (req: Request): unknown => req.body ?? {};
+  // Les regles ouvrent ou ferment les flux d'observation de l'enregistreur (« existe-t-il une regle active ? »).
+  const afterRuleChange = () => {
+    try {
+      deps.dahua.reload();
+    } catch (err) {
+      console.error('[psim] relecture des flux apres un changement de regle :', err);
+    }
+  };
+
+  app.get('/api/rules', anyUser, (_req, res) => res.json(deps.rules.list()));
+  app.get('/api/presence', anyUser, (_req, res) => res.json(deps.presence.current()));
+  app.post('/api/rules', adminOnly, json, (req, res) => {
+    const rule = deps.rules.create(actorOf(req), ruleBody(req) as Parameters<Rules['create']>[1]);
+    afterRuleChange();
+    res.status(201).json(rule);
+  });
+  // Essai sur le passe : rien n'est ecrit, le moteur ne recoit aucun message.
+  app.post('/api/rules/simulate', adminOnly, json, (req, res) => {
+    const body = ruleBody(req);
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new PsimError(400, 'La demande : un objet est attendu');
+    for (const key of Object.keys(body)) {
+      if (key !== 'spec' && key !== 'days') throw new PsimError(400, `La demande : champ « ${key.replace(/[^ -~]/g, '?').slice(0, 40)} » non reconnu`);
+    }
+    const { spec, days } = body as { spec?: unknown; days?: unknown };
+    if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 30) throw new PsimError(400, 'Nombre de jours invalide (1 a 30)');
+    const to = Date.now();
+    const from = to - days * 86_400_000;
+    const result = deps.rules.simulate(spec, from, to);
+    // L'historique d'armement n'est pas conserve : pour « quand la zone est armee », l'armement ACTUEL sert pour tout le passe.
+    const when = typeof spec === 'object' && spec !== null ? (spec as { when?: unknown }).when : undefined;
+    const armedNote = typeof when === 'object' && when !== null && (when as { type?: unknown }).type === 'armed';
+    res.json({ summary: result.summary, triggers: result.triggers, days, from, to, armedNote });
+  });
+  app.put('/api/rules/:id', adminOnly, json, (req, res) => {
+    const rule = deps.rules.update(actorOf(req), ruleId(req), ruleBody(req) as Parameters<Rules['update']>[2]);
+    afterRuleChange();
+    res.json(rule);
+  });
+  app.delete('/api/rules/:id', adminOnly, (req, res) => {
+    deps.rules.remove(actorOf(req), ruleId(req));
+    afterRuleChange();
+    res.status(204).end();
   });
 
   // ---- Cameras reelles (ONVIF / RTSP) ---------------------------------------------------
