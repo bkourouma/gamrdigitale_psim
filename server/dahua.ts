@@ -361,15 +361,27 @@ export function createDahuaEvents(deps: DahuaDeps) {
 
   /** Hotes et identifiants des cameras reelles a voie (« channel=N »), pour l'observation de toutes les voies. */
   function observedCredentials(): Credentials[] {
-    const found: Credentials[] = [];
+    return faceHosts().map((h) => h.creds);
+  }
+
+  /**
+   * Un enregistreur ou une camera Dahua par hote de camera_source (chemin RTSP avec « channel=N », identifiants lisibles),
+   * avec la premiere camera de cet hote par ordre d'identifiant. Port HTTP 80 (limite connue), sauf pour un hote deja relie
+   * a un detecteur : le port de ce detecteur est repris (c'est aussi celui du lien reutilise par reload). Sert a lire les
+   * bases de visages (findGroup) sur chaque appareil, et a ouvrir les flux d'observation.
+   */
+  function faceHosts(): { cameraId: string; creds: Credentials }[] {
+    const found: { cameraId: string; creds: Credentials }[] = [];
     const seen = new Set<string>();
-    const cams = db.prepare("SELECT host, username, secret, rtsp_path FROM camera_source WHERE rtsp_path IS NOT NULL ORDER BY device_id").all() as unknown as { host: string; username: string | null; secret: string | null; rtsp_path: string }[];
+    const portOf = new Map<string, number>();
+    for (const row of rows()) if (!portOf.has(row.host)) portOf.set(row.host, row.http_port);
+    const cams = db.prepare("SELECT device_id, host, username, secret, rtsp_path FROM camera_source WHERE rtsp_path IS NOT NULL ORDER BY device_id").all() as unknown as { device_id: string; host: string; username: string | null; secret: string | null; rtsp_path: string }[];
     for (const cam of cams) {
       if (!/channel=\d+/i.test(cam.rtsp_path) || seen.has(cam.host)) continue;
-      const creds = credentials({ host: cam.host, http_port: 80, username: cam.username, secret: cam.secret });
+      const creds = credentials({ host: cam.host, http_port: portOf.get(cam.host) ?? 80, username: cam.username, secret: cam.secret });
       if (!creds) continue; // sans identifiants lisibles : cet hote est ignore, une autre camera du meme hote peut en avoir
       seen.add(cam.host);
-      found.push(creds);
+      found.push({ cameraId: cam.device_id, creds });
     }
     return found;
   }
@@ -697,7 +709,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
     links.clear();
   }
 
-  return { reload, view, setSource, removeSource, test, stop };
+  return { reload, view, setSource, removeSource, test, stop, faceHosts };
 }
 
 export type DahuaEvents = ReturnType<typeof createDahuaEvents>;

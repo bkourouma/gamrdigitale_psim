@@ -37,6 +37,19 @@ CREATE TABLE IF NOT EXISTS presence_event (
 CREATE INDEX IF NOT EXISTS idx_presence_event_at ON presence_event(at);
 `;
 
+/**
+ * Cameras d'un hote Dahua : celles dont la source video (camera_source) a cet hote et un chemin RTSP ; avec `channel`, celles dont
+ * le chemin contient « channel=<voie> » (casse indifferente). Partagee avec faceobs.ts : une observation (hote, voie) designe
+ * les memes cameras pour la presence et pour les visages.
+ */
+export function camerasOfSource(db: DatabaseSync, host: string, channel?: number): string[] {
+  const rows = db.prepare('SELECT device_id, rtsp_path FROM camera_source WHERE host = ? AND rtsp_path IS NOT NULL ORDER BY device_id').all(host) as { device_id: string; rtsp_path: string }[];
+  if (channel === undefined) return rows.map((r) => r.device_id);
+  // Borne apres le numero : « channel=1 » ne designe pas « channel=10 ».
+  const wanted = new RegExp(`channel=${channel}(?![0-9])`, 'i');
+  return rows.filter((r) => wanted.test(r.rtsp_path)).map((r) => r.device_id);
+}
+
 export function createPresence(deps: { db: DatabaseSync; now?: () => number; retentionDays?: number }) {
   const { db } = deps;
   const now = deps.now ?? Date.now;
@@ -53,13 +66,7 @@ export function createPresence(deps: { db: DatabaseSync; now?: () => number; ret
     .all() as { camera_id: string }[];
   for (const row of open) insert.run(row.camera_id, 'stop', now(), 'restart');
 
-  function camerasOf(host: string, channel?: number): string[] {
-    const rows = db.prepare('SELECT device_id, rtsp_path FROM camera_source WHERE host = ? AND rtsp_path IS NOT NULL ORDER BY device_id').all(host) as { device_id: string; rtsp_path: string }[];
-    if (channel === undefined) return rows.map((r) => r.device_id);
-    // Borne apres le numero : « channel=1 » ne designe pas « channel=10 ».
-    const wanted = new RegExp(`channel=${channel}(?![0-9])`, 'i');
-    return rows.filter((r) => wanted.test(r.rtsp_path)).map((r) => r.device_id);
-  }
+  const camerasOf = (host: string, channel?: number): string[] => camerasOfSource(db, host, channel);
 
   function record(cameraId: string, kind: 'start' | 'stop', at: number, source: string): void {
     insert.run(cameraId, kind, at, source);

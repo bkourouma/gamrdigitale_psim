@@ -6,8 +6,9 @@ import { describe, it } from 'node:test';
 import { openDb } from '../server/db.ts';
 import { createEngine, PsimError } from '../server/engine.ts';
 import type { PresenceChange } from '../server/presence.ts';
-import { createRuleMachine, createRules, describeRule, validateSpec } from '../server/rules.ts';
-import type { RuleAction, RuleSpec } from '../server/rules.ts';
+import type { FaceSeen } from '../server/faceobs.ts';
+import { createRuleMachine, createRules, describeRule, faceMatches, validateSpec } from '../server/rules.ts';
+import type { RuleAction, RuleSpec, Who } from '../server/rules.ts';
 import { seedDemo } from '../server/seed.ts';
 
 // Lundi 12 octobre 2026, minuit, heure locale du serveur (les plages horaires se lisent en heure locale).
@@ -104,7 +105,8 @@ describe('regles de presence : validation de la specification', () => {
     refuse(spec({ where: { cameras: ['C-99'] } }), /camera inconnue « C-99 »/);
     refuse(spec({ where: { zones: ['Cave'] } }), /zone inconnue « Cave »/);
     refuse(spec({ where: { cameras: [42 as never] } }), /nom invalide/);
-    refuse(spec({ who: { type: 'list' } as never }), /seul « n'importe qui »/);
+    refuse(spec({ who: { type: 'list' } as never }), /identifiant de la liste : texte requis/);
+    refuse(spec({ who: { type: 'everyone' } as never }), /Qui : choisir/);
     refuse(spec({ when: { type: 'sometimes' } as never }), /Quand : choisir/);
     refuse(spec({ when: { type: 'windows', windows: [] } }), /au moins une plage/);
     refuse(spec({ when: { type: 'windows', windows: [{ days: [1], from: '25:00', to: '06:00' }] } }), /heures invalides/);
@@ -1096,5 +1098,511 @@ describe('regles de presence : essai sur le passe', () => {
       assert.ok(ms < 1000, `${label} : ${Math.round(ms)} ms`);
       assert.ok(Array.isArray(sim.triggers));
     }
+  });
+});
+
+// ---- 6. Regles d'identite (visages) ------------------------------------------------------------------------------
+
+const UNKNOWN: Who = { type: 'unknown' };
+const FAMILLE: Who = { type: 'list', listId: '2', listName: 'Famille' };
+const AWA: Who = { type: 'person', personId: 'p-7', personName: 'Awa Koné' };
+const idSpec = (who: Who, over: Partial<RuleSpec> = {}): RuleSpec => spec({ who, ...over });
+
+describe("regles d'identite : validation", () => {
+  const refuse = (input: unknown, pattern: RegExp) =>
+    assert.throws(
+      () => validateSpec(input, KNOWN),
+      (e: unknown) => e instanceof PsimError && e.status === 400 && pattern.test(e.message),
+      `devait etre refusee : ${JSON.stringify(input)}`,
+    );
+
+  it('accepte inconnu, liste et personne, et les normalise (espaces)', () => {
+    assert.deepEqual(validateSpec(idSpec(UNKNOWN), KNOWN).who, { type: 'unknown' });
+    assert.deepEqual(validateSpec(idSpec(FAMILLE), KNOWN).who, FAMILLE);
+    assert.deepEqual(validateSpec(idSpec(AWA), KNOWN).who, AWA);
+    assert.deepEqual(validateSpec(idSpec({ type: 'person', personId: ' p  7 ', personName: '  Awa   Koné ' }), KNOWN).who, { type: 'person', personId: 'p 7', personName: 'Awa Koné' });
+    assert.deepEqual(validateSpec(idSpec(FAMILLE, { cooldownMinutes: 0, then: { severity: 'warning' } }), KNOWN).then, { severity: 'warning' });
+    // bornes : 64 pour l'identifiant, 80 pour le nom
+    const edge = validateSpec(idSpec({ type: 'list', listId: 'x'.repeat(64), listName: 'y'.repeat(80) }), KNOWN).who as { listId: string; listName: string };
+    assert.deepEqual([edge.listId.length, edge.listName.length], [64, 80]);
+  });
+
+  it('refuse les champs manquants, vides, trop longs, de mauvais type ou en trop', () => {
+    refuse(idSpec({ type: 'list', listName: 'F' } as never), /identifiant de la liste : texte requis/);
+    refuse(idSpec({ type: 'list', listId: '2' } as never), /nom de la liste : texte requis/);
+    refuse(idSpec({ type: 'list', listId: '', listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', listId: '   ', listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', listId: 2 as never, listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', listId: 'x'.repeat(65), listName: 'F' }), /64 caracteres au plus/);
+    refuse(idSpec({ type: 'list', listId: '2', listName: 'y'.repeat(81) }), /80 caracteres au plus/);
+    refuse(idSpec({ type: 'person', personId: 'p', personName: null as never }), /nom de la personne : texte requis/);
+    refuse(idSpec({ type: 'person', personId: 'p' } as never), /nom de la personne/);
+    refuse(idSpec({ type: 'person', personId: 'p', personName: 'A', listId: '2' } as never), /champ « listId »/);
+    refuse(idSpec({ type: 'list', listId: '2', listName: 'F', personId: 'p' } as never), /champ « personId »/);
+    refuse(idSpec({ type: 'unknown', listId: '2' } as never), /champ « listId »/);
+    refuse(idSpec('inconnu' as never), /objet est attendu/);
+    refuse(idSpec(Object.create({ type: 'unknown' }) as never), /objet est attendu/);
+  });
+
+  it("refuse les noms hostiles (controles, invisibles, sens d'ecriture) et ne fait pas confiance aux prototypes", () => {
+    for (const bad of ['a\nb', 'a\u0000b', 'a‮b', 'a​b', 'a b', 'a\u0085b']) {
+      refuse(idSpec({ type: 'list', listId: '2', listName: bad }), /caracteres de controle ou invisibles/);
+      refuse(idSpec({ type: 'person', personId: bad, personName: 'A' }), /caracteres de controle ou invisibles/);
+    }
+    const hostile = JSON.parse('{"type":"list","listId":"2","listName":"F","__proto__":{"x":1}}');
+    refuse(idSpec(hostile), /champ « __proto__ »/);
+    refuse(idSpec({ type: '__proto__' } as never), /Qui : choisir/);
+    refuse(idSpec({ type: 'constructor' } as never), /Qui : choisir/);
+    // un nom de champ hostile reste lisible et inoffensif dans le message d'erreur
+    refuse(idSpec({ type: 'unknown', ['x\u0007y']: 1 } as never), /champ « x\?y »/);
+  });
+
+  it("un visage ne « reste » pas : « stays » est refuse pour les trois identites, accepte pour n'importe qui", () => {
+    for (const who of [UNKNOWN, FAMILLE, AWA]) {
+      refuse(stays(5, { who }), /pour reconnaitre un visage, seul « apparait » est possible/);
+    }
+    assert.equal(validateSpec(stays(5), KNOWN).trigger.type, 'stays');
+  });
+
+  it("ne verifie rien aupres de l'enregistreur : une liste inconnue de tous est acceptee", () => {
+    assert.doesNotThrow(() => validateSpec(idSpec({ type: 'list', listId: 'base-supprimee', listName: 'Ancienne liste' }), KNOWN));
+  });
+});
+
+describe("regles d'identite : phrase en francais", () => {
+  const names: Record<string, string> = { 'C-01': 'Avant cour', 'C-02': 'Escalier' };
+  const ctx = { cameraName: (id: string) => names[id] ?? id };
+
+  it('visage inconnu', () => {
+    assert.equal(
+      describeRule(idSpec(UNKNOWN), ctx),
+      'Prévenir (alerte critique) si un visage inconnu est vu devant la caméra « Avant cour », à toute heure ; ensuite, attendre 10 min avant de signaler à nouveau.',
+    );
+  });
+
+  it('liste, en zone, avec plage de nuit et avertissement', () => {
+    const s = idSpec(FAMILLE, { where: { zones: ['Cour'] }, when: night(), then: { severity: 'warning' } });
+    assert.equal(
+      describeRule(s, ctx),
+      'Prévenir (avertissement) si une personne de la liste « Famille » est reconnue dans la zone « Cour », uniquement de 22:00 à 06:00 le lendemain, tous les jours ; ensuite, attendre 10 min avant de signaler à nouveau.',
+    );
+  });
+
+  it('personne, plusieurs cameras, zone armee, repos nul', () => {
+    assert.equal(
+      describeRule(idSpec(AWA, { where: { cameras: ['C-01', 'C-02'] }, when: { type: 'armed' }, cooldownMinutes: 0 }), ctx),
+      'Prévenir (alerte critique) si la personne « Awa Koné » est reconnue devant les caméras « Avant cour » ou « Escalier », uniquement quand la zone est armée ; ensuite, signaler à nouveau sans attendre.',
+    );
+  });
+
+  it("« n'importe qui » ne change pas", () => {
+    assert.match(describeRule(spec(), ctx), /^Prévenir \(alerte critique\) si quelqu'un apparaît devant la caméra « Avant cour »,/);
+  });
+});
+
+describe("regles d'identite : correspondance", () => {
+  it("faceMatches : inconnu, liste (groupe), personne ; « n'importe qui » ne correspond a aucun visage", () => {
+    const known = { kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    const unknown = { kind: 'unknown' as const };
+    assert.equal(faceMatches(UNKNOWN, unknown), true);
+    assert.equal(faceMatches(UNKNOWN, known), false);
+    assert.equal(faceMatches(FAMILLE, known), true);
+    assert.equal(faceMatches(FAMILLE, { ...known, groupId: '3' }), false);
+    assert.equal(faceMatches(FAMILLE, { ...known, groupId: null }), false);
+    assert.equal(faceMatches(FAMILLE, unknown), false);
+    assert.equal(faceMatches(FAMILLE, { kind: 'unknown', groupId: '2' }), false, "un inconnu n'a pas de liste");
+    assert.equal(faceMatches(AWA, known), true);
+    assert.equal(faceMatches(AWA, { ...known, personId: 'p-8' }), false);
+    assert.equal(faceMatches(AWA, { kind: 'recognized', personId: null, groupId: '2' }), false);
+    assert.equal(faceMatches(AWA, unknown), false);
+    assert.equal(faceMatches({ type: 'anyone' }, known), false);
+    assert.equal(faceMatches({ type: 'anyone' }, unknown), false);
+  });
+});
+
+function idMachine(s: RuleSpec, armed: Record<string, boolean> = {}) {
+  return createRuleMachine(s, { cameras: ['C-01', 'C-02'], isArmed: (cameraId) => armed[cameraId] !== false });
+}
+const seen = (sec: number, cameraId: string, kind: 'recognized' | 'unknown' = 'unknown', personId: string | null = null, groupId: string | null = null) => ({ cameraId, at: at(sec), kind, personId, groupId });
+const seenAt = (ms: number, cameraId: string, kind: 'recognized' | 'unknown' = 'unknown') => ({ cameraId, at: ms, kind, personId: null, groupId: null });
+
+describe("machine d'identite : declenchement, prolongation, retour au calme, repos", () => {
+  it("evenement selon la gravite et l'identite", () => {
+    const fire = (s: RuleSpec, obs: ReturnType<typeof seen>) => brief(idMachine(s).see(obs));
+    const mine = seen(0, 'C-01', 'recognized', 'p-7', '2');
+    assert.deepEqual(fire(idSpec(UNKNOWN), seen(0, 'C-01')), ['face_unknown:C-01@0']);
+    assert.deepEqual(fire(idSpec(FAMILLE), mine), ['face_banned:C-01@0']);
+    assert.deepEqual(fire(idSpec(AWA), mine), ['face_banned:C-01@0']);
+    for (const who of [UNKNOWN, FAMILLE, AWA]) {
+      const obs = who.type === 'unknown' ? seen(0, 'C-01') : mine;
+      assert.deepEqual(fire(idSpec(who, { then: { severity: 'warning' } }), obs), ['face_noticed:C-01@0']);
+    }
+  });
+
+  it('ne reagit pas aux autres identites ni aux cameras hors portee ; la camera designee est celle de l\'observation', () => {
+    const m = idMachine(idSpec(FAMILLE));
+    assert.deepEqual(brief(m.see(seen(0, 'C-01', 'unknown'))), []);
+    assert.deepEqual(brief(m.see(seen(1, 'C-01', 'recognized', 'p-9', '3'))), []);
+    assert.deepEqual(brief(m.see(seen(2, 'C-09', 'recognized', 'p-7', '2'))), [], 'hors portee');
+    assert.equal(m.nextWake(), null);
+    assert.deepEqual(brief(m.see(seen(3, 'C-02', 'recognized', 'p-7', '2'))), ['face_banned:C-02@3']);
+  });
+
+  it("prolongation : chaque observation correspondante repousse la fin ; clear a l'instant exact derniere + 60 s", () => {
+    const m = idMachine(idSpec(UNKNOWN));
+    assert.deepEqual(brief(m.see(seen(0, 'C-01'))), ['face_unknown:C-01@0']);
+    assert.equal(m.nextWake(), at(60));
+    assert.deepEqual(brief(m.see(seen(50, 'C-02'))), [], 'deja declenchee, prolonge');
+    assert.equal(m.nextWake(), at(110));
+    assert.deepEqual(brief(m.see(seen(100, 'C-01', 'recognized', 'p-1', '1'))), [], 'une autre identite ne prolonge pas');
+    assert.equal(m.nextWake(), at(110));
+    assert.deepEqual(brief(m.tick(at(109))), []);
+    assert.equal(m.isTriggered(), true);
+    assert.deepEqual(brief(m.tick(at(500))), ['clear@110'], 'date de la fin, pas du tick');
+    assert.equal(m.isTriggered(), false);
+    assert.equal(m.nextWake(), null);
+  });
+
+  it("a 60 s pile apres la derniere observation correspondante, la regle est deja finie (repos nul : nouveau declenchement)", () => {
+    const m = idMachine(idSpec(UNKNOWN, { cooldownMinutes: 0 }));
+    m.see(seen(0, 'C-01'));
+    assert.deepEqual(brief(m.see(seen(59, 'C-01'))), [], 'prolonge : fin a 119');
+    assert.deepEqual(brief(m.see(seen(118, 'C-01'))), [], '59 s apres la derniere : encore declenchee, fin a 178');
+    assert.deepEqual(brief(m.see(seen(178, 'C-01'))), ['clear@178', 'face_unknown:C-01@178']);
+  });
+
+  it('repos : aucune observation ne declenche avant la fin du repos, limite incluse', () => {
+    const a = idMachine(idSpec(UNKNOWN)); // repos 10 min
+    a.see(seen(0, 'C-01'));
+    assert.deepEqual(brief(a.tick(at(60))), ['clear@60']); // repos jusqu'a 660
+    assert.deepEqual(brief(a.see(seen(659, 'C-01'))), [], 'encore au repos');
+    assert.equal(a.nextWake(), null, 'une observation pendant le repos ne declenche ni ne prolonge');
+    const b = idMachine(idSpec(UNKNOWN));
+    b.see(seen(0, 'C-01'));
+    b.tick(at(60));
+    assert.deepEqual(brief(b.see(seen(660, 'C-01'))), ['face_unknown:C-01@660'], 'repos ecoule pile');
+  });
+
+  it('le repos part de la fin (derniere observation + 60 s), pas du declenchement', () => {
+    const m = idMachine(idSpec(UNKNOWN, { cooldownMinutes: 5 }));
+    m.see(seen(0, 'C-01'));
+    m.see(seen(50, 'C-01')); // prolonge : fin a 110, repos jusqu'a 410
+    assert.deepEqual(brief(m.see(seen(409, 'C-01'))), ['clear@110'], 'encore au repos : seule la fin est signalee');
+    assert.deepEqual(brief(m.see(seen(410, 'C-01'))), ['face_unknown:C-01@410']);
+  });
+
+  it("release : un seul clear, pas de repos ensuite ; init ne signale rien et ignore la presence ; feed est sans effet", () => {
+    const m = idMachine(idSpec(UNKNOWN));
+    assert.deepEqual(brief(m.release(at(1))), []);
+    m.see(seen(0, 'C-01'));
+    assert.deepEqual(brief(m.release(at(5))), ['clear@5']);
+    assert.equal(m.nextWake(), null);
+    assert.deepEqual(brief(m.see(seen(6, 'C-01'))), ['face_unknown:C-01@6']);
+    const fresh = idMachine(idSpec(UNKNOWN));
+    assert.deepEqual(brief(fresh.init({ 'C-01': { since: at(-3600) } }, at(0))), []);
+    assert.equal(fresh.isTriggered(), false);
+    assert.deepEqual(brief(fresh.feed(change(1, 'C-01', 'start'))), [], "la presence ne pilote pas une regle d'identite");
+    assert.deepEqual(brief(fresh.tick(at(5000))), []);
+    assert.equal(fresh.nextWake(), null);
+  });
+
+  it("une regle « n'importe qui » ignore les visages", () => {
+    const m = idMachine(spec());
+    assert.deepEqual(brief(m.see(seen(0, 'C-01'))), []);
+    assert.deepEqual(brief(m.see(seen(1, 'C-01', 'recognized', 'p-7', '2'))), []);
+    assert.equal(m.nextWake(), null);
+    assert.deepEqual(brief(m.feed(change(2, 'C-01', 'start'))), ['person_detected:C-01@2']);
+  });
+
+  it('le temps ne recule jamais', () => {
+    const m = idMachine(idSpec(UNKNOWN));
+    m.tick(at(100));
+    assert.deepEqual(brief(m.see(seen(50, 'C-01'))), ['face_unknown:C-01@100']);
+  });
+});
+
+describe("machine d'identite : periodes (when)", () => {
+  const mondayNight = idSpec(UNKNOWN, { when: { type: 'windows', windows: [{ days: [1], from: '22:00', to: '06:00' }] } });
+  const fires = (s: RuleSpec, day: number, h: number, m: number) => idMachine(s).see(seenAt(T0 + hms(day, h, m) * S, 'C-01')).length > 0;
+
+  it('plage a cheval sur minuit : debut inclus, fin exclue, autre jour exclu', () => {
+    assert.equal(fires(mondayNight, 0, 21, 59), false);
+    assert.equal(fires(mondayNight, 0, 22, 0), true);
+    assert.equal(fires(mondayNight, 1, 3, 0), true);
+    assert.equal(fires(mondayNight, 1, 5, 59), true);
+    assert.equal(fires(mondayNight, 1, 6, 0), false);
+    assert.equal(fires(mondayNight, 1, 23, 0), false);
+    assert.equal(fires(mondayNight, 0, 3, 0), false);
+  });
+
+  it('une observation hors plage est oubliee ; une observation ulterieure dans la plage declenche', () => {
+    const m = idMachine(idSpec(UNKNOWN, { when: night() }));
+    assert.deepEqual(brief(m.see(seenAt(at(hms(0, 20)), 'C-01'))), []);
+    assert.deepEqual(brief(m.see(seenAt(at(hms(0, 22, 5)), 'C-01'))), [`face_unknown:C-01@${hms(0, 22, 5)}`]);
+  });
+
+  it('declenchee dans la plage, la regle est prolongee par une observation apres la fermeture de la plage', () => {
+    const m = idMachine(idSpec(UNKNOWN, { when: night() }));
+    assert.deepEqual(brief(m.see(seenAt(at(hms(1, 5, 59, 30)), 'C-01'))), [`face_unknown:C-01@${hms(1, 5, 59, 30)}`]);
+    assert.deepEqual(brief(m.see(seenAt(at(hms(1, 6, 0, 20)), 'C-01'))), [], 'plage fermee mais deja declenchee : prolonge');
+    assert.deepEqual(brief(m.tick(at(hms(1, 7)))), [`clear@${hms(1, 6, 1, 20)}`]);
+  });
+
+  it("zone armee : jugee sur la camera de l'observation", () => {
+    const m = idMachine(idSpec(UNKNOWN, { when: { type: 'armed' } }), { 'C-02': false });
+    assert.deepEqual(brief(m.see(seen(0, 'C-02'))), [], 'zone de C-02 desarmee');
+    assert.deepEqual(brief(m.see(seen(5, 'C-01'))), ['face_unknown:C-01@5']);
+  });
+});
+
+describe("machine d'identite : direct par ticks == essai par sauts", () => {
+  it("memes actions, quelle que soit la facon d'avancer le temps (generateur a graine fixe)", () => {
+    const prng = (seed: number) => {
+      let x = seed >>> 0;
+      return () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+    };
+    const specs: RuleSpec[] = [
+      idSpec(UNKNOWN, { cooldownMinutes: 0 }),
+      idSpec(UNKNOWN, { cooldownMinutes: 3, then: { severity: 'warning' } }),
+      idSpec(FAMILLE, { cooldownMinutes: 1 }),
+      idSpec(AWA, { cooldownMinutes: 5 }),
+      idSpec(UNKNOWN, { when: night(), cooldownMinutes: 5 }),
+      idSpec(FAMILLE, { when: { type: 'armed' }, cooldownMinutes: 2 }),
+    ];
+    const start = hms(0, 20);
+    const end = hms(1, 4);
+    let total = 0;
+    for (let seed = 1; seed <= 4; seed++) {
+      const rnd = prng(seed * 104729);
+      const events: { sec: number; cameraId: string; kind: 'recognized' | 'unknown'; personId: string | null; groupId: string | null }[] = [];
+      for (const cameraId of ['C-01', 'C-02']) {
+        let t = start + Math.floor(rnd() * 600);
+        while (t < end - 3600) {
+          const r = rnd();
+          events.push(r < 0.5 ? { sec: t, cameraId, kind: 'unknown', personId: null, groupId: null } : r < 0.75 ? { sec: t, cameraId, kind: 'recognized', personId: 'p-7', groupId: '2' } : { sec: t, cameraId, kind: 'recognized', personId: 'p-9', groupId: '2' });
+          t += rnd() < 0.7 ? 5 + Math.floor(rnd() * 90) : 120 + Math.floor(rnd() * 2400);
+        }
+      }
+      events.sort((a, b) => a.sec - b.sec);
+      for (const [i, s] of specs.entries()) {
+        const armed = { 'C-02': seed % 2 === 0 };
+        const dense = idMachine(s, armed);
+        const sparse = idMachine(s, armed);
+        const sight = (e: (typeof events)[number]) => ({ cameraId: e.cameraId, at: at(e.sec), kind: e.kind, personId: e.personId, groupId: e.groupId });
+        const denseOut: RuleAction[] = [];
+        let k = 0;
+        for (let sec = start; sec <= end; sec++) {
+          while (k < events.length && events[k].sec <= sec) denseOut.push(...dense.see(sight(events[k++])));
+          denseOut.push(...dense.tick(at(sec)));
+        }
+        const sparseOut: RuleAction[] = [];
+        for (const e of events) sparseOut.push(...sparse.see(sight(e)));
+        sparseOut.push(...sparse.tick(at(end)));
+        assert.deepEqual(brief(denseOut), brief(sparseOut), `graine ${seed}, regle ${i}`);
+        total += denseOut.length;
+      }
+    }
+    assert.ok(total > 50, `les scenarios declenchent bien des actions (${total})`);
+  });
+});
+
+// ---- 7. Regles d'identite : moteur complet (visages injectes) ---------------------------------------------------------
+
+function fakeFaces() {
+  const listeners = new Set<(s: FaceSeen) => void>();
+  const log: FaceSeen[] = [];
+  return {
+    emit(s: FaceSeen) {
+      log.push(s);
+      for (const fn of [...listeners]) fn(s);
+    },
+    /** Historique ajoute sans prevenir personne (essai sur le passe). */
+    seed(items: FaceSeen[]) {
+      log.push(...items);
+    },
+    subscribe(fn: (s: FaceSeen) => void) {
+      listeners.add(fn);
+      return () => void listeners.delete(fn);
+    },
+    history(from: number, to: number, cameraIds?: string[]): FaceSeen[] {
+      return log
+        .filter((s) => s.at >= from && s.at <= to && (!cameraIds || cameraIds.includes(s.cameraId)))
+        .map((s, i) => ({ s, i }))
+        .sort((a, b) => a.s.at - b.s.at || a.i - b.i)
+        .map((x) => x.s);
+    },
+    listenerCount: () => listeners.size,
+  };
+}
+const face = (ms: number, cameraId: string, kind: 'recognized' | 'unknown' = 'unknown', personId: string | null = null, groupId: string | null = null): FaceSeen => ({
+  cameraId,
+  at: ms,
+  kind,
+  personId,
+  personName: personId ? 'Nom' : null,
+  groupId,
+  groupName: groupId ? 'Base' : null,
+  similarity: kind === 'recognized' ? 90 : null,
+});
+
+type FaceScript = [sec: number, cameraId: string, kind?: 'recognized' | 'unknown', personId?: string | null, groupId?: string | null][];
+
+function faceSetup(opts: { withFaces?: boolean; armed?: Record<string, boolean> } = {}) {
+  const h = setup({ armed: opts.armed });
+  h.rules.close(); // le moteur de setup() n'a pas de visages : on en monte un autre sur la meme base
+  const faces = fakeFaces();
+  let current = T0;
+  const sent: { sec: number; deviceId: string; event: string }[] = [];
+  const engine = {
+    handleDetectorMessage: (deviceId: string, payload: unknown) => {
+      sent.push({ sec: (current - T0) / S, deviceId, event: (payload as { event: string }).event });
+      h.engine.handleDetectorMessage(deviceId, payload);
+    },
+    audit: h.engine.audit,
+    getDevice: h.engine.getDevice,
+    createDevice: h.engine.createDevice,
+    updateDevice: h.engine.updateDevice,
+    deleteDevice: h.engine.deleteDevice,
+    setLinks: h.engine.setLinks,
+    getSnapshot: h.engine.getSnapshot,
+  };
+  const rules = createRules({ db: h.db, engine, presence: h.presence, faces: opts.withFaces === false ? undefined : faces, isArmed: (zone) => h.armed[zone] !== false, now: () => current });
+  return {
+    h,
+    faces,
+    rules,
+    sent,
+    triggers: () => sent.filter((m) => m.event !== 'clear'),
+    set: (sec: number) => {
+      current = T0 + sec * S;
+    },
+    /** Avance seconde par seconde de `from` a `until`, en jouant les visages du scenario et un tick par seconde. */
+    play(script: FaceScript, from: number, until: number) {
+      const todo = script.map((e, i) => ({ e, i })).sort((a, b) => a.e[0] - b.e[0] || a.i - b.i).map((x) => x.e);
+      let k = 0;
+      for (let s = from; s <= until; s++) {
+        current = T0 + s * S;
+        while (k < todo.length && todo[k][0] <= s) {
+          const [, cam, kind, pid, gid] = todo[k++];
+          faces.emit(face(current, cam, kind ?? 'unknown', pid ?? null, gid ?? null));
+        }
+        rules.tick();
+      }
+    },
+    status: (id: string) => h.engine.getDevice(id)?.status,
+  };
+}
+
+describe("regles d'identite : direct, detecteur et essai sur le passe", () => {
+  it('un visage inconnu ouvre un incident critique (face_unknown) sur R-1, retour a la normale 60 s apres la derniere observation', () => {
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Inconnus cour', spec: idSpec(UNKNOWN, { where: { cameras: ['C-01', 'C-02'] } }) });
+    f.play([[0, 'C-01'], [30, 'C-02']], 0, 89);
+    assert.equal(f.status('R-1'), 'alarm');
+    const [incident] = f.h.engine.getSnapshot().incidents;
+    assert.equal(incident.event, 'face_unknown');
+    assert.equal(incident.severity, 'critical');
+    assert.equal(incident.detectorId, 'R-1');
+    f.play([], 90, 90);
+    assert.equal(f.status('R-1'), 'normal');
+    assert.deepEqual(f.sent.map((m) => `${m.sec}:${m.event}`), ['0:face_unknown', '90:clear']);
+  });
+
+  it('liste / personne = face_banned, avertissement = face_noticed (pre-alarme) ; les autres visages sont sans effet', () => {
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Famille', spec: idSpec(FAMILLE, { where: { cameras: ['C-01'] }, then: { severity: 'warning' } }) });
+    f.rules.create('admin', { name: 'Awa', spec: idSpec(AWA, { where: { cameras: ['C-02'] } }) });
+    f.play([[0, 'C-01', 'recognized', 'p-1', '3'], [1, 'C-01', 'unknown'], [2, 'C-02', 'recognized', 'p-7', '2']], 0, 3);
+    assert.deepEqual(f.sent.map((m) => `${m.deviceId}:${m.event}`), ['R-2:face_banned']);
+    assert.equal(f.status('R-1'), 'normal');
+    f.play([[10, 'C-01', 'recognized', 'p-1', '2']], 4, 11);
+    assert.equal(f.status('R-1'), 'prealarm');
+    const noticed = f.h.engine.getSnapshot().incidents.find((i) => i.detectorId === 'R-1')!;
+    assert.equal(noticed.severity, 'warning');
+    assert.equal(noticed.event, 'face_noticed');
+  });
+
+  it("les regles « n'importe qui » ne recoivent pas les visages, et les regles d'identite ne recoivent pas la presence", () => {
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Presence', spec: spec() });
+    f.rules.create('admin', { name: 'Inconnus', spec: idSpec(UNKNOWN) });
+    f.play([[0, 'C-01']], 0, 1);
+    assert.deepEqual(f.sent.map((m) => m.deviceId), ['R-2']);
+    f.set(100);
+    f.h.presence.emit({ cameraId: 'C-01', kind: 'start', at: T0 + 100 * S, source: 'test' });
+    assert.deepEqual(f.sent.map((m) => m.deviceId), ['R-2', 'R-1']);
+  });
+
+  it("sans `faces`, une regle d'identite vit mais ne recoit rien, et son essai ne declenche rien", () => {
+    const f = faceSetup({ withFaces: false });
+    f.rules.create('admin', { name: 'Inconnus', spec: idSpec(UNKNOWN) });
+    assert.equal(f.faces.listenerCount(), 0);
+    f.faces.emit(face(T0, 'C-01'));
+    f.play([], 0, 5);
+    assert.equal(f.sent.length, 0);
+    assert.ok(f.h.engine.getDevice('R-1'));
+    assert.deepEqual(f.rules.simulate(idSpec(UNKNOWN), T0, at(60)).triggers, []);
+  });
+
+  it('close() desabonne aussi les visages', () => {
+    const f = faceSetup();
+    assert.equal(f.faces.listenerCount(), 1);
+    f.rules.close();
+    assert.equal(f.faces.listenerCount(), 0);
+  });
+
+  it("desactivation pendant l'alarme : clear ; reactivee, elle reagit", () => {
+    const f = faceSetup();
+    const rule = f.rules.create('admin', { name: 'Inconnus', spec: idSpec(UNKNOWN) });
+    f.play([[0, 'C-01']], 0, 5);
+    assert.equal(f.status('R-1'), 'alarm');
+    f.rules.update('admin', rule.id, { enabled: false });
+    assert.equal(f.status('R-1'), 'normal');
+    f.play([[6, 'C-01']], 6, 20);
+    assert.equal(f.triggers().length, 1, 'desactivee : aucune reaction');
+    f.rules.update('admin', rule.id, { enabled: true });
+    f.play([[30, 'C-01']], 21, 31);
+    assert.equal(f.triggers().length, 2);
+  });
+
+  it("une regle d'identite ne peut etre ni creee ni modifiee avec « reste » (400)", () => {
+    const f = faceSetup();
+    assert.throws(() => f.rules.create('admin', { name: 'x', spec: stays(5, { who: UNKNOWN }) }), (e: unknown) => e instanceof PsimError && e.status === 400 && /seul « apparait »/.test(e.message));
+    const rule = f.rules.create('admin', { name: 'ok', spec: idSpec(UNKNOWN) });
+    assert.throws(() => f.rules.update('admin', rule.id, { spec: stays(5, { who: UNKNOWN }) }), /seul « apparait »/);
+    assert.deepEqual(f.rules.get(rule.id)!.spec.who, UNKNOWN);
+    assert.match(f.rules.get(rule.id)!.summary, /si un visage inconnu est vu devant la caméra/);
+  });
+
+  it('essai sur le passe == direct : memes declenchements et memes fins ; sans effet de bord', () => {
+    const script: FaceScript = [
+      [0, 'C-01'], [40, 'C-02'], [95, 'C-01', 'recognized', 'p-7', '2'], // une seule alarme, fin a 100 (le visage reconnu ne prolonge pas)
+      [200, 'C-01'], // repos ou non selon la regle
+      [800, 'C-02'], [850, 'C-01'], [1000, 'C-01'],
+    ];
+    for (const s of [idSpec(UNKNOWN, { where: { cameras: ['C-01', 'C-02'] } }), idSpec(UNKNOWN, { where: { zones: ['Accueil', 'Couloir'] }, cooldownMinutes: 3 })]) {
+      const f = faceSetup();
+      f.rules.create('admin', { name: 'Inconnus', spec: s });
+      f.play(script, 0, 1500);
+      const count = (t: string) => (f.h.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+      const before = { audit: count('audit_log'), incident: count('incident'), sent: f.sent.length };
+      const sim = f.rules.simulate(s, T0, at(1500));
+      const liveTriggers = f.triggers().map((m) => m.sec);
+      const liveClears = f.sent.filter((m) => m.event === 'clear').map((m) => m.sec);
+      // le faux enregistreur de visages memorise ce qu'il a emis : l'historique est celui du direct
+      assert.deepEqual(sim.triggers.map((t) => (t.at - T0) / S), liveTriggers);
+      assert.deepEqual(sim.triggers.map((t) => (t.endedAt === null ? null : (t.endedAt - T0) / S)), liveClears);
+      assert.ok(liveTriggers.length >= 2, 'le scenario declenche plusieurs fois');
+      assert.deepEqual({ audit: count('audit_log'), incident: count('incident'), sent: f.sent.length }, before);
+    }
+  });
+
+  it("essai : fin retrouvee au-dela de la periode, filtre par les cameras de la portee, phrase d'identite", () => {
+    const f = faceSetup();
+    f.faces.seed([face(at(10), 'C-01'), face(at(60), 'C-01'), face(at(30), 'C-04'), face(at(5000), 'C-01')]);
+    const sim = f.rules.simulate(idSpec(UNKNOWN), T0, at(100));
+    assert.deepEqual(sim.triggers, [{ at: at(10), endedAt: at(120), cameraId: 'C-01' }]);
+    assert.match(sim.summary, /si un visage inconnu est vu devant la caméra « Camera accueil »/);
+    assert.deepEqual(f.rules.simulate(idSpec(AWA), T0, at(100)).triggers, [], 'personne differente');
   });
 });

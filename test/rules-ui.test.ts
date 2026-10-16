@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { describeRule, validateSpec } from '../server/rules.ts';
-import type { RuleSpec } from '../server/rules.ts';
+import type { RuleSpec, Who } from '../server/rules.ts';
 
 const WEB = join(import.meta.dirname, '..', 'web');
 // Fins de ligne normalisees : le depot est extrait en CRLF sous Windows (core.autocrlf), les motifs ci-dessous sont ecrits en LF.
@@ -27,6 +27,7 @@ interface Win {
 }
 interface Form {
   name: string;
+  who: Who;
   whereMode: 'cameras' | 'zones';
   cameras: string[];
   zones: string[];
@@ -73,6 +74,40 @@ interface Rules {
   periodText: (days: number) => string;
   trialButtonText: (days: number) => string;
   trialHeadline: (count: number, days: number) => string;
+  MAX_FACE_ID: number;
+  MAX_FACE_NAME: number;
+  MAX_SOURCE_TEXT: number;
+  MAX_ASSIST_TURN: number;
+  MAX_ASSIST_HISTORY: number;
+  RELIABILITY_NOTE: string;
+  CAUTION_NOTE: string;
+  NO_LIST_NOTE: string;
+  STAYS_FACE_NOTE: string;
+  isFaceWho: (who: unknown) => boolean;
+  cloneWho: (who: unknown) => Who;
+  buildWho: (who: unknown) => Who;
+  triggerForWho: (who: Who, mode: 'appears' | 'stays') => { triggerMode: 'appears' | 'stays'; changed: boolean };
+  severityForWho: (a: { from: string; to: string; severity: 'warning' | 'critical'; touched: boolean }) => { severity: 'warning' | 'critical'; changed: boolean };
+  restoreForAnyone: (a: { triggerMode: 'appears' | 'stays'; severity: 'warning' | 'critical'; autoTrigger: boolean; autoSeverity: 'warning' | 'critical' | null; touched: boolean }) => { triggerMode: 'appears' | 'stays'; severity: 'warning' | 'critical' };
+  severityTexts: (face: boolean) => { warning: string; critical: string };
+  appearsTexts: (who: Who) => { label: string; desc: string };
+  listChoices: (lists: FaceList[], ...whos: (Who | null)[]) => { id: string; label: string; note: string; missing: boolean }[];
+  selectedListIndex: (items: { id: string; label: string }[], who: Who) => number;
+  facesView: (faces: { status: string; lists?: FaceList[]; notes?: string[] }, who: Who, stored?: Who | null) => { kind: 'loading' | 'error' | 'empty' | 'select'; items: { id: string; label: string; note: string; missing: boolean }[]; notes: string[] };
+  formFromProposal: (proposal: { name: string; spec: RuleSpec; summary?: string }, ctx?: { cameraIds?: Set<string>; zones?: Set<string>; lists?: { id: string }[] | null }) => { form: Form; issues: string[] };
+  historyForAssist: (turns: Turn[]) => Turn[];
+  sourceTextOf: (turns: Turn[]) => string;
+  nextAssistTurns: (turns: Turn[], sent: string, result: unknown) => { turns: Turn[]; sourceText: string };
+}
+interface FaceList {
+  id: string;
+  name: string;
+  cameraId: string;
+  cameraName: string;
+}
+interface Turn {
+  role: 'user' | 'assistant';
+  text: string;
 }
 const rules = (await import(pathToFileURL(join(WEB, 'rules.js')).href)) as Rules;
 
@@ -158,6 +193,17 @@ describe('ecran « Regles » : page et navigation', () => {
       'Modifications non enregistrées',
       'Abandonner la saisie',
       'Ajouter une plage',
+      'Une personne de la liste…',
+      'Un visage inconnu',
+      'Décrivez la règle en une phrase',
+      'Proposer une règle',
+      'Proposition de l’assistant : relisez chaque case, puis enregistrez.',
+      'Aucune liste de visages : ajoutez une caméra à reconnaissance faciale et créez-y une base',
+      'recommandé tant que l’essai de fiabilité n’est pas terminé',
+      'une reconnaissance peut se tromper : un humain doit vérifier avant d’agir',
+      'Les listes de visages n’ont pas pu être lues',
+      'Réessayer',
+      'Répondre',
     ]) {
       assert.ok(all.includes(text), `texte absent : ${text}`);
     }
@@ -202,7 +248,10 @@ describe('ecran « Regles » : politique de securite du contenu et donnees', () 
 
   it("appelle les routes du contrat d'API et seulement elles", () => {
     const paths = new Set([...withoutComments.matchAll(/['`](\/api\/[^'`$]*)/g)].map((m) => m[1]));
-    assert.deepEqual([...paths].sort(), ['/api/presence', '/api/rules', '/api/rules/', '/api/rules/simulate'].sort());
+    assert.deepEqual([...paths].sort(), ['/api/faces/lists', '/api/presence', '/api/rules', '/api/rules/', '/api/rules/assist', '/api/rules/simulate'].sort());
+    assert.match(withoutComments, /api\('\/api\/faces\/lists'\)/, 'lecture des listes : GET');
+    assert.match(withoutComments, /api\('\/api\/rules\/assist'\)/, "l'assistant est-il configure : GET");
+    assert.match(withoutComments, /api\('\/api\/rules\/assist', \{ method: 'POST', body \}\)/, "la proposition : POST { text, history? }");
     assert.match(withoutComments, /method: 'DELETE'/);
     assert.match(withoutComments, /method: 'PUT', body: \{ enabled: on \}/);
     assert.match(withoutComments, /method: 'POST', body: \{ spec: buildSpec\(state\), days \}/);
@@ -505,5 +554,470 @@ describe('ecran « Regles » : un brouillon n’est jamais ecrase', () => {
     assert.match(code, /type: 'checkbox', role: 'switch'/);
     assert.match(code, /rule\.enabled \? 'Active' : 'Inactive'/);
     assert.match(code, /icon\(rule\.enabled \? 'state-ok' : 'state-offline'\)/);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ visages et assistant
+
+const LIST_WHO: Who = { type: 'list', listId: '1', listName: 'Résidents et personnel' };
+const PERSON_WHO: Who = { type: 'person', personId: 'P-42', personName: 'Awa Koné' };
+const WHOS: Who[] = [{ type: 'anyone' }, { type: 'unknown' }, LIST_WHO, { type: 'list', listId: '7', listName: 'Interdits' }, PERSON_WHO];
+const LISTS = [
+  { id: '1', name: 'Résidents et personnel', cameraId: 'D05', cameraName: 'Avant cour' },
+  { id: '2', name: 'Interdits', cameraId: 'D05', cameraName: 'Avant cour' },
+];
+
+describe('ecran « Regles » : case « Qui » etendue aux visages, meme verification et meme phrase que le serveur', () => {
+  it('chaque « Qui » x Ou x Quand x Alors : validateSpec (serveur) accepte et normalise a l’identique, describeRule dit la meme phrase', () => {
+    const whens: Partial<Form>[] = [{ whenMode: 'always' }, { whenMode: 'armed' }, { whenMode: 'windows', windows: [win([1, 2, 3, 4, 5], '19:00', '07:00')] }];
+    const wheres: Partial<Form>[] = [{ whereMode: 'cameras', cameras: ['D05'] }, { whereMode: 'cameras', cameras: ['D05', 'D08'] }, { whereMode: 'zones', zones: ['Cour', 'Intérieur'] }];
+    let n = 0;
+    for (const who of WHOS) for (const w of wheres) for (const q of whens) for (const severity of ['warning', 'critical'] as const) for (const cooldown of ['0', '10']) {
+      const f = form({ who, ...w, ...q, severity, cooldown });
+      assert.deepEqual(rules.formProblems(f, CTX), [], JSON.stringify(f));
+      const spec = rules.buildSpec(f);
+      assert.deepEqual(spec.who, who);
+      const checked = validateSpec(spec, CTX);
+      assert.deepEqual(checked, spec, 'le serveur ne change rien a ce que l’ecran construit');
+      assert.equal(rules.describeSpec(spec, nameOf), describeRule(checked, { cameraName: nameOf }), 'meme phrase que le serveur');
+      assert.equal(rules.liveSentence(f, nameOf), describeRule(checked, { cameraName: nameOf }));
+      n++;
+    }
+    assert.equal(n, 5 * 3 * 3 * 2 * 2);
+  });
+
+  it('« reste plus de N » reste possible pour « n’importe qui » (comportement inchange)', () => {
+    const f = form({ triggerMode: 'stays', minutes: '15' });
+    assert.deepEqual(rules.buildSpec(f).who, { type: 'anyone' });
+    assert.deepEqual(rules.buildSpec(f).trigger, { type: 'stays', minutes: 15 });
+    assert.deepEqual(rules.formProblems(f, CTX), []);
+    assert.match(rules.liveSentence(f, nameOf) ?? '', /si quelqu'un reste au moins 15 min /);
+  });
+
+  it('les trois phrases de visage sont celles du serveur', () => {
+    const phrase = (who: Who) => rules.liveSentence(form({ who }), nameOf) ?? '';
+    assert.match(phrase({ type: 'unknown' }), /^Prévenir \(avertissement\) si un visage inconnu est vu devant la caméra « Avant cour », à toute heure ;/);
+    assert.match(phrase(LIST_WHO), /si une personne de la liste « Résidents et personnel » est reconnue devant/);
+    assert.match(phrase(PERSON_WHO), /si la personne « Awa Koné » est reconnue devant/);
+  });
+
+  it('pour un visage, « reste plus de N minutes » est refuse par l’ecran comme par le serveur', () => {
+    for (const who of WHOS.filter((w) => w.type !== 'anyone')) {
+      const f = form({ who, triggerMode: 'stays', minutes: '5' });
+      assert.deepEqual(rules.formProblems(f, CTX).map((p) => p.key), ['trigger'], who.type);
+      assert.match(rules.formProblems(f, CTX)[0].message, /seul « un visage est vu » est possible/);
+      assert.equal(rules.liveSentence(f, nameOf), null);
+      assert.throws(() => validateSpec(rules.buildSpec(f), CTX), /seul « apparait » est possible/);
+    }
+    // Meme une duree absurde ne produit qu'un seul message : la condition elle-meme est refusee.
+    assert.deepEqual(rules.formProblems(form({ who: { type: 'unknown' }, triggerMode: 'stays', minutes: '0' }), CTX).map((p) => p.key), ['trigger']);
+  });
+
+  it('une liste est requise ; identifiant et nom bornes comme au serveur ; textes ranges comme au serveur', () => {
+    const serverAccepts = (f: Form) => {
+      try {
+        validateSpec(rules.buildSpec(f), CTX);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const keys = (f: Form) => rules.formProblems(f, CTX).map((p) => p.key);
+    const none = form({ who: { type: 'list', listId: '', listName: '' } });
+    assert.deepEqual(keys(none), ['who']);
+    assert.match(rules.formProblems(none, CTX)[0].message, /^Choisissez une liste de visages\.$/);
+    assert.equal(serverAccepts(none), false);
+    const cases: [string, Who][] = [
+      ['id de 64', { type: 'list', listId: 'x'.repeat(rules.MAX_FACE_ID), listName: 'A' }],
+      ['id de 65', { type: 'list', listId: 'x'.repeat(rules.MAX_FACE_ID + 1), listName: 'A' }],
+      ['nom de 80', { type: 'list', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME) }],
+      ['nom de 81', { type: 'list', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME + 1) }],
+      ['nom vide', { type: 'list', listId: '1', listName: '   ' }],
+      ['nom avec controle', { type: 'list', listId: '1', listName: 'A\u0007B' }],
+      ['nom avec caractere invisible', { type: 'list', listId: '1', listName: 'A​B' }],
+      ['personne sans id', { type: 'person', personId: '', personName: 'Awa' }],
+      ['personne sans nom', { type: 'person', personId: 'P1', personName: '' }],
+    ];
+    for (const [label, who] of cases) {
+      const f = form({ who });
+      assert.equal(keys(f).includes('who'), !serverAccepts(f), label);
+    }
+    assert.equal(rules.MAX_FACE_ID, 64);
+    assert.equal(rules.MAX_FACE_NAME, 80);
+    assert.match(SERVER_RULES, /const MAX_FACE_ID = 64;/);
+    assert.match(SERVER_RULES, /const MAX_FACE_NAME = 80;/);
+    // Espaces et composition Unicode : l'ecran envoie ce que le serveur gardera.
+    const messy = form({ who: { type: 'list', listId: ' 1 ', listName: '  Résidents   et\tpersonnel ' } });
+    assert.deepEqual(rules.buildSpec(messy).who, LIST_WHO);
+    assert.deepEqual(validateSpec(rules.buildSpec(messy), CTX).who, LIST_WHO);
+    const decomposed = form({ who: { type: 'list', listId: '1', listName: 'Résidents et personnel' } });
+    assert.deepEqual(rules.buildSpec(decomposed).who, LIST_WHO);
+  });
+
+  it('une liste qui n’est plus lue n’empeche pas d’enregistrer : seul le contexte des cameras et zones est controle', () => {
+    const f = form({ who: { type: 'list', listId: 'disparue', listName: 'Ancienne base' } });
+    assert.deepEqual(rules.formProblems(f, CTX), []);
+    assert.deepEqual(validateSpec(rules.buildSpec(f), CTX).who, { type: 'list', listId: 'disparue', listName: 'Ancienne base' });
+  });
+
+  it('une regle enregistree rouvre le meme formulaire pour chaque « Qui » (Modifier -> Enregistrer ne change rien)', () => {
+    for (const who of WHOS) {
+      const f = form({ who, severity: 'critical', cooldown: '25' });
+      const spec = rules.buildSpec(f);
+      const back = rules.formFromRule({ name: f.name, enabled: true, spec });
+      assert.deepEqual(back.who, who);
+      assert.deepEqual(rules.buildSpec(back), spec);
+      assert.equal(rules.formKey(back), rules.formKey({ ...f, enabled: true }));
+    }
+    // Les copies ne sont pas partagees avec la regle.
+    const spec = rules.buildSpec(form({ who: LIST_WHO }));
+    const back = rules.formFromRule({ name: 'x', enabled: true, spec });
+    (back.who as { listName: string }).listName = 'Autre';
+    assert.equal((spec.who as { listName: string }).listName, 'Résidents et personnel');
+    assert.notEqual(rules.formKey(form({ who: LIST_WHO })), rules.formKey(form({ who: { type: 'unknown' } })));
+    assert.notEqual(rules.formKey(form({ who: LIST_WHO })), rules.formKey(form({ who: { ...LIST_WHO, listId: '2' } })));
+  });
+
+  it('une regle sans « Qui » (ancienne forme) se rouvre comme « n’importe qui »', () => {
+    const spec = rules.buildSpec(form());
+    const old = { ...spec } as Partial<RuleSpec>;
+    delete old.who;
+    assert.deepEqual(rules.formFromRule({ name: 'x', enabled: true, spec: old as RuleSpec }).who, { type: 'anyone' });
+    assert.deepEqual(rules.cloneWho(undefined), { type: 'anyone' });
+    assert.deepEqual(rules.cloneWho({ type: 'inconnu' }), { type: 'anyone' });
+  });
+});
+
+describe('ecran « Regles » : « Si » et « Alors » suivent le « Qui »', () => {
+  it('passer a un visage ramene « reste plus de N » a « apparait » en le disant', () => {
+    assert.deepEqual(rules.triggerForWho({ type: 'unknown' }, 'stays'), { triggerMode: 'appears', changed: true });
+    assert.deepEqual(rules.triggerForWho(LIST_WHO, 'stays'), { triggerMode: 'appears', changed: true });
+    assert.deepEqual(rules.triggerForWho(LIST_WHO, 'appears'), { triggerMode: 'appears', changed: false });
+    assert.deepEqual(rules.triggerForWho({ type: 'anyone' }, 'stays'), { triggerMode: 'stays', changed: false });
+    const code = read('rules.js');
+    assert.match(code, /if \(trigger\.changed\) \{\s*autoTrigger = true;\s*ifNote\.textContent = 'La condition est passée à « un visage est vu »/);
+  });
+
+  it('textes de « Si » : « Quelqu’un apparait » pour n’importe qui, « Un visage est vu » pour un visage ; « reste plus de » expliquee', () => {
+    assert.equal(rules.appearsTexts({ type: 'anyone' }).label, 'Quelqu’un apparaît');
+    for (const who of [{ type: 'unknown' }, LIST_WHO, PERSON_WHO] as Who[]) assert.equal(rules.appearsTexts(who).label, 'Un visage est vu');
+    assert.equal(rules.STAYS_FACE_NOTE, 'Pas proposé pour un visage : un visage est vu à un instant, pas pendant une durée.');
+    const code = read('rules.js');
+    assert.match(code, /ifStays\.input\.disabled = face;/);
+    assert.match(code, /minutesInput\.disabled = face;/);
+  });
+
+  it('gravite : « avertissement » (signalement) recommande pour un visage ; « alarme » reste possible avec un rappel prudent', () => {
+    const face = rules.severityTexts(true);
+    assert.match(face.warning, /recommandé tant que l’essai de fiabilité n’est pas terminé/);
+    assert.match(face.critical, /une reconnaissance peut se tromper : un humain doit vérifier avant d’agir/);
+    assert.ok(!rules.severityTexts(false).warning.includes('fiabilité'));
+    assert.ok(!rules.severityTexts(false).critical.includes('reconnaissance'));
+    assert.deepEqual(rules.severityTexts(false), { warning: 'Une alerte à regarder, moins urgente.', critical: 'Une alarme rouge, la plus urgente : à traiter tout de suite.' });
+    // « Alarme » reste choisissable : une regle visage critique est acceptee par le serveur.
+    const f = form({ who: { type: 'unknown' }, severity: 'critical' });
+    assert.deepEqual(validateSpec(rules.buildSpec(f), CTX).then, { severity: 'critical' });
+    // Le defaut d'un formulaire neuf ne change pas (« avertissement », pour tout le monde).
+    assert.equal(rules.defaultForm().severity, 'warning');
+    assert.deepEqual(rules.defaultForm().who, { type: 'anyone' });
+  });
+
+  it('changement automatique de gravite : seulement de « n’importe qui » vers un visage, gravite non touchee', () => {
+    const run = (a: Partial<{ from: string; to: string; severity: 'warning' | 'critical'; touched: boolean }>) => rules.severityForWho({ from: 'anyone', to: 'unknown', severity: 'critical', touched: false, ...a });
+    assert.deepEqual(run({}), { severity: 'warning', changed: true });
+    assert.deepEqual(run({ to: 'list' }), { severity: 'warning', changed: true });
+    assert.deepEqual(run({ touched: true }), { severity: 'critical', changed: false }, 'gravite choisie a la main : on n’y touche pas');
+    assert.deepEqual(run({ from: 'unknown', to: 'list' }), { severity: 'critical', changed: false }, 'd’un visage a un autre : rien ne change');
+    assert.deepEqual(run({ to: 'anyone' }), { severity: 'critical', changed: false }, 'retour a n’importe qui : rien ne change');
+    assert.deepEqual(run({ severity: 'warning' }), { severity: 'warning', changed: false });
+    assert.deepEqual(run({ from: 'anyone', to: 'anyone' }), { severity: 'critical', changed: false });
+    // Retour a « n'importe qui » : ce que l'ecran a change tout seul est remis, sauf une gravite choisie entre-temps.
+    const back = (a: Partial<Parameters<Rules['restoreForAnyone']>[0]>) => rules.restoreForAnyone({ triggerMode: 'appears', severity: 'warning', autoTrigger: true, autoSeverity: 'critical', touched: false, ...a });
+    assert.deepEqual(back({}), { triggerMode: 'stays', severity: 'critical' });
+    assert.deepEqual(back({ touched: true }), { triggerMode: 'stays', severity: 'warning' });
+    assert.deepEqual(back({ autoTrigger: false, autoSeverity: null }), { triggerMode: 'appears', severity: 'warning' });
+    const code = read('rules.js');
+    assert.match(code, /severityTouched = true;\s*thenNote\.textContent = '';/, 'toucher la gravite la verrouille');
+    assert.match(code, /severityTouched = false;/, 'un formulaire ouvert repart sans gravite touchee');
+  });
+});
+
+describe('ecran « Regles » : listes de visages (lecture de /api/faces/lists)', () => {
+  it('menu : « Nom de la liste » ; la camera source n’est precisee que s’il y a plusieurs sources', () => {
+    assert.deepEqual(rules.listChoices(LISTS, { type: 'anyone' }).map((i) => [i.id, i.label, i.note, i.missing]), [['1', 'Résidents et personnel', '', false], ['2', 'Interdits', '', false]]);
+    const two = [...LISTS, { id: '1', name: 'Résidents', cameraId: 'D09', cameraName: 'Portail' }];
+    assert.deepEqual(rules.listChoices(two, { type: 'anyone' }).map((i) => [i.label, i.note]), [['Résidents et personnel', 'Avant cour'], ['Interdits', 'Avant cour'], ['Résidents', 'Portail']]);
+    assert.deepEqual(rules.listChoices([{ id: '5', name: '', cameraId: 'D05', cameraName: '' }], null).map((i) => i.label), ['5'], 'sans nom : l’identifiant');
+  });
+
+  it('une liste enregistree qui n’est plus lue reste proposee, avec son nom, et se retrouve dans le menu', () => {
+    const gone: Who = { type: 'list', listId: '99', listName: 'Ancienne base' };
+    const items = rules.listChoices(LISTS, gone);
+    assert.deepEqual(items.at(-1), { id: '99', label: 'Ancienne base', note: 'Liste non retrouvée', missing: true });
+    assert.equal(rules.selectedListIndex(items, gone), 2);
+    // Apres avoir choisi une autre liste, la liste enregistree reste proposee (via `stored`) pour revenir en arriere.
+    const afterPick = rules.listChoices(LISTS, LIST_WHO, gone);
+    assert.deepEqual(afterPick.at(-1)?.label, 'Ancienne base');
+    assert.equal(afterPick.filter((i) => i.id === '99').length, 1);
+    // Une liste lue n’est pas ajoutee deux fois.
+    assert.equal(rules.listChoices(LISTS, LIST_WHO, LIST_WHO).length, 2);
+    assert.equal(rules.listChoices(LISTS, { type: 'list', listId: '', listName: '' }).length, 2);
+  });
+
+  it('deux sources qui numerotent pareil : le choix suit identifiant ET nom', () => {
+    const two = [{ id: '1', name: 'Résidents', cameraId: 'A', cameraName: 'A' }, { id: '1', name: 'Visiteurs', cameraId: 'B', cameraName: 'B' }];
+    const items = rules.listChoices(two, { type: 'anyone' });
+    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Visiteurs' }), 1);
+    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Résidents' }), 0);
+    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Renomme' }), 0, 'nom change : l’identifiant seul');
+    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '', listName: '' }), -1);
+    assert.equal(rules.selectedListIndex(items, { type: 'unknown' }), -1);
+  });
+
+  it('ce que montre la zone : lecture en cours, erreur, aucune liste, menu (avec les remarques du serveur)', () => {
+    const who: Who = { type: 'list', listId: '', listName: '' };
+    assert.equal(rules.facesView({ status: 'loading', lists: [] }, who).kind, 'loading');
+    assert.equal(rules.facesView({ status: 'idle', lists: [] }, who).kind, 'loading');
+    assert.equal(rules.facesView({ status: 'error', lists: [] }, who).kind, 'error');
+    const empty = rules.facesView({ status: 'ok', lists: [], notes: ['La caméra « Portail » n’a pas répondu.', '  '] }, who);
+    assert.equal(empty.kind, 'empty');
+    assert.deepEqual(empty.notes, ['La caméra « Portail » n’a pas répondu.']);
+    const ok = rules.facesView({ status: 'ok', lists: LISTS, notes: [] }, who);
+    assert.equal(ok.kind, 'select');
+    assert.equal(ok.items.length, 2);
+    // Une liste deja choisie reste affichee meme si la lecture a echoue ou ne la voit plus.
+    const stored: Who = { type: 'list', listId: '9', listName: 'Ancienne base' };
+    assert.equal(rules.facesView({ status: 'error', lists: [] }, stored).items[0].label, 'Ancienne base');
+    assert.equal(rules.facesView({ status: 'ok', lists: [] }, stored).kind, 'select', 'pas « aucune liste » quand une liste est deja choisie');
+    assert.equal(rules.facesView({ status: 'loading', lists: [] }, stored).items.length, 1);
+  });
+
+  it("le texte « aucune liste » est celui demande, et les remarques, l'erreur et « Reessayer » sont branches", () => {
+    assert.equal(rules.NO_LIST_NOTE, 'Aucune liste de visages : ajoutez une caméra à reconnaissance faciale et créez-y une base.');
+    const code = read('rules.js');
+    assert.match(code, /facesNotes\.replaceChildren\(\.\.\.view\.notes\.map\(\(n\) => h\('li', \{ text: n \}\)\)\)/, 'remarques en texte seulement');
+    assert.match(code, /Les listes de visages n’ont pas pu être lues\. /);
+    assert.match(code, /facesRetry\.addEventListener\('click'/);
+    assert.match(code, /Lecture des listes de visages sur les caméras…/);
+    // Les listes ne sont lues qu'a la demande (choix de la liste, ou regle deja sur une liste), pas a chaque ouverture.
+    assert.match(code, /if \(type === 'list'\) loadFaces\(\);/);
+    assert.match(code, /if \(state\.who\.type === 'list'\) loadFaces\(\);/);
+    assert.match(code, /FACES_FRESH_MS = 5 \* 60_000/);
+  });
+
+  it('« Une personne precise » n’est pas proposee a l’ecran, mais une regle existante s’affiche et se rouvre sans perte', () => {
+    const code = read('rules.js');
+    assert.match(code, /whoPerson\.el\.hidden = true;/, 'cachee par defaut');
+    assert.match(code, /whoPerson\.el\.hidden = !\(type === 'person' \|\| keptPerson\);/, 'visible seulement pour une regle qui en a une');
+    assert.match(code, /Une personne précise : « \$\{person\.personName\} »/);
+    const spec = rules.buildSpec(form({ who: PERSON_WHO }));
+    const back = rules.formFromRule({ name: 'Awa', enabled: true, spec });
+    assert.deepEqual(rules.buildSpec(back).who, PERSON_WHO);
+  });
+});
+
+describe('ecran « Regles » : assistant « Decrivez la regle en une phrase »', () => {
+  const code = read('rules.js');
+  const part = (from: string, to: string) => {
+    const a = code.indexOf(from);
+    const b = code.indexOf(to, a);
+    assert.ok(a >= 0 && b > a, `${from} .. ${to}`);
+    return code.slice(a, b);
+  };
+
+  it('la zone n’existe que si le serveur dit « configured: true » (lue une fois par session, masquee sans bruit en cas d’echec)', () => {
+    assert.match(code, /assistBox\.hidden = assistConfigured !== true;/);
+    assert.match(code, /assistConfigured = res\?\.configured === true;/);
+    const probe = part('async function ensureAssist()', 'function clearAssistMessages()');
+    assert.match(probe, /if \(assistConfigured !== null \|\| assistProbing\) return;/, 'une seule lecture par session');
+    assert.match(probe, /catch \{\s*assistConfigured = null;/, 'echec : zone masquee, rien d’affiche, on reessaiera');
+    assert.ok(!/toast\(|textContent/.test(probe), 'aucun message');
+    assert.match(code, /assistConfigured = null;\s*assistProbing = false;\s*form\.reset\(\)/, 'un autre compte : lecture a refaire');
+    assert.match(code, /ensureAssist\(\);\s*if \(state\.who\.type === 'list'\) loadFaces\(\);/, 'lue a l’ouverture du formulaire (creation et modification)');
+  });
+
+  it('une proposition REMPLIT le formulaire : elle n’enregistre jamais (aucun appel d’API ecrivant une regle hors du bouton Enregistrer)', () => {
+    const apply = part('async function applyProposal(', 'async function askAssistant(');
+    assert.ok(!/\bapi\(/.test(apply), 'applyProposal ne parle pas au serveur (les listes passent par loadFaces)');
+    assert.match(code, /h\('strong', \{ text: 'Proposition de l’assistant : relisez chaque case, puis enregistrez\.' \}\)/);
+    assert.match(apply, /assistProposalSummary\.textContent = res\.summary \?\? '';/, 'la phrase du serveur est montree');
+    // Seuls trois appels ecrivent : l'essai (sans rien enregistrer), l'assistant (sans rien enregistrer) et le bouton Enregistrer.
+    const posts = [...code.matchAll(/api\(([^)]*)method: 'POST'/g)].map((m) => m[1]);
+    assert.equal(posts.length, 3, posts.join(' | '));
+    assert.match(code, /el\.addEventListener\('submit'/);
+    // Une saisie en cours n'est pas ecrasee sans demander.
+    assert.match(apply, /Remplacer votre saisie par la proposition \?/);
+    assert.match(apply, /formKey\(state\) !== \(appliedKey \?\? baseKey\)/);
+  });
+
+  it('la phrase d’origine accompagne la creation seulement (jamais la modification), et seulement apres une proposition', () => {
+    assert.match(code, /proposalSource = editing \? null : sourceText \|\| null;/);
+    assert.match(code, /const created = \{ \.\.\.body, enabled: state\.enabled, \.\.\.\(proposalSource \? \{ sourceText: proposalSource \} : \{\}\) \};/);
+    assert.match(code, /editing \? await api\(`\/api\/rules\/\$\{editing\.id\}`, \{ method: 'PUT', body \}\) : await api\('\/api\/rules', \{ method: 'POST', body: created \}\)/);
+    assert.match(code, /proposalSource = null;/, 'remise a zero a chaque ouverture');
+    assert.equal(rules.MAX_SOURCE_TEXT, 1000);
+    assert.match(SERVER_RULES, /const MAX_SOURCE_TEXT = 1000;/);
+    assert.match(code, /maxlength: String\(MAX_SOURCE_TEXT\)/);
+  });
+
+  it('la question affiche un champ de reponse ; Entree envoie la reponse sans enregistrer la regle ; bouton occupe pendant l’appel', () => {
+    assert.match(code, /assistAnswer\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key === 'Enter'\) \{\s*e\.preventDefault\(\);/);
+    assert.match(code, /'Répondre'/);
+    const ask = part('async function askAssistant(', 'assistText.addEventListener');
+    assert.match(ask, /if \(assistBusy\) return;/);
+    assert.match(ask, /setAssistBusy\(true\);/);
+    assert.match(ask, /if \(!isAnswer\) assistTurns = \[\];/, '« Proposer une règle » repart d’un echange neuf ; « Repondre » le prolonge');
+    assert.match(ask, /if \(history\.length\) body\.history = history;/);
+    assert.match(code, /busy\(assistSend, on\);\s*busy\(assistReply, on\);/);
+    assert.match(code, /if \(n !== assistSeq\) return;/, 'une reponse arrivee apres la fermeture du formulaire est ignoree');
+  });
+
+  it('refus, question, erreurs : message en texte, formulaire intact', () => {
+    const ask = part('async function askAssistant(', 'assistText.addEventListener');
+    assert.match(ask, /assistRefusedText\.textContent = sentence\(res\.reason\);/);
+    assert.match(ask, /assistQuestionText\.textContent = String\(res\.question \?\? ''\);/);
+    assert.match(ask, /assistError\.textContent = err\?\.message \? sentence\(err\.message\) : 'L’assistant n’a pas pu répondre\. Réessayez dans un instant\.';/, 'message du serveur (503, 429, 502, 504) tel quel');
+    const refused = ask.slice(ask.indexOf("res?.kind === 'refused'"), ask.indexOf("res?.kind === 'rule'"));
+    assert.ok(!/state\s*=|paint\(|changed\(/.test(refused), 'un refus ne touche pas au formulaire');
+    assert.match(ask, /catch \(err\) \{\s*if \(n !== assistSeq\) return;\s*setAssistBusy\(false\);\s*assistError\.textContent/, 'une erreur n’affiche qu’un message');
+  });
+
+  it('les textes de la zone, la confidentialite et le plafond de 1000 caracteres sont presents', () => {
+    for (const text of ['Décrivez la règle en une phrase', 'Proposer une règle', 'il ne l’enregistre jamais', 'aucune image n’est envoyée', 'Écrivez d’abord une phrase qui décrit la règle.']) assert.ok(code.includes(text), text);
+    assert.match(code, /`\$\{assistText\.value\.length\} \/ \$\{MAX_SOURCE_TEXT\}`/, 'compteur discret');
+  });
+});
+
+describe('ecran « Regles » : proposition de l’assistant -> formulaire (fonction pure)', () => {
+  const proposal = (over: Partial<RuleSpec> = {}, name = 'Inconnus la nuit') => ({
+    name,
+    summary: 'phrase du serveur',
+    spec: { ...rules.buildSpec(form({ who: { type: 'unknown' }, cameras: ['D05'], whenMode: 'windows', windows: [win([1, 2, 3], '19:00', '07:00')], cooldown: '30' })), ...over } as RuleSpec,
+  });
+  const ctx = { cameraIds: CTX.cameraIds, zones: CTX.zones, lists: LISTS };
+
+  it('une proposition complete donne un formulaire que l’ecran et le serveur acceptent, case par case', () => {
+    const { form: f, issues } = rules.formFromProposal(proposal(), ctx);
+    assert.deepEqual(issues, []);
+    assert.equal(f.name, 'Inconnus la nuit');
+    assert.deepEqual(f.who, { type: 'unknown' });
+    assert.deepEqual(f.cameras, ['D05']);
+    assert.equal(f.whenMode, 'windows');
+    assert.deepEqual(f.windows, [win([1, 2, 3], '19:00', '07:00')]);
+    assert.equal(f.triggerMode, 'appears');
+    assert.equal(f.severity, 'warning');
+    assert.equal(f.cooldown, '30');
+    assert.deepEqual(rules.formProblems(f, CTX), [], 'meme verification locale que la saisie manuelle');
+    assert.deepEqual(rules.buildSpec(f), proposal().spec);
+    assert.deepEqual(validateSpec(rules.buildSpec(f), CTX), rules.buildSpec(f));
+    assert.equal(rules.liveSentence(f, nameOf), describeRule(proposal().spec, { cameraName: nameOf }));
+  });
+
+  it('reprend chaque « Qui », « Ou », « Quand », « Si », « Alors » (zones, armement, reste plus de N, alarme)', () => {
+    for (const who of WHOS) {
+      const stays = who.type === 'anyone';
+      const src = form({ who, whereMode: 'zones', zones: ['Cour'], whenMode: 'armed', triggerMode: stays ? 'stays' : 'appears', minutes: '12', severity: 'critical', cooldown: '0' });
+      const spec = rules.buildSpec(src);
+      const { form: f, issues } = rules.formFromProposal({ name: 'x', spec }, { ...ctx, lists: stays ? null : [{ id: '1' }, { id: '7' }] });
+      assert.deepEqual(issues, [], who.type);
+      assert.deepEqual(rules.buildSpec(f), spec);
+    }
+  });
+
+  it('une camera ou une zone inconnue de l’ecran n’est PAS reprise : la case reste a completer, et c’est dit', () => {
+    const cams = rules.formFromProposal(proposal({ where: { cameras: ['D05', 'ZZ'] } }), ctx);
+    assert.deepEqual(cams.form.cameras, ['D05']);
+    assert.equal(cams.issues.length, 1);
+    assert.match(cams.issues[0], /^Caméra inconnue sur cet écran : « ZZ »\. Choisissez les caméras dans la case « Où »\.$/);
+    const allGone = rules.formFromProposal(proposal({ where: { cameras: ['ZZ', 'YY'] } }), ctx);
+    assert.deepEqual(allGone.form.cameras, []);
+    assert.match(allGone.issues[0], /^Caméras inconnues sur cet écran : « ZZ », « YY »\./);
+    assert.deepEqual(rules.formProblems(allGone.form, CTX).map((p) => p.key), ['where'], 'la verification locale demande de completer la case');
+    const zone = rules.formFromProposal(proposal({ where: { zones: ['Cave'] } }), ctx);
+    assert.equal(zone.form.whereMode, 'zones');
+    assert.deepEqual(zone.form.zones, []);
+    assert.match(zone.issues[0], /^Zone inconnue sur cet écran : « Cave »\. Choisissez les zones dans la case « Où »\.$/);
+    // Sans contexte (ecran pas pret) : rien n'est retire.
+    assert.deepEqual(rules.formFromProposal(proposal({ where: { cameras: ['ZZ'] } }), {}).form.cameras, ['ZZ']);
+  });
+
+  it('une liste inconnue de l’ecran : la case « Qui » reste a completer ; listes pas encore lues : on garde le choix', () => {
+    const spec = { who: { type: 'list', listId: '99', listName: 'Fantomes' } } as Partial<RuleSpec>;
+    const known = rules.formFromProposal(proposal(spec), ctx);
+    assert.deepEqual(known.form.who, { type: 'list', listId: '', listName: '' });
+    assert.match(known.issues[0], /^La liste « Fantomes » n’existe pas dans les listes lues sur l’enregistreur\. Choisissez-la dans la case « Qui »\.$/);
+    assert.deepEqual(rules.formProblems(known.form, CTX).map((p) => p.key), ['who']);
+    const unread = rules.formFromProposal(proposal(spec), { ...ctx, lists: null });
+    assert.deepEqual(unread.form.who, { type: 'list', listId: '99', listName: 'Fantomes' });
+    assert.deepEqual(unread.issues, []);
+    assert.deepEqual(rules.formFromProposal(proposal({ who: LIST_WHO }), ctx).form.who, LIST_WHO);
+  });
+
+  it('nom borne, valeurs par defaut, pas de partage avec la proposition', () => {
+    assert.equal(rules.formFromProposal(proposal({}, 'x'.repeat(200)), ctx).form.name.length, rules.MAX_NAME);
+    assert.equal(rules.formFromProposal({ name: undefined as unknown as string, spec: {} as RuleSpec }, ctx).form.name, '');
+    const p = proposal();
+    const f = rules.formFromProposal(p, ctx).form;
+    f.windows[0].days.push(0);
+    f.cameras.push('D08');
+    assert.deepEqual((p.spec.when as { windows: Win[] }).windows[0].days, [1, 2, 3]);
+    assert.deepEqual((p.spec.where as { cameras: string[] }).cameras, ['D05']);
+  });
+});
+
+describe('ecran « Regles » : echange avec l’assistant (historique, phrase d’origine)', () => {
+  it('historique : tours valides seulement, 10 derniers, 500 caracteres au plus, comme le serveur', () => {
+    assert.equal(rules.MAX_ASSIST_TURN, 500);
+    assert.equal(rules.MAX_ASSIST_HISTORY, 10);
+    const SERVER_ASSIST = readFileSync(join(import.meta.dirname, '..', 'server', 'ruleassist.ts'), 'utf8');
+    assert.match(SERVER_ASSIST, /const MAX_HISTORY = 10;/);
+    assert.match(SERVER_ASSIST, /const MAX_TURN = 500;/);
+    assert.deepEqual(rules.historyForAssist([]), []);
+    assert.deepEqual(rules.historyForAssist([{ role: 'user', text: '  la nuit  ' }, { role: 'assistant', text: 'Quelles heures ?' }, { role: 'user', text: '   ' }, { role: 'system' as 'user', text: 'x' }]), [
+      { role: 'user', text: 'la nuit' },
+      { role: 'assistant', text: 'Quelles heures ?' },
+    ]);
+    const many = Array.from({ length: 14 }, (_, i) => ({ role: i % 2 ? ('assistant' as const) : ('user' as const), text: `t${i}` }));
+    assert.deepEqual(rules.historyForAssist(many).map((t) => t.text), ['t4', 't5', 't6', 't7', 't8', 't9', 't10', 't11', 't12', 't13']);
+    assert.equal(rules.historyForAssist([{ role: 'user', text: 'x'.repeat(900) }])[0].text.length, 500);
+  });
+
+  it('phrase d’origine : ce que l’utilisateur a ecrit durant l’echange, 1000 caracteres au plus', () => {
+    assert.equal(rules.sourceTextOf([]), '');
+    assert.equal(rules.sourceTextOf([{ role: 'user', text: 'Préviens-moi la nuit' }, { role: 'assistant', text: 'Quelle caméra ?' }, { role: 'user', text: 'Le portail' }]), 'Préviens-moi la nuit — Le portail');
+    assert.equal(rules.sourceTextOf([{ role: 'user', text: 'x'.repeat(1500) }]).length, 1000);
+  });
+
+  it('une question prolonge l’echange (phrase puis question dans l’historique) ; une regle ou un refus le terminent', () => {
+    const q = rules.nextAssistTurns([], 'Préviens-moi la nuit', { kind: 'question', question: 'Quelle caméra ?' });
+    assert.deepEqual(q.turns, [{ role: 'user', text: 'Préviens-moi la nuit' }, { role: 'assistant', text: 'Quelle caméra ?' }]);
+    const q2 = rules.nextAssistTurns(q.turns, 'Le portail', { kind: 'question', question: 'Quelles heures ?' });
+    assert.equal(q2.turns.length, 4);
+    assert.deepEqual(rules.historyForAssist(q2.turns).map((t) => t.role), ['user', 'assistant', 'user', 'assistant']);
+    const done = rules.nextAssistTurns(q2.turns, 'De 19 h à 7 h', { kind: 'rule', name: 'x', spec: {}, summary: 'y' });
+    assert.deepEqual(done.turns, []);
+    assert.equal(done.sourceText, 'Préviens-moi la nuit — Le portail — De 19 h à 7 h');
+    assert.deepEqual(rules.nextAssistTurns(q.turns, 'Autre chose', { kind: 'refused', reason: 'non' }), { turns: [], sourceText: '' });
+    assert.equal(rules.nextAssistTurns([], 'une seule phrase', { kind: 'rule' }).sourceText, 'une seule phrase');
+  });
+});
+
+describe('ecran « Regles » : feuille de style des visages et de l’assistant', () => {
+  const css = read('rules.css').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  it('les classes nouvelles existent, sans couleur en dur, avec le rendu telephone', () => {
+    for (const cls of ['.rl-assist', '.rl-assist-reply', '.rl-assist-proposal', '.rl-faces', '.rl-choice.is-disabled', '.rl-change-note']) assert.ok(css.includes(cls), cls);
+    const phone = /@media \(max-width: 480px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    assert.match(phone, /\.rl-assist/);
+    assert.match(phone, /\.rl-faces/);
+    assert.ok(!/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(css));
+  });
+
+  it('chaque classe posee par rules.js sur les elements nouveaux est stylee', () => {
+    const code = read('rules.js');
+    for (const cls of ['rl-assist', 'rl-assist-row', 'rl-assist-count', 'rl-assist-ask-body', 'rl-assist-question', 'rl-assist-reply', 'rl-assist-proposal', 'rl-assist-proposal-body', 'rl-assist-summary', 'rl-assist-issues', 'rl-faces', 'rl-faces-field', 'rl-faces-status', 'rl-faces-fail-body', 'rl-faces-notes', 'rl-who-caution', 'rl-change-note']) {
+      assert.ok(code.includes(cls), `classe absente du JS : ${cls}`);
+      assert.ok(css.includes(`.${cls}`), `classe non stylee : ${cls}`);
+    }
   });
 });

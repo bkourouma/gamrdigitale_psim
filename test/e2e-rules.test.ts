@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:net';
@@ -21,6 +21,7 @@ import { after, before, describe, it } from 'node:test';
 import { createDahuaEvents, openEventStream } from '../server/dahua.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
+import { createFaceObs } from '../server/faceobs.ts';
 import { createPresence } from '../server/presence.ts';
 import { createRules } from '../server/rules.ts';
 import { seal } from '../server/secrets.ts';
@@ -122,6 +123,10 @@ async function login(base: string, username: string, password: string): Promise<
   assert.equal(res.status, 200);
   return res.headers.getSetCookie()[0].split(';')[0];
 }
+
+/** Jeux d'essai visage (test/fixtures/dahua-face-*) : texte brut d'une partie du flux, ramene a la voie 1 (index=0). */
+const faceFixture = (name: string): string => readFileSync(join(ROOT, 'test', 'fixtures', name), 'utf8').replace(/\r\n/g, '\n').replace(/index=\d+/, 'index=0');
+const FACE_UNKNOWN = faceFixture('dahua-face-recognition-unknown.txt');
 
 const SPEC = {
   who: { type: 'anyone' },
@@ -380,6 +385,69 @@ describe('regles de presence (processus reel)', { timeout: 180_000 }, () => {
     assert.equal(off.body.enabled, false);
     assert.equal((await state()).devices.find((d: any) => d.id === rule.deviceId).status, 'normal');
   });
+
+  it("regles d'identite : un visage inconnu declenche « Visage inconnu en zone reservee » (critique) et « Visage signale » (avertissement) ; « n'importe qui » ne reagit pas a un visage ; les visages vus sont listes sans photo", async () => {
+    // Le lien vers le faux enregistreur et la camera C-01 (voie 1) viennent du test precedent.
+    assert.deepEqual((await asAdmin('GET', '/api/faces/recent')).body, [], 'aucun visage vu pour le moment');
+    const ID_SPEC = { ...SPEC, who: { type: 'unknown' } };
+    const critical = (await asAdmin('POST', '/api/rules', { name: 'Inconnu en zone reservee', spec: { ...ID_SPEC, then: { severity: 'critical' } } })).body;
+    const warning = (await asAdmin('POST', '/api/rules', { name: 'Inconnu signale', spec: { ...ID_SPEC, then: { severity: 'warning' } } })).body;
+    const anyone = (await asAdmin('POST', '/api/rules', { name: 'Presence ordinaire', spec: SPEC })).body;
+    assert.match(critical.summary, /visage inconnu/i);
+    await wait(300); // le flux est deja ouvert (detecteur lie) : la regle n'en change rien
+
+    xvr.emit(FACE_UNKNOWN);
+    await until(async () => {
+      const snap = await state();
+      return [critical, warning].every((r) => snap.incidents.some((i: any) => i.detectorId === r.deviceId));
+    }, 8000, `incidents d'identite\n${s.output().slice(-600)}`);
+    const snap = await state();
+
+    const hard = snap.incidents.find((i: any) => i.detectorId === critical.deviceId);
+    assert.equal(hard.event, 'face_unknown');
+    assert.equal(eventLabel(hard.event), 'Visage inconnu en zone réservée');
+    assert.equal(hard.severity, 'critical');
+    assert.equal(hard.category, 'access');
+    assert.deepEqual(hard.cameraIds, ['C-01']);
+    assert.equal(snap.devices.find((d: any) => d.id === critical.deviceId).status, 'alarm');
+
+    const soft = snap.incidents.find((i: any) => i.detectorId === warning.deviceId);
+    assert.equal(soft.event, 'face_noticed');
+    assert.equal(eventLabel(soft.event), 'Visage signalé');
+    assert.equal(soft.severity, 'warning');
+    assert.equal(snap.devices.find((d: any) => d.id === warning.deviceId).status, 'prealarm');
+
+    // « N'importe qui » est piloté par la presence, jamais par un visage.
+    assert.equal(snap.incidents.filter((i: any) => i.detectorId === anyone.deviceId).length, 0);
+    assert.equal(snap.devices.find((d: any) => d.id === anyone.deviceId).status, 'normal');
+
+    // Les visages vus : sans photo ni identifiant interne.
+    const recent = await asAdmin('GET', '/api/faces/recent');
+    assert.equal(recent.status, 200);
+    assert.equal(recent.body.length, 1);
+    assert.deepEqual(Object.keys(recent.body[0]).sort(), ['at', 'cameraId', 'cameraName', 'groupName', 'kind', 'personName', 'similarity']);
+    assert.deepEqual({ ...recent.body[0], at: 0 }, { cameraId: 'C-01', cameraName: 'Camera accueil', at: 0, kind: 'unknown', personName: null, groupName: null, similarity: null });
+    assert.ok(Math.abs(recent.body[0].at - Date.now()) < 30_000);
+    assert.doesNotMatch(JSON.stringify(recent.body), /base64|Candidates|image/i);
+
+    // Les routes de visages sont reservees a l'administrateur.
+    for (const path of ['/api/faces/recent', '/api/faces/lists']) {
+      assert.equal((await call('GET', path, operator)).status, 403, `${path} par l'operateur`);
+      assert.equal((await call('GET', path, null)).status, 401, `${path} sans session`);
+    }
+    assert.equal((await call('GET', '/api/rules/assist', operator)).status, 403);
+    assert.equal((await call('POST', '/api/rules/assist', operator, { text: 'x' })).status, 403);
+
+    // Une personne reconnue ne correspond pas a « inconnu » : rien de plus ne se declenche.
+    const known = faceFixture('dahua-face-recognition-known.txt');
+    const incidentsBefore = (await state()).incidents.length;
+    xvr.emit(known);
+    await until(async () => (await asAdmin('GET', '/api/faces/recent')).body.length === 2, 5000, 'visage reconnu enregistre');
+    const seen = (await asAdmin('GET', '/api/faces/recent')).body;
+    assert.equal(seen[0].kind, 'recognized', 'le plus recent d\'abord');
+    assert.equal(typeof seen[0].personName, 'string');
+    assert.equal((await state()).incidents.length, incidentsBefore, 'une personne reconnue ne declenche pas « inconnu »');
+  });
 });
 
 // ---------------------------------------------------------------- integration en processus (horloge maitrisee)
@@ -463,6 +531,90 @@ describe('regles de presence : branchement observeAll -> presence -> regle -> in
       assert.equal(status(), 'alarm', 'nouvelle alerte (le meme incident, reste ouvert, est repris par le moteur)');
       xvr.cut();
       await until(() => Object.keys(presence.current()).length === 0, 5000, 'presence terminee par la perte du flux');
+    } finally {
+      rules.close();
+      dahua.stop();
+      db.close();
+    }
+  });
+});
+
+describe("regles d'identite : branchement observeAll -> visages -> regle -> incident, en processus", () => {
+  const xvr = fakeRecorder();
+  let port = 0;
+  before(async () => {
+    port = await xvr.start();
+  });
+  after(() => xvr.stop());
+
+  it("une regle d'identite ouvre le flux ; un visage inconnu declenche ; retour au calme 60 s apres la derniere observation ; une panne de la presence n'empeche pas les visages", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psim-rules-face-'));
+    const db = openDb(join(dir, 'psim.db'));
+    seedDemo(db, dir, join(ROOT, 'seed'));
+    const key = randomBytes(32);
+    db.prepare("INSERT INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES ('C-01', 'rtsp', '127.0.0.1', 554, '/cam/realmonitor?channel=1&subtype=1', ?, ?)").run(USER, seal(key, PASSWORD));
+    let clock = Date.now();
+    const now = () => clock;
+    const engine = createEngine(db, () => {}, now, { isArmed: () => true });
+    const presence = createPresence({ db, now });
+    const faceObs = createFaceObs({ db, now });
+    const rules = createRules({ db, engine, presence, faces: faceObs, isArmed: () => true, now });
+    let presenceBroken = false;
+    const dahua = createDahuaEvents({
+      db,
+      engine,
+      key,
+      now,
+      log: () => {},
+      isArmed: () => true,
+      open: (creds, handlers) => openEventStream({ ...creds, port }, handlers),
+      // Meme branchement que main.ts : l'un ne doit pas empecher l'autre.
+      onObservation: (o) => {
+        try {
+          if (presenceBroken) throw new Error('presence en panne');
+          presence.observe(o);
+        } catch {
+          // journalise par main.ts
+        }
+        faceObs.observe(o);
+      },
+      onLinkLost: (host) => presence.linkLost(host),
+      observeAll: () => rules.list().some((r) => r.enabled),
+    });
+    try {
+      dahua.reload();
+      await wait(150);
+      assert.equal(xvr.connected(), 0, 'aucune regle : aucun flux');
+
+      const rule = rules.create('admin', { name: 'Inconnu en zone reservee', spec: { ...SPEC, who: { type: 'unknown' } } });
+      dahua.reload();
+      await until(() => xvr.connected() === 1, 5000, "flux ouvert par la regle d'identite");
+      await wait(150);
+      presenceBroken = true;
+
+      const incidents = () => engine.getSnapshot().incidents.filter((i) => i.detectorId === rule.deviceId);
+      const status = () => engine.getDevice(rule.deviceId)!.status;
+      xvr.emit(FACE_UNKNOWN);
+      await until(() => incidents().length === 1, 5000, 'incident de la regle');
+      assert.equal(status(), 'alarm');
+      assert.equal(incidents()[0].event, 'face_unknown');
+
+      // Nouvelle observation 30 s plus tard : le retour au calme se compte depuis elle (et non depuis la premiere).
+      clock += 30_000;
+      xvr.emit(FACE_UNKNOWN.replace('"UTC" : 1776717100', '"UTC" : 1776717130'));
+      await until(() => faceObs.history(0, clock + 1).length === 2, 5000, 'deuxieme observation');
+      clock += 59_000;
+      rules.tick();
+      assert.equal(status(), 'alarm', 'moins de 60 s apres la derniere observation : toujours la');
+      clock += 2_000;
+      rules.tick();
+      assert.equal(status(), 'normal', '60 s sans nouvelle observation : retour au calme');
+      assert.equal(incidents().length, 1, "l'incident reste a traiter par un humain");
+
+      // Regle desactivee : plus rien a observer.
+      rules.update('admin', rule.id, { enabled: false });
+      dahua.reload();
+      await until(() => xvr.connected() === 0, 5000, 'flux ferme');
     } finally {
       rules.close();
       dahua.stop();
