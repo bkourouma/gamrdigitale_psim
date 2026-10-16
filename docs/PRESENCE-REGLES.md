@@ -179,16 +179,34 @@ sur le vrai XVR** (lot V4) : les jeux d'essai viennent de la documentation Dahua
 
 | Lot | Contenu | Fichiers possédés | Dépend de | État |
 |---|---|---|---|---|
-| **P1** | Observations Dahua sur toutes les voies, présences | `server/dahua.ts`, `server/presence.ts`, `test/presence.test.ts`, `test/dahua.test.ts` | — | à lancer |
-| **P2** | Moteur de règles, détecteurs virtuels, essai sur le passé, nouveaux événements | `server/rules.ts`, `server/sources.ts`, `test/presencerules.test.ts`, `test/sources.test.ts` | contrat P1 | à lancer |
-| **P3** | Branchement, API, écran « Règles » | `server/main.ts`, `server/api.ts`, `web/rules.js`, `web/rules.css`, `web/index.html`, `web/app.js`, `web/icons.svg`, `test/e2e-rules.test.ts` | P1, P2 | après P1+P2 |
-| **A1** | Assistant IA (cœur, sans branchement) | `server/ruleassist.ts`, `test/ruleassist.test.ts` | contrat P2 | à lancer |
+| **P1** | Observations Dahua sur toutes les voies, présences | `server/dahua.ts`, `server/presence.ts`, `test/presence.test.ts`, `test/dahua.test.ts` | — | **fait** (36dfa1c) |
+| **P2** | Moteur de règles, détecteurs virtuels, essai sur le passé, nouveaux événements | `server/rules.ts`, `server/sources.ts`, `test/presencerules.test.ts`, `test/sources.test.ts` | contrat P1 | **fait** (36dfa1c) |
+| **P3** | Branchement, API, écran « Règles » | `server/main.ts`, `server/api.ts`, `web/rules.js`, `web/rules.css`, `web/index.html`, `web/app.js`, `web/icons.svg`, `test/e2e-rules.test.ts` | P1, P2 | **fait** (36dfa1c) |
+| **A1** | Assistant IA (cœur, sans branchement) | `server/ruleassist.ts`, `test/ruleassist.test.ts` | contrat P2 | **fait** (1592eed) |
 | **A2** | Assistant dans l'API et l'écran, configuration | `server/config.ts`, `.env.example`, `server/api.ts`, `server/main.ts`, `web/rules.js` | P3, A1 | après P3 |
-| **V1** | Lecture des événements et bases visage Dahua | `server/faces.ts`, `test/faces.test.ts`, `test/fixtures/dahua-face-*` | — | à lancer |
-| **V2** | Mise en service visages : procédure, essai de fiabilité, information du personnel | `docs/VISAGES.md` | — | à lancer |
+| **V1** | Lecture des événements et bases visage Dahua | `server/faces.ts`, `test/faces.test.ts`, `test/fixtures/dahua-face-*` | — | **fait** (98774b4) |
+| **V2** | Mise en service visages : procédure, essai de fiabilité, information du personnel | `docs/VISAGES.md` | — | **fait** (98774b4) |
 | **V3** | Règles d'identité (`who` : liste, personne, inconnu), écran des listes | `server/rules.ts`, `server/presence.ts`, `web/rules.js`, … | P3, V1 | après P3+V1 |
 | **V4** | Sur le vrai XVR : activer la reconnaissance voies 5 et 8, créer les bases, enregistrer, mesurer | (matériel) | V1, V2 | **avec l'accord de l'utilisateur, par le chef** |
 
 Règles communes : un fichier n'appartient qu'à un lot actif à la fois ; personne ne touche `data-prod/`, le PSIM de
 production, ni le vrai enregistreur (sauf V4, par le chef) ; tests ciblés + `npm run typecheck` avant chaque commit ;
 commits sur la branche du lot uniquement, jamais sur `main` (c'est le chef qui fusionne).
+
+## Décisions de l'utilisateur (16 octobre 2026)
+
+- **Conflit reconnaissance faciale / détection de personne** : « AI Mode » Face exclut SMD et IVS&SMD sur ce XVR, et on ne sait
+  pas si le réglage est par voie ou global. Si l'essai V4 montre que la reconnaissance coupe la détection de personne, on
+  **ajoute une caméra IP Dahua à reconnaissance faciale embarquée** (ses événements sont lus directement, comme le XVR)
+  plutôt que de perdre la présence.
+- **Cadre légal** : **essai familial seulement** (membres de la famille consentants ; ni personnel, ni liste « Interdits »)
+  en attendant un avis sur la loi n° 2013-450 (art. 7, autorisation préalable de l'ARTCI). Voir `docs/VISAGES.md`.
+- **Gravité** : les règles visage sont en **signalement (pré-alarme)** tant que l'essai de fiabilité n'est pas concluant.
+
+## Écarts acceptés à la fusion des lots P
+
+`rules.close()` ; identifiant de règle = max(règles, `R-n`) + 1 ; une règle qui a déclenché des incidents ne se supprime
+pas (409, l'écran propose « Désactiver ») ; `when.armed` simulé avec l'armement actuel (`armedNote`) ; repos non mémorisé
+entre deux démarrages ; purge de présence au démarrage puis toutes les 6 h ; `DELETE /api/devices/:id` d'un détecteur de
+règle → 409 ; `days` entier 1..30. Ouverts : le 409 est reconnu à l'écran par son message (exposer le statut HTTP dans
+`web/core.js` serait plus sûr) ; un enregistreur sans détecteur lié est observé sur le port 80 seulement.
