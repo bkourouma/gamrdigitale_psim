@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="admin.css">
   <link rel="stylesheet" href="equipment.css">
   <link rel="stylesheet" href="keys.css">
+  <link rel="stylesheet" href="rules.css">
 </head>
 <body>
   <a class="skip" href="#main" hidden>Aller au contenu</a>
@@ -88,6 +89,7 @@
           <p id="nav-admin-title" class="nav-group-title">Administration</p>
           <a class="nav-item" href="#/equipements" data-view="equipements"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg><span>Équipements et plan</span></a>
           <a class="nav-item" href="#/notifications" data-view="notifications"><svg class="icon" aria-hidden="true"><use href="icons.svg#megaphone"/></svg><span>Personnes prévenues</span></a>
+          <a class="nav-item" href="#/regles" data-view="regles"><svg class="icon" aria-hidden="true"><use href="icons.svg#rules"/></svg><span>Règles</span></a>
           <a class="nav-item" href="#/utilisateurs" data-view="utilisateurs"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg><span>Utilisateurs</span></a>
           <a class="nav-item" href="#/cles" data-view="cles"><svg class="icon" aria-hidden="true"><use href="icons.svg#key"/></svg><span>Clés et passerelles</span></a>
           <a class="nav-item" href="#/systeme" data-view="systeme"><svg class="icon" aria-hidden="true"><use href="icons.svg#server"/></svg><span>Système</span><span id="nav-count-systeme" class="nav-count is-warning" hidden></span></a>
@@ -457,6 +459,41 @@
               <p class="hint">Envoie tout de suite un message à chaque destinataire actif, des deux niveaux, pour vérifier qu'il le reçoit vraiment. Le message précise qu'aucune action n'est requise.</p>
               <div class="actions"><button id="notif-test" class="btn btn-primary" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#send"/></svg>Envoyer un message de test</button></div>
               <div id="notif-results" class="notif-results" aria-live="polite"></div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================================================================================ Règles -->
+        <section class="view view-regles is-narrow" id="view-regles" aria-labelledby="view-title" hidden>
+          <div id="rules-denied" class="empty" hidden>
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#lock"/></svg>
+            <strong>Écran réservé aux administrateurs</strong>
+            <span>Les règles se créent et se modifient avec un compte administrateur. Les alarmes qu'elles ouvrent apparaissent, pour tout le monde, dans Alarmes.</span>
+          </div>
+          <div id="rules-intro" class="notice is-info rl-intro">
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#info"/></svg>
+            <div>
+              <p>Une règle dit au PSIM de vous prévenir quand quelqu'un est vu par une caméra. Elle se lit en cinq cases : <strong>Qui</strong>, <strong>Où</strong>, <strong>Quand</strong>, <strong>Si</strong> (quelqu'un apparaît ou reste) et <strong>Alors</strong> (avertissement ou alerte critique).</p>
+              <p>Avant d'enregistrer, essayez la règle sur les jours passés : l'essai ne modifie rien et ne prévient personne. Une règle qui se déclenche ouvre une alarme comme n'importe quel détecteur.</p>
+            </div>
+          </div>
+          <p id="rules-loading" class="muted">Lecture des règles…</p>
+          <div id="rules-error" class="notice is-alarm rl-load-error" role="alert" hidden></div>
+          <div id="rules-form-slot" class="rl-form-slot" hidden></div>
+          <section id="rules-card" class="panel rl-list-panel" aria-labelledby="rules-title" hidden>
+            <div class="panel-head">
+              <h2 id="rules-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#rules"/></svg>Vos règles</h2>
+              <p id="rules-count" class="rl-count"></p>
+              <button id="rules-new" class="btn btn-primary is-apart" type="button" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Créer une règle</button>
+            </div>
+            <div class="panel-body">
+              <div id="rules-empty" class="empty" hidden>
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#rules"/></svg>
+                <strong>Aucune règle pour l'instant</strong>
+                <span>Une règle vous prévient quand quelqu'un est vu par une caméra. Exemple : « si quelqu'un apparaît devant la caméra Avant cour, de 22:00 à 06:00, prévenir par une alerte critique ».</span>
+                <button id="rules-empty-new" class="btn btn-primary" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#plus"/></svg>Créer une règle</button>
+              </div>
+              <ul id="rules-list" class="rl-list" aria-label="Règles enregistrées" hidden></ul>
             </div>
           </section>
         </section>
