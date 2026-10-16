@@ -183,10 +183,10 @@ sur le vrai XVR** (lot V4) : les jeux d'essai viennent de la documentation Dahua
 | **P2** | Moteur de règles, détecteurs virtuels, essai sur le passé, nouveaux événements | `server/rules.ts`, `server/sources.ts`, `test/presencerules.test.ts`, `test/sources.test.ts` | contrat P1 | **fait** (36dfa1c) |
 | **P3** | Branchement, API, écran « Règles » | `server/main.ts`, `server/api.ts`, `web/rules.js`, `web/rules.css`, `web/index.html`, `web/app.js`, `web/icons.svg`, `test/e2e-rules.test.ts` | P1, P2 | **fait** (36dfa1c) |
 | **A1** | Assistant IA (cœur, sans branchement) | `server/ruleassist.ts`, `test/ruleassist.test.ts` | contrat P2 | **fait** (1592eed) |
-| **A2** | Assistant dans l'API et l'écran, configuration | `server/config.ts`, `.env.example`, `server/api.ts`, `server/main.ts`, `web/rules.js` | P3, A1 | après P3 |
+| **A2** | Assistant dans l'API et l'écran, configuration | `server/config.ts`, `.env.example`, `server/api.ts`, `server/main.ts`, `web/rules.js` | P3, A1 | **fait** (437c35a) |
 | **V1** | Lecture des événements et bases visage Dahua | `server/faces.ts`, `test/faces.test.ts`, `test/fixtures/dahua-face-*` | — | **fait** (98774b4) |
 | **V2** | Mise en service visages : procédure, essai de fiabilité, information du personnel | `docs/VISAGES.md` | — | **fait** (98774b4) |
-| **V3** | Règles d'identité (`who` : liste, personne, inconnu), écran des listes | `server/rules.ts`, `server/presence.ts`, `web/rules.js`, … | P3, V1 | après P3+V1 |
+| **V3** | Règles d'identité (`who` : liste, personne, inconnu), écran des listes | `server/rules.ts`, `server/presence.ts`, `web/rules.js`, … | P3, V1 | **fait** (437c35a) |
 | **V4** | Sur le vrai XVR : activer la reconnaissance voies 5 et 8, créer les bases, enregistrer, mesurer | (matériel) | V1, V2 | **avec l'accord de l'utilisateur, par le chef** |
 
 Règles communes : un fichier n'appartient qu'à un lot actif à la fois ; personne ne touche `data-prod/`, le PSIM de
@@ -227,3 +227,18 @@ faciale passe par une **caméra IP Dahua à reconnaissance faciale embarquée** 
 - Choix du modèle : une caméra de la gamme Dahua à reconnaissance faciale embarquée (base de visages dans la caméra),
   placée au point de passage (portail ou entrée), à hauteur de visage, 2 à 4 m ; référence exacte à confirmer avec le
   fournisseur et à inscrire au registre de qualification. Essai familial seulement (décision du 16 octobre).
+
+## Lots A2 et V3 fusionnés (437c35a, 16 octobre 2026)
+
+Assistant IA dans l'écran « Règles » (`GET/POST /api/rules/assist`, 20 propositions/heure/administrateur, journal
+`rule_assist` sans le texte) ; règles d'identité (`who` : liste, personne, inconnu ; `appears` seulement ; retour au calme
+60 s après la dernière observation ; signalement par défaut) ; observations visage `server/faceobs.ts` (sans photo, 30 jours) ;
+`GET /api/faces/lists` (bases lues sur toutes les caméras Dahua), `GET /api/faces/recent`. Réglages : `PSIM_ASSIST_API_KEY`,
+`PSIM_ASSIST_MODEL`, `PSIM_ASSIST_API_URL` (essais seulement : https partout, http seulement vers cette machine).
+
+Points ouverts : deux caméras peuvent numéroter leurs listes pareil (`who.listId` seul se confondrait : ajouter la caméra
+source à la règle si une deuxième caméra visage arrive) ; doublon Start/Pulse dédoublonné seulement à heure identique (à
+vérifier sur la vraie caméra) ; `scripts/check-config.ts` ne contrôle pas encore `PSIM_ASSIST_*` ; le texte d'accueil de
+`web/index.html` ne parle pas des visages ; le 409 de suppression reconnu par son message à l'écran.
+Reste : **la caméra visage** (achat, pose, qualification : format réel de `FaceRecognition` et de `findGroup`), puis l'essai
+familial décrit dans `docs/VISAGES.md`.
