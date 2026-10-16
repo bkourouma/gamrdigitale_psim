@@ -3,6 +3,7 @@ import { inSchedule, parseSchedule } from './arming.ts';
 import type { Window } from './arming.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './errors.ts';
+import type { FaceObs } from './faceobs.ts';
 import type { Presence, PresenceChange } from './presence.ts';
 import { hasForbiddenChar, normalizeName } from './text.ts';
 import type { Device } from './types.ts';
@@ -22,7 +23,15 @@ import type { Device } from './types.ts';
  *  - createRules : base de donnees, detecteurs virtuels, journal, direct (tick + abonnement a la presence), essai.
  */
 
-export type Who = { type: 'anyone' }; // etape 3 : | { type: 'list'; listId } | { type: 'person'; personId } | { type: 'unknown' }
+/**
+ * Qui : n'importe qui (presence) ou une identite de visage (reconnaissance faciale de l'enregistreur). Les noms de liste et de
+ * personne sont recopies dans la regle : aucune verification aupres de l'enregistreur (qui peut etre injoignable).
+ */
+export type Who =
+  | { type: 'anyone' }
+  | { type: 'list'; listId: string; listName: string }
+  | { type: 'person'; personId: string; personName: string }
+  | { type: 'unknown' };
 
 export interface RuleSpec {
   who: Who;
@@ -58,6 +67,9 @@ const MAX_NAME = 80;
 const MAX_SOURCE_TEXT = 1000;
 const MAX_LIST = 50;
 const MAX_ID_TEXT = 80;
+/** Identifiant de liste ou de personne (meme borne que faces.ts) et noms recopies dans la regle. */
+const MAX_FACE_ID = 64;
+const MAX_FACE_NAME = 80;
 /** Essai sur le passe : on lit un peu au-dela de la fin pour retrouver la fin des presences commencees avant. */
 const SIM_MARGIN_MS = DAY_MS;
 const SIM_MAX_SPAN_MS = 31 * DAY_MS;
@@ -99,6 +111,39 @@ function idList(value: unknown, known: ReadonlySet<string>, label: string, what:
   return out;
 }
 
+/**
+ * Texte d'identite (identifiant ou nom) : chaine non vide, longueur bornee, sans controle ni caractere invisible. Les espaces
+ * sont normalises comme dans faces.ts (c'est avec ce texte qu'une observation sera comparee).
+ */
+function faceText(value: unknown, max: number, label: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new PsimError(400, `${label} : texte requis`);
+  if (value.length > max) throw new PsimError(400, `${label} : ${max} caracteres au plus`);
+  if (hasForbiddenChar(value)) throw new PsimError(400, `${label} : caracteres de controle ou invisibles interdits`);
+  const flat = normalizeName(value).replace(/\s+/gu, ' ');
+  if (flat === '') throw new PsimError(400, `${label} : texte requis`);
+  return flat;
+}
+
+function validateWho(raw: unknown): Who {
+  const who = plain(raw, 'Qui');
+  switch (own(who, 'type')) {
+    case 'anyone':
+      only(who, ['type'], 'Qui');
+      return { type: 'anyone' };
+    case 'unknown':
+      only(who, ['type'], 'Qui');
+      return { type: 'unknown' };
+    case 'list':
+      only(who, ['type', 'listId', 'listName'], 'Qui');
+      return { type: 'list', listId: faceText(own(who, 'listId'), MAX_FACE_ID, 'Qui : identifiant de la liste'), listName: faceText(own(who, 'listName'), MAX_FACE_NAME, 'Qui : nom de la liste') };
+    case 'person':
+      only(who, ['type', 'personId', 'personName'], 'Qui');
+      return { type: 'person', personId: faceText(own(who, 'personId'), MAX_FACE_ID, 'Qui : identifiant de la personne'), personName: faceText(own(who, 'personName'), MAX_FACE_NAME, 'Qui : nom de la personne') };
+    default:
+      throw new PsimError(400, 'Qui : choisir « n\'importe qui », une liste de visages, une personne ou « un visage inconnu »');
+  }
+}
+
 function intIn(value: unknown, min: number, max: number, label: string, unit: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new PsimError(400, `${label} : un nombre entier de ${unit} entre ${min} et ${max} est attendu`);
@@ -118,9 +163,7 @@ export function validateSpec(input: unknown, ctx: { cameraIds: ReadonlySet<strin
   for (const [key, label] of boxes) if (own(spec, key) === undefined) throw new PsimError(400, `Il manque la case « ${label} » dans la regle`);
 
   // Qui
-  const who = plain(own(spec, 'who'), 'Qui');
-  only(who, ['type'], 'Qui');
-  if (own(who, 'type') !== 'anyone') throw new PsimError(400, "Qui : pour l'instant, seul « n'importe qui » est disponible");
+  const whoOut = validateWho(own(spec, 'who'));
 
   // Ou
   const where = plain(own(spec, 'where'), 'Ou');
@@ -176,6 +219,10 @@ export function validateSpec(input: unknown, ctx: { cameraIds: ReadonlySet<strin
       throw new PsimError(400, 'Si : choisir « quelqu\'un apparait » ou « quelqu\'un reste plus de N minutes »');
   }
 
+  if (whoOut.type !== 'anyone' && cause.type === 'stays') {
+    throw new PsimError(400, 'Si : pour reconnaitre un visage, seul « apparait » est possible (un visage est vu a un instant, pas pendant une duree)');
+  }
+
   // Alors
   const then = plain(own(spec, 'then'), 'Alors');
   only(then, ['severity'], 'Alors');
@@ -186,7 +233,7 @@ export function validateSpec(input: unknown, ctx: { cameraIds: ReadonlySet<strin
   const rawCooldown = own(spec, 'cooldownMinutes');
   const cooldownMinutes = rawCooldown === undefined ? DEFAULT_COOLDOWN_MINUTES : intIn(rawCooldown, 0, MAX_MINUTES, 'Repos', 'minutes');
 
-  return { who: { type: 'anyone' }, where: placed, when: period, trigger: cause, then: { severity }, cooldownMinutes };
+  return { who: whoOut, where: placed, when: period, trigger: cause, then: { severity }, cooldownMinutes };
 }
 
 // ---- Phrase en francais -------------------------------------------------------------------------------------------
@@ -237,7 +284,11 @@ function describeMinutes(m: number): string {
 /** Phrase francaise courante, complete et sans jargon, qui dit exactement ce que fera la regle. */
 export function describeRule(spec: RuleSpec, ctx: { cameraName: (id: string) => string }): string {
   const action = spec.then.severity === 'critical' ? 'Prévenir (alerte critique)' : 'Prévenir (avertissement)';
-  const cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${describeMinutes(spec.trigger.minutes)}`;
+  let cause: string;
+  if (spec.who.type === 'unknown') cause = 'si un visage inconnu est vu';
+  else if (spec.who.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » est reconnue`;
+  else if (spec.who.type === 'person') cause = `si la personne « ${spec.who.personName} » est reconnue`;
+  else cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${describeMinutes(spec.trigger.minutes)}`;
   let where: string;
   if ('cameras' in spec.where) {
     const names = spec.where.cameras.map((id) => `« ${ctx.cameraName(id)} »`);
@@ -256,7 +307,30 @@ export function describeRule(spec: RuleSpec, ctx: { cameraName: (id: string) => 
 
 // ---- Machine a etats pure -----------------------------------------------------------------------------------------
 
-export type RuleEventName = 'person_detected' | 'person_lingering' | 'person_noticed';
+export type RuleEventName = 'person_detected' | 'person_lingering' | 'person_noticed' | 'face_unknown' | 'face_banned' | 'face_noticed';
+
+/** Un visage vu (forme de FaceSeen, faceobs.ts) : ce que la machine d'une regle d'identite lit. */
+export interface FaceSighting {
+  cameraId: string;
+  at: number;
+  kind: 'recognized' | 'unknown';
+  personId?: string | null;
+  groupId?: string | null;
+}
+
+/** Une observation correspond-elle a la case « Qui » ? « n'importe qui » ne correspond a aucun visage (c'est la presence qui le pilote). */
+export function faceMatches(who: Who, obs: Pick<FaceSighting, 'kind' | 'personId' | 'groupId'>): boolean {
+  switch (who.type) {
+    case 'unknown':
+      return obs.kind === 'unknown';
+    case 'list':
+      return obs.kind === 'recognized' && typeof obs.groupId === 'string' && obs.groupId === who.listId;
+    case 'person':
+      return obs.kind === 'recognized' && typeof obs.personId === 'string' && obs.personId === who.personId;
+    default:
+      return false;
+  }
+}
 
 export type RuleAction =
   | { kind: 'trigger'; event: RuleEventName; cameraId: string; at: number }
@@ -277,6 +351,12 @@ export interface RuleMachine {
   init(occupied: Record<string, { since: number }>, at: number): RuleAction[];
   /** Un changement de presence. Le temps avance d'abord jusqu'a `change.at` (minuteries echues), puis le changement est applique. */
   feed(change: Pick<PresenceChange, 'cameraId' | 'kind' | 'at'>): RuleAction[];
+  /**
+   * Un visage vu (regles d'identite seulement : sans effet pour « n'importe qui »). Le temps avance d'abord jusqu'a `obs.at`.
+   * Une observation correspondante declenche (periode active, hors repos, pas deja declenchee) ou prolonge ; le retour au calme
+   * a lieu 60 s apres la derniere observation correspondante.
+   */
+  see(obs: FaceSighting): RuleAction[];
   /** Fait avancer le temps jusqu'a `at` : fin de presence, duree atteinte, plage horaire ouverte, repos ecoule. */
   tick(at: number): RuleAction[];
   /** Prochain instant ou quelque chose peut changer sans nouvel evenement (pour sauter les temps morts), ou null. */
@@ -306,6 +386,11 @@ export interface RuleMachine {
  *  - PERIODE ACTIVE (`when`) : toujours ; plages horaires (heure locale du serveur, plages a cheval sur minuit comprises) ;
  *    ou zone armee (pour `appears` : la camera du « start » ; pour `stays` : au moins une camera presente a cet instant).
  *
+ * REGLES D'IDENTITE (`who` : liste, personne, inconnu) : la machine ignore la presence (`feed`) et n'est pilotee que par les
+ * visages vus (`see`). Une observation correspondante (faceMatches), dans la portee, pendant une periode active (`appears` : la
+ * camera de l'observation), hors repos et si la regle n'est pas deja declenchee, declenche. Les observations correspondantes
+ * suivantes prolongent ; `clear` a l'instant EXACT derniere-observation-correspondante + 60 s, puis repos `cooldownMinutes`.
+ *
  * Les minuteries sont evaluees a leur instant EXACT quel que soit le rythme des appels : un tick toutes les secondes (direct)
  * et des sauts de `nextWake` (essai) donnent les memes declenchements.
  */
@@ -314,7 +399,10 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
   const cooldownMs = spec.cooldownMinutes * MINUTE_MS;
   const stays = spec.trigger.type === 'stays';
   const stayMs = spec.trigger.type === 'stays' ? spec.trigger.minutes * MINUTE_MS : 0;
-  const event: RuleEventName = spec.then.severity === 'warning' ? 'person_noticed' : stays ? 'person_lingering' : 'person_detected';
+  const identity = spec.who.type !== 'anyone';
+  const event: RuleEventName = identity
+    ? spec.then.severity === 'warning' ? 'face_noticed' : spec.who.type === 'unknown' ? 'face_unknown' : 'face_banned'
+    : spec.then.severity === 'warning' ? 'person_noticed' : stays ? 'person_lingering' : 'person_detected';
 
   /** `since` : occupee depuis ; sinon `stoppedAt` : dernier « stop » (la camera compte encore pendant 60 s). */
   const cams = new Map<string, { since: number | null; stoppedAt: number | null }>();
@@ -322,6 +410,8 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
   let presenceSince: number | null = null;
   let triggered = false;
   let restUntil = -Infinity;
+  /** Regles d'identite : instant de la derniere observation correspondante pendant que la regle est declenchee. */
+  let lastMatch: number | null = null;
 
   const anyOccupied = (): boolean => [...cams.values()].some((c) => c.since !== null);
 
@@ -353,6 +443,16 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
   }
 
   function evaluate(t: number, out: RuleAction[]): void {
+    if (identity) {
+      if (triggered && lastMatch !== null && t >= lastMatch + SMOOTHING_MS) {
+        const end = lastMatch + SMOOTHING_MS;
+        triggered = false;
+        lastMatch = null;
+        restUntil = end + cooldownMs;
+        out.push({ kind: 'clear', at: end });
+      }
+      return;
+    }
     const end = endsAt();
     if (end !== null && t >= end) {
       presenceSince = null;
@@ -379,6 +479,10 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
     const take = (x: number) => {
       if (x > clock && (wake === null || x < wake)) wake = x;
     };
+    if (identity) {
+      if (triggered && lastMatch !== null) take(lastMatch + SMOOTHING_MS);
+      return wake;
+    }
     const end = endsAt();
     if (end !== null) take(end);
     if (stays && !triggered && presenceSince !== null) {
@@ -405,6 +509,7 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
     init(occupied, at) {
       const out: RuleAction[] = [];
       clock = Math.max(clock, at);
+      if (identity) return out; // rien n'est signale pour le passe, et la presence ne pilote pas une regle d'identite
       for (const [id, o] of Object.entries(occupied)) {
         if (!scope.has(id)) continue;
         cams.set(id, { since: Math.min(o.since, at), stoppedAt: null });
@@ -416,7 +521,7 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
 
     feed(change) {
       const out: RuleAction[] = [];
-      if (!scope.has(change.cameraId)) return out;
+      if (identity || !scope.has(change.cameraId)) return out;
       advance(change.at, out);
       const t = clock;
       let cam = cams.get(change.cameraId);
@@ -439,6 +544,22 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
       return out;
     },
 
+    see(obs) {
+      const out: RuleAction[] = [];
+      if (!identity || !scope.has(obs.cameraId)) return out;
+      advance(obs.at, out);
+      const t = clock;
+      if (!faceMatches(spec.who, obs)) return out;
+      if (triggered) {
+        lastMatch = t; // prolonge : retour au calme 60 s apres cette observation
+      } else if (t >= restUntil && isActive(obs.cameraId, t)) {
+        triggered = true;
+        lastMatch = t;
+        out.push({ kind: 'trigger', event, cameraId: obs.cameraId, at: t });
+      }
+      return out;
+    },
+
     tick(at) {
       const out: RuleAction[] = [];
       advance(at, out);
@@ -451,6 +572,7 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
     release(at) {
       if (!triggered) return [];
       triggered = false;
+      lastMatch = null;
       return [{ kind: 'clear', at }];
     },
   };
@@ -478,6 +600,8 @@ export function createRules(deps: {
   db: DatabaseSync;
   engine: Pick<Engine, 'handleDetectorMessage' | 'audit' | 'getDevice' | 'createDevice' | 'updateDevice' | 'deleteDevice' | 'setLinks' | 'getSnapshot'>;
   presence: Pick<Presence, 'subscribe' | 'history' | 'current'>;
+  /** Visages vus (regles d'identite). Absent : ces regles existent mais ne recoivent rien, et leur essai ne declenche rien. */
+  faces?: Pick<FaceObs, 'subscribe' | 'history'>;
   isArmed: (zone: string) => boolean;
   now?: () => number;
 }) {
@@ -489,6 +613,8 @@ export function createRules(deps: {
     machine: RuleMachine;
     scope: ReadonlySet<string>;
     deviceId: string;
+    /** Regle d'identite : pilotee par les visages, pas par la presence. */
+    identity: boolean;
   }
   const live = new Map<number, Live>();
 
@@ -616,7 +742,7 @@ export function createRules(deps: {
       // La zone est relue a chaque fois : une camera deplacee dans une autre zone est jugee sur sa zone actuelle.
       isArmed: (cameraId) => deps.isArmed(engine.getDevice(cameraId)?.zone ?? zones.get(cameraId) ?? ''),
     });
-    const entry: Live = { machine, scope: new Set(scope.map((c) => c.id)), deviceId };
+    const entry: Live = { machine, scope: new Set(scope.map((c) => c.id)), deviceId, identity: spec.who.type !== 'anyone' };
     live.set(id, entry);
     dispatch(entry, machine.init(presence.current(), now()));
     return entry;
@@ -627,7 +753,7 @@ export function createRules(deps: {
     const entry = live.get(id);
     live.delete(id);
     const actions = entry ? entry.machine.release(now()) : [];
-    if (actions.length > 0) dispatch({ machine: entry!.machine, scope: entry!.scope, deviceId }, actions);
+    if (actions.length > 0) dispatch({ ...entry!, deviceId }, actions);
     else if (ringing(deviceId)) engine.handleDetectorMessage(deviceId, { event: 'clear' });
   }
 
@@ -644,7 +770,7 @@ export function createRules(deps: {
 
   const unsubscribe = presence.subscribe((change) => {
     for (const entry of live.values()) {
-      if (!entry.scope.has(change.cameraId)) continue;
+      if (entry.identity || !entry.scope.has(change.cameraId)) continue;
       try {
         dispatch(entry, entry.machine.feed(change));
       } catch (err) {
@@ -652,6 +778,24 @@ export function createRules(deps: {
       }
     }
   });
+
+  // Visages vus : seules les regles d'identite les recoivent (jamais les regles « n'importe qui »).
+  const unsubscribeFaces = deps.faces
+    ? deps.faces.subscribe((seen) => {
+        for (const entry of live.values()) {
+          if (!entry.identity || !entry.scope.has(seen.cameraId)) continue;
+          try {
+            dispatch(entry, entry.machine.see(seen));
+          } catch (err) {
+            console.error('[rules] visage :', err);
+          }
+        }
+      })
+    : () => {};
+  const close = (): void => {
+    unsubscribe();
+    unsubscribeFaces();
+  };
 
   // -- Saisie -------------------------------------------------------------------------------------------------------
 
@@ -797,11 +941,22 @@ export function createRules(deps: {
     const machine = createRuleMachine(spec, { cameras: ids, isArmed: (cameraId) => deps.isArmed(zones.get(cameraId) ?? '') });
 
     const horizon = to + SIM_MARGIN_MS;
-    const changes = presence
-      .history(from, horizon, ids)
-      .map((c, i) => ({ c, i }))
-      .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
-      .map((x) => x.c);
+    const identity = spec.who.type !== 'anyone';
+    // Regle d'identite : ce sont les visages vus qui sont rejoues (sans `faces`, rien ne se declenche).
+    const sightings = identity && deps.faces
+      ? deps.faces
+          .history(from, horizon, ids)
+          .map((c, i) => ({ c, i }))
+          .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
+          .map((x) => x.c)
+      : [];
+    const changes = identity
+      ? []
+      : presence
+          .history(from, horizon, ids)
+          .map((c, i) => ({ c, i }))
+          .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
+          .map((x) => x.c);
 
     const triggers: { at: number; endedAt: number | null; cameraId: string }[] = [];
     const collect = (actions: RuleAction[]) => {
@@ -812,6 +967,7 @@ export function createRules(deps: {
     };
     machine.tick(from);
     for (const change of changes) collect(machine.feed(change));
+    for (const seen of sightings) collect(machine.see(seen));
     collect(machine.tick(horizon));
     return { summary: describeRule(spec, { cameraName: (id) => scope.find((c) => c.id === id)?.name ?? id }), triggers: triggers.filter((t) => t.at >= from && t.at <= to) };
   }
@@ -858,7 +1014,7 @@ export function createRules(deps: {
 
   reconcile();
 
-  return { list, get, create, update, remove, tick, simulate, close: unsubscribe };
+  return { list, get, create, update, remove, tick, simulate, close };
 }
 
 export type Rules = ReturnType<typeof createRules>;

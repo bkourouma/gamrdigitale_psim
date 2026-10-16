@@ -281,6 +281,9 @@ export const config = {
     // Une lecture toutes les 60 s par defaut : l'essai gratuit du cloud Tuya plafonne le nombre d'appels par mois.
     return { accessId, accessSecret, baseUrl, region, pollS: num('PSIM_TUYA_POLL_S', 60, 10, 120) };
   })(),
+  // Assistant de regles (ecran « Regles », zone « Decrivez la regle en une phrase ») : cle de l'API Anthropic, dans le .env seulement.
+  // Cle vide ou absente = assistant non configure (la zone n'est pas affichee). Seules des phrases et des noms sont envoyes, jamais d'image.
+  assist: { apiKey: (env.PSIM_ASSIST_API_KEY ?? '').trim(), model: (env.PSIM_ASSIST_MODEL ?? '').trim() || 'claude-sonnet-5-5' },
   // Entree HTTP pour les systemes qui poussent leurs evenements (controle d'acces, passerelles IoT) : POST /api/ingest/<id>
   // avec « Authorization: Bearer <jeton> ». Desactivee si le jeton est vide. 24 caracteres minimum (verifie au demarrage).
   ingestToken: env.PSIM_INGEST_TOKEN ?? '',
