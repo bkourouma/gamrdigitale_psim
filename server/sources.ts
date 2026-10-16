@@ -70,9 +70,17 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   loitering: 'alarm',
   sos: 'alarm',
   fall: 'alarm',
+  // presence et visages : envoyes par les detecteurs virtuels des regles de presence (server/rules.ts) ; gravite
+  // « critical » = evenement precis, gravite « warning » = person_noticed / face_noticed
+  person_detected: 'alarm',
+  person_lingering: 'alarm',
+  face_banned: 'alarm',
+  face_unknown: 'alarm',
   // prealarmes
   door_held_open: 'prealarm',
   badge_denied_repeated: 'prealarm',
+  person_noticed: 'prealarm',
+  face_noticed: 'prealarm',
   // retour a la normale
   normal: 'normal',
   clear: 'normal',
@@ -116,8 +124,14 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   loitering: 'Rôdage suspect',
   sos: 'Appel de détresse (SOS)',
   fall: 'Chute détectée',
+  person_detected: 'Présence détectée',
+  person_lingering: 'Présence prolongée',
+  face_banned: 'Personne interdite reconnue',
+  face_unknown: 'Visage inconnu en zone réservée',
   door_held_open: 'Porte restée ouverte',
   badge_denied_repeated: 'Badge refusé à répétition',
+  person_noticed: 'Présence signalée',
+  face_noticed: 'Visage signalé',
   normal: 'Retour à la normale',
   clear: 'Retour au calme',
   restored: 'Retour à la normale',

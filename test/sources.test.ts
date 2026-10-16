@@ -7,7 +7,7 @@ import { openDb } from '../server/db.ts';
 import { createEngine, PsimError } from '../server/engine.ts';
 import { createRiskService } from '../server/risk.ts';
 import { seedDemo } from '../server/seed.ts';
-import { checkSensorSettings, interpret, stateFromValue } from '../server/sources.ts';
+import { checkSensorSettings, EVENT_LABEL, EVENTS, eventLabel, interpret, stateFromValue } from '../server/sources.ts';
 import type { SensorSettings } from '../server/sources.ts';
 
 const T0 = 1_000_000_000_000;
@@ -245,5 +245,39 @@ describe("l'indice de risque incendie ne compte que l'incendie", () => {
     const after = risk.overview().zones.find((z) => z.zone === 'Accueil')!.facts;
     assert.equal(after.fires, before.fires);
     assert.equal(after.detectors, before.detectors, "le detecteur de mouvement n'est pas un detecteur d'incendie");
+  });
+});
+
+describe('evenements de presence et de visage (regles de presence)', () => {
+  const NEW_EVENTS = [
+    ['person_detected', 'alarm', 'Présence détectée'],
+    ['person_lingering', 'alarm', 'Présence prolongée'],
+    ['person_noticed', 'prealarm', 'Présence signalée'],
+    ['face_banned', 'alarm', 'Personne interdite reconnue'],
+    ['face_unknown', 'alarm', 'Visage inconnu en zone réservée'],
+    ['face_noticed', 'prealarm', 'Visage signalé'],
+  ] as const;
+
+  it('chacun est reconnu, avec son effet et son motif en clair', () => {
+    for (const [event, effect, label] of NEW_EVENTS) {
+      assert.equal(EVENTS[event], effect, event);
+      assert.equal(EVENT_LABEL[event], label, event);
+      assert.equal(eventLabel(event), label);
+      assert.deepEqual(interpret(fire, { event }), { ok: true, state: effect, event, alive: false, value: null });
+    }
+  });
+
+  it("ouvre un incident (critique pour une alarme, avertissement pour une prealarme) qui garde son motif", () => {
+    const { engine } = setup();
+    for (const [event, effect] of NEW_EVENTS) {
+      const id = `R-${event}`.slice(0, 32);
+      engine.createDevice('admin', { id, kind: 'detector', name: event, zone: 'Accueil', category: 'access', heartbeatS: 0 });
+      engine.handleDetectorMessage(id, { event });
+      const incident = engine.getSnapshot().incidents.find((i) => i.detectorId === id);
+      assert.ok(incident, `incident pour ${event}`);
+      assert.equal(incident.severity, effect === 'alarm' ? 'critical' : 'warning', event);
+      assert.equal(incident.event, event);
+      assert.equal(engine.getDevice(id)?.status, effect, event);
+    }
   });
 });
