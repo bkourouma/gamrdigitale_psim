@@ -1,0 +1,17 @@
+Code=FaceRecognition;action=Start;index=4;data={
+  "Code" : "FaceRecognition",
+  "Name" : "Face Recognition",
+  "UTC" : 1776717200,
+  "Sequence" : 579900,
+  "Class" : "FaceAnalysis",
+  "Candidates" : [
+    {
+      "Similarity" : 62,
+      "Person" : { "UID" : "11", "PersonID" : 11.0, "GroupID" : "1", "Name" : "Marie Exemple", "GroupName" : "Residents et personnel" }
+    },
+    {
+      "Similarity" : 88,
+      "Person" : { "UID" : "3", "PersonID" : 3.0, "GroupID" : "2", "Name" : "Paul Fictif", "GroupName" : "Interdits" }
+    }
+  ]
+}

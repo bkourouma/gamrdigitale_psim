@@ -1,0 +1,10 @@
+found=2
+GroupList[0].groupID=1
+GroupList[0].groupName=Residents et personnel
+GroupList[0].groupType=BlackListDB
+GroupList[0].groupSize=12
+GroupList[0].groupDetail=Liste fictive pour les essais
+GroupList[1].groupID=2
+GroupList[1].groupName=Interdits
+GroupList[1].groupType=BlackListDB
+GroupList[1].groupSize=0
