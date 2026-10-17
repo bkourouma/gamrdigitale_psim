@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { X509Certificate } from 'node:crypto';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { checkTls } from '../scripts/commission/checks.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -124,6 +125,14 @@ describe('outil init-production (processus reel)', { timeout: 120_000 }, () => {
     assert.match(tls.detail, /psim\.local/);
     assert.match(tls.detail, /192\.168\.1\.22/);
     assert.ok(!/ERREUR/.test(r.stdout), r.stdout);
+    // autorite locale : chaine feuille + autorite dans cert.pem, cle de l'autorite a cote (jamais dans cert.pem)
+    const tlsDir = dirname(env.PSIM_TLS_CERT);
+    assert.ok(existsSync(join(tlsDir, 'ca.pem')) && existsSync(join(tlsDir, 'ca-key.pem')));
+    const chain = readFileSync(env.PSIM_TLS_CERT, 'utf8');
+    assert.equal(chain.match(/BEGIN CERTIFICATE/g)?.length, 2);
+    assert.ok(!chain.includes('PRIVATE KEY'));
+    assert.equal(new X509Certificate(readFileSync(join(tlsDir, 'ca.pem'))).ca, true);
+    assert.match(r.stdout, /autorite/);
   });
 
   it("le fichier genere demarre un vrai PSIM de production : les identifiants fonctionnent, l'administrateur est tenu d'activer la 2FA, le simulateur est ferme", async () => {

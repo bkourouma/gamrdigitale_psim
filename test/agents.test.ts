@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { X509Certificate, createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
+import { findOpenssl, generateSiteCert } from '../scripts/lib/cert.ts';
 import { PHONE_COOKIE, createAgents, releaseAcknowledged } from '../server/agents.ts';
 import { checkCredentials, createSession, createUser, getSession, parseCookies, setSessionValidator, useSessionStore } from '../server/auth.ts';
 import { openDb } from '../server/db.ts';
@@ -1816,6 +1817,58 @@ describe('HTTP : certificat du PSIM', () => {
         assert.ok(!res.raw.toString().includes('SECRET'));
         assert.equal((await admin.get('/api/agent-cert.svg')).status, 404);
       }
+    } finally {
+      console.warn = quiet;
+    }
+  });
+
+  const real = { skip: findOpenssl() ? false : 'openssl introuvable' };
+
+  it("fichier-chaîne (serveur + autorité) produit par generateSiteCert : /api/agent-cert renvoie exactement l'autorité, jamais le certificat du serveur", real, async () => {
+    const site = generateSiteCert({ hosts: ['psim.test', '192.168.1.10'], dir: mkdtempSync(join(tmpdir(), 'psim-agents-ca-')) });
+    const { admin } = await web({ certPath: site.cert });
+    const res = await new Client(admin.base).get('/api/agent-cert');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/x-x509-ca-cert');
+    const served = res.raw.toString();
+    assert.equal((served.match(/BEGIN CERTIFICATE/g) ?? []).length, 1, 'un seul certificat');
+    const ca = new X509Certificate(res.raw);
+    assert.equal(ca.ca, true);
+    assert.equal(ca.fingerprint256, new X509Certificate(readFileSync(site.ca)).fingerprint256);
+    assert.notEqual(ca.fingerprint256, new X509Certificate(readFileSync(site.cert)).fingerprint256, 'pas le certificat du serveur');
+    assert.ok(!served.includes('PRIVATE KEY'));
+    // le QR, lui, continue de fonctionner sur ce fichier
+    assert.equal((await admin.get('/api/agent-cert.svg')).status, 200);
+  });
+
+  it("un certificat unique auto-signé CA:TRUE est servi tel quel (compatibilité)", real, async () => {
+    const site = generateSiteCert({ hosts: ['psim.test'], dir: mkdtempSync(join(tmpdir(), 'psim-agents-ca-')) });
+    const { admin } = await web({ certPath: site.ca });
+    const res = await new Client(admin.base).get('/api/agent-cert');
+    assert.equal(res.status, 200);
+    assert.equal(res.raw.toString(), readFileSync(site.ca, 'utf8'));
+  });
+
+  it("un certificat de serveur seul (CA:FALSE, sans autorité) est servi tel quel : comportement historique", real, async () => {
+    const site = generateSiteCert({ hosts: ['psim.test'], dir: mkdtempSync(join(tmpdir(), 'psim-agents-ca-')) });
+    const leafOnly = join(dir, 'serveur-seul.pem');
+    writeFileSync(leafOnly, readFileSync(site.cert, 'utf8').split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----\n');
+    assert.equal(new X509Certificate(readFileSync(leafOnly)).ca, false);
+    const { admin } = await web({ certPath: leafOnly });
+    const res = await new Client(admin.base).get('/api/agent-cert');
+    assert.equal(res.status, 200);
+    assert.equal(res.raw.toString(), readFileSync(leafOnly, 'utf8'));
+  });
+
+  it("une chaîne qui contient aussi la clé privée n'est jamais servie, même avec une autorité valide", real, async () => {
+    const site = generateSiteCert({ hosts: ['psim.test'], dir: mkdtempSync(join(tmpdir(), 'psim-agents-ca-')) });
+    const both = join(dir, 'chaine-et-cle.pem');
+    writeFileSync(both, readFileSync(site.cert, 'utf8') + readFileSync(site.key, 'utf8'));
+    const quiet = console.warn;
+    console.warn = () => {};
+    try {
+      const { admin } = await web({ certPath: both });
+      assert.equal((await new Client(admin.base).get('/api/agent-cert')).status, 404);
     } finally {
       console.warn = quiet;
     }

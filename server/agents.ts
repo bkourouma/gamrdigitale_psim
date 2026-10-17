@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Express, Request, RequestHandler, Response } from 'express';
 import QRCode from 'qrcode';
 import { createSession, destroyPhoneSessions, destroySession, destroyUserSessions, isRateLimited, parseCookies, recordFailure } from './auth.ts';
+import { certificateBlocks, pickPhoneCa } from './cert-info.ts';
 import type { Engine } from './engine.ts';
 import { PsimError } from './errors.ts';
 import { MSG_ID_PATTERN } from './ingestmeta.ts';
@@ -996,7 +997,12 @@ export function createAgents(deps: AgentsDeps) {
   const SVG_HEADERS = { 'Content-Type': 'image/svg+xml', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox", 'Cache-Control': 'no-store' };
   const qrSvg = (text: string) => QRCode.toString(text, { type: 'svg', margin: 1, width: 260 });
 
-  /** Certificat public a installer sur le telephone (CA du PSIM). Refuse tout fichier contenant une cle privee. */
+  /**
+   * Certificat public a installer sur le telephone (autorite locale du PSIM). Refuse tout fichier contenant une cle privee.
+   * Le fichier PSIM_TLS_CERT est soit une chaine « serveur + autorite » (on n'en sert que l'AUTORITE : le telephone n'installe
+   * comme CA qu'un certificat CA:TRUE), soit un certificat unique (servi tel quel), soit un contenu sans autorite lisible
+   * (certificat de serveur seul, fichier non analysable : servi tel quel, comportement historique).
+   */
   function readCertificate(): Buffer | null {
     if (!deps.certPath) return null;
     try {
@@ -1006,7 +1012,9 @@ export function createAgents(deps: AgentsDeps) {
         console.warn('[agents] PSIM_TLS_CERT contient une cle privee : jamais servi');
         return null;
       }
-      return pem;
+      const ca = pickPhoneCa(pem);
+      if (!ca) return pem;
+      return certificateBlocks(pem).length === 1 ? pem : Buffer.from(ca.pem);
     } catch {
       return null;
     }

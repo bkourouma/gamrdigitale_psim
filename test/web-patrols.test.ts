@@ -181,6 +181,13 @@ describe('ecran « Rondes » : securite du code servi (CSP stricte, aucun secret
     assert.doesNotMatch(src, /createObjectURL|data:image/);
   });
 
+  it("l'adresse a ecrire dans une etiquette NFC vient de l'origine du QR (serveur), pas de l'adresse du navigateur", () => {
+    const src = read('patrols.js');
+    assert.match(src, /api\('\/api\/patrols\/label-origin'\)/);
+    assert.match(src, /const address = \(cp\) => labelUrl\(st\.origin \|\| location\.origin, cp\.code\)/);
+    assert.equal(patrols.labelUrl('https://192.168.1.50:3033/', 'k4m7qx2b3d'), 'https://192.168.1.50:3033/agent/#cp=k4m7qx2b3d');
+  });
+
   it('impression : la planche est seule imprimee (le reste du cadre est masque)', () => {
     const css = read('patrols.css');
     assert.match(css, /@media print/);
