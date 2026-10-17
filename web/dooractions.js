@@ -106,6 +106,20 @@ export function doorActionPlan({ door, remote, actuator, maintenance = false }) 
   return plan;
 }
 
+/** Type d'actionneur attendu pour une porte selon son genre (meme regle que le serveur : door -> lock, le reste -> gate). */
+export const actuatorTypeForKind = (kind) => (kind === 'door' ? 'lock' : kind === 'gate' || kind === 'barrier' || kind === 'turnstile' ? 'gate' : null);
+
+/**
+ * Actionneurs proposables a l'administrateur pour lier une porte : type coherent avec le genre, meme issue de secours que la
+ * porte, pas deja lies a une AUTRE porte (le serveur reverifie tout et reste juge : 400 / 409 affiches tels quels).
+ */
+export function compatibleActuators({ door, actuators, doors }) {
+  const type = actuatorTypeForKind(door?.kind);
+  if (!type) return [];
+  const taken = new Set((doors ?? []).filter((d) => d.detectorId !== door.detectorId && d.actuatorId).map((d) => d.actuatorId));
+  return (actuators ?? []).filter((a) => a.type === type && Boolean(a.emergencyExit) === Boolean(door.emergencyExit) && !taken.has(a.id));
+}
+
 /** Etat d'une commande, tel que le service des commandes le rapporte (jamais « fait » sans accuse). */
 export function commandStateText(c) {
   if (!c) return 'Envoyée — accusé attendu';
@@ -235,17 +249,50 @@ export function doorActions(door, detail, opts = {}) {
   return root;
 }
 
+// ---------------------------------------------------------------- branchement dans la fiche de porte de l'ecran Acces
+
+/**
+ * Contrat avec web/access.js : apres chaque rendu de la fiche de porte, l'ecran emet `psim:door-card` avec { slot, door } ;
+ * `slot` est l'emplacement `data-slot="remote-open"`, `door` le DoorView. Ce module y pose le composant ci-dessus (boutons selon
+ * l'actionneur lie et les droits, mode de porte), sans que access.js l'importe.
+ */
+export async function fillDoorCard(slot, door) {
+  if (!slot || !door?.detectorId) return;
+  const token = `${door.detectorId}:${Date.now()}`;
+  slot.dataset.dooractToken = token;
+  try {
+    const { core } = await deps();
+    const detail = await core.api(`/api/access/doors/${encodeURIComponent(door.detectorId)}`);
+    // La fiche a ete re-rendue ou a change de porte pendant la lecture : cette reponse est perimee.
+    if (!slot.isConnected || slot.dataset.dooractToken !== token) return;
+    slot.replaceChildren(doorActions(detail.door ?? door, detail, {}));
+  } catch {
+    // Echec de lecture : le texte de l'ecran Acces reste en place, la fiche n'est jamais bloquee.
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('psim:door-card', (e) => {
+    const d = e.detail ?? {};
+    void fillDoorCard(d.slot, d.door);
+  });
+}
+
 async function build(root, door, detail, opts, { core, cmds }) {
   const { h, icon, time } = core;
   const remote = detail.remote ?? null;
   const cameras = Array.isArray(detail.cameras) ? detail.cameras : EMPTY;
 
+  root.dooractUnwatch?.(); // reconstruction (liaison changee) : l'ancien abonnement s'arrete
+  const isAdmin = core.S.me?.role === 'admin';
   let actuator = null;
   let maintenance = false;
-  if (remote?.available) {
+  let list = null;
+  if (remote?.available || isAdmin) {
     try {
       const res = await cmds.listActuators();
-      actuator = res.actuators.find((a) => a.id === remote.actuatorId) ?? null;
+      list = res.actuators;
+      actuator = remote?.available ? res.actuators.find((a) => a.id === remote.actuatorId) ?? null : null;
       maintenance = res.lock.locked;
     } catch (err) {
       root.replaceChildren(h('p', { class: 'notice is-alarm', role: 'alert', text: `Impossible de lire les droits sur l’équipement : ${err.message}` }));
@@ -291,6 +338,7 @@ async function build(root, door, detail, opts, { core, cmds }) {
     );
   };
   let unwatch = null;
+  root.dooractUnwatch = () => unwatch?.();
   const onSent = (command) => {
     if (!sent.some((s) => s.cmdId === command.cmdId)) sent.unshift({ cmdId: command.cmdId, action: command.action, command, at: Date.now() });
     renderStatus();
@@ -345,7 +393,39 @@ async function build(root, door, detail, opts, { core, cmds }) {
     controls.append(h('p', { class: 'hint', text: 'Une raison et votre mot de passe sont demandés pour ouvrir. « Envoyée » ne veut pas dire « ouverte » : attendez l’accusé de l’équipement.' }));
   }
 
-  root.replaceChildren(h('h3', { class: 'dooract-title', text: 'Ouverture à distance' }), head, camBox, controls, error, status);
+  // ---- liaison porte <-> actionneur (administrateur seulement ; la route PUT ne demande pas de mot de passe)
+  let linkBox = null;
+  if (isAdmin) {
+    const linkError = h('p', { class: 'form-error', role: 'alert' });
+    const doors = await core.api('/api/access/doors').catch(() => null);
+    const options = doors ? compatibleActuators({ door, actuators: list, doors }) : [];
+    const select = h('select', { id: `dooract-link-${door.detectorId}` }, h('option', { value: '' }, '— choisir un actionneur —'), options.map((a) => h('option', { value: a.id, selected: a.id === remote?.actuatorId }, a.name)));
+    const save = async (button, actuatorId) => {
+      linkError.textContent = '';
+      button.disabled = true;
+      try {
+        await core.api(`/api/access/doors/${encodeURIComponent(door.detectorId)}`, { method: 'PUT', body: { actuatorId } });
+        const fresh = await core.api(`/api/access/doors/${encodeURIComponent(door.detectorId)}`);
+        opts.onLinkChange?.(fresh);
+        await build(root, fresh.door ?? door, fresh, opts, { core, cmds });
+      } catch (err) {
+        linkError.textContent = err.message;
+        button.disabled = false;
+      }
+    };
+    const link = h('button', { class: 'btn', type: 'button', disabled: !doors || options.length === 0, onclick: (e) => (select.value ? void save(e.currentTarget, select.value) : void (linkError.textContent = 'Choisissez d’abord un actionneur dans la liste.')) }, icon('lock'), h('span', { text: 'Lier' }));
+    const unlink = remote?.actuatorId || door.actuatorId ? h('button', { class: 'btn', type: 'button', onclick: (e) => void save(e.currentTarget, null) }, h('span', { text: 'Délier' })) : null;
+    linkBox = h(
+      'div',
+      { class: 'dooract-link' },
+      h('label', { class: 'field' }, h('span', { text: 'Actionneur lié' }), select),
+      h('div', { class: 'actions' }, link, unlink),
+      doors && options.length === 0 ? h('p', { class: 'hint', text: `Aucun actionneur compatible n’est libre (il faut un${actuatorTypeForKind(door.kind) === 'gate' ? ' portail / une barrière' : 'e serrure / gâche'}, ${door.emergencyExit ? 'déclaré issue de secours' : 'non déclaré issue de secours'}, et pas déjà lié à une autre porte).` }) : null,
+      linkError,
+    );
+  }
+
+  root.replaceChildren(h('h3', { class: 'dooract-title', text: 'Ouverture à distance' }), head, camBox, controls, error, status, linkBox);
   unwatch = cmds.watchCommands(() => {
     if (!root.isConnected) return void unwatch?.();
     renderStatus();

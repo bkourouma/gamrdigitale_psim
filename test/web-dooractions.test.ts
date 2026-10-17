@@ -65,6 +65,8 @@ interface Mod {
   evacuationPreview: (d: unknown) => { total: number; ready: number; notReady: unknown[]; canGo: boolean };
   evacuationRowState: (r: unknown, c?: unknown) => RowState;
   evacuationBilan: (s: RowState[]) => { opened: number; total: number; pending: number; text: string; complete: boolean; allOpen: boolean };
+  actuatorTypeForKind: (k: unknown) => string | null;
+  compatibleActuators: (x: { door: unknown; actuators: unknown[]; doors: unknown[] }) => { id: string }[];
   doorActions: unknown;
   evacuationButton: unknown;
 }
@@ -160,6 +162,35 @@ describe('composant porte : boutons selon type, droits, issue de secours, mainte
     assert.match(m.doorActionPlan({ door: {}, remote: remote(), actuator: lock({ linkUp: false }) }).blocked ?? '', /Liaison coupée/);
     assert.equal(m.doorActionPlan({ door: {}, remote: remote(), actuator: lock({ linkUp: null }) }).blocked, null);
     assert.ok(maint.buttons.length > 0);
+  });
+});
+
+describe('liaison porte <-> actionneur (administrateur)', () => {
+  const act = (id: string, type: string, emergencyExit = false) => ({ id, type, emergencyExit });
+  const actuators = [act('g1', 'lock'), act('g2', 'lock'), act('s1', 'lock', true), act('p1', 'gate'), act('sir', 'siren')];
+  const ids = (door: unknown, doors: unknown[] = []) => m.compatibleActuators({ door, actuators, doors }).map((a) => a.id);
+
+  it('genre de porte -> type d’actionneur', () => {
+    assert.equal(m.actuatorTypeForKind('door'), 'lock');
+    for (const k of ['gate', 'barrier', 'turnstile']) assert.equal(m.actuatorTypeForKind(k), 'gate');
+    assert.equal(m.actuatorTypeForKind('autre'), null);
+  });
+
+  it('seuls les actionneurs de type coherent, de meme issue de secours et libres sont proposes', () => {
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'door', emergencyExit: false }), ['g1', 'g2']);
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'door', emergencyExit: true }), ['s1']);
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'barrier', emergencyExit: false }), ['p1']);
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'door', emergencyExit: false }, [{ detectorId: 'd2', actuatorId: 'g1' }]), ['g2']);
+    // l’actionneur de CETTE porte reste proposable
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'door', emergencyExit: false }, [{ detectorId: 'd1', actuatorId: 'g1' }]), ['g1', 'g2']);
+    assert.deepEqual(ids({ detectorId: 'd1', kind: 'inconnu' }), []);
+  });
+
+  it('le bloc est reserve a l’administrateur, visible aussi sans actionneur lie', () => {
+    const src = read('dooractions.js');
+    assert.match(src, /const isAdmin = core\.S\.me\?\.role === 'admin'/);
+    assert.match(src, /if \(isAdmin\) \{[\s\S]*?Actionneur lié/);
+    assert.match(read('dooractions.css'), /.dooract-link/);
   });
 });
 
@@ -304,7 +335,11 @@ describe('interface : integration et securite du code servi (CSP stricte, route 
     assert.equal(sends.length, 1, 'un seul envoi d’ordre, partage');
     assert.match(commands, /async function sendCommand[\s\S]*?\/api\/actuators\/\$\{encodeURIComponent\(a\.id\)\}\/commands/);
     const routes = [...dooract.matchAll(/api\(\s*['"`]([^'"`]+)['"`]/g)].map((x) => x[1]);
-    assert.deepEqual([...new Set(routes)], ['/api/access/evacuation']);
+    // Lecture de la fiche de la porte (GET, remplissage de l'emplacement de l'ecran Acces) et « Tout ouvrir » : aucun ordre ici.
+    assert.deepEqual([...new Set(routes)].sort(), ['/api/access/doors', '/api/access/doors/${encodeURIComponent(door.detectorId)}', '/api/access/evacuation']);
+    // Liaison porte <-> actionneur : PUT /api/access/doors/:id { actuatorId } (sans mot de passe), jamais une autre ecriture
+    assert.match(dooract, /method: 'PUT', body: { actuatorId }/);
+    assert.deepEqual([...dooract.matchAll(/method: '(\w+)'/g)].map((x) => x[1]).sort(), ['POST', 'PUT']);
     assert.doesNotMatch(dooract + loadDoorBlock, /mqtt|publish\(/i);
   });
 
@@ -330,5 +365,13 @@ describe('interface : integration et securite du code servi (CSP stricte, route 
 
   it('aucun appel reseau direct hors core.js `api` dans les fichiers du lot', () => {
     for (const src of [dooract, commands, incidents]) assert.doesNotMatch(src, /\bfetch\(|XMLHttpRequest|EventSource\(|WebSocket\(/);
+  });
+
+  it('la fiche de porte de l’ecran Acces est remplie par l’evenement psim:door-card (access.js n’importe rien)', () => {
+    assert.match(dooract, /addEventListener\('psim:door-card'/);
+    assert.match(dooract, /export async function fillDoorCard\(slot, door\)/);
+    assert.match(dooract, /typeof document !== 'undefined'/);
+    assert.match(dooract, /\/api\/access\/doors\//);
+    assert.doesNotMatch(read('access.js'), /dooractions/);
   });
 });

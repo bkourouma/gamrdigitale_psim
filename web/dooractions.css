@@ -34,3 +34,8 @@
 .cmd-actuator.is-focus { border: 2px solid var(--ink); border-radius: var(--r-md); padding: var(--s3); }
 .inc-door:empty { display: none; }
 .inc-door { margin: var(--s3) 0; }
+
+/* Liaison porte <-> actionneur (administrateur) */
+.dooract-link { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.dooract-link select { min-height: var(--control-h); }
+.dooract-link .actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
