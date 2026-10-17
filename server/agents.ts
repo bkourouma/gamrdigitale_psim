@@ -51,6 +51,11 @@ const MAX_ZONES = 50;
 const MAX_NAME = 80;
 /** Le detecteur `A-<identifiant>` doit tenir dans les 32 caracteres d'un identifiant d'equipement. */
 const MAX_USERNAME = 30;
+/**
+ * Le detecteur virtuel `A-<identifiant>` est un identifiant d'equipement : lettres, chiffres, tiret et soulignement SEULEMENT
+ * (le point, admis pour un compte ordinaire, y est refuse : « marie.dupont » echouait a la creation du detecteur, apres coup).
+ */
+const AGENT_USERNAME = /^[a-z0-9][a-z0-9_-]{2,29}$/;
 const MAX_ACTIVE_PHONES = 200;
 const MAX_PENDING_PAIRINGS = 20;
 const SOS_LOGIN_WINDOW_MS = 24 * HOUR;
@@ -214,12 +219,18 @@ const clipDetail = (text: string): string => normalizeName(text.replace(/[\u0000
  * Partagee avec patrols.ts (prefixe `P-`). Renvoie le nombre de detecteurs liberes.
  */
 export function releaseAcknowledged(db: DatabaseSync, engine: Pick<Engine, 'handleDetectorMessage'>, prefix: 'A-' | 'P-'): number {
+  // Le prefixe seul ne suffit pas : le site peut avoir ses propres detecteurs `A-01` (controle d'acces) ; on ne libere que les
+  // detecteurs virtuels de CE module (agents, telephones de secours, circuits).
+  const virtual =
+    prefix === 'A-'
+      ? "d.id IN (SELECT 'A-' || username FROM agent_profile UNION SELECT 'A-phone-' || id FROM agent_phone)"
+      : "d.id GLOB 'P-[0-9]*' AND d.id NOT GLOB 'P-*[^0-9]*'"; // `P-<n° de circuit>` : chiffres seulement
   const rows = db
     .prepare(
       `SELECT DISTINCT d.id AS id FROM incident i JOIN device d ON d.id = i.detector_id
-        WHERE i.status = 'acknowledged' AND substr(d.id, 1, 2) = ? AND d.status IN ('alarm', 'prealarm')`,
+        WHERE i.status = 'acknowledged' AND ${virtual} AND d.status IN ('alarm', 'prealarm')`,
     )
-    .all(prefix) as Row[];
+    .all() as Row[];
   let released = 0;
   for (const r of rows) {
     engine.handleDetectorMessage(r.id as string, { event: 'clear' });
@@ -460,7 +471,7 @@ export function createAgents(deps: AgentsDeps) {
   function createAgent(actor: string, input: Record<string, unknown>): AgentAdminView {
     if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new PsimError(400, 'Corps invalide');
     const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
-    if (username.length > MAX_USERNAME) throw new PsimError(400, `Identifiant invalide (3 a ${MAX_USERNAME} caracteres : lettres minuscules, chiffres, . _ -)`);
+    if (!AGENT_USERNAME.test(username)) throw new PsimError(400, `Identifiant invalide (3 a ${MAX_USERNAME} caracteres : lettres minuscules, chiffres, tiret et soulignement, sans point)`);
     // Tout est valide AVANT la moindre ecriture : jamais de creation partielle.
     const displayName = cleanText(input.displayName, 'displayName');
     const pin = cleanPin(input.pin);
@@ -695,6 +706,13 @@ export function createAgents(deps: AgentsDeps) {
     ).map((r) => ({ username: r.username as string, displayName: r.display_name as string, status: r.status as 'en_route' | 'on_site', at: r.at as number }));
   }
 
+  /** Qui a acquitte, en clair pour l'agent : le nom affiche si c'est un agent (« Marie Dupont »), sinon l'identifiant du poste. */
+  function ackerName(username: string | null): string | null {
+    if (username === null) return null;
+    const row = db.prepare('SELECT display_name FROM agent_profile WHERE username = ?').get(username) as Row | undefined;
+    return (row?.display_name as string | undefined) ?? username;
+  }
+
   function alarmView(i: Incident): AgentAlarm {
     return {
       id: i.id,
@@ -706,7 +724,7 @@ export function createAgents(deps: AgentsDeps) {
       floorName: i.floor,
       openedAt: i.openedAt,
       acknowledged: i.status === 'acknowledged',
-      acknowledgedBy: i.ackedBy,
+      acknowledgedBy: ackerName(i.ackedBy),
       hasSnapshot: i.snapshots.length > 0,
       hasLive: liveCameras(i).length > 0,
       dispatch: dispatchesOf(i.id),

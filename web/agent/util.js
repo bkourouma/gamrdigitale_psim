@@ -57,6 +57,25 @@ export function fmtClock(ms) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+const DAYS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+
+/**
+ * « à 07:43 » le jour même, « demain à 07:43 » le lendemain, « lundi à 07:43 » au-delà : une ronde du lendemain ne doit pas
+ * passer pour une ronde imminente. `now` est injectable (tests).
+ */
+export function fmtWhen(ms, now = Date.now()) {
+  const start = (t) => {
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+  const days = Math.round((start(ms) - start(now)) / 86_400_000);
+  const clock = fmtClock(ms);
+  if (days <= 0) return `à ${clock}`;
+  if (days === 1) return `demain à ${clock}`;
+  return `${DAYS[new Date(ms).getDay()]} à ${clock}`;
+}
+
 /** « il y a 4 min », « à l'instant », « il y a 2 h 10 ». `now` est injectable (tests). */
 export function fmtAgo(ms, now = Date.now()) {
   const s = Math.max(0, Math.round((now - ms) / 1000));

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 // @ts-expect-error module JS de l'interface (sans types), importe pour tester ses calculs purs
-import { api, fmtAgo, fmtDuration, setAuthLostHandler, setNetworkHandler, uuid } from '../web/agent/util.js';
+import { api, fmtAgo, fmtDuration, fmtWhen, setAuthLostHandler, setNetworkHandler, uuid } from '../web/agent/util.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -119,4 +119,16 @@ describe('api()', () => {
     assert.deepEqual(seen.slice(-2), [false, true], 'une erreur 500 prouve que le serveur répond : en ligne');
     assert.ok(seen.every((v, i) => i === 0 || v !== seen[i - 1]), 'jamais deux fois le même état de suite');
   });
+});
+
+describe('fmtWhen : le jour d\'une ronde à venir', () => {
+  const at = (dayOffset: number, h: number, m: number) => {
+    const d = new Date(2026, 9, 17 + dayOffset, h, m, 0, 0);
+    return d.getTime();
+  };
+  const now = at(0, 7, 37);
+  it('le jour même : « à 07:43 »', () => assert.equal(fmtWhen(at(0, 7, 43), now), 'à 07:43'));
+  it('le lendemain : « demain à 07:43 » (jamais pris pour une ronde imminente)', () => assert.equal(fmtWhen(at(1, 7, 43), now), 'demain à 07:43'));
+  it('plus tard : le nom du jour', () => assert.equal(fmtWhen(at(3, 22, 0), now), 'mardi à 22:00'));
+  it('après minuit, le lendemain reste « demain » même à 00:05', () => assert.equal(fmtWhen(at(1, 0, 5), at(0, 23, 50)), 'demain à 00:05'));
 });
