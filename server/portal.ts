@@ -10,14 +10,18 @@
  *
  * Ce qui part (jamais plus) : equipements (nom, zone, etage, etat), disponibilite et periodes d'arret, incidents sans
  * leurs commentaires ni les noms des operateurs, nombre de notifications, indice de securite GAMR (du site et par zone,
- * sans les notes ni le nom de l'evaluateur). Jamais : identifiants ou adresses des cameras, images, comptes, journal,
- * destinataires de notification.
+ * sans les notes ni le nom de l'evaluateur), et, si le site a des portes, un AGREGAT anonyme du controle d'acces (nombre
+ * de portes, etat du moment, disponibilite, comptes d'incidents : voir accessportal.ts). Jamais : identifiants ou adresses des
+ * cameras, images, comptes, journal, destinataires de notification, ni rien de nominatif du controle d'acces (titulaires,
+ * badges, identifiants ou adresses de controleurs, passages).
  *
  * Authentification : signature HMAC-SHA256 du corps avec une cle propre a ce site (en-tetes X-Psim-*). La cle ne circule
  * jamais ; l'horodatage signe limite le rejeu. Un echec d'envoi ne gene jamais le PSIM : il est compte et reessaye.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { buildAccessSummary } from './accessportal.ts';
+import type { AccessSummary } from './accessportal.ts';
 import { availabilityOf, blindPeriods, combine, loadIntervals, outagesOf } from './history.ts';
 import type { Availability, BlindPeriod, Outage } from './history.ts';
 
@@ -91,6 +95,11 @@ export interface SiteSummary {
     /** Indice du site, un point par jour local (le plus ancien d'abord). */
     history: { day: string; index: number }[];
   };
+  /**
+   * Controle d'acces (F28) : agregat anonyme (voir accessportal.ts). Absent quand le site n'a aucune porte declaree, ou quand
+   * le PSIM est plus ancien : le portail ne montre alors pas de carte « Controle d'acces » (ou la dit « non transmise »).
+   */
+  access?: AccessSummary;
 }
 
 /** Ce que la gestion des risques fournit (voir risk.ts, `overview`) ; seule une partie en est envoyee. */
@@ -111,6 +120,15 @@ export interface SummaryOptions {
 }
 
 const MAX_RISK_ZONES = 200;
+
+/** L'agregat d'acces ; un calcul en echec ne doit jamais empecher l'envoi de l'etat du site. */
+function accessPart(db: DatabaseSync, now: number, from: number, intervals: ReturnType<typeof loadIntervals>): AccessSummary | undefined {
+  try {
+    return buildAccessSummary(db, { now, from, intervals });
+  } catch {
+    return undefined;
+  }
+}
 
 function riskPart(build: (() => RiskInput) | undefined, fromDay: string): SiteSummary['risk'] {
   if (!build) return undefined;
@@ -242,6 +260,7 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
     incidents,
     notifications: { sent: notif('sent'), failed: notif('failed') },
     risk: riskPart(options.risk, dayKey(new Date(from))),
+    access: accessPart(db, now, from, intervals),
   };
 }
 

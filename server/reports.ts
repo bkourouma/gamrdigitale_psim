@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { PsimError } from './engine.ts';
 import { CATEGORIES, CATEGORY_LABEL } from './sources.ts';
+import { accessSectionHtml, computeAccessReport } from './accessreport.ts';
 import type { DeviceCategory } from './types.ts';
 
 /**
@@ -399,7 +400,7 @@ ${table(
     esc(qualificationText(r.category, r.qualification)),
     esc(r.comment ?? ''),
   ]),
-)}`}
+)}`}${accessSectionHtml(computeAccessReport(db, range, now))}
 <p class="foot">Document généré par le PSIM à partir de son journal. Les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur.</p>
 ${anchorLine()}
 ${PAGE_FOOT()}`;

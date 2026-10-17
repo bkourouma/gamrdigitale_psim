@@ -6,6 +6,7 @@
  * Comptes : prestataire, diallo (direction), kaloum (responsable d'un site), autre (autre client), dg-banque / dir-conakry / dir-haute-guinee (la banque) ; mot de passe : voir la sortie.
  * Rien n'est ecrit dans portal-data/ : la demo ne touche pas a une vraie installation.
  */
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,6 +15,7 @@ import { addGroup, addOrganization, addSite, assignSite, groupIdsByCodes } from 
 import { createPortalApp } from '../server/api.ts';
 import { openPortalDb } from '../server/db.ts';
 import { storeSummary } from '../server/ingest.ts';
+import { createAccess } from '../../server/access.ts';
 import { openDb } from '../../server/db.ts';
 import { createEngine } from '../../server/engine.ts';
 import { beginHistory, recordState } from '../../server/history.ts';
@@ -51,6 +53,12 @@ interface Plan {
   riskP?: Record<string, number | null>;
   /** Detecteurs d'une autre categorie que l'incendie (l'etape 2 du PSIM en envoie : energie, personnes...). */
   categories?: Record<string, 'energy' | 'people' | 'environment'>;
+  /**
+   * Controle d'acces : `n` portes (P-01 a P-0n) sur un controleur. Leurs pannes passees et leur etat actuel se decrivent comme ceux
+   * des detecteurs (`outages`, `now`, avec les identifiants P-01...). `incidents` : [il y a N heures, numero de porte (0 = P-01),
+   * evenement de la passerelle, qualification] ; le portail n'en recoit que des comptes (jamais de nom, de badge ni de controleur).
+   */
+  doors?: { n: number; incidents: [number, number, 'door_forced' | 'door_held_open' | 'badge_denied_repeated' | 'tamper', 'fire' | 'false_alarm'][] };
 }
 
 function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSummary; at: number } {
@@ -58,7 +66,8 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
   const db = openDb(':memory:');
   seedDemo(db, mkdtempSync(join(tmpdir(), 'psim-demo-')), join(root, 'seed'));
   let clock = at - 36 * 24 * HOUR;
-  const engine = createEngine(db, () => {}, () => clock, { silentTimeoutMs: 0 });
+  const access = createAccess({ db, now: () => clock, key: randomBytes(32), audit: (actor, action, ref) => engine.audit(actor, action, ref), setDeviceState: (id, state, event) => engine.setStateBySupervisor(id, state, event) });
+  const engine = createEngine(db, () => {}, () => clock, { silentTimeoutMs: 0, ...(plan.doors ? { access } : {}) });
   const risk = createRiskService(db, engine, { now: () => clock });
   for (const [zone, p] of Object.entries(plan.riskP ?? {})) {
     if (p === null) db.prepare('DELETE FROM risk_zone WHERE zone = ?').run(zone);
@@ -69,6 +78,15 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
   for (const id of plan.cameras ?? []) {
     db.prepare("INSERT INTO camera_source (device_id, kind, host, port) VALUES (?, 'rtsp', '192.0.2.10', 554)").run(id);
     recordState(db, id, 'normal', clock);
+  }
+  const doorIds = Array.from({ length: plan.doors?.n ?? 0 }, (_, i) => `P-0${i + 1}`);
+  if (doorIds.length > 0) {
+    access.createController('demo', { id: 'CTL-DEMO', name: 'Contrôleur de démonstration', brand: 'dahua' });
+    doorIds.forEach((id, i) => {
+      engine.createDevice('demo', { id, kind: 'detector', name: `Porte ${i + 1}`, zone: 'Entrepot', category: 'access' });
+      access.declareDoor('demo', { detectorId: id, controllerId: 'CTL-DEMO', doorNo: (i % 4) + 1 });
+      engine.ingest(id, { event: 'door_closed' });
+    });
   }
   const random = prng(seed);
 
@@ -93,6 +111,17 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
       { t: open + Math.round((1 + random() * 6) * MIN), run: () => engine.acknowledge(incidentId, 'gardien') },
       { t: open + Math.round((8 + random() * 10) * MIN), run: () => engine.handleDetectorMessage(id, { state: 'normal' }) },
       { t: open + Math.round((20 + random() * 25) * MIN), run: () => engine.close(incidentId, 'gardien', qualification, null) },
+    );
+  }
+  for (const [ago, door, event, qualification] of plan.doors?.incidents ?? []) {
+    const id = doorIds[door];
+    const open = at - ago * HOUR;
+    let incidentId = 0;
+    events.push(
+      { t: open, run: () => (engine.ingest(id, { event }), (incidentId = engine.getSnapshot().incidents.find((i) => i.detectorId === id && i.status !== 'closed')!.id)) },
+      { t: open + 3 * MIN, run: () => engine.acknowledge(incidentId, 'gardien') },
+      { t: open + 10 * MIN, run: () => (engine.ingest(id, { state: 'normal' }), engine.ingest(id, { event: 'door_closed' })) },
+      { t: open + 30 * MIN, run: () => engine.close(incidentId, 'gardien', qualification, null) },
     );
   }
   for (const [id, [state, minutes]] of Object.entries(plan.now ?? {})) events.push({ t: at - minutes * MIN, run: setState(id, state) });
@@ -131,8 +160,11 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number; 
     org: 'Groupe Diallo', id: 'entrepot-kaloum', name: 'Entrepôt Kaloum', seed: 11,
     plan: {
       cameras: ['C-01', 'C-02', 'C-03', 'C-04'],
-      outages: [[700, 25, 'D-03', 'offline'], [610, 130, 'D-02', 'fault'], [400, 12, 'D-03', 'offline'], [300, 45, 'D-01', 'fault'], [150, 75, 'C-02', 'offline'], [97, 190, 'D-03', 'offline'], [30, 18, 'D-02', 'offline']],
+      outages: [[700, 25, 'D-03', 'offline'], [200, 95, 'P-02', 'offline'], [610, 130, 'D-02', 'fault'], [400, 12, 'D-03', 'offline'], [300, 45, 'D-01', 'fault'], [150, 75, 'C-02', 'offline'], [97, 190, 'D-03', 'offline'], [30, 18, 'D-02', 'offline']],
       incidents: [[760, 'D-01', 'false_alarm'], [520, 'D-02', 'false_alarm'], [333, 'D-04', 'fire'], [200, 'D-01', 'false_alarm'], [60, 'D-03', 'false_alarm']],
+      // Quatre portes : une série de refus et une porte restée ouverte (fausses alarmes), une porte forcée avérée, une porte hors ligne depuis 40 min.
+      now: { 'P-04': ['offline', 40] },
+      doors: { n: 4, incidents: [[300, 0, 'door_held_open', 'false_alarm'], [120, 1, 'badge_denied_repeated', 'false_alarm'], [48, 2, 'door_forced', 'fire']] },
     },
   },
   {
@@ -151,7 +183,7 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number; 
   // ---- Banque du Fouta
   { org: 'Banque du Fouta', group: 'agences-kaloum', id: 'agence-kaloum-centre', name: 'Agence Kaloum Centre', seed: 61, plan: { cameras: ['C-01', 'C-02'], outages: [[200, 20, 'D-02', 'offline']], incidents: [[300, 'D-01', 'false_alarm']], riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1, Stockage: 1 } } },
   { org: 'Banque du Fouta', group: 'agences-kaloum', id: 'agence-kaloum-port', name: 'Agence du Port', seed: 62, plan: { outages: [[400, 45, 'D-03', 'fault']], incidents: [[120, 'D-02', 'false_alarm']], now: { 'D-01': ['alarm', 9] }, riskP: { Atelier: 3, Entrepot: 3 } } },
-  { org: 'Banque du Fouta', group: 'agences-ratoma', id: 'agence-ratoma-marche', name: 'Agence Marché de Ratoma', seed: 63, plan: { outages: [[300, 30, 'D-01', 'offline']], incidents: [], now: { 'D-02': ['fault', 150] }, riskP: { Atelier: 2 } } },
+  { org: 'Banque du Fouta', group: 'agences-ratoma', id: 'agence-ratoma-marche', name: 'Agence Marché de Ratoma', seed: 63, plan: { outages: [[300, 30, 'D-01', 'offline'], [200, 90, 'P-01', 'offline']], incidents: [], now: { 'D-02': ['fault', 150], 'P-02': ['fault', 180] }, riskP: { Atelier: 2 }, doors: { n: 2, incidents: [[90, 0, 'tamper', 'false_alarm']] } } },
   { org: 'Banque du Fouta', group: 'agences-ratoma', id: 'agence-ratoma-nord', name: 'Agence Ratoma Nord', seed: 64, plan: { categories: { 'D-05': 'energy' }, outages: [], incidents: [], now: { 'D-05': ['alarm', 25] }, riskP: { Atelier: 1, Entrepot: 2 } } },
   { org: 'Banque du Fouta', group: 'region-haute-guinee', id: 'agence-kankan-centre', name: 'Agence Kankan Centre', seed: 65, plan: { cameras: ['C-01', 'C-03'], outages: [[100, 15, 'D-01', 'offline']], incidents: [], now: { 'D-04': ['alarm', 330] }, silentFor: 360, riskP: { Atelier: 2, Entrepot: 2 } } },
   { org: 'Banque du Fouta', group: 'region-haute-guinee', id: 'agence-kankan-gare', name: 'Agence de la Gare', seed: 66, plan: { categories: { 'D-06': 'people' }, outages: [], incidents: [[3, 'D-06', 'fire']], riskP: { Atelier: 1, Entrepot: 1, 'Salle serveurs': 1 } } },

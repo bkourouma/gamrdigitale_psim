@@ -7,6 +7,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { MAX_SKEW_MS, PAYLOAD_VERSION, SIGNATURE_HEADER, SITE_HEADER, SITE_ID_PATTERN, TIME_HEADER, sign, signatureMatches } from '../../server/portal.ts';
 import type { SiteSummary } from '../../server/portal.ts';
+import { ACCESS_STATE_KEYS } from '../../server/accessportal.ts';
 import { siteKey } from './keys.ts';
 
 export type Headers = Record<string, string | string[] | undefined>;
@@ -110,6 +111,39 @@ function parseRisk(v: unknown): NonNullable<SiteSummary['risk']> {
   };
 }
 
+/** Compte plausible pour un site : entier positif, borne (un million suffit largement pour des portes ou des incidents). */
+const count = (v: unknown, what: string): number => int(v, what, 0, 1_000_000);
+
+/**
+ * Controle d'acces (F28) : un agregat de comptes, rien de nominatif. Valide champ par champ ; seuls les champs connus sont
+ * gardes (un champ en plus, comme un nom de porte ou un identifiant de controleur, n'est ni stocke ni renvoye).
+ */
+function parseAccess(v: unknown): NonNullable<SiteSummary['access']> {
+  const x = obj(v, 'access');
+  const doors = int(x.doors, 'access.doors', 1, 10_000);
+  const st = obj(x.states, 'access.states');
+  const states = Object.fromEntries(ACCESS_STATE_KEYS.map((k) => [k, int(st[k], `access.states.${k}`, 0, 10_000)])) as NonNullable<SiteSummary['access']>['states'];
+  if (ACCESS_STATE_KEYS.reduce((n, k) => n + states[k], 0) > doors) fail('access.states (plus de portes que declarees)');
+  const inc = obj(x.incidents, 'access.incidents');
+  const incidents = {
+    total: count(inc.total, 'access.incidents.total'),
+    forced: count(inc.forced, 'access.incidents.forced'),
+    heldOpen: count(inc.heldOpen, 'access.incidents.heldOpen'),
+    repeatedDenials: count(inc.repeatedDenials, 'access.incidents.repeatedDenials'),
+    tamper: count(inc.tamper, 'access.incidents.tamper'),
+    other: count(inc.other, 'access.incidents.other'),
+    openNow: count(inc.openNow, 'access.incidents.openNow'),
+    byDay: arr(inc.byDay, 'access.incidents.byDay', 400).map((p, i) => {
+      const y = obj(p, `access.incidents.byDay[${i}]`);
+      const day = str(y.day, 'access.incidents.byDay.day', 10);
+      if (!DAY.test(day)) fail(`access.incidents.byDay[${i}].day`);
+      return { day, n: count(y.n, `access.incidents.byDay[${i}].n`) };
+    }),
+  };
+  if (incidents.forced + incidents.heldOpen + incidents.repeatedDenials + incidents.tamper + incidents.other > incidents.total) fail('access.incidents (types plus nombreux que le total)');
+  return { doors, states, availability: AVAIL(x.availability, 'access.availability'), incidents };
+}
+
 /** Valide un resume recu. Ne garde que les champs connus (rien d'autre n'est stocke ni renvoye aux clients). */
 export function parseSummary(raw: unknown): { ok: true; summary: SiteSummary } | { ok: false; error: string } {
   try {
@@ -185,6 +219,8 @@ export function parseSummary(raw: unknown): { ok: true; summary: SiteSummary } |
       notifications: { sent: int(obj(o.notifications, 'notifications').sent, 'notifications.sent'), failed: int(obj(o.notifications, 'notifications').failed, 'notifications.failed') },
       // Facultatif : un PSIM plus ancien n'envoie pas d'indice, son resume reste valable.
       risk: o.risk === undefined || o.risk === null ? undefined : parseRisk(o.risk),
+      // Facultatif aussi : absent d'un PSIM plus ancien, ou d'un site sans porte. Le portail dit « non transmis », sans rien inventer.
+      access: o.access === undefined || o.access === null ? undefined : parseAccess(o.access),
     };
     return { ok: true, summary };
   } catch (err) {
