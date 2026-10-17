@@ -67,6 +67,7 @@ export const EVENT_LABEL = {
   power_restored: 'Courant rétabli',
   fault: 'Défaut',
   low_battery: 'Batterie faible',
+  clock_drift: "Horloge de l'équipement déréglée",
   heartbeat: 'Signe de vie',
   ping: 'Signe de vie',
   badge_granted: 'Badge accepté',
