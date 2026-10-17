@@ -1,4 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { createAccessRuleMachine, describeAccessRule, describeMinutes, describeWindow, isAccessSpec, joinOr, validateAccessSpec } from './accessrules.ts';
+import type { AccessRuleAction, AccessRuleMachine } from './accessrules.ts';
+import type { AccessRuleSpec, PassageFeed, PassageNote } from './accessrulestypes.ts';
+import type { HoldersReader } from './accessholderstypes.ts';
 import { inSchedule, parseSchedule } from './arming.ts';
 import type { Window } from './arming.ts';
 import type { Engine } from './engine.ts';
@@ -15,6 +19,10 @@ import type { Device } from './types.ts';
  * quand sa condition est remplie, parle a SON detecteur virtuel `R-<id>` : on reutilise ainsi tout le traitement d'alarme
  * existant (incident, cameras liees, images, notifications, escalade, journal). L'IA ne decide jamais : ce moteur est
  * deterministe et local.
+ *
+ * REGLES D'ACCES (F15) : une specification portant `kind: 'access'` est une regle d'acces (badge hors horaires, badge surveille,
+ * refus sur plusieurs portes). Meme table, meme cycle de vie, meme detecteur virtuel, meme API ; la logique propre est dans
+ * `accessrules.ts`, ce fichier ne fait que la brancher (une specification SANS `kind` reste une regle de presence).
  *
  * Trois couches :
  *  - validateSpec / describeRule : fonctions pures (verification stricte, phrase en francais) ;
@@ -54,12 +62,16 @@ export interface Rule {
   id: number;
   name: string;
   enabled: boolean;
-  spec: RuleSpec;
+  /** Regle de presence (sans `kind`) ou regle d'acces (`kind: 'access'`). */
+  spec: RuleSpec | AccessRuleSpec;
+  /** Derive de `spec`. */
+  kind: 'presence' | 'access';
   deviceId: string;
   summary: string;
   /**
    * Vrai : regle d'identite (liste ou personne) a reenregistrer. Elle ne se declenche pas, et ne peut pas etre reactivee telle
    * quelle. Cas : enregistree avant l'ajout de la camera source (`who.cameraId` absent), ou camera supprimee / sans source video.
+   * Toujours faux pour une regle d'acces.
    */
   needsReview: boolean;
   sourceText: string | null;
@@ -68,6 +80,8 @@ export interface Rule {
   updatedBy: string;
   updatedAt: number;
 }
+
+export { isAccessSpec };
 
 /** Duree de lissage : un « stop » suivi d'un « start » en moins de 60 s ne coupe pas la presence. */
 export const SMOOTHING_MS = 60_000;
@@ -263,56 +277,17 @@ export function validateSpec(input: unknown, ctx: { cameraIds: ReadonlySet<strin
 
 // ---- Phrase en francais -------------------------------------------------------------------------------------------
 
-const DAY_NAMES = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
-const MONDAY_FIRST = [1, 2, 3, 4, 5, 6, 0];
-
-/** « a, b et c » */
-function joinAnd(items: string[]): string {
-  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} et ${items[items.length - 1]}`;
-}
-
-/** « a, b ou c » */
-function joinOr(items: string[]): string {
-  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} ou ${items[items.length - 1]}`;
-}
-
-function describeDays(days: number[]): string {
-  const set = new Set(days);
-  if (set.size === 7) return 'tous les jours';
-  const parts: string[] = [];
-  let run: number[] = [];
-  const flush = () => {
-    if (run.length >= 3) parts.push(`du ${DAY_NAMES[run[0]]} au ${DAY_NAMES[run[run.length - 1]]}`);
-    else for (const d of run) parts.push(`le ${DAY_NAMES[d]}`);
-    run = [];
-  };
-  for (const d of MONDAY_FIRST) {
-    if (set.has(d)) run.push(d);
-    else flush();
-  }
-  flush();
-  return joinAnd(parts);
-}
-
-function describeWindow(w: Window): string {
-  const overnight = w.from > w.to;
-  return `de ${w.from} à ${w.to}${overnight ? ' le lendemain' : ''}, ${describeDays(w.days)}`;
-}
-
-/** 5 -> « 5 min », 60 -> « 1 h », 90 -> « 1 h 30 ». */
-function describeMinutes(m: number): string {
-  if (m < 60) return `${m} min`;
-  if (m % 60 === 0) return `${m / 60} h`;
-  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
-}
-
 /** « (caméra « Portail ») » ; une regle ancienne sans camera (ou avec une valeur qui n'est pas du texte) : « (caméra non précisée) ». */
 function faceCameraPhrase(cameraId: unknown, cameraName: (id: string) => string): string {
   return typeof cameraId === 'string' && cameraId !== '' ? `(caméra « ${cameraName(cameraId)} »)` : '(caméra non précisée)';
 }
 
-/** Phrase francaise courante, complete et sans jargon, qui dit exactement ce que fera la regle. */
-export function describeRule(spec: RuleSpec, ctx: { cameraName: (id: string) => string }): string {
+/**
+ * Phrase francaise courante, complete et sans jargon, qui dit exactement ce que fera la regle. Une regle d'acces est decrite par
+ * `describeAccessRule` (version normale, avec le titulaire ou le badge surveille) ; `doorName` absent : l'identifiant de la porte.
+ */
+export function describeRule(spec: RuleSpec | AccessRuleSpec, ctx: { cameraName: (id: string) => string; doorName?: (id: string) => string }): string {
+  if (isAccessSpec(spec)) return describeAccessRule(spec, { doorName: ctx.doorName ?? ((id) => id) });
   const action = spec.then.severity === 'critical' ? 'Prévenir (alerte critique)' : 'Prévenir (avertissement)';
   let cause: string;
   if (spec.who.type === 'unknown') cause = 'si un visage inconnu est vu';
@@ -705,12 +680,35 @@ CREATE TABLE IF NOT EXISTS presence_rule (
 
 type Row = Record<string, unknown>;
 
+/**
+ * Un declenchement de l'essai sur le passe. Regle de presence : `{ at, endedAt, cameraId }` (inchange). Regle d'acces : `cameraId`
+ * vide, plus `doorId` et `detail` (texte de l'incident : porte et heure, jamais de nom de titulaire ni de numero de badge).
+ */
+export interface SimTrigger {
+  at: number;
+  endedAt: number | null;
+  cameraId: string;
+  doorId?: string;
+  detail?: string;
+}
+
+export interface SimulationResult {
+  summary: string;
+  triggers: SimTrigger[];
+  /** Limite de l'essai a montrer a l'administrateur (regle d'acces : droits d'aujourd'hui, journal indisponible). */
+  note?: string;
+}
+
 export function createRules(deps: {
   db: DatabaseSync;
   engine: Pick<Engine, 'handleDetectorMessage' | 'audit' | 'getDevice' | 'createDevice' | 'updateDevice' | 'deleteDevice' | 'setLinks' | 'getSnapshot'>;
   presence: Pick<Presence, 'subscribe' | 'history' | 'current'>;
   /** Visages vus (regles d'identite). Absent : ces regles existent mais ne recoivent rien, et leur essai ne declenche rien. */
   faces?: Pick<FaceObs, 'subscribe' | 'history'>;
+  /** Passages du journal des acces (regles d'acces). Absent : ces regles existent mais ne declenchent rien, et leur essai non plus. */
+  passages?: PassageFeed;
+  /** Titulaires et droits (lecture seule), pour « badge hors de ses horaires ». Absent : cette regle ne declenche rien. */
+  holders?: HoldersReader;
   isArmed: (zone: string) => boolean;
   now?: () => number;
 }) {
@@ -718,23 +716,47 @@ export function createRules(deps: {
   const now = deps.now ?? Date.now;
   db.exec(DDL);
 
-  interface Live {
+  interface PresenceLive {
+    kind: 'presence';
     machine: RuleMachine;
     scope: ReadonlySet<string>;
     deviceId: string;
     /** Regle d'identite : pilotee par les visages, pas par la presence. */
     identity: boolean;
   }
+  /** Regle d'acces : pilotee par les passages (la portee est jugee par la machine elle-meme). */
+  interface AccessLive {
+    kind: 'access';
+    machine: AccessRuleMachine;
+    deviceId: string;
+  }
+  type Live = PresenceLive | AccessLive;
   const live = new Map<number, Live>();
 
   // -- Environnement (cameras, zones) ------------------------------------------------------------------------------
 
+  /** Portes declarees (table `access_door` du journal des acces), par identifiant. Table absente ou illisible : aucune porte. */
+  function declaredDoors(devices: Device[]): Device[] {
+    try {
+      const ids = (db.prepare('SELECT detector_id FROM access_door ORDER BY detector_id').all() as Row[]).map((r) => r.detector_id as string);
+      const byId = new Map(devices.map((d) => [d.id, d] as const));
+      return ids.flatMap((id) => byId.get(id) ?? []);
+    } catch {
+      return [];
+    }
+  }
+
   function environment() {
-    const devices = engine.getSnapshot().devices;
+    const snapshot = engine.getSnapshot();
+    const devices = snapshot.devices;
     const cameras = devices.filter((d) => d.kind === 'camera');
+    const doors = declaredDoors(devices);
     return {
       devices,
       cameras,
+      doors,
+      links: snapshot.links,
+      doorCtx: { doorIds: new Set(doors.map((d) => d.id)) as ReadonlySet<string> },
       ctx: {
         cameraIds: new Set(cameras.map((c) => c.id)) as ReadonlySet<string>,
         zones: new Set(devices.map((d) => d.zone).filter((z) => z !== '')) as ReadonlySet<string>,
@@ -775,7 +797,52 @@ export function createRules(deps: {
     return out;
   }
 
+  /**
+   * Portes visees par une regle d'acces, par identifiant : celles de la liste, ou TOUTES les portes declarees (portee dynamique).
+   * Saisie : une porte inconnue est refusee.
+   */
+  function resolveDoors(spec: AccessRuleSpec, doors: Device[]): Device[] {
+    if ('allDoors' in spec.where) return doors;
+    const out: Device[] = [];
+    for (const id of spec.where.doors) {
+      const door = doors.find((d) => d.id === id);
+      if (!door) throw new PsimError(400, `Porte inconnue ou non declaree : « ${shown(id)} »`);
+      if (!out.includes(door)) out.push(door);
+    }
+    return out.sort((a, b) => (a.id < b.id ? -1 : 1));
+  }
+
+  /** Comme resolveDoors, sans erreur : une porte retiree depuis l'enregistrement de la regle est simplement ignoree. */
+  function tolerantDoors(spec: AccessRuleSpec, doors: Device[]): Device[] {
+    if ('allDoors' in spec.where) return doors;
+    const wanted = new Set(spec.where.doors);
+    return doors.filter((d) => wanted.has(d.id));
+  }
+
+  /** Portee resolue : les equipements vises (cameras ou portes, la 1re donne la zone et la position) et les cameras a lier. */
+  interface Placement {
+    devices: Device[];
+    links: string[];
+  }
+
+  function placement(spec: RuleSpec | AccessRuleSpec, env: ReturnType<typeof environment>, strict: boolean): Placement {
+    if (isAccessSpec(spec)) {
+      const devices = strict ? resolveDoors(spec, env.doors) : tolerantDoors(spec, env.doors);
+      // Cameras des portes de la portee (union, triee) : l'incident montre ce que voient les cameras de ces portes.
+      const known = new Set(env.cameras.map((c) => c.id));
+      const links = [...new Set(devices.flatMap((d) => env.links[d.id] ?? []))].filter((id) => known.has(id)).sort();
+      return { devices, links };
+    }
+    const devices = strict ? resolveScope(spec, env.cameras) : tolerantScope(spec, env.cameras);
+    return { devices, links: devices.map((c) => c.id).sort() };
+  }
+
   const cameraName = (id: string): string => engine.getDevice(id)?.name ?? id;
+  const doorName = cameraName; // une porte est un equipement comme un autre : son nom est celui de son detecteur
+  /** Phrase d'une regle telle que les ecrans la montrent (avec le titulaire ou le badge surveille pour une regle d'acces). */
+  const phrase = (spec: RuleSpec | AccessRuleSpec): string => describeRule(spec, { cameraName, doorName });
+  /** Phrase pour le journal d'audit : jamais de nom de titulaire ni de numero de badge. */
+  const auditPhrase = (spec: RuleSpec | AccessRuleSpec): string => (isAccessSpec(spec) ? describeAccessRule(spec, { doorName, anonymous: true }) : phrase(spec));
 
   /**
    * Hote (appareil) de la source video d'une camera : relu a chaque comparaison (une camera dont on change l'adresse reste
@@ -811,15 +878,19 @@ export function createRules(deps: {
   }
 
   /** Saisie complete : forme (validateSpec), portee (cameras ou zones existantes) puis possibilite de declenchement. Sans effet de bord. */
-  function checked(input: unknown, env: ReturnType<typeof environment>): { spec: RuleSpec; scope: Device[] } {
+  function checked(input: unknown, env: ReturnType<typeof environment>): { spec: RuleSpec | AccessRuleSpec; place: Placement } {
+    if (isAccessSpec(input)) {
+      const spec = validateAccessSpec(input, env.doorCtx);
+      return { spec, place: placement(spec, env, true) };
+    }
     const spec = validateSpec(input, env.ctx);
-    const scope = resolveScope(spec, env.cameras);
-    checkReachable(spec, scope);
-    return { spec, scope };
+    const place = placement(spec, env, true);
+    checkReachable(spec, place.devices);
+    return { spec, place };
   }
 
   /** Verification d'une specification telle que la ferait `create` (l'API l'utilise pour la proposition de l'assistant). */
-  function validate(input: unknown): RuleSpec {
+  function validate(input: unknown): RuleSpec | AccessRuleSpec {
     return checked(input, environment()).spec;
   }
 
@@ -828,15 +899,17 @@ export function createRules(deps: {
   const rowOf = (id: number): Row | undefined => db.prepare('SELECT * FROM presence_rule WHERE id = ?').get(id) as Row | undefined;
 
   function toRule(r: Row): Rule {
-    const spec = JSON.parse(r.spec as string) as RuleSpec;
+    const spec = JSON.parse(r.spec as string) as RuleSpec | AccessRuleSpec;
+    const access = isAccessSpec(spec);
     return {
       id: r.id as number,
       name: r.name as string,
       enabled: r.enabled === 1,
       spec,
+      kind: access ? 'access' : 'presence',
       deviceId: r.device_id as string,
-      summary: describeRule(spec, { cameraName }),
-      needsReview: whoNeedsReview(spec.who, hostOf),
+      summary: phrase(spec),
+      needsReview: access ? false : whoNeedsReview(spec.who, hostOf),
       sourceText: (r.source_text as string | null) ?? null,
       createdBy: r.created_by as string,
       createdAt: r.created_at as number,
@@ -854,12 +927,12 @@ export function createRules(deps: {
   // -- Detecteur virtuel --------------------------------------------------------------------------------------------
 
   /**
-   * Cree ou met a jour le detecteur `R-<id>` : nom de la regle, zone de la 1re camera, liens = la portee. Etage et position
-   * ne suivent la 1re camera que si elle a change (`moveToFirst`) : on ne ramene pas a sa place un detecteur que
+   * Cree ou met a jour le detecteur `R-<id>` : nom de la regle, zone de la 1re camera (ou 1re porte), liens = la portee (pour une
+   * regle d'acces : les cameras liees aux portes). Etage et position ne suivent la 1re camera que si elle a change (`moveToFirst`) : on ne ramene pas a sa place un detecteur que
    * l'administrateur a deplace sur le plan.
    */
-  function syncDevice(actor: string, deviceId: string, name: string, scope: Device[], moveToFirst: boolean): void {
-    const first = scope[0];
+  function syncDevice(actor: string, deviceId: string, name: string, place: Placement, moveToFirst: boolean): void {
+    const first = place.devices[0];
     const existing = engine.getDevice(deviceId);
     if (!existing) {
       engine.createDevice(actor, { id: deviceId, kind: 'detector', name, zone: first.zone, floorId: first.floorId, x: first.x, y: first.y, category: 'access', heartbeatS: 0 });
@@ -870,7 +943,7 @@ export function createRules(deps: {
       if (moveToFirst && (existing.floorId !== first.floorId || existing.x !== first.x || existing.y !== first.y)) Object.assign(patch, { floorId: first.floorId, x: first.x, y: first.y });
       if (Object.keys(patch).length > 0) engine.updateDevice(actor, deviceId, patch);
     }
-    const wanted = scope.map((c) => c.id).sort();
+    const wanted = place.links;
     const current = (db.prepare('SELECT camera_id FROM device_link WHERE detector_id = ? ORDER BY camera_id').all(deviceId) as Row[]).map((r) => r.camera_id as string);
     if (wanted.length !== current.length || wanted.some((id, i) => id !== current[i])) engine.setLinks(actor, deviceId, wanted);
   }
@@ -879,9 +952,35 @@ export function createRules(deps: {
 
   // -- Direct -------------------------------------------------------------------------------------------------------
 
-  function dispatch(entry: Live, actions: RuleAction[]): void {
-    for (const a of actions) engine.handleDetectorMessage(entry.deviceId, { event: a.kind === 'clear' ? 'clear' : a.event });
+  /** Un declenchement d'une regle d'acces porte le texte de l'incident (`detail`) ; celui d'une regle de presence n'en a pas. */
+  function dispatch(entry: Pick<Live, 'deviceId'>, actions: (RuleAction | AccessRuleAction)[]): void {
+    for (const a of actions) {
+      if (a.kind === 'clear') engine.handleDetectorMessage(entry.deviceId, { event: 'clear' });
+      else engine.handleDetectorMessage(entry.deviceId, 'detail' in a ? { event: a.event, detail: a.detail } : { event: a.event });
+    }
   }
+
+  /** Une porte est-elle declaree maintenant ? (portee « toutes les portes » : dynamique, une porte declaree plus tard est couverte.) */
+  let doorQuery: ReturnType<DatabaseSync['prepare']> | null = null;
+  function isDeclaredDoor(doorId: string): boolean {
+    try {
+      doorQuery ??= db.prepare('SELECT 1 AS x FROM access_door WHERE detector_id = ?');
+      return doorQuery.get(doorId) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  /** La machine d'une regle d'acces : meme fabrique pour le direct et pour l'essai (les memes droits, les memes portes). */
+  function accessMachine(spec: AccessRuleSpec, inScope: (doorId: string) => boolean): AccessRuleMachine {
+    return createAccessRuleMachine(spec, { holders: deps.holders, inScope, doorName });
+  }
+
+  const accessScope = (spec: AccessRuleSpec): ((doorId: string) => boolean) => {
+    if ('allDoors' in spec.where) return isDeclaredDoor;
+    const doors = new Set(spec.where.doors);
+    return (doorId) => doors.has(doorId);
+  };
 
   const ringing = (deviceId: string): boolean => {
     const status = engine.getDevice(deviceId)?.status;
@@ -889,7 +988,12 @@ export function createRules(deps: {
   };
 
   /** Machine + abonnement d'une regle activee, initialisee avec les presences en cours. */
-  function startLive(id: number, spec: RuleSpec, deviceId: string, devices: Device[]): Live {
+  function startLive(id: number, spec: RuleSpec | AccessRuleSpec, deviceId: string, devices: Device[]): Live {
+    if (isAccessSpec(spec)) {
+      const access: AccessLive = { kind: 'access', machine: accessMachine(spec, accessScope(spec)), deviceId };
+      live.set(id, access);
+      return access;
+    }
     const cameras = devices.filter((d) => d.kind === 'camera');
     const scope = tolerantScope(spec, cameras);
     const zones = new Map(scope.map((c) => [c.id, c.zone] as const));
@@ -909,7 +1013,7 @@ export function createRules(deps: {
         console.warn(`[rules] regle ${id} : ${what} n'est plus trouvee sur l'appareil de la camera « ${shown(cameraName(who.cameraId))} » : reenregistrez la regle`);
       },
     });
-    const entry: Live = { machine, scope: new Set(scope.map((c) => c.id)), deviceId, identity: spec.who.type !== 'anyone' };
+    const entry: PresenceLive = { kind: 'presence', machine, scope: new Set(scope.map((c) => c.id)), deviceId, identity: spec.who.type !== 'anyone' };
     live.set(id, entry);
     dispatch(entry, machine.init(presence.current(), now()));
     return entry;
@@ -937,7 +1041,7 @@ export function createRules(deps: {
 
   const unsubscribe = presence.subscribe((change) => {
     for (const entry of live.values()) {
-      if (entry.identity || !entry.scope.has(change.cameraId)) continue;
+      if (entry.kind !== 'presence' || entry.identity || !entry.scope.has(change.cameraId)) continue;
       try {
         dispatch(entry, entry.machine.feed(change));
       } catch (err) {
@@ -950,7 +1054,7 @@ export function createRules(deps: {
   const unsubscribeFaces = deps.faces
     ? deps.faces.subscribe((seen) => {
         for (const entry of live.values()) {
-          if (!entry.identity || !entry.scope.has(seen.cameraId)) continue;
+          if (entry.kind !== 'presence' || !entry.identity || !entry.scope.has(seen.cameraId)) continue;
           try {
             dispatch(entry, entry.machine.see(seen));
           } catch (err) {
@@ -959,9 +1063,23 @@ export function createRules(deps: {
         }
       })
     : () => {};
+  // Passages : seules les regles d'acces activees les recoivent (la machine ignore les portes hors de sa portee).
+  const unsubscribePassages = deps.passages
+    ? deps.passages.subscribe((passage: PassageNote) => {
+        for (const entry of live.values()) {
+          if (entry.kind !== 'access') continue;
+          try {
+            dispatch(entry, entry.machine.see(passage));
+          } catch (err) {
+            console.error('[rules] passage :', err);
+          }
+        }
+      })
+    : () => {};
   const close = (): void => {
     unsubscribe();
     unsubscribeFaces();
+    unsubscribePassages();
   };
 
   // -- Saisie -------------------------------------------------------------------------------------------------------
@@ -994,7 +1112,7 @@ export function createRules(deps: {
     only(body, ['name', 'spec', 'sourceText', 'enabled'], 'La demande');
     const name = cleanName(own(body, 'name'));
     const env = environment();
-    const { spec, scope } = checked(own(body, 'spec'), env);
+    const { spec, place } = checked(own(body, 'spec'), env);
     const sourceText = cleanSourceText(own(body, 'sourceText'));
     const enabled = cleanEnabled(own(body, 'enabled'), true);
 
@@ -1009,7 +1127,7 @@ export function createRules(deps: {
     db.prepare('INSERT INTO presence_rule (id, name, enabled, spec, device_id, source_text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, name, enabled ? 1 : 0, JSON.stringify(spec), deviceId, sourceText, actor, t, actor, t);
     try {
-      syncDevice(actor, deviceId, name, scope, true);
+      syncDevice(actor, deviceId, name, place, true);
     } catch (err) {
       db.prepare('DELETE FROM presence_rule WHERE id = ?').run(id);
       if (engine.getDevice(deviceId) && incidentCount(deviceId) === 0) {
@@ -1021,7 +1139,7 @@ export function createRules(deps: {
       }
       throw err;
     }
-    const summary = describeRule(spec, { cameraName });
+    const summary = auditPhrase(spec);
     engine.audit(actor, 'rule_created', { deviceId, details: `${name} : ${summary}${sourceText ? ` | phrase d'origine : « ${sourceText} »` : ''}${enabled ? '' : ' | desactivee'}` });
     if (enabled) startLive(id, spec, deviceId, env.devices);
     return get(id) as Rule;
@@ -1043,17 +1161,25 @@ export function createRules(deps: {
     if (enabled && !old.enabled && !specGiven && old.needsReview) {
       throw new PsimError(400, 'Cette regle doit etre reenregistree : choisissez a nouveau la liste');
     }
-    const previousScope = tolerantScope(old.spec, env.cameras);
+    const previousPlace = placement(old.spec, env, false);
     const given = specGiven ? checked(own(body, 'spec'), env) : null;
     const spec = given ? given.spec : old.spec;
-    const scope = given ? given.scope : previousScope;
+    const place = given ? given.place : previousPlace;
+    const scope = place.devices;
+    const previousScope = previousPlace.devices;
     const specChanged = JSON.stringify(spec) !== JSON.stringify(old.spec);
-    const scopeChanged = specGiven && (scope.length !== previousScope.length || scope.some((c, i) => c.id !== previousScope[i].id));
+    // Portee changee : les equipements vises (cameras ou portes) OU, pour une regle d'acces, les cameras des portes.
+    const scopeChanged =
+      specGiven &&
+      (scope.length !== previousScope.length ||
+        scope.some((c, i) => c.id !== previousScope[i].id) ||
+        place.links.length !== previousPlace.links.length ||
+        place.links.some((id, i) => id !== previousPlace.links[i]));
     const renamed = name !== old.name;
     if (!renamed && !specChanged && !scopeChanged && enabled === old.enabled) return old;
 
     // Detecteur d'abord : si le plan ou le nom est refuse, rien n'a encore change dans la regle.
-    if (scope.length > 0 && (specGiven || renamed)) syncDevice(actor, old.deviceId, name, scope, scope[0].id !== previousScope[0]?.id);
+    if (scope.length > 0 && (specGiven || renamed)) syncDevice(actor, old.deviceId, name, place, scope[0].id !== previousScope[0]?.id);
     const t = now();
     db.prepare('UPDATE presence_rule SET name = ?, enabled = ?, spec = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(name, enabled ? 1 : 0, JSON.stringify(spec), actor, t, id);
 
@@ -1066,7 +1192,7 @@ export function createRules(deps: {
     }
 
     if (renamed || specChanged || scopeChanged) {
-      engine.audit(actor, 'rule_updated', { deviceId: old.deviceId, details: `${name} : ${describeRule(spec, { cameraName })}` });
+      engine.audit(actor, 'rule_updated', { deviceId: old.deviceId, details: `${name} : ${auditPhrase(spec)}` });
     }
     if (enabled !== old.enabled) engine.audit(actor, enabled ? 'rule_enabled' : 'rule_disabled', { deviceId: old.deviceId, details: name });
     return get(id) as Rule;
@@ -1089,7 +1215,7 @@ export function createRules(deps: {
       throw err;
     }
     db.prepare('DELETE FROM presence_rule WHERE id = ?').run(id);
-    engine.audit(actor, 'rule_deleted', { deviceId: rule.deviceId, details: `${rule.name} : ${rule.summary}` });
+    engine.audit(actor, 'rule_deleted', { deviceId: rule.deviceId, details: `${rule.name} : ${auditPhrase(rule.spec)}` });
   }
 
   /**
@@ -1099,15 +1225,21 @@ export function createRules(deps: {
    * LIMITE : l'historique d'armement n'est pas conserve ; pour `when.armed`, l'etat d'armement ACTUEL de chaque zone est
    * utilise pour toute la periode. Les presences deja en cours au debut de la periode ne sont pas connues (la lecture
    * commence a `from`) : leur premiere detection compte comme le debut de la presence.
+   *
+   * REGLE D'ACCES : les passages du journal sont rejoues dans la MEME machine (sans `passages`, rien ne se declenche). LIMITE : les
+   * droits des titulaires sont ceux d'AUJOURD'HUI appliques a l'heure des passages passes (`note`). Un declenchement porte alors
+   * `doorId` et `detail` (le texte de l'incident, sans nom ni numero de badge) ; `cameraId` y est vide.
    */
-  function simulate(specInput: unknown, from: number, to: number): { summary: string; triggers: { at: number; endedAt: number | null; cameraId: string }[] } {
+  function simulate(specInput: unknown, from: number, to: number): SimulationResult {
     if (typeof from !== 'number' || typeof to !== 'number' || !Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
       throw new PsimError(400, 'Periode invalide : le debut doit preceder la fin');
     }
     if (to - from > SIM_MAX_SPAN_MS) throw new PsimError(400, 'Periode trop longue (31 jours au plus)');
     const env = environment();
-    const { spec, scope } = checked(specInput, env);
+    const { spec, place } = checked(specInput, env);
+    const scope = place.devices;
     const ids = scope.map((c) => c.id);
+    if (isAccessSpec(spec)) return simulateAccess(spec, ids, from, to);
     const zones = new Map(scope.map((c) => [c.id, c.zone] as const));
     // Meme `hostOf` que le direct : un meme historique donne les memes declenchements.
     const machine = createRuleMachine(spec, { cameras: ids, isArmed: (cameraId) => deps.isArmed(zones.get(cameraId) ?? ''), hostOf });
@@ -1130,7 +1262,7 @@ export function createRules(deps: {
           .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
           .map((x) => x.c);
 
-    const triggers: { at: number; endedAt: number | null; cameraId: string }[] = [];
+    const triggers: SimTrigger[] = [];
     const collect = (actions: RuleAction[]) => {
       for (const a of actions) {
         if (a.kind === 'trigger') triggers.push({ at: a.at, endedAt: null, cameraId: a.cameraId });
@@ -1144,11 +1276,42 @@ export function createRules(deps: {
     return { summary: describeRule(spec, { cameraName: (id) => scope.find((c) => c.id === id)?.name ?? cameraName(id) }), triggers: triggers.filter((t) => t.at >= from && t.at <= to) };
   }
 
+  /** Essai d'une regle d'acces (voir `simulate`) : rejoue les passages de la portee, du plus ancien au plus recent. */
+  function simulateAccess(spec: AccessRuleSpec, doorIds: string[], from: number, to: number): SimulationResult {
+    const machine = accessMachine(spec, accessScope(spec));
+    const horizon = to + SIM_MARGIN_MS;
+    const passages = deps.passages
+      ? deps.passages
+          .history(from, horizon, doorIds)
+          .map((p, i) => ({ p, i }))
+          .sort((a, b) => a.p.at - b.p.at || a.i - b.i)
+          .map((x) => x.p)
+      : [];
+    const triggers: SimTrigger[] = [];
+    const collect = (actions: AccessRuleAction[]) => {
+      for (const a of actions) {
+        if (a.kind === 'trigger') triggers.push({ at: a.at, endedAt: null, cameraId: '', doorId: a.doorId, detail: a.detail });
+        else if (triggers.length > 0 && triggers[triggers.length - 1].endedAt === null) triggers[triggers.length - 1].endedAt = a.at;
+      }
+    };
+    machine.tick(from);
+    for (const p of passages) collect(machine.see(p));
+    collect(machine.tick(horizon));
+    const notes: string[] = [];
+    if (!deps.passages) notes.push("Le journal des passages n'est pas disponible : rien ne peut être rejoué.");
+    if (spec.what.type === 'off_hours') notes.push("Les droits des titulaires sont ceux d'aujourd'hui, appliqués à l'heure des passages passés.");
+    return {
+      summary: phrase(spec),
+      triggers: triggers.filter((t) => t.at >= from && t.at <= to),
+      ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+    };
+  }
+
   // -- Demarrage : reconciliation -----------------------------------------------------------------------------------
 
   function reconcile(): void {
-    const devices = engine.getSnapshot().devices;
-    const cameras = devices.filter((d) => d.kind === 'camera');
+    const env = environment();
+    const devices = env.devices;
     const known = new Set<string>();
     for (const row of db.prepare('SELECT * FROM presence_rule ORDER BY id').all() as Row[]) {
       const id = row.id as number;
@@ -1156,10 +1319,10 @@ export function createRules(deps: {
       known.add(deviceId);
       try {
         const rule = toRule(row);
-        const scope = tolerantScope(rule.spec, cameras);
+        const place = placement(rule.spec, env, false);
         if (!engine.getDevice(deviceId)) {
-          if (scope.length === 0) console.warn(`[rules] regle ${id} : detecteur ${deviceId} absent et aucune camera disponible pour le recreer`);
-          else syncDevice(rule.updatedBy, deviceId, rule.name, scope, true);
+          if (place.devices.length === 0) console.warn(`[rules] regle ${id} : detecteur ${deviceId} absent et aucune ${rule.kind === 'access' ? 'porte' : 'camera'} disponible pour le recreer`);
+          else syncDevice(rule.updatedBy, deviceId, rule.name, place, true);
         }
         if (!engine.getDevice(deviceId)) continue;
         if (rule.enabled) startLive(id, rule.spec, deviceId, devices);

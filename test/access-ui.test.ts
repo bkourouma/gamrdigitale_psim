@@ -74,6 +74,7 @@ interface DoorForm {
   kind: string;
   emergencyExit: boolean;
   heldMinutes: string;
+  armWithZone: boolean;
 }
 interface View {
   show: (container: unknown, sub?: string) => Promise<void>;
@@ -157,6 +158,9 @@ interface Access {
   doorFormFrom: (d: Record<string, unknown>) => DoorForm;
   doorProblems: (f: DoorForm, o?: { editing?: boolean; controllerIds?: string[] | null }) => Problem[];
   doorBody: (f: DoorForm, o?: { editing?: boolean; original?: Record<string, unknown> | null }) => Record<string, unknown>;
+  armingFieldInfo: (o: { zone?: string; zoneArmable?: boolean; enabled?: boolean }) => { disabled: boolean; help: string; reason: string };
+  armingFactInfo: (door: unknown) => { text: string; attached: boolean; armed: boolean | null } | null;
+  armingNoteOf: (p: unknown) => { text: string; authorized: boolean } | null;
   parseRetention: (text: unknown) => { ok: true; days: number } | { ok: false; message: string };
   lastPurgeText: (purge: unknown, now: number) => string;
   createAccessView: (deps: Record<string, unknown>) => View;
@@ -810,7 +814,7 @@ describe('écran « Accès » : formulaire d’une porte', () => {
   const controllers = ['CTL-1', 'CTL-2'];
 
   it('valeurs de départ : porte, numéro 1, 5 minutes, pas une issue de secours', () => {
-    assert.deepEqual(A.emptyDoorForm(), { detectorId: '', controllerId: '', doorNo: '1', kind: 'door', emergencyExit: false, heldMinutes: '5' });
+    assert.deepEqual(A.emptyDoorForm(), { detectorId: '', controllerId: '', doorNo: '1', kind: 'door', emergencyExit: false, heldMinutes: '5', armWithZone: false });
   });
 
   it('contrôles : détecteur, contrôleur connu, numéro 1 à 4, type, délai', () => {
@@ -850,6 +854,61 @@ describe('écran « Accès » : formulaire d’une porte', () => {
     assert.deepEqual(A.doorBody({ ...same, emergencyExit: true, kind: 'gate' }, { editing: true, original }), { kind: 'gate', emergencyExit: true });
     assert.deepEqual(A.doorBody({ ...same, controllerId: 'CTL-2', doorNo: '3' }, { editing: true, original }), { controllerId: 'CTL-2', doorNo: 3 });
     assert.equal('detectorId' in A.doorBody({ ...same, heldMinutes: '1' }, { editing: true, original }), false);
+  });
+
+  it('armement : `armWithZone` n’est envoyé que s’il a changé', () => {
+    assert.equal('armWithZone' in A.doorBody(good()), false, 'création sans la case : rien envoyé');
+    assert.equal(A.doorBody(good({ armWithZone: true })).armWithZone, true, 'création avec la case');
+    const original = { detectorId: 'P1', controllerId: 'CTL-1', doorNo: 1, kind: 'door', emergencyExit: false, heldAlarmAfterS: 300, armWithZone: false };
+    const same = A.doorFormFrom({ ...original, arming: { enabled: false, zone: 'Hall', zoneArmable: true, armedNow: null } });
+    assert.equal(same.armWithZone, false);
+    assert.deepEqual(A.doorBody(same, { editing: true, original }), {}, 'inchangé : rien');
+    assert.deepEqual(A.doorBody({ ...same, armWithZone: true }, { editing: true, original }), { armWithZone: true });
+    const armed = { ...original, armWithZone: true };
+    assert.deepEqual(A.doorBody({ ...same, armWithZone: true }, { editing: true, original: armed }), {});
+    assert.deepEqual(A.doorBody({ ...same, armWithZone: false }, { editing: true, original: armed }), { armWithZone: false }, 'décocher est envoyé');
+    assert.equal(A.doorFormFrom({ ...original, arming: { enabled: true, zone: 'Hall', zoneArmable: true, armedNow: true } }).armWithZone, true);
+    assert.equal(A.doorFormFrom(original).armWithZone, false, 'ancien serveur sans `arming`');
+  });
+});
+
+describe('écran « Accès » : armement des portes (F14), textes', () => {
+  it('case : active avec une zone armable, désactivée et expliquée sinon', () => {
+    const ok = A.armingFieldInfo({ zone: 'Hall', zoneArmable: true });
+    assert.equal(ok.disabled, false);
+    assert.equal(ok.reason, '');
+    assert.match(ok.help, /Quand la zone « Hall » est armée \(écran Armement\), toute ouverture de cette porte donne une pré-alarme/);
+    assert.match(ok.help, /Une porte forcée reste une alarme\./);
+    const none = A.armingFieldInfo({ zone: '  ', zoneArmable: true });
+    assert.equal(none.disabled, true);
+    assert.equal(none.reason, 'Cette porte n’est dans aucune zone : choisissez-en une dans sa fiche d’équipement.');
+    const flat = A.armingFieldInfo({ zone: 'Hall', zoneArmable: false });
+    assert.equal(flat.disabled, true);
+    assert.equal(flat.reason, 'Cette zone n’a pas d’armement : ajoutez-y un détecteur d’intrusion ou réglez-la dans l’écran Armement.');
+    assert.equal(A.armingFieldInfo({ zone: '', zoneArmable: false, enabled: true }).disabled, false, 'une porte déjà rattachée peut toujours être décochée');
+  });
+
+  it('ligne de la fiche : non rattachée, armée, désarmée, inconnue, ancien serveur', () => {
+    const door = (arming: unknown) => ({ detectorId: 'P1', arming });
+    assert.equal(A.armingFactInfo(door({ enabled: false, zone: 'Hall', zoneArmable: true, armedNow: null }))!.text, 'Non rattachée');
+    const on = A.armingFactInfo(door({ enabled: true, zone: 'Hall', zoneArmable: true, armedNow: true }))!;
+    assert.equal(on.text, 'Rattachée à la zone « Hall » — armée maintenant');
+    assert.equal(on.armed, true);
+    assert.equal(A.armingFactInfo(door({ enabled: true, zone: 'Hall', zoneArmable: true, armedNow: false }))!.text, 'Rattachée à la zone « Hall » — désarmée maintenant');
+    assert.equal(A.armingFactInfo(door({ enabled: true, zone: 'Hall', zoneArmable: true, armedNow: null }))!.text, 'Rattachée à la zone « Hall »');
+    assert.equal(A.armingFactInfo({ detectorId: 'P1' }), null, 'ancien serveur : pas de ligne, pas d’erreur');
+    assert.equal(A.armingFactInfo(null), null);
+  });
+
+  it('note de passage : autorisée, non autorisée, absente', () => {
+    const ok = A.armingNoteOf({ arming: { authorized: true, groupId: 3, groupName: 'Nuit', label: 'Ouverture pendant l’armement : autorisée, groupe Nuit' } })!;
+    assert.deepEqual(ok, { text: 'Ouverture pendant l’armement : autorisée, groupe Nuit', authorized: true });
+    const no = A.armingNoteOf({ arming: { authorized: false, groupId: null, groupName: null, label: 'Ouverture pendant l’armement : non autorisée' } })!;
+    assert.equal(no.authorized, false);
+    assert.equal(no.text, 'Ouverture pendant l’armement : non autorisée');
+    assert.equal(A.armingNoteOf({ arming: null }), null);
+    assert.equal(A.armingNoteOf({}), null, 'ancien serveur');
+    assert.equal(A.armingNoteOf(null), null);
   });
 });
 
@@ -2094,6 +2153,63 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     view.hide();
   });
 
+  it('fiche : ligne « Armement avec la zone » et notes d’armement des passages', async () => {
+    const armed = { ...DOOR_FORCED, arming: { enabled: true, zone: 'Hall', zoneArmable: true, armedNow: true } };
+    const { view, container } = setup({
+      routes: {
+        'GET /api/access/doors': () => [DOOR_CLOSED, DOOR_OFFLINE, armed],
+        'GET /api/access/doors/P-ENTREE': () => ({
+          door: armed,
+          lastPassages: [PASSAGE(1, { arming: { authorized: true, groupId: 3, groupName: 'Nuit', label: 'Ouverture pendant l’armement : autorisée, groupe Nuit' } }), PASSAGE(2, { arming: { authorized: false, groupId: null, groupName: null, label: 'Ouverture pendant l’armement : non autorisée' } }), PASSAGE(3, { arming: null })],
+          cameras: [],
+          remote: { available: false, reason: '' },
+        }),
+      },
+    });
+    await view.show(container, 'portes/P-ENTREE');
+    await flush();
+    const t = container.textContent;
+    assert.match(t, /Armement avec la zone/);
+    assert.match(t, /Rattachée à la zone « Hall » — armée maintenant/);
+    assert.ok(byText(container, 'a', 'Ouvrir l’écran Armement'));
+    assert.match(t, /Ouverture pendant l’armement : autorisée, groupe Nuit/);
+    assert.match(t, /Ouverture pendant l’armement : non autorisée/);
+    const notes = container.findAll((e) => e.className.includes('acc-arming-note'));
+    assert.equal(notes.length, 2, 'le passage sans note n’en a pas');
+    assert.ok(notes[0].className.includes('is-ok'));
+    assert.ok(notes[1].className.includes('is-warning'));
+    view.hide();
+  });
+
+  it('fiche d’une porte non rattachée, ou d’un ancien serveur sans `arming` : aucune erreur', async () => {
+    const offDoor = { ...DOOR_FORCED, arming: { enabled: false, zone: 'Hall', zoneArmable: true, armedNow: null } };
+    const off = setup({ routes: { 'GET /api/access/doors': () => [DOOR_CLOSED, DOOR_OFFLINE, offDoor], 'GET /api/access/doors/P-ENTREE': () => ({ door: offDoor, lastPassages: [PASSAGE(1)], cameras: [], remote: { available: false, reason: '' } }) } });
+    await off.view.show(off.container, 'portes/P-ENTREE');
+    await flush();
+    assert.match(off.container.textContent, /Non rattachée/);
+    assert.equal(off.container.findAll((e) => e.className.includes('acc-arming-note')).length, 0);
+    off.view.hide();
+
+    const old = setup();
+    await old.view.show(old.container, 'portes/P-ENTREE');
+    await flush();
+    assert.doesNotMatch(old.container.textContent, /Armement avec la zone/);
+    assert.match(old.container.textContent, /Titulaire 1/);
+    old.view.hide();
+  });
+
+  it('journal : la note d’armement figure sur la ligne du passage concerné', async () => {
+    const { view, container } = setup({
+      routes: { 'GET /api/access/events': () => ({ items: [PASSAGE(1, { arming: { authorized: false, groupId: null, groupName: null, label: 'Ouverture pendant l’armement : non autorisée' } }), PASSAGE(2)], nextCursor: null, total: 2, totalCapped: false }) },
+    });
+    await view.show(container);
+    await flush();
+    const notes = container.findAll((e) => e.className.includes('acc-arming-note'));
+    assert.equal(notes.length, 1);
+    assert.match(notes[0].textContent, /non autorisée/);
+    view.hide();
+  });
+
   it('fiche d’une porte sans caméra ni passage : vides qui apprennent ; porte inconnue : message et retour', async () => {
     const { view, container } = setup({ routes: { 'GET /api/access/doors/P-ARRIERE': () => ({ door: DOOR_CLOSED, lastPassages: [], cameras: [], remote: { available: false, reason: '' } }) } });
     await view.show(container, 'portes/P-ARRIERE');
@@ -2401,6 +2517,50 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     assert.equal(calls.filter((c) => c.method === 'PUT').length, puts);
     assert.match(form.textContent, /Aucun changement à enregistrer./);
     view.hide();
+  });
+
+  it('déclaration : la case « Armer cette porte avec sa zone » (zone vide, non armable, armable) et le corps envoyé', async () => {
+    const edit = async (door: Record<string, unknown>, routes: Record<string, (c: Call) => unknown> = {}) => {
+      const ctx = setup({ routes: { 'GET /api/access/doors': () => [door], ...routes } });
+      await ctx.view.show(ctx.container, 'declaration');
+      await flush();
+      ctx.container.find((e) => e.tagName === 'button' && e.attrs.get('aria-label') === `Modifier la porte ${door.name}`)!.click();
+      await flush();
+      const form = declForm(ctx.container)!;
+      const box = form.find((e) => e.type === 'checkbox' && e.parent!.textContent.includes('Armer cette porte avec sa zone'))!;
+      return { ...ctx, form, box };
+    };
+    const arming = (over: Record<string, unknown>) => ({ enabled: false, zone: 'Hall', zoneArmable: true, armedNow: null, ...over });
+
+    const free = await edit({ ...DOOR_CLOSED, arming: arming({}) }, { 'PUT /api/access/doors/': () => ({}) });
+    assert.equal(free.box.disabled, false);
+    assert.match(free.form.textContent, /Quand la zone « Hall » est armée/);
+    free.box.checked = true;
+    free.form.dispatch('submit');
+    await flush();
+    assert.deepEqual(free.calls.find((c) => c.method === 'PUT')!.body, { armWithZone: true });
+    free.view.hide();
+
+    const empty = await edit({ ...DOOR_CLOSED, zone: '', arming: arming({ zone: '' }) });
+    assert.equal(empty.box.disabled, true);
+    assert.match(empty.form.textContent, /Cette porte n’est dans aucune zone : choisissez-en une dans sa fiche d’équipement\./);
+    empty.view.hide();
+
+    const flat = await edit({ ...DOOR_CLOSED, arming: arming({ zoneArmable: false }) });
+    assert.equal(flat.box.disabled, true);
+    assert.match(flat.form.textContent, /Cette zone n’a pas d’armement/);
+    flat.view.hide();
+
+    const refused = await edit({ ...DOOR_CLOSED, arming: arming({}) }, { 'PUT /api/access/doors/': () => { throw new Error('Cette zone n’a pas d’armement.'); } });
+    refused.box.checked = true;
+    refused.form.dispatch('submit');
+    await flush();
+    assert.match(refused.form.textContent, /Cette zone n’a pas d’armement\./, 'le message du serveur reste affiché');
+    refused.view.hide();
+
+    const old = await edit(DOOR_CLOSED);
+    assert.equal(old.form.find((e) => e.type === 'checkbox' && e.parent!.textContent.includes('Armer cette porte avec sa zone')), null, 'ancien serveur : pas de case');
+    old.view.hide();
   });
 
   it('déclaration : sans contrôleur, « Déclarer une porte » est grisé et le dit ; liste des contrôleurs illisible : « Réessayer »', async () => {

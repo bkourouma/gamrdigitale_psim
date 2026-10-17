@@ -272,3 +272,64 @@ describe('moteur : ce que le desarmement masque et ce qu il ne masque jamais', (
     assert.equal(engine.getSnapshot().incidents.length, 1);
   });
 });
+
+describe("etat de la zone a un instant donne (jugement d'un passage, F14)", () => {
+  it("une derogation de desarmement decidee APRES l'instant juge ne compte pas : on retombe sur le defaut", () => {
+    const t = setup(MON(12));
+    t.arming.setOverride('operateur', 'Accueil', 'disarmed', 2); // derogation a 12:00, jusqu'a 14:00
+    assert.equal(t.arming.isArmed('Accueil'), false, 'maintenant : desarmee');
+    assert.equal(t.arming.isArmed('Accueil', MON(12)), false, "a l'instant meme de la derogation : elle compte");
+    assert.equal(t.arming.isArmed('Accueil', MON(12, 0) - 1), true, '1 ms avant : la zone etait armee (defaut)');
+    assert.equal(t.arming.isArmed('Accueil', MON(9)), true, 'ce matin : armee');
+    assert.equal(t.arming.isArmed('Accueil', MON(13)), false, 'pendant la derogation');
+    assert.equal(t.arming.isArmed('Accueil', MON(14)), true, 'derogation terminee');
+    assert.equal(t.arming.get('Accueil', MON(11)).armed, true);
+    assert.equal(t.arming.get('Accueil', MON(11)).source, 'default');
+    assert.equal(t.arming.get('Accueil', MON(11)).override, null);
+  });
+
+  it("avant la derogation, c'est le planning qui fait foi : une derogation d'armement ne rend pas la zone armee retroactivement", () => {
+    const t = setup(MON(20));
+    t.arming.setSchedule('admin', 'Accueil', night);
+    t.arming.setOverride('operateur', 'Accueil', 'armed', 3); // 20:00 : deja armee par le planning
+    t.set(MON(21));
+    t.arming.setOverride('operateur', 'Accueil', 'disarmed', 1); // remplace la precedente a 21:00
+    assert.equal(t.arming.isArmed('Accueil', MON(20, 30)), true, 'planning : nuit');
+    assert.equal(t.arming.isArmed('Accueil', MON(21, 30)), false, 'derogation');
+    // Jour : le planning desarme, une derogation 'armed' posee a 12:00 n'arme pas 11:00.
+    const j = setup(MON(12));
+    j.arming.setSchedule('admin', 'Accueil', night);
+    j.arming.setOverride('operateur', 'Accueil', 'armed', 2);
+    assert.equal(j.arming.isArmed('Accueil', MON(11)), false);
+    assert.equal(j.arming.isArmed('Accueil', MON(13)), true);
+  });
+
+  it("l'etat courant (sans instant) ignore le controle de debut : une horloge qui recule ne fait pas oublier une derogation", () => {
+    const t = setup(MON(12));
+    t.arming.setOverride('operateur', 'Accueil', 'disarmed', 2);
+    t.set(MON(11, 55)); // l'horloge a recule de 5 minutes
+    assert.equal(t.arming.isArmed('Accueil'), false, 'toujours desarmee maintenant');
+    assert.equal(t.arming.get('Accueil').armed, false);
+    assert.equal(t.arming.snapshot().Accueil, false);
+  });
+
+  it("zone sans nom ou inconnue : armee, a n'importe quel instant", () => {
+    const t = setup();
+    assert.equal(t.arming.isArmed('', MON(3)), true);
+    assert.equal(t.arming.isArmed('Zone inconnue', MON(3)), true);
+  });
+
+  it("une derogation annulee ne laisse aucune trace pour le passe (limite assumee : le jugement retombe sur le planning)", () => {
+    const t = setup(MON(12));
+    t.arming.setOverride('operateur', 'Accueil', 'disarmed', 2);
+    t.arming.clearOverride('operateur', 'Accueil');
+    assert.equal(t.arming.isArmed('Accueil', MON(12, 30)), true);
+  });
+
+  it("le moteur continue d'utiliser l'etat courant : isArmed(zone) sans instant", () => {
+    const t = setup(MON(12));
+    t.arming.setOverride('operateur', 'Accueil', 'disarmed', 2);
+    t.engine.ingest('I-01', { event: 'motion' });
+    assert.equal(t.engine.getSnapshot().incidents.length, 0);
+  });
+});

@@ -177,6 +177,42 @@
 .rl-form-foot { margin-top: var(--s2); }
 .rl-enable { min-height: var(--control-h); }
 
+/* Règles « Badges et portes » : le choix du genre (création), le repère du genre sur une carte, les cases du formulaire. */
+.rl-box-kind { margin-bottom: var(--s3); }
+.rl-box-kind .rl-choices { align-items: stretch; }
+.rl-box-kind .rl-choice { flex: 1 1 260px; }
+.rl-box-kind .rl-choice-label { flex-wrap: nowrap; align-items: flex-start; }
+.rl-box-kind .rl-choice-label .icon { flex: none; margin-top: 2px; }
+.rl-part { display: grid; gap: var(--s4); min-width: 0; }
+.rl-part[hidden] { display: none; }
+.rl-kind { color: var(--ink-2); }
+.rl-trial-note p { overflow-wrap: anywhere; }
+
+/* Sous-réglages d'une case (groupe, badge ou titulaire, refus répétés) : même encart que la liste de visages. */
+.rl-sub { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.rl-sub[hidden] { display: none; }
+.rl-sub-field { max-width: 460px; }
+.rl-sub-status { display: flex; align-items: center; gap: var(--s2); overflow-wrap: anywhere; }
+.rl-sub-status:empty { display: none; }
+.rl-sub .notice p { overflow-wrap: anywhere; }
+.rl-spread { display: flex; flex-wrap: wrap; gap: var(--s3); }
+.rl-spread .field { flex: 1 1 170px; max-width: 240px; }
+.rl-subfieldset { border: 0; padding: 0; gap: var(--s2); min-width: 0; }
+.rl-subfieldset legend { padding: 0; font-weight: 700; color: var(--ink); }
+.rl-if-text { max-width: 70ch; font-size: var(--fs-md); font-weight: 600; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+
+/* Recherche d'un titulaire : résultats nommés (un bouton par personne), puis la personne choisie. */
+.rl-holder { display: grid; gap: var(--s2); min-width: 0; }
+.rl-holder[hidden] { display: none; }
+.rl-holder-results { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.rl-holder-results:empty { display: none; }
+.rl-holder-hit { display: grid; justify-items: start; gap: 2px; width: 100%; padding: var(--s2) var(--s3); text-align: left; }
+.rl-holder-hit-name { font-weight: 700; overflow-wrap: anywhere; }
+.rl-holder-hit-note { font-size: var(--fs-sm); font-weight: 400; color: var(--ink-2); overflow-wrap: anywhere; }
+.rl-holder-chosen { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.rl-holder-chosen[hidden] { display: none; }
+.rl-holder-name { font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+
 /* Cibles tactiles : 44 px partout dans cet écran (les petits boutons de liste dense n'y servent pas). */
 .rl-form .btn-sm, .rl-rule .btn-sm { min-height: var(--control-h); }
 
@@ -198,6 +234,9 @@
   .rl-assist-count { margin-left: 0; }
   .rl-faces { padding: var(--s3) var(--s2); }
   .rl-faces > .btn { justify-self: stretch; }
+  .rl-sub { padding: var(--s3) var(--s2); }
+  .rl-sub .btn, .rl-holder-chosen .btn { flex: 1 1 auto; }
+  .rl-spread .field { max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

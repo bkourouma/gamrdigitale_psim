@@ -14,6 +14,10 @@ import { CATEGORY_ICON } from './plan.js';
 import { $, h, icon, api, toast, S, time, elapsed, emit, go, activeIncidents, focusedIncident, followAlarm, isActive, isFiring, devicesOf, STATUS_LABEL, render } from './core.js';
 import { commandsButton } from './commands.js';
 import { doorActions } from './dooractions.js';
+import { holderNamesView } from './holderref.js';
+
+/** Détail d'incident : « H12 » devient « NOM Prénom (H12) » à l'écran seulement (le texte part aussi dans les SMS et courriels, sans nom). */
+const showDetail = holderNamesView((id) => api(`/api/access/holders/${id}`), () => S.me?.username ?? null);
 
 /** L'attente se lit sur une barre qui se remplit en 5 minutes (un repère par minute). */
 const WAIT_SCALE_MS = 5 * 60 * 1000;
@@ -569,7 +573,7 @@ function updateCard(card, incident, followed) {
     : unconfirmedText(incident.category, incident.event);
   refs.conf.hidden = !confirmed && !open && !blocked;
   const detailText = typeof incident.detail === 'string' ? incident.detail.trim() : '';
-  refs.detail.textContent = detailText;
+  showDetail(refs.detail, detailText);
   refs.detail.hidden = detailText === '';
   renderDispatch(card);
   pollDispatch(card, incident, expanded);

@@ -211,3 +211,12 @@
 @media (forced-colors: active) {
   .acc-door, .acc-fiche-state, .acc-form { border-color: CanvasText; }
 }
+
+/* Armement des portes (F14) : note de passage, ligne de la fiche, repère du tableau. */
+.acc-arming-note { display: inline-flex; align-items: flex-start; gap: var(--s1); font-size: var(--fs-xs); line-height: 1.35; color: var(--ink-2); max-width: 100%; overflow-wrap: anywhere; }
+.acc-arming-note .icon { flex: none; margin-top: 1px; }
+.acc-arming-note.is-warning { color: var(--warning-ink, var(--ink)); font-weight: 700; }
+.acc-arming-fact { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
+.acc-who .acc-arming-tag { margin-top: var(--s1); }
+.acc-arming-reason:empty { display: none; }
+.acc-check .acc-arming-reason { color: var(--ink); }

@@ -7,7 +7,7 @@ import { openDb } from '../server/db.ts';
 import { createEngine, PsimError } from '../server/engine.ts';
 import { createRiskService } from '../server/risk.ts';
 import { seedDemo } from '../server/seed.ts';
-import { checkSensorSettings, EVENT_LABEL, EVENTS, eventLabel, interpret, stateFromValue } from '../server/sources.ts';
+import { ALWAYS_ACTIVE_EVENTS, checkSensorSettings, EVENT_LABEL, EVENTS, eventLabel, interpret, stateFromValue } from '../server/sources.ts';
 import type { SensorSettings } from '../server/sources.ts';
 
 const T0 = 1_000_000_000_000;
@@ -279,5 +279,48 @@ describe('evenements de presence et de visage (regles de presence)', () => {
       assert.equal(incident.event, event);
       assert.equal(engine.getDevice(id)?.status, effect, event);
     }
+  });
+});
+
+describe("evenements de l'armement des portes (F14) et des regles d'acces (F15)", () => {
+  const ACCESS_EVENTS = [
+    ['door_opened_armed', 'prealarm', "Ouverture pendant l'armement"],
+    ['badge_offhours', 'alarm', 'Badge utilisé hors de ses horaires'],
+    ['badge_offhours_noticed', 'prealarm', 'Badge hors horaires signalé'],
+    ['badge_watched', 'alarm', 'Badge surveillé utilisé'],
+    ['badge_watched_noticed', 'prealarm', 'Badge surveillé signalé'],
+    ['denials_spread', 'alarm', 'Refus sur plusieurs portes'],
+    ['denials_spread_noticed', 'prealarm', 'Refus sur plusieurs portes signalés'],
+  ] as const;
+  const access: SensorSettings = { category: 'access', warnAt: null, alarmAt: null, direction: 'above' };
+
+  it('chacun est reconnu avec son effet et son libelle (accents compris)', () => {
+    for (const [event, effect, label] of ACCESS_EVENTS) {
+      assert.equal(EVENTS[event], effect, event);
+      assert.equal(EVENT_LABEL[event], label, event);
+      assert.equal(eventLabel(event), label);
+      assert.deepEqual(interpret(access, { event }), { ok: true, state: effect, event, alive: false, value: null, detail: null }, event);
+    }
+  });
+
+  it("aucun n'est « toujours actif » : l'armement ne les concerne pas, et la categorie acces n'est de toute facon jamais masquee", () => {
+    for (const [event] of ACCESS_EVENTS) assert.ok(!ALWAYS_ACTIVE_EVENTS.has(event), event);
+    // Zone desarmee : un detecteur de categorie acces ouvre quand meme son incident (seule la categorie intrusion est masquee).
+    const { engine, db } = setup({ isArmed: () => false });
+    db.prepare("UPDATE device SET zone = 'Accueil' WHERE id = 'A-01'").run();
+    for (const [event, effect] of ACCESS_EVENTS) {
+      engine.handleDetectorMessage('A-01', { event });
+      assert.equal(engine.getDevice('A-01')?.status, effect, event);
+      engine.handleDetectorMessage('A-01', { event: 'normal' });
+    }
+  });
+
+  it("door_opened_armed porte le texte de l'incident (detail) jusqu'au motif affiche", () => {
+    const { engine } = setup();
+    engine.handleDetectorMessage('A-01', { event: 'door_opened_armed', detail: "Ouverture de la porte « Entrée » à 22:14 pendant l'armement de la zone « Bureaux » : aucun titulaire connu" });
+    const incident = engine.getSnapshot().incidents.find((i) => i.detectorId === 'A-01')!;
+    assert.equal(incident.severity, 'warning');
+    assert.equal(incident.event, 'door_opened_armed');
+    assert.match(incident.detail ?? '', /Entrée.*22:14.*Bureaux/);
   });
 });

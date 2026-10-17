@@ -96,12 +96,18 @@ export function createArming(db: DatabaseSync, audit: (actor: string, action: st
     return db.prepare('SELECT * FROM arming_zone WHERE zone = ?').get(zone) as Row | undefined;
   }
 
-  /** `withNext` : calcule aussi le prochain changement (couteux : a eviter sur le chemin des alarmes). */
-  function stateOf(zone: string, ts = now(), withNext = true): ZoneArming {
+  /**
+   * `at` : instant juge. Pour un instant EXPLICITE, une derogation ne compte que si elle existait deja (`at >= override_at`) :
+   * « la zone etait-elle armee a ce moment-la ? » ne tient pas compte d'un desarmement decide apres coup (voir accessarming.ts).
+   * Sans `at` (etat courant : maintenant), la derogation compte toujours, meme si l'horloge a recule depuis.
+   * `withNext` : calcule aussi le prochain changement (couteux : a eviter sur le chemin des alarmes).
+   */
+  function stateOf(zone: string, at?: number, withNext = true): ZoneArming {
+    const ts = at ?? now();
     const r = row(zone);
     const schedule = r?.schedule ? (JSON.parse(r.schedule as string) as Window[]) : null;
     const override: Override | null =
-      r?.override_mode && (r.override_until as number) > ts
+      r?.override_mode && (r.override_until as number) > ts && (at === undefined || ts >= (r.override_at as number))
         ? { mode: r.override_mode as Override['mode'], until: r.override_until as number, by: r.override_by as string, at: r.override_at as number }
         : null;
     const compute = (t: number): { armed: boolean; source: ZoneArming['source'] } => {
@@ -137,10 +143,13 @@ export function createArming(db: DatabaseSync, audit: (actor: string, action: st
 
   const list = (): ZoneArming[] => zones().map((z) => stateOf(z));
 
-  /** Utilise par le moteur a chaque message d'intrusion. Une zone inconnue ou sans nom est armee. */
-  function isArmed(zone: string): boolean {
+  /**
+   * Utilise par le moteur a chaque message d'intrusion. Une zone inconnue ou sans nom est armee. `at` : la zone etait-elle armee a
+   * cet instant (passage d'une porte, voir accessarming.ts) ? Sans `at`, maintenant.
+   */
+  function isArmed(zone: string, at?: number): boolean {
     if (!zone) return true;
-    return stateOf(zone, now(), false).armed;
+    return stateOf(zone, at, false).armed;
   }
 
   function checkZone(zone: unknown): string {
@@ -167,7 +176,7 @@ export function createArming(db: DatabaseSync, audit: (actor: string, action: st
     }
     const t = now();
     upsert(zone, { override_mode: mode, override_until: t + Math.round(hours * 3_600_000), override_by: actor, override_at: t });
-    lastKnown.set(zone, stateOf(zone, now(), false).armed);
+    lastKnown.set(zone, stateOf(zone, undefined, false).armed);
     audit(actor, mode === 'armed' ? 'zone_armed' : 'zone_disarmed', { details: `${zone} : ${mode === 'armed' ? 'armement' : 'desarmement'} manuel pour ${hours} h` });
     onChange();
     return stateOf(zone);
@@ -198,7 +207,7 @@ export function createArming(db: DatabaseSync, audit: (actor: string, action: st
   /** Controle periodique : journalise et diffuse les changements d'etat dus au planning ou a la fin d'une derogation. */
   function tick(): void {
     for (const zone of zones()) {
-      const s = stateOf(zone, now(), false);
+      const s = stateOf(zone, undefined, false);
       const before = lastKnown.get(zone);
       lastKnown.set(zone, s.armed);
       if (before === undefined || before === s.armed) continue;
@@ -209,7 +218,7 @@ export function createArming(db: DatabaseSync, audit: (actor: string, action: st
 
   /** Photographie pour l'interface : etat effectif par zone. */
   function snapshot(): Record<string, boolean> {
-    return Object.fromEntries(zones().map((z) => [z, stateOf(z, now(), false).armed]));
+    return Object.fromEntries(zones().map((z) => [z, stateOf(z, undefined, false).armed]));
   }
 
   return { list, get: stateOf, isArmed, setOverride, clearOverride, setSchedule, tick, snapshot };

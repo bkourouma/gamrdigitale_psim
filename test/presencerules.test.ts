@@ -1836,7 +1836,7 @@ describe("regles d'identite : direct, detecteur et essai sur le passe", () => {
     assert.throws(() => f.rules.create('admin', { name: 'x', spec: stays(5, { who: UNKNOWN }) }), (e: unknown) => e instanceof PsimError && e.status === 400 && /seul « apparait »/.test(e.message));
     const rule = f.rules.create('admin', { name: 'ok', spec: idSpec(UNKNOWN) });
     assert.throws(() => f.rules.update('admin', rule.id, { spec: stays(5, { who: UNKNOWN }) }), /seul « apparait »/);
-    assert.deepEqual(f.rules.get(rule.id)!.spec.who, UNKNOWN);
+    assert.deepEqual((f.rules.get(rule.id)!.spec as RuleSpec).who, UNKNOWN);
     assert.match(f.rules.get(rule.id)!.summary, /si un visage inconnu est vu devant la caméra/);
   });
 
@@ -2191,7 +2191,7 @@ describe("regles d'identite : la portee doit contenir une camera de l'appareil d
     const good = idSpec(FAMILLE, { where: { zones: ['Couloir', 'Couloir'] } });
     assert.deepEqual(f.rules.validate(good), { ...good, where: { zones: ['Couloir'] } }, 'spec normalisee (doublons retires)');
     assert.deepEqual(f.rules.validate(spec()), spec());
-    assert.deepEqual(f.rules.validate(idSpec(UNKNOWN, { where: { cameras: ['C-03'] } })).who, UNKNOWN);
+    assert.deepEqual((f.rules.validate(idSpec(UNKNOWN, { where: { cameras: ['C-03'] } })) as RuleSpec).who, UNKNOWN);
     refused(() => f.rules.validate(idSpec(FAMILLE, { where: { cameras: ['C-04'] } })), FAMILLE_REFUS); // autre appareil
     refused(() => f.rules.validate(idSpec(AWA, { where: { zones: ['Salle serveurs'] } })), AWA_REFUS); // zone sur un autre appareil
     refused(() => f.rules.validate(idSpec({ ...FAMILLE, cameraId: 'C-05' } as Who)), /n'est reliee a aucun appareil/);

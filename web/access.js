@@ -280,6 +280,43 @@ export function lastPassageSentence(p, now) {
   return `${holderLine(p)} — ${resultLabelOf(p)}, ${formatWhen(p.atDevice, now)}`;
 }
 
+/** Armement de la porte lu sur la réponse du serveur ; `null` si le serveur est ancien (pas de champ `arming`). */
+export function doorArming(door) {
+  const a = door?.arming;
+  if (!a || typeof a !== 'object') return null;
+  return { enabled: Boolean(a.enabled), zone: typeof a.zone === 'string' ? a.zone.trim() : '', zoneArmable: a.zoneArmable !== false, armedNow: typeof a.armedNow === 'boolean' ? a.armedNow : null };
+}
+
+/** Ce que la case « Armer cette porte avec sa zone » peut faire pour une zone donnée : active, ou désactivée avec son explication. */
+export function armingFieldInfo({ zone = '', zoneArmable = true, enabled = false } = {}) {
+  const name = String(zone ?? '').trim();
+  const help = `Quand ${name ? `la zone « ${name} »` : 'la zone de la porte'} est armée (écran Armement), toute ouverture de cette porte donne une pré-alarme, même avec un badge accepté, sauf pour un titulaire dont le groupe a un droit à cette heure. Une porte forcée reste une alarme.`;
+  // Une porte déjà rattachée reste décochable, même si sa zone a disparu depuis.
+  if (!name && !enabled) return { disabled: true, help, reason: 'Cette porte n’est dans aucune zone : choisissez-en une dans sa fiche d’équipement.' };
+  if (!zoneArmable && !enabled) return { disabled: true, help, reason: 'Cette zone n’a pas d’armement : ajoutez-y un détecteur d’intrusion ou réglez-la dans l’écran Armement.' };
+  return { disabled: false, help, reason: '' };
+}
+
+/** Ligne « Armement avec la zone » de la fiche : { text, attached, armed } ; `null` si le serveur ne fournit pas l’information. */
+export function armingFactInfo(door) {
+  const a = doorArming(door);
+  if (!a) return null;
+  if (!a.enabled) return { text: 'Non rattachée', attached: false, armed: null };
+  const zone = a.zone ? `« ${a.zone} »` : 'de la porte';
+  if (a.armedNow === true) return { text: `Rattachée à la zone ${zone} — armée maintenant`, attached: true, armed: true };
+  if (a.armedNow === false) return { text: `Rattachée à la zone ${zone} — désarmée maintenant`, attached: true, armed: false };
+  return { text: `Rattachée à la zone ${zone}`, attached: true, armed: null };
+}
+
+/** Note d’armement d’un passage : { text, authorized } ou `null` (pas de note, ou serveur ancien). */
+export function armingNoteOf(p) {
+  const a = p?.arming;
+  if (!a || typeof a !== 'object') return null;
+  const authorized = Boolean(a.authorized);
+  const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : `Ouverture pendant l’armement : ${authorized ? 'autorisée' : 'non autorisée'}`;
+  return { text: label, authorized };
+}
+
 export function kindLabel(kind) {
   return DOOR_KINDS.find((k) => k.id === kind)?.label ?? 'Porte';
 }
@@ -679,7 +716,7 @@ export function controllerBody(form, { editing = false, original = null } = {}) 
 }
 
 export function emptyDoorForm() {
-  return { detectorId: '', controllerId: '', doorNo: '1', kind: 'door', emergencyExit: false, heldMinutes: minutesInput(HELD_DEFAULT_S) };
+  return { detectorId: '', controllerId: '', doorNo: '1', kind: 'door', emergencyExit: false, heldMinutes: minutesInput(HELD_DEFAULT_S), armWithZone: false };
 }
 
 export function doorFormFrom(door) {
@@ -690,6 +727,7 @@ export function doorFormFrom(door) {
     kind: door.kind ?? 'door',
     emergencyExit: Boolean(door.emergencyExit),
     heldMinutes: minutesInput(door.heldAlarmAfterS ?? HELD_DEFAULT_S),
+    armWithZone: Boolean(door.arming?.enabled),
   };
 }
 
@@ -709,8 +747,10 @@ export function doorBody(form, { editing = false, original = null } = {}) {
   const held = parseHeldDelay(form.heldMinutes);
   const seconds = held.ok ? held.seconds : HELD_DEFAULT_S;
   const full = { controllerId: form.controllerId, doorNo: Number(form.doorNo), kind: form.kind, emergencyExit: Boolean(form.emergencyExit), heldAlarmAfterS: seconds };
-  if (!editing) return { detectorId: form.detectorId, ...full };
+  const arm = Boolean(form.armWithZone);
+  if (!editing) return { detectorId: form.detectorId, ...full, ...(arm ? { armWithZone: true } : {}) };
   const body = {};
+  if (arm !== Boolean(original?.armWithZone)) body.armWithZone = arm;
   if (full.controllerId !== original?.controllerId) body.controllerId = full.controllerId;
   if (full.doorNo !== original?.doorNo) body.doorNo = full.doorNo;
   if (full.kind !== original?.kind) body.kind = full.kind;
@@ -1410,6 +1450,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         { class: 'acc-cell-stack' },
         h('span', { class: `pill ${tone === 'ok' ? 'is-ok' : 'is-warning'}` }, ico(tone === 'ok' ? 'state-ok' : 'lock'), resultLabelOf(p)),
         p.late ? h('span', { class: 'tag is-info', title: 'Récupéré dans la mémoire du contrôleur après une coupure. L’heure affichée est celle du contrôleur.' }, ico('clock', 'icon-sm'), 'Reçu en différé') : null,
+        armingNoteEl(p),
       ),
     );
     let videoCell;
@@ -1653,6 +1694,21 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     return [h('dt', { text: label }), h('dd', {}, ...value)];
   }
 
+  /** Ligne « Armement avec la zone » de la fiche (rien si le serveur ne fournit pas l'information). */
+  function armingFact(door) {
+    const info = armingFactInfo(door);
+    if (!info) return [];
+    const mark = info.attached ? h('span', { class: `tag ${info.armed === true ? 'is-warning' : 'is-info'} acc-arming-tag` }, ico('shield', 'icon-sm'), info.armed === true ? 'Armée' : info.armed === false ? 'Désarmée' : 'Rattachée') : null;
+    return fact('Armement avec la zone', h('span', { class: 'acc-arming-fact' }, mark, h('span', { text: info.text }), info.attached ? h('a', { class: 'acc-link', href: '#/armement' }, 'Ouvrir l’écran Armement') : null));
+  }
+
+  /** Note d'armement d'un passage (journal et fiche de porte) : « autorisée » en ton normal, « non autorisée » en avertissement. */
+  function armingNoteEl(p) {
+    const note = armingNoteOf(p);
+    if (!note) return null;
+    return h('span', { class: `acc-arming-note ${note.authorized ? 'is-ok' : 'is-warning'}` }, ico(note.authorized ? 'shield' : 'state-warning', 'icon-sm'), h('span', { text: note.text }));
+  }
+
   function updateDoorCard(card, door) {
     const last = state.last.get(door.detectorId);
     const sig = JSON.stringify([door.name, door.zone, door.floorId, door.controllerName, door.controllerId, door.doorNo, door.kind, door.emergencyExit, door.state, door.stateLabel, door.stateHint, door.deviceStatus, door.lastPassageAt, last?.passage?.id ?? null, (core.S.floors ?? []).length, dayStart(now())]);
@@ -1893,6 +1949,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       ...fact('Type', kindLabel(door.kind)),
       ...fact('Issue de secours', door.emergencyExit ? 'Oui : cette porte ne se verrouille jamais à distance.' : 'Non'),
       ...fact('Alarme « maintenue ouverte »', door.heldAlarmAfterS ? `Après ${secondsText(door.heldAlarmAfterS)} porte ouverte` : '—'),
+      ...armingFact(door),
       ...fact('Dernier signe de vie', door.lastSeen ? capFirst(formatWhen(door.lastSeen, now(), { seconds: true })) : 'Aucun depuis le démarrage du PSIM'),
     ]);
 
@@ -1929,7 +1986,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         h(
           'td',
           { 'data-label': 'Résultat' },
-          h('div', { class: 'acc-cell-stack' }, h('span', { class: `pill ${tone === 'ok' ? 'is-ok' : 'is-warning'}` }, ico(tone === 'ok' ? 'state-ok' : 'lock'), resultLabelOf(p)), p.late ? h('span', { class: 'tag is-info' }, ico('clock', 'icon-sm'), 'Reçu en différé') : null),
+          h('div', { class: 'acc-cell-stack' }, h('span', { class: `pill ${tone === 'ok' ? 'is-ok' : 'is-warning'}` }, ico(tone === 'ok' ? 'state-ok' : 'lock'), resultLabelOf(p)), p.late ? h('span', { class: 'tag is-info' }, ico('clock', 'icon-sm'), 'Reçu en différé') : null, armingNoteEl(p)),
         ),
       );
     });
@@ -2274,7 +2331,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       return h(
         'tr',
         { 'data-door-row': door.detectorId },
-        h('td', { 'data-label': 'Porte', class: 'acc-who' }, h('strong', { text: doorName(door) }), h('span', { class: 'acc-sub mono', text: door.detectorId })),
+        h('td', { 'data-label': 'Porte', class: 'acc-who' }, h('strong', { text: doorName(door) }), h('span', { class: 'acc-sub mono', text: door.detectorId }), door.arming?.enabled ? h('span', { class: 'tag is-info acc-arming-tag', title: `Rattachée à l’armement de la zone « ${door.arming.zone || door.zone || ''} »` }, ico('shield', 'icon-sm'), 'Armée avec sa zone') : null),
         h('td', { 'data-label': 'Contrôleur' }, h('div', { class: 'acc-cell-stack' }, h('span', { text: door.controllerName || door.controllerId || '—' }), h('span', { class: 'acc-sub', text: `Porte n° ${door.doorNo ?? '?'}` }))),
         h('td', { 'data-label': 'Type', text: kindLabel(door.kind) }),
         h('td', { 'data-label': 'Issue de secours' }, door.emergencyExit ? h('span', { class: 'tag is-warning' }, ico('door', 'icon-sm'), 'Issue de secours') : h('span', { class: 'muted', text: 'Non' })),
@@ -2321,9 +2378,30 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       doorNo: select([1, 2, 3, 4].map((n) => ({ id: String(n), label: `Porte n° ${n}` })), start.doorNo),
       kind: select(DOOR_KINDS, start.kind),
       emergencyExit: h('input', { type: 'checkbox' }),
+      armWithZone: h('input', { type: 'checkbox' }),
       heldMinutes: h('input', { type: 'text', inputmode: 'decimal', maxlength: '8', autocomplete: 'off', spellcheck: 'false' }),
     };
     inputs.emergencyExit.checked = start.emergencyExit;
+    inputs.armWithZone.checked = start.armWithZone;
+    // Case d'armement : la zone est celle du détecteur de la porte (lue sur la porte, ou sur le détecteur choisi à la déclaration).
+    const armHint = h('span', { class: 'hint' });
+    const armReason = h('span', { class: 'hint acc-arming-reason' });
+    const armHintId = acc.uid('acc-hint');
+    armHint.id = armHintId;
+    inputs.armWithZone.setAttribute('aria-describedby', armHintId);
+    const refreshArming = () => {
+      const a = door ? doorArming(door) : null;
+      const zone = door ? (a?.zone || door.zone || '') : (core.S.devices.get(inputs.detectorId.value)?.zone ?? '');
+      const info = armingFieldInfo({ zone, zoneArmable: door ? a?.zoneArmable !== false : true, enabled: start.armWithZone });
+      inputs.armWithZone.disabled = info.disabled;
+      if (info.disabled) inputs.armWithZone.checked = false;
+      armHint.textContent = info.help;
+      armReason.textContent = info.reason;
+    };
+    refreshArming();
+    if (!editing) inputs.detectorId.addEventListener('change', refreshArming);
+    // Un ancien serveur ne connaît pas l'armement : on ne propose pas la case pour une porte existante.
+    const armRow = editing && !doorArming(door) ? null : h('div', { class: 'acc-check' }, h('label', { class: 'check' }, inputs.armWithZone, h('span', { text: 'Armer cette porte avec sa zone' })), armHint, armReason);
     inputs.heldMinutes.value = start.heldMinutes;
     const error = h('p', { class: 'form-error', role: 'alert' });
     const titleId = acc.uid('acc-door-form');
@@ -2350,6 +2428,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         field('Alarme « maintenue ouverte » après (minutes)', inputs.heldMinutes, 'Au bout de ce délai, une porte restée ouverte déclenche l’alarme. Par exemple 5, ou 0,5 pour trente secondes (de 10 secondes à 24 heures).'),
       ),
       checkRow(inputs.emergencyExit, 'Cette porte est une issue de secours', 'Une issue de secours ne se verrouille jamais à distance, quoi qu’il arrive. Cochez-la pour toute porte qui doit rester libre à la sortie.'),
+      armRow,
       error,
       h('div', { class: 'actions' }, submit, cancel),
     );
@@ -2358,11 +2437,11 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (busy) return;
-      const values = { detectorId: editing ? door.detectorId : inputs.detectorId.value, controllerId: inputs.controllerId.value, doorNo: inputs.doorNo.value, kind: inputs.kind.value, emergencyExit: inputs.emergencyExit.checked, heldMinutes: inputs.heldMinutes.value };
+      const values = { detectorId: editing ? door.detectorId : inputs.detectorId.value, controllerId: inputs.controllerId.value, doorNo: inputs.doorNo.value, kind: inputs.kind.value, emergencyExit: inputs.emergencyExit.checked, heldMinutes: inputs.heldMinutes.value, armWithZone: inputs.armWithZone.checked };
       acc.clearInvalid(form, error);
       const problems = doorProblems(values, { editing, controllerIds: controllers.map((x) => x.id) });
       if (problems.length) return acc.markInvalid(inputs[problems[0].field] ?? null, error, problems[0].message);
-      const original = door ? { controllerId: door.controllerId, doorNo: door.doorNo, kind: door.kind, emergencyExit: Boolean(door.emergencyExit), heldAlarmAfterS: door.heldAlarmAfterS } : null;
+      const original = door ? { controllerId: door.controllerId, doorNo: door.doorNo, kind: door.kind, emergencyExit: Boolean(door.emergencyExit), heldAlarmAfterS: door.heldAlarmAfterS, armWithZone: Boolean(door.arming?.enabled) } : null;
       const body = doorBody(values, { editing, original });
       if (editing && Object.keys(body).length === 0) return acc.markInvalid(null, error, 'Aucun changement à enregistrer.');
       busy = true;
@@ -2376,7 +2455,8 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         renderDeclaration();
         state.ui.c.addDoor.focus();
       } catch (err) {
-        acc.markInvalid(null, error, err.message);
+        // Refus d'armement (zone vide ou sans armement) : le message s'affiche près de la case.
+        acc.markInvalid(body.armWithZone === true && /zone|armement/i.test(String(err.message)) ? inputs.armWithZone : null, error, err.message);
       } finally {
         busy = false;
         acc.setBusy(submit, false);

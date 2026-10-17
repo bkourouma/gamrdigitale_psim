@@ -922,6 +922,30 @@ describe('setStateBySupervisor', () => {
     assert.ok(engine.listAudit(50).some((a) => a.action === 'incident_opened' && a.deviceId === 'A-01'));
   });
 
+  it("accepte une pre-alarme avec son texte (detail) ; le motif et le texte arrivent a l'incident", () => {
+    assert.equal(engine.setStateBySupervisor('A-01', 'prealarm', 'door_opened_armed', 'Ouverture de la porte « Porte » à 22:14 : aucun titulaire connu'), true);
+    assert.equal(dev('A-01').status, 'prealarm');
+    assert.equal(incidents('A-01')[0].severity, 'warning');
+    assert.equal(incidents('A-01')[0].event, 'door_opened_armed');
+    assert.equal(incidents('A-01')[0].detail, 'Ouverture de la porte « Porte » à 22:14 : aucun titulaire connu');
+  });
+
+  it("ne rend jamais une alarme plus douce : une pre-alarme demandee sur un detecteur en alarme est sans effet (vrai quand meme)", () => {
+    engine.setStateBySupervisor('A-01', 'alarm', 'door_held_open');
+    assert.equal(engine.setStateBySupervisor('A-01', 'prealarm', 'door_opened_armed', 'x'), true);
+    assert.equal(dev('A-01').status, 'alarm');
+    assert.equal(incidents('A-01')[0].severity, 'critical');
+    assert.equal(incidents('A-01')[0].event, 'door_held_open');
+    assert.equal(incidents('A-01')[0].detail, null);
+  });
+
+  it("une alarme demandee apres une pre-alarme l'aggrave (comportement existant)", () => {
+    engine.setStateBySupervisor('A-01', 'prealarm', 'door_opened_armed', 'texte');
+    engine.setStateBySupervisor('A-01', 'alarm', 'door_held_open');
+    assert.equal(dev('A-01').status, 'alarm');
+    assert.equal(incidents('A-01')[0].severity, 'critical');
+  });
+
   it('faux si le detecteur n\'existe pas, ou si c\'est une camera', () => {
     assert.equal(engine.setStateBySupervisor('NOPE', 'alarm', 'x'), false);
     assert.equal(engine.setStateBySupervisor('C-01', 'alarm', 'x'), false);
@@ -1884,7 +1908,7 @@ describe('migration', () => {
     const second = openDb(file);
     assert.equal((second.prepare("SELECT value FROM access_setting WHERE key = 'x'").get() as Json).value, '1');
     const tables = (second.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'access_%' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
-    assert.deepEqual(tables, ['access_controller', 'access_door', 'access_door_mode', 'access_event', 'access_setting']);
+    assert.deepEqual(tables, ['access_controller', 'access_door', 'access_door_arming', 'access_door_mode', 'access_event', 'access_event_arming', 'access_setting']);
     const indexes = (second.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'access_%' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
     assert.deepEqual(indexes, ['access_door_by_actuator', 'access_door_by_controller', 'access_event_by_credential', 'access_event_by_device_event', 'access_event_by_door', 'access_event_by_time']);
     second.close();

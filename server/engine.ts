@@ -394,15 +394,31 @@ export function createEngine(
       else if (verdict.duplicate) {
         if (meta.msgId !== null) remember(db, found.id, meta.msgId, t);
         result = { ok: true, duplicate: true };
-      } else result = deliver(found, reading, meta, t);
+      } else {
+        result = deliver(found, reading, meta, t);
+        // Pre-alarme decidee par le module (armement des portes) : APRES `deliver`, sinon un detecteur « hors ligne » repassant
+        // « normal » par le signe de vie de ce message l'effacerait. setStateBySupervisor ne la pose jamais sur une alarme.
+        if (result.ok && verdict.raise) setStateBySupervisor(found.id, verdict.raise.state, verdict.raise.event, verdict.raise.detail);
+      }
     } catch (err) {
       db.exec('ROLLBACK TO ingest_access');
       db.exec('RELEASE ingest_access');
+      settleAccess(access, false);
       throw err;
     }
     if (!result.ok) db.exec('ROLLBACK TO ingest_access');
     db.exec('RELEASE ingest_access');
+    // Transaction terminee : le module peut annoncer ce qu'il avait en attente (validee) ou le jeter (annulee).
+    settleAccess(access, result.ok);
     return result;
+  }
+
+  function settleAccess(access: AccessHook, committed: boolean): void {
+    try {
+      access.settle?.(committed);
+    } catch (err) {
+      console.error('[engine] journal des acces (fin de transaction) :', err);
+    }
   }
 
   const carriesAccess = (payload: unknown): boolean => typeof payload === 'object' && payload !== null && !Array.isArray(payload) && Object.hasOwn(payload, 'access');
@@ -410,13 +426,16 @@ export function createEngine(
   /**
    * Etat decide par le PSIM lui-meme (ex. escalade d'une porte maintenue ouverte en alarme) : meme chemin que l'etat d'un message
    * (incident, journal, historique, publication), mais SANS toucher `last_seen` : un equipement muet doit pouvoir passer hors ligne.
-   * Heure = maintenant. Faux si le detecteur n'existe pas.
+   * Heure = maintenant. Faux si le detecteur n'existe pas. `detail` : texte de l'incident (nomme la porte et l'heure, jamais un nom
+   * de personne). Une PRE-ALARME demandee pour un detecteur deja en ALARME n'est pas appliquee (vrai quand meme : le detecteur
+   * existe) : une decision du PSIM n'adoucit jamais une alarme.
    */
-  function setStateBySupervisor(deviceId: string, state: DetectorState, event: string | null): boolean {
+  function setStateBySupervisor(deviceId: string, state: DetectorState, event: string | null, detail: string | null = null): boolean {
     const device = getDevice(deviceId);
     if (!device || device.kind !== 'detector') return false;
+    if (state === 'prealarm' && device.status === 'alarm') return true;
     const t = now();
-    applyState(device, state, { eventAt: t, receivedAt: t, dated: false, lateMs: 0, aheadMs: 0, msgId: null }, event);
+    applyState(device, state, { eventAt: t, receivedAt: t, dated: false, lateMs: 0, aheadMs: 0, msgId: null }, event, detail);
     return true;
   }
 

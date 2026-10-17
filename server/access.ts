@@ -13,12 +13,19 @@
  *    rajeunir `last_seen` (une porte muette doit pouvoir passer hors ligne) ; la purge suit la duree de conservation ;
  *  - le SERVICE (portes, recherche, export CSV, controleurs, reglages) que les routes `/api/access/*` appellent.
  *
+ * Points d'accroche des lots F14 / F15 (toute la logique est dans server/accessarming.ts) : armement des portes (`doorArming`, option :
+ * verdict note sur chaque passage accepte, pre-alarme renvoyee au moteur dans `AccessHookResult.raise`, ouvertures sans passage jugees
+ * dans `tick`) et flux des passages (`passages`, annonce apres validation de la transaction du moteur via `settle`).
+ *
  * Donnees personnelles : numeros de badge et noms. Aucun code PIN ni gabarit biometrique n'est jamais lu ni stocke : seuls les
  * champs listes dans validateAccessField() sont gardes, tout champ inconnu est ignore.
  */
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import { migrateAccessArming } from './accessarming.ts';
+import type { DoorArming } from './accessarming.ts';
 import { checkDoorLink, doorModeFields, forgetDoorMode, migrateAccessRemote, parseDoorMode, recordDoorMode, remoteOf } from './accessremote.ts';
 import type { DoorMode, DoorRemote } from './accessremote.ts';
+import type { ArmingNote, DoorArmingView, PassageFeed, PassageNote, RaiseRequest } from './accessrulestypes.ts';
 import { PsimError } from './errors.ts';
 import { defaultFloorId } from './floors.ts';
 import { LATE_AFTER_MS } from './ingestmeta.ts';
@@ -122,10 +129,20 @@ export interface AccessHookInput {
   state: DetectorState | null;
   meta: MessageMeta;
 }
-export type AccessHookResult = { ok: true; duplicate?: true } | { ok: false; status: number; error: string };
+export type AccessHookResult = { ok: true; duplicate?: true; raise?: RaiseRequest } | { ok: false; status: number; error: string };
 /** Point d'accroche appele par le moteur (engine.ts, option `access`). */
 export interface AccessHook {
+  /**
+   * `ok: true` peut porter `raise` : une pre-alarme decidee APRES coup (armement des portes, F14), que le moteur applique une fois
+   * le message livre (sinon un detecteur « hors ligne » repassant « normal » par ce signe de vie l'effacerait). Le moteur ne
+   * l'applique jamais a un detecteur deja en alarme.
+   */
   onMessage(input: AccessHookInput): AccessHookResult;
+  /**
+   * Appele par le moteur une fois la transaction du message terminee : `committed` vrai = validee (ou sans effet), faux = annulee
+   * (les notifications en attente sont jetees). Une exception est ignoree par le moteur.
+   */
+  settle?(committed: boolean): void;
 }
 
 /** Champ `access` d'un message de passage, apres validation (rien d'autre n'est garde). */
@@ -187,6 +204,8 @@ export interface DoorView {
   lastSeen: number | null;
   lastPassageAt: number | null;
   cameraIds: string[];
+  /** Rattachement a l'armement de la zone (F14). Sans module d'armement : `{ enabled: false, zone, zoneArmable: false, armedNow: null }`. */
+  arming: DoorArmingView;
 }
 
 export interface PassageView {
@@ -209,6 +228,8 @@ export interface PassageView {
   reason: AccessReason | null;
   resultLabel: string;
   late: boolean;
+  /** Verdict de l'armement pour un passage accepte pendant l'armement de la zone de la porte (F14), sinon `null`. */
+  arming: ArmingNote | null;
 }
 
 export interface DoorDetail {
@@ -276,6 +297,8 @@ export interface DoorInput {
   emergencyExit?: unknown;
   heldAlarmAfterS?: unknown;
   actuatorId?: unknown;
+  /** « Armer avec la zone » (F14) : booleen strict. Vrai exige une zone non vide et armable. */
+  armWithZone?: unknown;
 }
 
 export interface AccessOptions {
@@ -286,7 +309,7 @@ export interface AccessOptions {
   key: Buffer;
   audit: (actor: string, action: string, ref?: { deviceId?: string; details?: string }) => void;
   /** Changement d'etat decide par le PSIM (escalade) : ne touche pas last_seen. Faux si le detecteur n'existe pas. */
-  setDeviceState: (deviceId: string, state: 'alarm', event: string) => boolean;
+  setDeviceState: (deviceId: string, state: 'alarm' | 'prealarm', event: string, detail?: string) => boolean;
   /** Duree de conservation par defaut (jours, 7 a 3650) ; 90 si absente. Un reglage enregistre en base la remplace. */
   retentionDays?: number;
   /** Reglages d'essai de la purge (par defaut : lots de 10 000, 200 000 lignes au plus par appel). */
@@ -302,9 +325,13 @@ export interface AccessOptions {
    * (titulaires, phase 2) en depend. Une erreur est ignoree.
    */
   onTopologyChange?: () => void;
+  /** Armement des portes (F14, server/accessarming.ts). Absent : comportement d'avant, aucune porte n'est rattachee a l'armement. */
+  doorArming?: DoorArming;
 }
 
 export interface AccessService extends AccessHook {
+  /** Flux des nouveaux passages pour les regles d'acces (F15) : voir PassageFeed. */
+  passages: PassageFeed;
   /** Escalade des portes maintenues ouvertes, puis purge automatique (un lot par controle, voir AUTO_PURGE_*). A appeler chaque seconde. Ne leve jamais. */
   tick(): void;
   /** Supprime les passages plus vieux que la duree de conservation, par lots de 10 000 (au plus 200 000 par appel). */
@@ -398,6 +425,7 @@ CREATE TABLE IF NOT EXISTS access_setting (
 );
 `);
   migrateAccessRemote(db); // mode de porte (F19), un actionneur par porte (F17)
+  migrateAccessArming(db); // armement des portes (F14) : reglage par porte, verdict par passage
 }
 
 // ---- Validation du champ `access` -----------------------------------------------------------------------------------------
@@ -644,6 +672,12 @@ export function createAccess(opts: AccessOptions): AccessService {
 
   const refuse = (status: number, error: string): AccessHookResult => ({ ok: false, status, error });
 
+  // En attente de validation de la transaction du moteur (voir `settle`) : passages a annoncer aux ecouteurs (F15) et ouvertures de
+  // porte a juger apres le delai de grace (F14). Borne : un appelant qui n'appellerait jamais `settle` ne fait pas grossir la memoire.
+  const STAGED_MAX = 2000;
+  let staged: { notes: PassageNote[]; opens: { doorId: string; at: number }[] } = { notes: [], opens: [] };
+  const listeners = new Set<(passage: PassageNote) => void>();
+
   function onMessage(input: AccessHookInput): AccessHookResult {
     const { device, payload, event, state, meta } = input;
     const msg = isPlainObject(payload) ? payload : null;
@@ -673,6 +707,8 @@ export function createAccess(opts: AccessOptions): AccessService {
     }
 
     return atomically((): AccessHookResult => {
+      let passageId = 0;
+      let holderId: number | null = null;
       // 2. Enregistrement du passage ; deduplication definitive par l'index unique (controleur, evenement).
       if (passage) {
         // Titulaire connu du PSIM (phase 2) : `holder_id`, et son nom si le controleur n'en a pas donne.
@@ -692,6 +728,8 @@ export function createAccess(opts: AccessOptions): AccessService {
           passage.eventId, passage.deferred || meta.lateMs >= LATE_AFTER_MS ? 1 : 0,
         );
         if (Number(res.changes) === 0) return { ok: true, duplicate: true };
+        passageId = Number(res.lastInsertRowid);
+        holderId = holder?.id ?? null;
       }
 
       // 3. Etat physique de la porte (une porte non declaree n'a rien a mettre a jour : le passage est gardé quand meme).
@@ -714,9 +752,89 @@ export function createAccess(opts: AccessOptions): AccessService {
           meta.receivedAt, live ? (msg!.ts as number) - meta.receivedAt : null, controllerId,
         );
       }
-      return { ok: true };
+
+      // 5. Armement de la porte (F14) : un passage ACCEPTE d'une porte rattachee est juge a l'heure du controleur (verdict note, pre-alarme
+      // proposee au moteur) ; un `door_opened` sans passage sera juge apres le delai de grace, une fois la transaction validee.
+      let raise: RaiseRequest | undefined;
+      if (door && opts.doorArming) {
+        if (passage && passage.result === 'granted') {
+          const judged = opts.doorArming.judgePassage({ eventId: passageId, doorId: device.id, at: atDevice, holderId });
+          if (judged.raise) raise = judged.raise;
+        } else if (!passage && event === 'door_opened') {
+          staged.opens.push({ doorId: device.id, at: meta.eventAt });
+          trim(staged.opens);
+        }
+      }
+      // 6. Flux des passages (F15) : annonce apres validation, jamais pour un doublon (sorti plus haut).
+      if (passage) {
+        const note: PassageNote = {
+          id: passageId, doorId: device.id, controllerId: passage.controllerId, at: atDevice, receivedAt: meta.receivedAt, direction: passage.direction,
+          credential: passage.credential, holderId, holderRef: passage.holderRef, method: passage.method, result: passage.result, reason: passage.reason,
+          late: passage.deferred || meta.lateMs >= LATE_AFTER_MS,
+        };
+        staged.notes.push(note);
+        trim(staged.notes);
+      }
+      return raise ? { ok: true, raise } : { ok: true };
     });
   }
+
+  /** Liste en attente de `settle` : au-dela de STAGED_MAX, les plus anciens partent (jamais de croissance sans borne). */
+  function trim(list: unknown[]): void {
+    if (list.length > STAGED_MAX) list.splice(0, list.length - STAGED_MAX);
+  }
+
+  /**
+   * Fin de la transaction du moteur : validee, on annonce les passages (un ecouteur qui leve est journalise et n'empeche ni les
+   * autres ecouteurs ni l'ingestion) et on arme le delai de grace des ouvertures ; annulee, tout est jete.
+   */
+  function settle(committed: boolean): void {
+    const { notes, opens } = staged;
+    staged = { notes: [], opens: [] };
+    if (!committed) return;
+    for (const o of opens) {
+      try {
+        opts.doorArming?.noteOpened(o.doorId, o.at);
+      } catch (err) {
+        console.error(`[access] ouverture de ${o.doorId} (armement) :`, err);
+      }
+    }
+    for (const note of notes) {
+      for (const listener of [...listeners]) {
+        try {
+          listener(note);
+        } catch (err) {
+          console.error('[access] ecouteur de passages :', err);
+        }
+      }
+    }
+  }
+
+  const MAX_HISTORY = 20_000;
+  const passages: PassageFeed = {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+    history(from, to, doorIds) {
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return [];
+      let doorFilter = '';
+      const params: (string | number)[] = [from, to];
+      if (doorIds !== undefined) {
+        const ids = [...new Set(doorIds.filter((d): d is string => typeof d === 'string'))];
+        if (ids.length === 0) return [];
+        doorFilter = ' AND door_id IN (SELECT value FROM json_each(?))'; // une seule requete, sans limite de parametres
+        params.push(JSON.stringify(ids));
+      }
+      const rows = sql(`SELECT * FROM access_event WHERE at_device >= ? AND at_device <= ?${doorFilter} ORDER BY at_device, id LIMIT ${MAX_HISTORY}`).all(...params) as Row[];
+      return rows.map((r): PassageNote => ({
+        id: r.id as number, doorId: r.door_id as string, controllerId: r.controller_id as string, at: r.at_device as number, receivedAt: r.at_received as number,
+        direction: (r.direction as AccessDirection | null) ?? null, credential: (r.credential as string | null) ?? null, holderId: (r.holder_id as number | null) ?? null,
+        holderRef: (r.holder_ref as string | null) ?? null, method: r.method as AccessMethod, result: r.result as AccessResult,
+        reason: (r.reason as AccessReason | null) ?? null, late: r.late === 1,
+      }));
+    },
+  };
 
   /**
    * Suit l'etat physique d'une porte DECLAREE d'apres le message. Un message date plus ancien que l'etat connu ne l'ecrase pas.
@@ -793,6 +911,12 @@ export function createAccess(opts: AccessOptions): AccessService {
     } catch (err) {
       console.error('[access] escalade :', err);
     }
+    // Ouvertures de porte sans passage, en attente de jugement (armement, F14) : leur delai de grace court sur la meme horloge.
+    try {
+      opts.doorArming?.tick();
+    } catch (err) {
+      console.error('[access] armement des portes :', err);
+    }
     // Horloge revenue en arriere de plus d'une periode : on ne reste pas bloque en attente d'un instant lointain.
     if (t >= nextAutoPurge || nextAutoPurge - t > AUTO_PURGE_EVERY_MS) {
       nextAutoPurge = t + AUTO_PURGE_EVERY_MS;
@@ -833,7 +957,10 @@ export function createAccess(opts: AccessOptions): AccessService {
                          FROM access_door a JOIN device d ON d.id = a.detector_id JOIN access_controller c ON c.id = a.controller_id
                          LEFT JOIN access_door_mode m ON m.detector_id = a.detector_id`;
 
-  function toDoorView(r: Row, cameraIds: string[]): DoorView {
+  /** Reglage d'armement d'une porte absent (pas de module d'armement) : jamais rattachee. */
+  const noArming = (zone: string): DoorArmingView => ({ enabled: false, zone, zoneArmable: false, armedNow: null });
+
+  function toDoorView(r: Row, cameraIds: string[], arming: DoorArmingView): DoorView {
     const doorState = r.door_state as DoorPhysical;
     const shown = displayState({ deviceStatus: r.status as string, doorState, forced: r.forced_at !== null, heldOpen: r.held_since !== null });
     const since =
@@ -862,6 +989,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       lastSeen: (r.last_seen as number | null) ?? null,
       lastPassageAt: (r.last_passage_at as number | null) ?? null,
       cameraIds,
+      arming,
     };
   }
 
@@ -874,12 +1002,14 @@ export function createAccess(opts: AccessOptions): AccessService {
       list.push(r.camera_id as string);
       links.set(r.detector_id as string, list);
     }
-    return (sql(`${DOOR_SELECT} ORDER BY d.name COLLATE NOCASE, a.detector_id`).all() as Row[]).map((r) => toDoorView(r, links.get(r.detector_id as string) ?? []));
+    const rows = sql(`${DOOR_SELECT} ORDER BY d.name COLLATE NOCASE, a.detector_id`).all() as Row[];
+    const armings = opts.doorArming?.viewsOf(rows.map((r) => ({ detectorId: r.detector_id as string, zone: r.zone as string })));
+    return rows.map((r) => toDoorView(r, links.get(r.detector_id as string) ?? [], armings?.get(r.detector_id as string) ?? noArming(r.zone as string)));
   }
 
   function doorView(id: string): DoorView | null {
     const r = sql(`${DOOR_SELECT} WHERE a.detector_id = ?`).get(id) as Row | undefined;
-    return r ? toDoorView(r, cameraIdsOf(id)) : null;
+    return r ? toDoorView(r, cameraIdsOf(id), opts.doorArming?.viewOf(id, r.zone as string) ?? noArming(r.zone as string)) : null;
   }
 
   /** `hint` : clause « INDEXED BY ... » facultative (voir indexFor). */
@@ -908,14 +1038,23 @@ export function createAccess(opts: AccessOptions): AccessService {
       reason,
       resultLabel: resultLabel(r.result as string, reason),
       late: r.late === 1,
+      arming: null, // renseigne par decorate()
     };
+  }
+
+  /** Joint le verdict de l'armement (F14) a un lot de passages, en UNE requete (pas une par ligne). */
+  function decorate(views: PassageView[]): PassageView[] {
+    if (!opts.doorArming || views.length === 0) return views;
+    const notes = opts.doorArming.notesOf(views.map((v) => v.id));
+    for (const v of views) v.arming = notes.get(v.id) ?? null;
+    return views;
   }
 
   function door(id: string): DoorDetail {
     if (typeof id !== 'string' || !ID_PATTERN.test(id)) throw new PsimError(404, 'Porte introuvable');
     const view = doorView(id);
     if (!view) throw new PsimError(404, 'Porte introuvable');
-    const lastPassages = (sql(`${PASSAGE_SELECT} WHERE e.door_id = ? ORDER BY e.at_device DESC, e.id DESC LIMIT 10`).all(id) as Row[]).map(toPassageView);
+    const lastPassages = decorate((sql(`${PASSAGE_SELECT} WHERE e.door_id = ? ORDER BY e.at_device DESC, e.id DESC LIMIT 10`).all(id) as Row[]).map(toPassageView));
     const cameras = (sql('SELECT d.id AS id, d.name AS name, d.status AS status FROM device_link l JOIN device d ON d.id = l.camera_id WHERE l.detector_id = ? ORDER BY d.id').all(id) as Row[]).map((r) => ({
       id: r.id as string,
       name: r.name as string,
@@ -1075,7 +1214,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     const page = whereOf(f, cursor);
     const rows = sql(`${passageSelect(indexFor(f))}${page.text} ORDER BY e.at_device DESC, e.id DESC LIMIT ?`).all(...page.params, limit + 1) as Row[];
     const hasMore = rows.length > limit;
-    const items = rows.slice(0, limit).map(toPassageView);
+    const items = decorate(rows.slice(0, limit).map(toPassageView));
     const last = items[items.length - 1];
     let total: number | null = null;
     let totalCapped = false;
@@ -1257,7 +1396,7 @@ export function createAccess(opts: AccessOptions): AccessService {
   // ---- Declaration des portes ------------------------------------------------------------------------------------------------------
 
   function checkDoorFields(input: Record<string, unknown>): {
-    controllerId?: string; doorNo?: number; kind?: DoorKind; emergencyExit?: boolean; heldAlarmAfterS?: number; actuatorId?: string | null;
+    controllerId?: string; doorNo?: number; kind?: DoorKind; emergencyExit?: boolean; heldAlarmAfterS?: number; actuatorId?: string | null; armWithZone?: boolean;
   } {
     const out: ReturnType<typeof checkDoorFields> = {};
     const controllerId = own(input, 'controllerId');
@@ -1291,7 +1430,24 @@ export function createAccess(opts: AccessOptions): AccessService {
       if (actuator !== null && (typeof actuator !== 'string' || !ID_PATTERN.test(actuator))) throw new PsimError(400, 'actuatorId invalide (lettres, chiffres, - et _ ; 32 caracteres max)');
       out.actuatorId = actuator;
     }
+    const arm = own(input, 'armWithZone');
+    if (arm !== undefined) {
+      if (typeof arm !== 'boolean') throw new PsimError(400, 'armWithZone doit être vrai ou faux');
+      out.armWithZone = arm;
+    }
     return out;
+  }
+
+  /** Controle AVANT toute ecriture : « armer avec la zone » exige le module d'armement, une zone non vide et armable. */
+  function checkArmWithZone(detectorId: string, armWithZone: boolean | undefined): void {
+    if (armWithZone !== true) return;
+    if (!opts.doorArming) throw new PsimError(400, "L'armement des portes n'est pas disponible sur ce serveur");
+    opts.doorArming.assertCanEnable(detectorId);
+  }
+
+  function applyArmWithZone(actor: string, detectorId: string, armWithZone: boolean | undefined): void {
+    if (armWithZone === undefined || !opts.doorArming) return;
+    opts.doorArming.setEnabled(actor, detectorId, armWithZone);
   }
 
   /** Le numero de porte est unique par controleur : message clair avant la contrainte de la base. */
@@ -1314,9 +1470,11 @@ export function createAccess(opts: AccessOptions): AccessService {
     checkDoorNoFree(f.controllerId, f.doorNo, null);
     // Lien avec l'actionneur (F17, F18) : controle sur la porte telle qu'elle sera creee.
     if (f.actuatorId) checkDoorLink(db, { detectorId, kind: f.kind ?? 'door', emergencyExit: f.emergencyExit ?? false, actuatorId: f.actuatorId });
+    checkArmWithZone(detectorId, f.armWithZone);
     sql(
       'INSERT INTO access_door (detector_id, controller_id, door_no, kind, emergency_exit, held_alarm_after_s, actuator_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(detectorId, f.controllerId, f.doorNo, f.kind ?? 'door', f.emergencyExit ? 1 : 0, f.heldAlarmAfterS ?? DEFAULT_HELD_ALARM_S, f.actuatorId ?? null);
+    applyArmWithZone(actor, detectorId, f.armWithZone);
     topologyChanged();
     audit(actor, 'access_door_declared', { deviceId: detectorId, details: clip(`porte n°${f.doorNo} du controleur ${f.controllerId}${f.emergencyExit ? ', issue de secours' : ''}${f.actuatorId ? `, actionneur ${f.actuatorId}` : ''}`) });
     return doorView(detectorId) as DoorView;
@@ -1338,6 +1496,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     if (nextActuator !== null && (nextActuator !== current.actuator_id || nextKind !== current.kind || nextEmergency !== (current.emergency_exit === 1))) {
       checkDoorLink(db, { detectorId: id, kind: nextKind, emergencyExit: nextEmergency, actuatorId: nextActuator });
     }
+    checkArmWithZone(id, f.armWithZone);
     const changed: string[] = [];
     if (controllerId !== current.controller_id) changed.push('controleur');
     if (doorNo !== current.door_no) changed.push('numero');
@@ -1349,6 +1508,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       controllerId, doorNo, f.kind ?? current.kind, (f.emergencyExit ?? current.emergency_exit === 1) ? 1 : 0, f.heldAlarmAfterS ?? current.held_alarm_after_s,
       f.actuatorId === undefined ? current.actuator_id : f.actuatorId, id,
     );
+    applyArmWithZone(actor, id, f.armWithZone);
     topologyChanged();
     audit(actor, 'access_door_updated', { deviceId: id, details: clip(changed.length > 0 ? changed.join(', ') : 'aucun changement') });
     return doorView(id) as DoorView;
@@ -1359,6 +1519,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     if (!r || Number(r.changes) === 0) throw new PsimError(404, 'Porte introuvable');
     topologyChanged();
     forgetDoorMode(db, id);
+    opts.doorArming?.forget(id); // le rattachement ne ressort pas si la porte est redeclaree plus tard
     audit(actor, 'access_door_removed', { deviceId: id, details: "declaration retiree ; l'historique des passages est conserve jusqu'a la purge" });
   }
 
@@ -1388,7 +1549,7 @@ export function createAccess(opts: AccessOptions): AccessService {
   }
 
   return {
-    onMessage, tick, purge, doors, door, search, exportCsv, controllers, controller, createController, updateController, deleteController,
+    onMessage, settle, passages, tick, purge, doors, door, search, exportCsv, controllers, controller, createController, updateController, deleteController,
     declareDoor, updateDoor, removeDoor, settings, setRetention,
   };
 }

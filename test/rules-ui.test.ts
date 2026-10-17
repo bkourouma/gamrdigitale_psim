@@ -275,13 +275,14 @@ describe('ecran « Regles » : politique de securite du contenu et donnees', () 
 
   it("appelle les routes du contrat d'API et seulement elles", () => {
     const paths = new Set([...withoutComments.matchAll(/['`](\/api\/[^'`$]*)/g)].map((m) => m[1]));
-    assert.deepEqual([...paths].sort(), ['/api/faces/lists', '/api/presence', '/api/rules', '/api/rules/', '/api/rules/assist', '/api/rules/simulate'].sort());
+    assert.deepEqual([...paths].sort(), ['/api/access/doors', '/api/access/groups', '/api/access/holders?', '/api/faces/lists', '/api/presence', '/api/rules', '/api/rules/', '/api/rules/assist', '/api/rules/simulate'].sort());
     assert.match(withoutComments, /api\('\/api\/faces\/lists'\)/, 'lecture des listes : GET');
     assert.match(withoutComments, /api\('\/api\/rules\/assist'\)/, "l'assistant est-il configure : GET");
     assert.match(withoutComments, /api\('\/api\/rules\/assist', \{ method: 'POST', body \}\)/, "la proposition : POST { text, history? }");
     assert.match(withoutComments, /method: 'DELETE'/);
     assert.match(withoutComments, /method: 'PUT', body: \{ enabled: on \}/);
-    assert.match(withoutComments, /method: 'POST', body: \{ spec: buildSpec\(state\), days \}/);
+    assert.match(withoutComments, /method: 'POST', body: \{ spec, days \}/);
+    assert.match(withoutComments, /const spec = currentSpec\(\);/, "l'essai envoie la regle du genre affiche");
   });
 
   it("le refus du serveur de supprimer une regle qui a deja declenche des incidents est reconnu (409) et propose « Desactiver »", () => {
@@ -1094,7 +1095,7 @@ describe('ecran « Regles » : regle « a revoir » (needsReview)', () => {
     assert.match(code, /Elle ne se déclenche pas tant que ce n’est pas fait : touchez « Modifier »/);
     assert.match(code, /live\.hidden = !ruleState\(rule\)\.running \|\| ids\.length === 0;/, 'pas de « quelqu’un est vu » sur une regle qui ne se declenche pas');
     assert.match(code, /toggle\.checked = ruleState\(c\.rule\)\.running;/, 'apres un echec, l’interrupteur dit ce que fait vraiment la regle');
-    assert.match(code, /h\('div', \{ class: 'rl-rule-head' \}, nameEl, reviewTag, editingTag, toggleLabel\)/);
+    assert.match(code, /h\('div', \{ class: 'rl-rule-head' \}, nameEl, kindTag, reviewTag, editingTag, toggleLabel\)/);
     // Les classes de style existent deja (badge, avertissement) : rien de nouveau dans la feuille de style.
     const css = read('base.css');
     assert.match(css, /\.tag\.is-warning/);
@@ -1199,7 +1200,7 @@ describe('ecran « Regles » : un refus du serveur sur « Qui » ou « Ou » s�
   });
 
   it('tout autre message reste en bas du formulaire, en phrase ; les mots qui commencent comme un prefixe ne comptent pas', () => {
-    for (const message of ['Nom de la regle requis', 'Quand : au moins une plage horaire est necessaire', 'Ouverture : impossible', 'Oui : non', 'Quiconque : x', '', undefined, null]) {
+    for (const message of ['Nom de la regle requis', 'Quand de nuit : x', 'Sinon : x', 'Alors que : x', 'Ouverture : impossible', 'Oui : non', 'Quiconque : x', '', undefined, null]) {
       const p = rules.serverProblem(message);
       assert.equal(p.key, null, String(message));
       assert.equal(p.box, '');
@@ -1255,7 +1256,7 @@ describe('ecran « Regles » : assistant « Decrivez la regle en une phrase »',
 
   it('la phrase d’origine accompagne la creation seulement (jamais la modification), et seulement apres une proposition', () => {
     assert.match(code, /proposalSource = editing \? null : sourceText \|\| null;/);
-    assert.match(code, /const created = \{ \.\.\.body, enabled: state\.enabled, \.\.\.\(proposalSource \? \{ sourceText: proposalSource \} : \{\}\) \};/);
+    assert.match(code, /const created = \{ \.\.\.body, enabled: cur\(\)\.enabled, \.\.\.\(proposalSource \? \{ sourceText: proposalSource \} : \{\}\) \};/);
     assert.match(code, /editing \? await api\(`\/api\/rules\/\$\{editing\.id\}`, \{ method: 'PUT', body \}\) : await api\('\/api\/rules', \{ method: 'POST', body: created \}\)/);
     assert.match(code, /proposalSource = null;/, 'remise a zero a chaque ouverture');
     assert.equal(rules.MAX_SOURCE_TEXT, 1000);
