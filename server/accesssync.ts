@@ -45,6 +45,8 @@ const SIG_PATTERN = /^[0-9a-f]{64}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 /** Taille maximale d'un message publie (limite du broker), en octets UTF-8. */
 export const MAX_MESSAGE_BYTES = 1024;
+/** Taille maximale du champ `body` d'un ordre (la passerelle refuse au-dela, en plus de la limite du message entier). */
+export const MAX_BODY_BYTES = 800;
 /** Taille maximale d'un accuse accepte. */
 export const MAX_ACK_BYTES = 2048;
 /** Dates par message `set_holidays`. */
@@ -69,7 +71,8 @@ const DELETE_MARK = 'delete';
 
 const ACK_RESULTS = ['done', 'refused', 'error'] as const;
 type AckResult = (typeof ACK_RESULTS)[number];
-const ACK_CODES = ['not_supported', 'invalid', 'full', 'io', 'unreachable'] as const;
+/** Motif d'un code d'accuse : la passerelle en renvoie plusieurs (not_supported, invalid, full, io, unreachable, timeout, busy...). */
+const CODE_PATTERN = /^[a-z0-9_]{1,32}$/;
 
 // ---- Messages en francais -----------------------------------------------------------------------------------------------------
 
@@ -83,7 +86,12 @@ const MSG_NOT_SUPPORTED = 'Ce contrôleur ne sait pas faire cette opération.';
 const MSG_IO = "Le contrôleur n'a pas pu enregistrer ce changement (erreur de communication avec le matériel). Nouvel essai automatique.";
 const MSG_UNREACHABLE =
   "La passerelle n'arrive pas à joindre le contrôleur. Vérifiez qu'il est allumé et branché au réseau. Nouvel essai automatique.";
-const MSG_TOO_BIG = `Ce changement est trop volumineux pour être envoyé (plus de 1 024 octets) : raccourcissez le nom du titulaire ou réduisez le nombre de plages horaires.`;
+const MSG_TOO_BIG = 'Ce changement est trop volumineux pour être envoyé : raccourcissez le nom du titulaire ou réduisez le nombre de plages horaires.';
+const MSG_TIMEOUT = 'Le contrôleur a mis trop de temps à répondre : nouvel essai automatique.';
+const MSG_BUSY = 'La passerelle a trop de changements en attente : nouvel essai automatique.';
+const MSG_HOLIDAYS_NOT_SUPPORTED =
+  "Ce contrôleur ne sait pas encore appliquer « fermé les jours fériés » : retirez l'option de cette plage ou attendez la qualification.";
+const msgScheduleUnsent = (ref: string): string => `L'horaire de ce titulaire n'a pas pu être envoyé au contrôleur (voir l'état de la plage ${ref}).`;
 const MSG_BLOCKED = `Suppression retenue : plus de ${MASS_DELETE_LIMIT} titulaires à retirer d'un coup. Un administrateur doit la confirmer.`;
 const MSG_KEY_UNREADABLE =
   "La clé de synchronisation de ce contrôleur est illisible (clé du serveur changée ?). Renouvelez-la pour reprendre l'envoi des titulaires.";
@@ -102,6 +110,10 @@ function messageForCode(code: string | null): string {
       return MSG_IO;
     case 'unreachable':
       return MSG_UNREACHABLE;
+    case 'timeout':
+      return MSG_TIMEOUT;
+    case 'busy':
+      return MSG_BUSY;
     default:
       return "Le contrôleur n'a pas appliqué ce changement. Cliquez sur Réessayer.";
   }
@@ -144,7 +156,10 @@ CREATE TABLE IF NOT EXISTS access_sync_controller (
   op_last INTEGER NOT NULL DEFAULT 1,
   op_attempts INTEGER NOT NULL DEFAULT 0,
   op_sent_at INTEGER,
-  op_next_at INTEGER
+  op_next_at INTEGER,
+  -- 1 : la passerelle a accuse \`error\` pour l'operation en vol. Elle a consomme son seq (et renverrait le meme accuse) : l'operation n'est
+  -- plus renvoyee, elle est REMPLACEE (nouveau seq, nouvel opId) a l'echeance du prochain essai.
+  op_dead INTEGER NOT NULL DEFAULT 0
 );
 -- Un element a synchroniser. wanted_hash NULL = ne doit pas exister ; acked_hash NULL = absent du controleur. wanted_body : corps
 -- voulu (titulaire, plage) ou liste JSON des dates (jours feries), sans PIN ni photo.
@@ -190,6 +205,9 @@ CREATE INDEX IF NOT EXISTS access_sync_log_controller ON access_sync_log(control
 CREATE INDEX IF NOT EXISTS access_sync_log_seq ON access_sync_log(controller_id, seq);
 CREATE INDEX IF NOT EXISTS access_sync_log_deletes ON access_sync_log(controller_id, op, confirmed, at);
 `);
+  // Base creee avant l'ajout de op_dead (developpement) : la colonne est ajoutee, sans rien perdre.
+  const cols = db.prepare('PRAGMA table_info(access_sync_controller)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'op_dead')) db.exec('ALTER TABLE access_sync_controller ADD COLUMN op_dead INTEGER NOT NULL DEFAULT 0');
 }
 
 // ---- Lignes ------------------------------------------------------------------------------------------------------------------
@@ -236,6 +254,7 @@ interface CtrlRow {
   op_attempts: number;
   op_sent_at: number | null;
   op_next_at: number | null;
+  op_dead: number;
 }
 
 interface Wanted {
@@ -699,21 +718,48 @@ export function createSync(opts: SyncOptions): SyncService {
     );
   }
 
+  /** Libere l'operation en vol (elle n'a plus lieu d'etre renvoyee). */
+  function clearOp(controllerId: string): void {
+    run(
+      `UPDATE access_sync_controller SET op_id = NULL, op_seq = NULL, op_ts = NULL, op_body = NULL, op_kind = NULL, op_ref = NULL, op_op = NULL,
+         op_hash = NULL, op_chunk = 0, op_last = 1, op_attempts = 0, op_sent_at = NULL, op_next_at = NULL, op_dead = 0 WHERE controller_id = ?`,
+      controllerId,
+    );
+  }
+
+  /** Une operation est a envoyer pour cet element : voulu different de l'accuse, ni retenu, ni refuse definitivement. */
+  const needsSending = (row: ItemRow): boolean =>
+    row.wanted_hash !== row.acked_hash && row.held === 0 && !(row.failed_hash !== null && row.failed_hash === markerOf(row));
+
+  /** Plus aucun echec sur le controleur : le dernier incident est resolu. */
+  function clearProblemIfResolved(controllerId: string): void {
+    const ctrl = ctrlRow(controllerId);
+    if (ctrl && ctrl.problem_code !== null && !one('SELECT 1 AS x FROM access_sync_item WHERE controller_id = ? AND state = ? LIMIT 1', controllerId, 'failed')) {
+      run('UPDATE access_sync_controller SET problem_code = NULL, problem_message = NULL, problem_at = NULL WHERE controller_id = ?', controllerId);
+    }
+  }
+
   /**
-   * Cree et PERSISTE l'operation (seq + 1) pour cet element. Faux si le message serait trop gros : l'element passe en echec `invalid`,
-   * rien n'est publie et aucun seq n'est consomme.
+   * Cree et PERSISTE l'operation (seq + 1) pour cet element. Faux si le message serait trop gros (message entier ou champ `body`) :
+   * l'element passe en echec `invalid`, rien n'est publie et aucun seq n'est consomme.
+   *
+   * `replacing` : l'operation en vol vient d'etre accusee `error` (op_dead) ; la nouvelle la REMPLACE avec un nouveau seq et un nouvel
+   * opId, reconstruite depuis l'etat courant de l'element. Le compteur d'essais de l'element est CONSERVE (l'attente croissante et
+   * l'echec visible apres 5 essais continuent de compter) et le journal des operations garde sa ligne (mise a jour du seq) : une
+   * suppression de titulaire reessayee ne compte qu'une fois pour la regle des 20 suppressions.
    */
-  function createOp(controllerId: string, item: ItemRow): boolean {
+  function createOp(controllerId: string, item: ItemRow, replacing?: CtrlRow): boolean {
     const ctrl = ensureCtrl(controllerId);
     const built = buildOp(item);
     const seq = ctrl.last_seq + 1;
     const ts = now();
     // Gabarit de meme taille que le vrai message (opId de 32 car., signature de 64 car.).
     const probe = envelope('0'.repeat(32), seq, ts, built.body, '0'.repeat(64));
-    if (Buffer.byteLength(probe, 'utf8') > MAX_MESSAGE_BYTES) {
+    if (Buffer.byteLength(built.body, 'utf8') > MAX_BODY_BYTES || Buffer.byteLength(probe, 'utf8') > MAX_MESSAGE_BYTES) {
       atomically(() => {
         failItem(item, 'invalid', MSG_TOO_BIG, true);
         saveItem(item);
+        if (replacing) clearOp(controllerId); // l'ancienne operation morte n'a plus d'objet
       });
       return false;
     }
@@ -721,7 +767,7 @@ export function createSync(opts: SyncOptions): SyncService {
     atomically(() => {
       run(
         `UPDATE access_sync_controller SET last_seq = ?, op_id = ?, op_seq = ?, op_ts = ?, op_body = ?, op_kind = ?, op_ref = ?, op_op = ?, op_hash = ?,
-           op_chunk = ?, op_last = ?, op_attempts = 0, op_sent_at = NULL, op_next_at = 0 WHERE controller_id = ?`,
+           op_chunk = ?, op_last = ?, op_attempts = ?, op_sent_at = NULL, op_next_at = 0, op_dead = 0 WHERE controller_id = ?`,
         seq,
         opId,
         seq,
@@ -733,13 +779,18 @@ export function createSync(opts: SyncOptions): SyncService {
         built.hash,
         built.chunk,
         built.last ? 1 : 0,
+        replacing ? replacing.op_attempts : 0,
         controllerId,
       );
-      if (item.attempts !== 0) {
+      if (!replacing && item.attempts !== 0) {
         item.attempts = 0;
         saveItem(item);
       }
-      logOp(controllerId, seq, item.kind, item.ref, built.op, item.confirmed);
+      const sameLine = replacing && replacing.op_kind === item.kind && replacing.op_ref === item.ref && replacing.op_op === built.op;
+      const moved = sameLine
+        ? sql('UPDATE access_sync_log SET seq = ?, result = NULL WHERE controller_id = ? AND seq = ?').run(seq, controllerId, replacing!.op_seq!).changes
+        : 0;
+      if (!moved) logOp(controllerId, seq, item.kind, item.ref, built.op, item.confirmed);
     });
     return true;
   }
@@ -747,7 +798,7 @@ export function createSync(opts: SyncOptions): SyncService {
   /** Publie (ou republie) l'operation en vol, signee avec la cle du moment. Un publish faux n'est pas compte comme un essai. */
   function transmit(controllerId: string): void {
     const ctrl = ctrlRow(controllerId);
-    if (!ctrl || ctrl.op_id === null) return;
+    if (!ctrl || ctrl.op_id === null || ctrl.op_dead === 1) return; // une operation morte n'est jamais renvoyee
     const key = keyFor(controllerId);
     if (!key) return;
     const opId = ctrl.op_id;
@@ -791,7 +842,27 @@ export function createSync(opts: SyncOptions): SyncService {
     });
   }
 
-  /** Une etape pour un controleur : renvoi echu, ou creation et envoi de l'operation suivante. */
+  /**
+   * L'echeance d'une operation MORTE (accusee `error`) est passee : elle est remplacee par une nouvelle (nouveau seq, nouvel opId),
+   * reconstruite depuis l'etat courant de l'element, ou simplement liberee si l'element n'a plus rien a envoyer. Faux si aucune
+   * nouvelle operation n'est en vol (liberee, ou message trop gros).
+   */
+  function replaceDeadOp(controllerId: string, ctrl: CtrlRow): boolean {
+    if (ctrl.op_attempts >= FAIL_AFTER_ATTEMPTS) markNoAck(controllerId, ctrl); // 5 essais cumules sans succes : l'echec devient visible
+    const item = getItem(controllerId, ctrl.op_kind!, ctrl.op_ref!);
+    if (item && needsSending(item)) return createOp(controllerId, item, ctrl);
+    atomically(() => {
+      clearOp(controllerId);
+      if (item) {
+        settle(item, false);
+        persist(item, false);
+      }
+      clearProblemIfResolved(controllerId);
+    });
+    return false;
+  }
+
+  /** Une etape pour un controleur : renvoi echu, remplacement d'une operation morte, ou creation et envoi de l'operation suivante. */
   function step(controllerId: string): void {
     if (!known(controllerId)) return;
     if (!keyFor(controllerId)) return;
@@ -800,9 +871,16 @@ export function createSync(opts: SyncOptions): SyncService {
       // Echeance pas atteinte (et plausible : une horloge ramenee en arriere ne doit pas figer l'envoi pendant des heures).
       const wait = (ctrl.op_next_at ?? 0) - now();
       if (wait > 0 && wait <= MAX_RETRY_MS) return;
-      if (ctrl.op_attempts >= FAIL_AFTER_ATTEMPTS) markNoAck(controllerId, ctrl);
-      transmit(controllerId);
-      return;
+      if (ctrl.op_dead !== 1) {
+        if (ctrl.op_attempts >= FAIL_AFTER_ATTEMPTS) markNoAck(controllerId, ctrl);
+        transmit(controllerId);
+        return;
+      }
+      if (replaceDeadOp(controllerId, ctrl)) {
+        transmit(controllerId);
+        return;
+      }
+      // Operation morte liberee (plus rien a envoyer pour cet element) : on passe a la suivante.
     }
     refreshHold(controllerId);
     for (let i = 0; i < 1000; i++) {
@@ -866,8 +944,8 @@ export function createSync(opts: SyncOptions): SyncService {
     if (typeof opId !== 'string' || !OPID_PATTERN.test(opId)) return bad('format');
     if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) return bad('format');
     if (typeof result !== 'string' || !(ACK_RESULTS as readonly string[]).includes(result)) return bad('format');
-    if (code !== null && (typeof code !== 'string' || code.length > 32 || !(ACK_CODES as readonly string[]).includes(code))) return bad('format');
-    if (result === 'done' && code !== null) return bad('format');
+    // Tout code de motif `^[a-z0-9_]{1,32}$` est accepte (la passerelle en renvoie plusieurs) ; pour `done` il est ignore, sans invalider l'accuse.
+    if (code !== null && (typeof code !== 'string' || !CODE_PATTERN.test(code))) return bad('format');
     if (typeof ts !== 'number' || !Number.isSafeInteger(ts)) return bad('format');
     if (typeof sig !== 'string' || !SIG_PATTERN.test(sig)) return bad('format');
 
@@ -885,10 +963,31 @@ export function createSync(opts: SyncOptions): SyncService {
     const ctrl = ctrlRow(controllerId);
     if (!ctrl || ctrl.op_id === null) return bad('no_operation');
     if (ctrl.op_id !== opId || ctrl.op_seq !== seq) return bad('mismatch');
+    if (ctrl.op_dead === 1) return bad('mismatch'); // accuse en double ou tardif d'une operation deja morte : sans effet
 
-    applyAck(controllerId, ctrl, result as AckResult, code as string | null);
+    applyAck(controllerId, ctrl, result as AckResult, result === 'done' ? null : (code as string | null));
     if (result !== 'error') pump(controllerId);
     return { accepted: true };
+  }
+
+  /**
+   * Phrase d'un refus definitif. Deux cas particuliers : une plage « fermee les jours feries » que le controleur ne sait pas appliquer,
+   * et un titulaire refuse `invalid` parce qu'une plage de ses portes a elle-meme ete refusee (horaire inconnu du controleur).
+   */
+  function refusalMessage(controllerId: string, ctrl: CtrlRow, code: string): string {
+    try {
+      const body = JSON.parse(ctrl.op_body ?? 'null') as Record<string, unknown> | null;
+      if (code === 'not_supported' && ctrl.op_kind === 'schedule' && ctrl.op_op === 'upsert' && body?.holidays === true) return MSG_HOLIDAYS_NOT_SUPPORTED;
+      if (code === 'invalid' && ctrl.op_kind === 'holder' && ctrl.op_op === 'upsert' && Array.isArray(body?.doors)) {
+        for (const d of body.doors as { scheduleRef?: unknown }[]) {
+          const ref = d?.scheduleRef;
+          if (typeof ref === 'string' && getItem(controllerId, 'schedule', ref)?.state === 'failed') return msgScheduleUnsent(ref);
+        }
+      }
+    } catch {
+      // corps illisible : phrase generique
+    }
+    return messageForCode(code);
   }
 
   /** L'accuse est authentique et concerne l'operation en vol : met a jour l'element, libere l'operation (sauf `error`). */
@@ -900,8 +999,10 @@ export function createSync(opts: SyncOptions): SyncService {
       run('UPDATE access_sync_log SET result = ? WHERE controller_id = ? AND seq = ?', result, controllerId, ctrl.op_seq!);
 
       if (result === 'error') {
-        // Meme attente que l'absence d'accuse : l'operation reste en vol et sera renvoyee a l'echeance.
+        // La passerelle a consomme le seq et renverrait le MEME accuse : l'operation est morte. Elle reste en vol (l'element n'est ni
+        // synchronise ni libere) jusqu'a l'echeance du prochain essai, meme attente que l'absence d'accuse, puis elle est remplacee.
         const c = code ?? 'io';
+        run('UPDATE access_sync_controller SET op_dead = 1 WHERE controller_id = ? AND op_id = ?', controllerId, ctrl.op_id!);
         if (item) {
           item.code = c;
           item.message = messageForCode(c);
@@ -911,11 +1012,7 @@ export function createSync(opts: SyncOptions): SyncService {
         return;
       }
 
-      run(
-        `UPDATE access_sync_controller SET op_id = NULL, op_seq = NULL, op_ts = NULL, op_body = NULL, op_kind = NULL, op_ref = NULL, op_op = NULL,
-           op_hash = NULL, op_chunk = 0, op_last = 1, op_attempts = 0, op_sent_at = NULL, op_next_at = NULL WHERE controller_id = ?`,
-        controllerId,
-      );
+      clearOp(controllerId);
       if (!item) return;
       const hash = ctrl.op_hash!;
       const sameContent = markerOf(item) === hash;
@@ -939,10 +1036,7 @@ export function createSync(opts: SyncOptions): SyncService {
         if (item.failed_hash === hash) item.failed_hash = null;
         settle(item, false);
         persist(item, false);
-        // Plus aucun echec : le dernier incident est resolu.
-        if (ctrl.problem_code !== null && !one('SELECT 1 AS x FROM access_sync_item WHERE controller_id = ? AND state = ? LIMIT 1', controllerId, 'failed')) {
-          run('UPDATE access_sync_controller SET problem_code = NULL, problem_message = NULL, problem_at = NULL WHERE controller_id = ?', controllerId);
-        }
+        clearProblemIfResolved(controllerId);
         return;
       }
 
@@ -950,7 +1044,7 @@ export function createSync(opts: SyncOptions): SyncService {
       item.progress = 0;
       if (sameContent) {
         const c = code ?? 'invalid';
-        failItem(item, c, messageForCode(c), true);
+        failItem(item, c, refusalMessage(controllerId, ctrl, c), true);
       } else {
         item.attempts = 0;
         item.code = null;
@@ -974,7 +1068,7 @@ export function createSync(opts: SyncOptions): SyncService {
         return row.message ?? messageForCode(row.code);
       default:
         if (!hasKey) return MSG_NO_KEY;
-        if (row.code === 'io' || row.code === 'unreachable') return messageForCode(row.code);
+        if (row.code !== null) return messageForCode(row.code); // dernier accuse `error` (io, unreachable, timeout, busy...) : nouvel essai automatique
         if (!transportReady) return MSG_NO_TRANSPORT;
         return row.attempts > 0
           ? `Envoyé ${row.attempts} fois, en attente de la réponse du contrôleur.`
