@@ -10,6 +10,7 @@
 import { $, h, icon, api, toast, S, on, time } from './core.js';
 import { createDialogs, field, setBusy, copyButton } from './account.js';
 import { withReauth, reauthField } from './reauth.js';
+import { evacuationButton } from './dooractions.js';
 
 const TYPE_LABEL = { siren: 'Sirène', light: 'Projecteur', relay: 'Relais', lock: 'Serrure / gâche', gate: 'Portail / barrière', speaker: 'Haut-parleur' };
 const ACTION_LABEL = { on: 'Déclencher', off: 'Arrêter', pulse: 'Impulsion', unlock: 'Déverrouiller', lock: 'Verrouiller', open: 'Ouvrir', close: 'Fermer', stop: 'Arrêter', play: 'Diffuser un message' };
@@ -95,13 +96,30 @@ const timed = (a, action) => a.actions[action]?.maxS !== undefined;
 const needsReason = (a, action) => a.sensitive && action !== a.safeAction;
 const needsPassword = (a, action) => a.confirm === 'reauth' && action !== a.safeAction;
 
+/**
+ * Envoi d'un ordre : UNE seule route (POST /api/actuators/:id/commands), partagee par la boite de confirmation, par
+ * l'action sure immediate et par le composant des portes. Renvoie la commande telle que le serveur la connait ; le
+ * rappel ctx.onSent la transmet a qui veut afficher l'etat ailleurs (fiche de porte).
+ */
+async function sendCommand(a, action, { params = {}, reason, password } = {}, ctx = {}) {
+  const res = await api(`/api/actuators/${encodeURIComponent(a.id)}/commands`, {
+    method: 'POST',
+    body: { action, params, reason, confirm: true, incidentId: ctx.incidentId ?? undefined, password },
+  });
+  remember(res.command);
+  if (res.deduplicated) toast('Commande identique déjà en cours : rien n’a été renvoyé.', 'ok');
+  notify();
+  ctx.onSent?.(res.command, a);
+  return res.command;
+}
+
 /** Boite de confirmation explicite : actionneur, action, duree, raison (et mot de passe pour une serrure ou un portail). */
 function askCommand(a, action, ctx) {
   const cfg = a.actions[action];
   const label = ACTION_LABEL[action] ?? action;
   const error = h('p', { class: 'form-error', role: 'alert' });
   const duration = timed(a, action)
-    ? h('input', { type: 'number', min: String(cfg.minS), max: String(cfg.maxS), step: '1', value: String(Math.min(cfg.maxS, Math.max(cfg.minS, 10))), required: !cfg.unbounded, 'data-autofocus': true })
+    ? h('input', { type: 'number', min: String(cfg.minS), max: String(cfg.maxS), step: '1', value: String(Math.min(cfg.maxS, Math.max(cfg.minS, ctx.durationS ?? 10))), required: !cfg.unbounded, 'data-autofocus': true })
     : null;
   const clip = action === 'play' ? h('input', { type: 'text', maxlength: '32', pattern: '[A-Za-z0-9_-]{1,32}', required: true, spellcheck: 'false' }) : null;
   const reason = h('textarea', { rows: '2', maxlength: '200', required: needsReason(a, action) });
@@ -129,13 +147,8 @@ function askCommand(a, action, ctx) {
         if (clip) params.clip = clip.value.trim();
         setBusy(submit, true);
         try {
-          const res = await api(`/api/actuators/${encodeURIComponent(a.id)}/commands`, {
-            method: 'POST',
-            body: { action, params, reason: reason.value.trim() || undefined, confirm: true, incidentId: ctx.incidentId ?? undefined, password: password?.value || undefined },
-          });
-          remember(res.command);
-          if (res.deduplicated) toast('Commande identique déjà en cours : rien n’a été renvoyé.', 'ok');
-          showStatus(a, res.command.cmdId, ctx);
+          const command = await sendCommand(a, action, { params, reason: reason.value.trim() || undefined, password: password?.value || undefined }, ctx);
+          showStatus(a, command.cmdId, ctx);
         } catch (err) {
           error.textContent = err.message;
           setBusy(submit, false);
@@ -150,7 +163,7 @@ function askCommand(a, action, ctx) {
     password ? field(h, 'Votre mot de passe (redemandé pour cette commande)', password) : null,
     h('label', { class: 'check' }, sure, sureText),
     error,
-    h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: () => openPanel(ctx) }), submit),
+    h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: () => (ctx.standalone ? dialogs().close() : openPanel(ctx)) }), submit),
   );
   dialogs().open(`${label} : ${a.name}`, form);
 }
@@ -171,7 +184,7 @@ function showStatus(a, cmdId, ctx) {
       h(
         'div',
         { class: 'actions dialog-actions' },
-        h('button', { class: 'btn', type: 'button', text: 'Retour aux commandes', onclick: () => openPanel(ctx) }),
+        h('button', { class: 'btn', type: 'button', text: ctx.standalone ? 'Fermer' : 'Retour aux commandes', onclick: () => (ctx.standalone ? dialogs().close() : openPanel(ctx)) }),
         running
           ? h('button', {
               class: 'btn btn-danger',
@@ -199,7 +212,7 @@ function showStatus(a, cmdId, ctx) {
 }
 
 /** Panneau des commandes : actionneurs (ceux de la zone de l'incident d'abord), actions permises, dernieres commandes. */
-async function openPanel(ctx = {}) {
+export async function openPanel(ctx = {}) {
   const content = h('div', { class: 'cmd-panel' }, h('p', { class: 'muted', text: 'Chargement…' }));
   dialogs().open('Commandes des équipements', content);
   try {
@@ -208,12 +221,13 @@ async function openPanel(ctx = {}) {
     content.replaceChildren(h('p', { class: 'form-error', text: err.message }));
     return;
   }
-  const mine = actuators.filter((a) => a.allowed.length > 0).sort((x, y) => (y.zone === ctx.zone) - (x.zone === ctx.zone) || x.name.localeCompare(y.name, 'fr'));
+  const mine = actuators.filter((a) => a.allowed.length > 0).sort((x, y) => (y.id === ctx.focusActuatorId) - (x.id === ctx.focusActuatorId) || (y.zone === ctx.zone) - (x.zone === ctx.zone) || x.name.localeCompare(y.name, 'fr'));
   const history = h('ul', { class: 'cmd-history' });
   const rows = mine.map((a) =>
     h(
       'li',
-      { class: 'cmd-actuator' },
+      { class: `cmd-actuator${a.id === ctx.focusActuatorId ? ' is-focus' : ''}` },
+      a.id === ctx.focusActuatorId ? h('p', { class: 'tag is-warning', text: 'Porte de cette alarme' }) : null,
       h('p', {}, h('strong', { text: a.name }), h('span', { class: 'muted', text: ` — ${TYPE_LABEL[a.type] ?? a.type}${a.zone ? `, zone ${a.zone}` : ''}` })),
       !a.active ? h('p', { class: 'tag is-dashed', text: 'Désactivé' }) : a.linkUp === false ? h('p', { class: 'tag is-alarm', text: 'Liaison coupée : commande impossible' }) : null,
       h(
@@ -250,9 +264,44 @@ async function openPanel(ctx = {}) {
   renderHistory();
 }
 
+// ---------------------------------------------------------------- usage par d'autres ecrans (fiche de porte)
+
+/** Liste fraiche des actionneurs visibles par ce compte (avec `allowed`, `safeAction`, `confirm`...) et verrou global. */
+export async function listActuators() {
+  await loadList();
+  return { actuators, lock };
+}
+
+/** Derniere version connue d'une commande (temps reel), ou null. */
+export const liveCommand = (cmdId) => live.get(cmdId) ?? null;
+
+/** Abonnement aux changements (liste, commandes) ; renvoie la fonction qui le retire. */
+export function watchCommands(fn) {
+  watchers.add(fn);
+  return () => watchers.delete(fn);
+}
+
+export const actionLabel = (action) => ACTION_LABEL[action] ?? action;
+export const stateTag = (c) => STATE_TAG[c.state] ?? '';
+
+/**
+ * Ordre sur UN actionneur depuis un autre ecran. Action sure (verrouiller, arreter) : envoyee tout de suite, sans boite ;
+ * toute autre : meme boite de confirmation que le panneau (raison, mot de passe, case, duree). ctx : { incidentId?,
+ * durationS?, onSent?(commande, actionneur) }. Renvoie la commande pour une action sure, sinon rien (la boite s'ouvre).
+ */
+export async function commandAction(actuatorId, action, ctx = {}) {
+  await loadList();
+  const a = actuators.find((x) => x.id === actuatorId);
+  if (!a || !a.allowed.includes(action)) throw new Error('Ce compte ne peut pas envoyer cet ordre à cet équipement.');
+  const c = { ...ctx, standalone: true };
+  if (action === a.safeAction) return sendCommand(a, action, {}, c);
+  askCommand(a, action, c);
+  return null;
+}
+
 /** Bouton « Commandes » de la fiche d'un incident : visible seulement si ce compte peut commander quelque chose. */
-export function commandsButton(getIncident) {
-  const button = h('button', { class: 'btn btn-sm inc-commands', type: 'button', hidden: true, onclick: () => openPanel({ zone: getIncident().zone, incidentId: getIncident().id }) }, icon('bolt'), h('span', { text: 'Commandes' }));
+export function commandsButton(getIncident, getExtra = () => ({})) {
+  const button = h('button', { class: 'btn btn-sm inc-commands', type: 'button', hidden: true, onclick: () => openPanel({ zone: getIncident().zone, incidentId: getIncident().id, ...getExtra() }) }, icon('bolt'), h('span', { text: 'Commandes' }));
   watchers.add(() => {
     button.hidden = !(actuators ?? []).some((a) => a.allowed.length > 0) || getIncident().status === 'closed';
   });
@@ -434,6 +483,7 @@ export async function loadActuatorsAdmin() {
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => editActuator(null) }, icon('plus'), h('span', { text: 'Nouvel actionneur' })),
       h('button', { class: `btn${lock.locked ? '' : ' btn-danger'}`, type: 'button', onclick: toggleLock }, icon(lock.locked ? 'unlock' : 'lock'), h('span', { text: lock.locked ? 'Rétablir les commandes' : 'Verrouiller toutes les commandes' })),
       h('button', { class: 'btn', type: 'button', onclick: () => openPanel({}) }, icon('bolt'), h('span', { text: 'Commander…' })),
+      evacuationButton(),
     ),
     actuators.length
       ? h(

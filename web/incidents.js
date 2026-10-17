@@ -13,6 +13,7 @@ import { CATEGORY_LABEL, eventLabel, formatValue, qualificationLabel, realEventL
 import { CATEGORY_ICON } from './plan.js';
 import { $, h, icon, api, toast, S, time, elapsed, emit, go, activeIncidents, focusedIncident, followAlarm, isActive, isFiring, devicesOf, STATUS_LABEL, render } from './core.js';
 import { commandsButton } from './commands.js';
+import { doorActions } from './dooractions.js';
 
 /** L'attente se lit sur une barre qui se remplit en 5 minutes (un repère par minute). */
 const WAIT_SCALE_MS = 5 * 60 * 1000;
@@ -365,6 +366,11 @@ function buildCard(incident) {
 
   refs.steps = { s1, s2, s3 };
 
+  // Incident d'acces sur une porte declaree : bloc « Ouverture a distance », charge a la demande (voir loadDoorBlock).
+  refs.doorBlock = h('div', { class: 'inc-door' });
+  refs.doorActuatorId = null;
+  refs.doorFor = null;
+
   refs.body = h(
     'div',
     { class: 'inc-body' },
@@ -376,7 +382,7 @@ function buildCard(incident) {
       h('p', { class: 'inc-meta' }, h('span', {}, icon('pin', 'icon-sm'), refs.place), h('span', {}, icon('clock', 'icon-sm'), refs.opened), refs.measure),
       h('div', { class: 'inc-wait' }, refs.waitLine, refs.bar, refs.escalated),
     ),
-    h('div', { class: 'inc-main' }, refs.conf, refs.detail, refs.dispatchBlock, refs.advice, refs.shotsBlock, commandsButton(current), h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li), h('div', { class: 'actions' }, proofLink(id))),
+    h('div', { class: 'inc-main' }, refs.conf, refs.detail, refs.dispatchBlock, refs.advice, refs.shotsBlock, refs.doorBlock, commandsButton(current, () => ({ focusActuatorId: refs.doorActuatorId })), h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li), h('div', { class: 'actions' }, proofLink(id))),
   );
 
   async function acknowledge() {
@@ -480,6 +486,37 @@ function closeReason(detector) {
   return { cls: 'is-ready', icon: 'state-ok', text: 'Le détecteur est revenu à la normale : vous pouvez clôturer.' };
 }
 
+/**
+ * Bloc « Ouverture a distance » d'un incident d'acces (F17) : si le detecteur est une porte declaree (404 = non), la fiche
+ * de la porte se charge sans bloquer l'affichage ; une erreur reseau ne retire rien du reste de la fiche. Pas de bloc pour
+ * un incident clos. Les commandes sont rattachees a l'incident (incidentId).
+ */
+function loadDoorBlock(card, incident, expanded) {
+  const { refs } = card;
+  if (incident.category !== 'access' || incident.status === 'closed') {
+    if (refs.doorFor !== null) refs.doorBlock.replaceChildren();
+    refs.doorFor = null;
+    refs.doorActuatorId = null;
+    return;
+  }
+  if (!expanded || refs.doorFor === incident.detectorId || Date.now() < (refs.doorRetryAt ?? 0)) return;
+  refs.doorFor = incident.detectorId;
+  const wanted = incident.detectorId;
+  api(`/api/access/doors/${encodeURIComponent(wanted)}`)
+    .then((detail) => {
+      if (refs.doorFor !== wanted || !detail?.door) return;
+      refs.doorActuatorId = detail.remote?.actuatorId ?? null;
+      refs.doorBlock.replaceChildren(doorActions(detail.door, detail, { incidentId: incident.id, zone: incident.zone }));
+    })
+    .catch(() => {
+      // pas une porte (404) ou reseau coupe : la fiche reste telle quelle ; nouvel essai dans 30 s au plus tot (la fiche est rafraichie chaque seconde)
+      if (refs.doorFor === wanted) {
+        refs.doorFor = null;
+        refs.doorRetryAt = Date.now() + 30_000;
+      }
+    });
+}
+
 function updateCard(card, incident, followed) {
   const { el, refs } = card;
   const detector = S.devices.get(incident.detectorId);
@@ -540,6 +577,7 @@ function updateCard(card, incident, followed) {
   refs.advice.lastChild.textContent = incident.hint ? `Fausse alarme probable : ${hintText(incident.hintDetails)} À vérifier : l’incident reste ouvert.` : '';
   renderShots(refs.shots, incident);
   refs.shotsBlock.hidden = incident.snapshots.length === 0;
+  loadDoorBlock(card, incident, expanded);
 
   // Étapes
   updateCameraStep(card, incident, followed);
