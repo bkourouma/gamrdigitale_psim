@@ -208,10 +208,37 @@ journal. Les portes se rafraîchissent à chaque événement temps réel d'un d�
 `GET /api/access/doors`, regroupée) et toutes les 15 s tant que l'écran est visible. Le plan colore et nomme l'état de
 chaque porte (forme, icône et mot, jamais la couleur seule).
 
-**Voir la vidéo** : `server/video.ts` ne sait que relayer le flux **en direct** d'une caméra (`/api/cameras/:id/stream`) ;
-il ne relit pas l'enregistreur. Le lien du journal ouvre donc la **caméra en direct** liée à la porte, avec l'heure du
-passage rappelée (« Passage de 14:32 — vous voyez l'image d'aujourd'hui, pas l'enregistrement »). La relecture de
-l'enregistrement à l'heure du passage est un chantier à part (lecture Dahua) : point ouvert.
+**Voir la vidéo** (exigence F6) : le lien du journal ouvre une fenêtre qui montre **l'enregistrement à l'heure du passage**
+quand c'est possible, sinon l'image en direct, et qui dit toujours laquelle des deux est à l'écran.
+
+- **Relecture (voies d'enregistreur Dahua)** : si la source de la caméra liée est de type `rtsp` et que son chemin est une
+  voie d'enregistreur Dahua (`/cam/realmonitor?channel=N`, avec éventuellement `&subtype=M` ; N de 1 à 256), le serveur
+  dérive l'adresse de relecture `rtsp://hôte:port/cam/playback?channel=N&subtype=0&starttime=AAAA_MM_JJ_HH_mm_ss&endtime=AAAA_MM_JJ_HH_mm_ss`
+  (flux principal ; heure **locale du PSIM**, supposée être celle de l'enregistreur ; début = passage − 10 s, fin = passage + 20 s)
+  avec les identifiants de la caméra. Le navigateur ne fournit **que l'heure** (`at`, entier en ms, celle du contrôleur :
+  `atDevice`) ; l'adresse, l'hôte et le chemin viennent toujours de la source enregistrée, et aucun autre chemin RTSP, ni
+  caméra ONVIF ou simulée, n'est relisible (fonction pure `playbackUrl`, `server/video.ts`).
+- **Fenêtre** : elle s'ouvre tout de suite, lit `GET /api/cameras/replayable` (une fois par ouverture), puis affiche
+  `<img src="/api/cameras/<id>/playback?at=<atDevice>">` avec le bandeau « Enregistrement du JJ/MM/AAAA à HH:MM:SS (10 s avant
+  à 20 s après). ». Plusieurs caméras liées : un choix de caméra (la première relisible est ouverte d'abord ; les autres
+  s'ouvrent en direct). Une caméra non relisible reste en **direct**, avec « Image en direct, pas l'enregistrement de HH:MM »
+  et une phrase qui dit pourquoi (« Cette caméra ne permet pas la relecture depuis le PSIM. », ou : liste illisible,
+  heure du passage inconnue). **Échec de la relecture** (image en erreur : pas d'enregistrement à cette heure, enregistreur
+  injoignable, identifiants refusés) : message clair et bouton « Voir l'image en direct ». Échap ou « Fermer » coupe le flux.
+- **Un ffmpeg par demande** (jamais partagé entre opérateurs, contrairement au direct) : même sortie multipart MJPEG ; arrêt à la
+  fin du clip, à la fermeture de la réponse, ou après 45 s au plus (30 s de clip + marge). **Au plus 2 relectures simultanées**
+  (la 3e reçoit 503 « Trop de relectures en cours »). Erreurs : « Aucun enregistrement a cette heure ou enregistreur injoignable »
+  (502/504), 409 si la caméra n'est pas relisible, 400 si l'heure est invalide (dans le futur de plus d'une minute, plus vieille
+  que 400 jours, non entière). Le mot de passe n'apparaît jamais dans une réponse, un en-tête ni un journal.
+
+| Méthode et route | Rôle | Rôle de la route |
+|---|---|---|
+| `GET /api/cameras/replayable` | tous | `{ "ids": ["C-01", …] }` : les caméras relisibles (déclarée **avant** `:id`) |
+| `GET /api/cameras/:id/playback?at=<ms>` | tous | Flux multipart MJPEG de l'enregistrement de `at − 10 s` à `at + 20 s` |
+
+Chaque relecture acceptée est inscrite au journal infalsifiable : action **`camera_playback`** (acteur, caméra, « heure demandee
+AAAA-MM-JJ HH:mm:ss » en heure du PSIM), une ligne par demande ; une demande refusée (heure invalide, caméra non relisible,
+plafond) n'en produit pas.
 
 ## 6. Guide de l'installateur
 
@@ -249,5 +276,15 @@ Base de 900 000 passages (10 000 par jour sur 90 jours, 20 portes, 500 badges) ;
 ## 9. Limites connues et points à qualifier
 
 - **Âge maximal d'un passage** : `PSIM_INGEST_MAX_AGE_S` (7 jours par défaut, 30 jours au plus) borne l'âge de tout message daté, passage différé compris. Un contrôleur resté déconnecté plus longtemps perd les passages les plus anciens à la reconnexion (refus 400 "ts trop ancien"). Pour un site à connexion très instable, monter cette valeur.
-- **Vidéo à l'heure du passage** : voir § 5. Relecture de l'enregistreur Dahua : point « à qualifier » sur matériel réel.
+- **Vidéo à l'heure du passage : relecture Dahua, À QUALIFIER sur matériel réel** (§ 5). Le mécanisme est testé contre un faux
+  flux local ; ce qui suit n'a pas été vérifié sur un enregistreur et se contrôle à la recette :
+  - **format de l'heure et fuseau** du `starttime`/`endtime` (`AAAA_MM_JJ_HH_mm_ss`, heure locale du PSIM supposée identique à
+    celle de l'enregistreur) : à confirmer sur le modèle installé ; un décalage de fuseau ou d'heure d'été montre un autre moment ;
+  - **sous-flux** : la relecture demande toujours `subtype=0` (flux principal enregistré) ; à confirmer que c'est bien celui
+    que l'enregistreur conserve (certains n'enregistrent que le principal, d'autres aussi le secondaire) ;
+  - **délai d'écriture sur disque** : un passage de moins de quelques secondes peut ne pas encore être relisible (l'enregistreur
+    écrit par segments) ; l'opérateur voit alors « Aucun enregistrement à cette heure » et peut ouvrir le direct ;
+  - **fin du clip** : l'enregistreur doit fermer la session RTSP à `endtime` ; sinon la relecture s'arrête d'elle-même après 45 s ;
+  - **écart d'horloge** : l'heure demandée est celle du **contrôleur** (`atDevice`) ; un contrôleur ou un enregistreur mal réglé
+    décale l'extrait (écart de plus de 2 minutes déjà signalé comme défaut, § 6).
 - **Sabotage** : l'alarme `tamper` passe par l'incident habituel ; l'état affiché de la porte ne le montre pas séparément.

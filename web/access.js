@@ -9,8 +9,9 @@
  *  - tout ce qui vient du serveur (noms, numéros de badge) est hostile : texte seulement (`textContent` via h()), jamais
  *    d'HTML construit, jamais de style en ligne (CSP stricte) ;
  *  - aucune donnée personnelle dans l'adresse de la page (la sous-route ne porte que porte, résultat et « différé ») ;
- *  - « Voir la vidéo » ouvre l'image EN DIRECT de la caméra liée, jamais l'enregistrement : l'interface le dit (le
- *    serveur ne relit pas l'enregistreur, docs/ACCES.md § 5) ;
+ *  - « Voir la vidéo » montre l'ENREGISTREMENT du passage (10 s avant, 20 s après) quand une caméra liée est une voie
+ *    d'enregistreur Dahua que le PSIM sait relire (GET /api/cameras/replayable) ; sinon l'image EN DIRECT, et l'interface
+ *    dit toujours laquelle des deux elle montre, et pourquoi (docs/ACCES.md § 5) ;
  *  - une alarme ne se cache jamais : quand l'écran est quitté (hide), tout ce qu'il a ouvert (fenêtre vidéo, flux des
  *    caméras, écouteur du clavier) est fermé ;
  *  - les identifiants des contrôleurs sont en écriture seule : jamais préremplis, jamais relus.
@@ -298,6 +299,69 @@ export function videoNoteText(ts, now) {
   if (!validTs(ts)) return 'Image en direct, pas l’enregistrement du passage.';
   const same = dayStart(ts) === dayStart(now);
   return same ? `Image en direct, pas l’enregistrement de ${formatClock(ts)}.` : `Image en direct, pas l’enregistrement du ${formatDate(ts)} à ${formatClock(ts)}.`;
+}
+
+// ---- Vidéo d'un passage : enregistrement (relecture) ou image en direct -------------------------------------------------
+
+export const PLAYBACK_BEFORE_S = 10;
+export const PLAYBACK_AFTER_S = 20;
+/** Image vide (GIF 1x1) : y remplacer la source d'un flux le coupe côté serveur. */
+const BLANK_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+/** Adresse de la relecture d'une caméra à l'heure du passage (le navigateur ne fournit que l'heure, en ms) ; null si invalide. */
+export function playbackSrc(cameraId, ts) {
+  if (typeof cameraId !== 'string' || cameraId === '' || !validTs(ts)) return null;
+  const at = Math.trunc(ts);
+  if (!Number.isSafeInteger(at) || at <= 0) return null;
+  return `/api/cameras/${encodeURIComponent(cameraId)}/playback?at=${at}`;
+}
+
+/** « Enregistrement du 16/10/2026 à 14:32:05 (10 s avant à 20 s après). » */
+export function playbackNoteText(ts) {
+  const when = validTs(ts) ? ` du ${formatDate(ts)} à ${formatClockSeconds(ts)}` : ' du passage';
+  return `Enregistrement${when} (${PLAYBACK_BEFORE_S} s avant à ${PLAYBACK_AFTER_S} s après).`;
+}
+
+/** Pourquoi on montre l'image en direct plutôt que l'enregistrement. */
+export const LIVE_REASONS = {
+  unsupported: 'Cette caméra ne permet pas la relecture depuis le PSIM.',
+  unverified: 'Le PSIM n’a pas pu vérifier si cette caméra se relit : vous voyez la caméra telle qu’elle est maintenant.',
+  'no-time': 'L’heure du passage n’est pas connue : la relecture est impossible.',
+  failed: 'L’enregistrement n’a pas pu être lu : vous voyez la caméra telle qu’elle est maintenant.',
+};
+
+/** Message quand la relecture échoue (image en erreur) : aucun enregistrement à cette heure, ou enregistreur injoignable. */
+export const PLAYBACK_FAILED_TEXT = 'L’enregistrement n’a pas pu être lu : aucun enregistrement à cette heure, ou l’enregistreur ne répond pas.';
+
+export function liveReasonText(reason) {
+  return LIVE_REASONS[reason] ?? LIVE_REASONS.unsupported;
+}
+
+/**
+ * Ce que la fenêtre vidéo montrera pour chaque caméra liée à la porte : l'enregistrement (`replay`) si le serveur la
+ * dit relisible (`replayableIds`, null = liste illisible) et si l'heure du passage est connue, sinon le direct avec sa
+ * raison. `start` : la première caméra relisible (celle qu'on ouvre d'abord), sinon la première.
+ */
+export function planVideo(cameras, replayableIds, ts) {
+  const known = Array.isArray(replayableIds) ? new Set(replayableIds.filter((id) => typeof id === 'string')) : null;
+  const timeOk = playbackSrc('x', ts) !== null;
+  const items = (Array.isArray(cameras) ? cameras : []).map((cam) => {
+    const replay = known !== null && timeOk && known.has(cam.id);
+    const reason = replay ? null : known === null ? 'unverified' : !timeOk ? 'no-time' : 'unsupported';
+    return { ...cam, replay, reason };
+  });
+  const first = items.findIndex((c) => c.replay);
+  return { items, start: first < 0 ? 0 : first };
+}
+
+/**
+ * Bandeau de la fenêtre vidéo : ce qui est à l'écran et pourquoi. `mode` : « playback » (enregistrement), « live »
+ * (direct, avec la raison) ou « failed » (la relecture a échoué).
+ */
+export function videoBanner(mode, reason, ts, now) {
+  if (mode === 'playback') return { kind: 'info', title: playbackNoteText(ts), detail: 'Image relue depuis l’enregistreur de la caméra ; elle peut mettre quelques secondes à apparaître.' };
+  if (mode === 'failed') return { kind: 'warning', title: 'Enregistrement indisponible.', detail: PLAYBACK_FAILED_TEXT };
+  return { kind: 'warning', title: videoNoteText(ts, now), detail: liveReasonText(reason) };
 }
 
 /** Texte de l'emplacement réservé à l'ouverture à distance (lot AC4). Aucun bouton tant que le serveur ne l'offre pas. */
@@ -726,6 +790,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     videoOpen: false,
     videoEl: null,
     videoViewer: null,
+    videoToken: 0, // numéro de la fenêtre vidéo : une réponse tardive d'une fenêtre fermée n'écrit rien
     showing: false, // show() est en cours (chargement des modules)
     lastAnnounced: null,
   };
@@ -822,15 +887,24 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
   // ---------------------------------------------------------------------------------------------- caméras en direct
 
   /**
-   * Visionneuse d'images en direct (composant caméra existant : live.js pour une caméra réelle, camera.js pour la
-   * simulée). Un seul flux à la fois ; si la porte a plusieurs caméras, des boutons choisissent laquelle regarder.
+   * Visionneuse : image en direct (composant caméra existant : live.js pour une caméra réelle, camera.js pour la
+   * simulée) ou, pour une caméra marquée `replay` avec l'heure du passage (`atDevice`), enregistrement relu par le
+   * serveur (`<img>` sur /api/cameras/<id>/playback). Un seul flux à la fois ; si la porte a plusieurs caméras, des
+   * boutons choisissent laquelle regarder. `onMode({ mode, reason, cam })` prévient la fenêtre de ce qui est montré
+   * (mode « playback », « live » ou « failed » : relecture en échec, le bouton « Voir l’image en direct » est proposé).
    */
-  function createViewer(cameras) {
+  function createViewer(cameras, { atDevice = null, start = 0, onMode = null } = {}) {
     const canvas = h('canvas', { class: 'acc-viewer-canvas', role: 'img' });
+    const img = h('img', { class: 'acc-viewer-canvas', alt: '' });
+    img.hidden = true;
     const status = h('p', { class: 'acc-viewer-status', role: 'status' });
     status.hidden = true;
     const caption = h('p', { class: 'hint acc-viewer-caption' });
+    const liveButton = h('button', { class: 'btn btn-sm', type: 'button' }, ico('camera', 'icon-sm'), 'Voir l’image en direct');
+    const fallback = h('div', { class: 'actions' }, liveButton);
+    fallback.hidden = true;
     const buttons = [];
+    const forcedLive = new Set(); // caméras dont la relecture a échoué : on reste sur le direct
     let stop = null;
     let index = 0;
     let closed = false;
@@ -843,43 +917,91 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       }
     }
 
+    function showStatus(message, isError = false) {
+      status.hidden = !message;
+      status.textContent = message ?? '';
+      status.classList.toggle('is-error', Boolean(message) && isError);
+    }
+
+    /** Relecture : le navigateur lit le flux multipart du serveur ; le couper = vider la source de l'image. */
+    function startPlayback(cam, src) {
+      canvas.hidden = true;
+      img.hidden = false;
+      img.setAttribute('alt', `Enregistrement : ${cam.name}`);
+      let live = true;
+      img.addEventListener('error', () => {
+        if (!live) return;
+        live = false;
+        img.hidden = true;
+        fallback.hidden = false;
+        showStatus(PLAYBACK_FAILED_TEXT, true);
+        onMode?.({ mode: 'failed', reason: 'failed', cam });
+      });
+      img.setAttribute('src', src);
+      stop = () => {
+        live = false;
+        img.setAttribute('src', BLANK_IMAGE); // la source remplacée coupe la connexion au serveur (et donc ffmpeg)
+      };
+      viewers.add(stop);
+    }
+
+    function startLive(cam, device) {
+      img.hidden = true;
+      canvas.hidden = false;
+      const onStatus = (message) => showStatus(message, /tentative/.test(message ?? ''));
+      const isLive = device.streamKind === 'onvif' || device.streamKind === 'rtsp';
+      stop = isLive ? startLiveCamera(canvas, { cameraId: cam.id, onStatus }) : startSimCamera(canvas, { label: cam.id, zone: device.zone, getFire: () => 0 });
+      viewers.add(stop);
+    }
+
     function play(i) {
       stopStream();
       if (closed) return;
       index = i;
       const cam = cameras[i];
       buttons.forEach((b, k) => b.setAttribute('aria-pressed', String(k === i)));
+      fallback.hidden = true;
+      showStatus(null);
       const device = core.S.devices.get(cam.id);
-      caption.textContent = `Image en direct de « ${cam.name} ».`;
-      canvas.setAttribute('aria-label', `Image en direct : ${cam.name}`);
-      if (!device) {
-        status.hidden = false;
-        status.textContent = 'Cette caméra n’existe plus dans le PSIM.';
+      const src = cam.replay && !forcedLive.has(i) ? playbackSrc(cam.id, atDevice) : null;
+      if (src && device) {
+        caption.textContent = `Enregistrement de « ${cam.name} » (${PLAYBACK_BEFORE_S} s avant, ${PLAYBACK_AFTER_S} s après le passage).`;
+        canvas.setAttribute('aria-label', `Enregistrement : ${cam.name}`);
+        startPlayback(cam, src);
+        onMode?.({ mode: 'playback', reason: null, cam });
         return;
       }
-      status.hidden = true;
-      const onStatus = (message) => {
-        status.hidden = !message;
-        status.textContent = message ?? '';
-        status.classList.toggle('is-error', Boolean(message) && /tentative/.test(message));
-      };
-      const live = device.streamKind === 'onvif' || device.streamKind === 'rtsp';
-      stop = live ? startLiveCamera(canvas, { cameraId: cam.id, onStatus }) : startSimCamera(canvas, { label: cam.id, zone: device.zone, getFire: () => 0 });
-      viewers.add(stop);
+      const reason = forcedLive.has(i) ? 'failed' : (cam.reason ?? 'unsupported');
+      caption.textContent = `Image en direct de « ${cam.name} ».`;
+      canvas.setAttribute('aria-label', `Image en direct : ${cam.name}`);
+      img.hidden = true;
+      if (!device) {
+        canvas.hidden = false;
+        showStatus('Cette caméra n’existe plus dans le PSIM.');
+        onMode?.({ mode: 'live', reason, cam });
+        return;
+      }
+      startLive(cam, device);
+      onMode?.({ mode: 'live', reason, cam });
     }
+
+    liveButton.addEventListener('click', () => {
+      forcedLive.add(index);
+      play(index);
+    });
 
     let picker = null;
     if (cameras.length > 1) {
       picker = h('div', { class: 'segmented acc-viewer-picker', role: 'group', 'aria-label': 'Caméra à regarder' });
       cameras.forEach((cam, i) => {
-        const b = h('button', { type: 'button', 'aria-pressed': 'false' }, ico('camera', 'icon-sm'), h('span', { text: cam.name }));
+        const b = h('button', { type: 'button', 'aria-pressed': 'false', title: cam.replay ? 'Enregistrement du passage' : 'Image en direct' }, ico('camera', 'icon-sm'), h('span', { text: cam.name }));
         b.addEventListener('click', () => play(i));
         buttons.push(b);
         picker.append(b);
       });
     }
-    const el = h('div', { class: 'acc-viewer' }, picker, h('div', { class: 'acc-viewer-stage' }, canvas, status), caption);
-    play(0);
+    const el = h('div', { class: 'acc-viewer' }, picker, h('div', { class: 'acc-viewer-stage' }, canvas, img, status), fallback, caption);
+    play(Math.min(Math.max(Math.trunc(start) || 0, 0), cameras.length - 1));
     return {
       el,
       stop() {
@@ -897,27 +1019,51 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     viewers.clear();
   }
 
-  /** Fenêtre « Voir la vidéo » du journal : caméra(s) de la porte en direct, avec la mise en garde en toutes lettres. */
-  function openVideo(passage, cameras, opener) {
-    const viewer = createViewer(cameras);
+  /**
+   * Fenêtre « Voir la vidéo » du journal. Elle s'ouvre tout de suite, demande au serveur quelles caméras se relisent
+   * (une fois par ouverture), puis montre l'enregistrement du passage pour une caméra liée relisible, sinon l'image en
+   * direct avec la raison. Le bandeau dit toujours ce qui est à l'écran.
+   */
+  async function openVideo(passage, cameras, opener) {
+    const token = ++state.videoToken;
     const door = passage.doorName || passage.doorId;
-    const content = h(
-      'div',
-      { class: 'acc-video' },
-      h('div', { class: 'notice is-warning acc-notice' }, ico('state-warning'), h('div', { class: 'acc-notice-body' }, h('p', {}, h('strong', { text: videoNoteText(passage.atDevice, now()) })), h('p', { text: 'Le PSIM ne relit pas encore l’enregistreur : vous voyez la caméra de la porte telle qu’elle est maintenant.' }))),
-      viewer.el,
-      h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn btn-primary', type: 'button', 'data-autofocus': '', onclick: () => dialogs.close() }, 'Fermer')),
-    );
+    const banner = h('div', { class: 'notice is-info acc-notice', role: 'status' });
+    const showBanner = ({ kind, title, detail }) => {
+      banner.className = `notice is-${kind} acc-notice`;
+      banner.replaceChildren(ico(kind === 'warning' ? 'state-warning' : 'info'), h('div', { class: 'acc-notice-body' }, h('p', {}, h('strong', { text: title })), detail ? h('p', { text: detail }) : null));
+    };
+    showBanner({ kind: 'info', title: 'Recherche de l’enregistrement du passage…', detail: '' });
+    const actions = h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn btn-primary', type: 'button', 'data-autofocus': '', onclick: () => dialogs.close() }, 'Fermer'));
+    const content = h('div', { class: 'acc-video' }, banner, actions);
     state.videoOpen = true;
     state.videoEl = content;
-    state.videoViewer = viewer;
+    state.videoViewer = null;
     dialogs.open(`Passage de ${formatClock(passage.atDevice)} — ${door}`, content, {
       onClose: () => {
         state.videoOpen = false;
-        viewer.stop();
+        state.videoToken++;
+        state.videoViewer?.stop();
+        state.videoViewer = null;
         if (opener?.isConnected) opener.focus({ preventScroll: true });
       },
     });
+
+    let replayableIds = null; // illisible : on le dit et on montre le direct
+    try {
+      const data = await api('/api/cameras/replayable');
+      if (Array.isArray(data?.ids)) replayableIds = data.ids;
+    } catch {
+      replayableIds = null;
+    }
+    if (token !== state.videoToken || !state.videoOpen) return; // fermée (ou remplacée) pendant la lecture
+    const plan = planVideo(cameras, replayableIds, passage.atDevice);
+    const viewer = createViewer(plan.items, {
+      atDevice: passage.atDevice,
+      start: plan.start,
+      onMode: ({ mode, reason }) => showBanner(videoBanner(mode, reason, passage.atDevice, now())),
+    });
+    state.videoViewer = viewer;
+    content.insertBefore(viewer.el, actions);
   }
 
   // ---------------------------------------------------------------------------------------------- lecture des portes
@@ -1135,7 +1281,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.newer.addEventListener('click', () => changePage('newer'));
     j.older.addEventListener('click', () => changePage('older'));
     j.pager = h('nav', { class: 'acc-pager', 'aria-label': 'Pages du journal' }, j.newer, j.pageText, j.older);
-    j.videoHelp = h('p', { class: 'panel-note acc-video-help' }, ico('camera', 'icon-sm'), h('span', { text: '« Voir la vidéo » ouvre l’image en direct de la caméra de la porte, pas l’enregistrement du passage : le PSIM ne sait pas encore relire l’enregistreur.' }));
+    j.videoHelp = h('p', { class: 'panel-note acc-video-help' }, ico('camera', 'icon-sm'), h('span', { text: '« Voir la vidéo » montre l’enregistrement du passage (10 s avant, 20 s après) quand la caméra de la porte est une voie d’enregistreur Dahua ; sinon l’image en direct de la caméra, et la fenêtre le dit.' }));
     j.results = h('div', { class: 'acc-results', 'aria-busy': 'false' }, j.head, j.message, j.tableWrap, j.pager, j.videoHelp);
 
     return h('section', { class: 'panel acc-panel', 'aria-label': 'Journal des passages' }, h('div', { class: 'panel-body' }, h('h2', { class: 'sr-only', text: 'Journal des passages' }), form, j.note, j.status, j.results));
@@ -1268,7 +1414,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     );
     let videoCell;
     if (cameras.length) {
-      const opener = h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': `Voir la vidéo du passage de ${formatClock(p.atDevice)}, ${p.doorName || p.doorId} (image en direct, pas l’enregistrement)` }, ico('camera'), 'Voir la vidéo');
+      const opener = h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': `Voir la vidéo du passage de ${formatClock(p.atDevice)}, ${p.doorName || p.doorId} (l’enregistrement si la caméra le permet, sinon l’image en direct)` }, ico('camera'), 'Voir la vidéo');
       opener.addEventListener('click', () => {
         const ids = core.S.doors.get(p.doorId)?.cameraIds ?? cameras; // les caméras liées ont pu changer depuis l'affichage
         openVideo(p, ids.map((id) => ({ id, name: core.S.devices.get(id)?.name ?? id })), opener);
@@ -2483,6 +2629,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       keyBound = false;
     }
     stopAllViewers();
+    state.videoToken++;
     if (state.videoOpen) {
       // Une fenêtre vidéo ne reste pas ouverte sur un autre écran (alarme) ; une autre fenêtre ouverte depuis (Mon compte)
       // n'est pas la nôtre : on ne la ferme pas.

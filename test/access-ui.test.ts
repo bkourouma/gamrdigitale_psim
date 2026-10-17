@@ -120,6 +120,14 @@ interface Access {
   brandLabel: (b: unknown) => string;
   doorPlaceText: (door: unknown, floor?: string) => string;
   videoNoteText: (ts: unknown, now: number) => string;
+  playbackSrc: (cameraId: unknown, ts: unknown) => string | null;
+  playbackNoteText: (ts: unknown) => string;
+  liveReasonText: (reason: unknown) => string;
+  planVideo: (cameras: { id: string; name: string }[], replayableIds: unknown, ts: unknown) => { items: { id: string; name: string; replay: boolean; reason: string | null }[]; start: number };
+  videoBanner: (mode: string, reason: unknown, ts: unknown, now: number) => { kind: string; title: string; detail: string };
+  PLAYBACK_BEFORE_S: number;
+  PLAYBACK_AFTER_S: number;
+  PLAYBACK_FAILED_TEXT: string;
   remoteSlotText: (remote: unknown) => string;
   defaultFilters: (now: number) => Filters;
   hasNarrowingFilter: (f: Filters) => boolean;
@@ -298,6 +306,71 @@ describe('écran « Accès » : libellés d’un passage', () => {
     assert.equal(A.videoNoteText(NOW, NOW), 'Image en direct, pas l’enregistrement de 14:32.');
     assert.equal(A.videoNoteText(at(2026, 10, 12, 9, 5), NOW), 'Image en direct, pas l’enregistrement du 12/10/2026 à 09:05.');
     assert.equal(A.videoNoteText(null, NOW), 'Image en direct, pas l’enregistrement du passage.');
+  });
+
+  it('relecture : adresse de la caméra à l’heure du passage (id encodé, heure entière), null si invalide', () => {
+    const ts = at(2026, 10, 16, 14, 32, 5);
+    assert.equal(A.playbackSrc('CAM-1', ts), `/api/cameras/CAM-1/playback?at=${ts}`);
+    assert.equal(A.playbackSrc('CAM-1', ts + 0.9), `/api/cameras/CAM-1/playback?at=${ts}`, 'millisecondes entières');
+    assert.equal(A.playbackSrc('a/b?x=1#y', ts), `/api/cameras/a%2Fb%3Fx%3D1%23y/playback?at=${ts}`, 'un identifiant hostile ne sort pas de son segment');
+    for (const bad of [null, undefined, NaN, Infinity, -Infinity, 0, -5, '1760000000000', {}, 8.64e15 + 1]) assert.equal(A.playbackSrc('CAM-1', bad), null, String(bad));
+    for (const bad of [null, undefined, '', 12, {}]) assert.equal(A.playbackSrc(bad, ts), null, String(bad));
+  });
+
+  it('relecture : bandeau « Enregistrement du JJ/MM/AAAA à HH:MM:SS (10 s avant à 20 s après) »', () => {
+    assert.equal(A.PLAYBACK_BEFORE_S, 10);
+    assert.equal(A.PLAYBACK_AFTER_S, 20);
+    assert.equal(A.playbackNoteText(at(2026, 10, 16, 14, 32, 5)), 'Enregistrement du 16/10/2026 à 14:32:05 (10 s avant à 20 s après).');
+    assert.equal(A.playbackNoteText(at(2026, 1, 2, 3, 4, 9)), 'Enregistrement du 02/01/2026 à 03:04:09 (10 s avant à 20 s après).');
+    assert.equal(A.playbackNoteText(null), 'Enregistrement du passage (10 s avant à 20 s après).');
+  });
+
+  it('direct de repli : une phrase dit pourquoi', () => {
+    assert.equal(A.liveReasonText('unsupported'), 'Cette caméra ne permet pas la relecture depuis le PSIM.');
+    assert.match(A.liveReasonText('unverified'), /n’a pas pu vérifier/);
+    assert.match(A.liveReasonText('no-time'), /L’heure du passage n’est pas connue/);
+    assert.match(A.liveReasonText('failed'), /L’enregistrement n’a pas pu être lu/);
+    assert.equal(A.liveReasonText('autre chose'), A.liveReasonText('unsupported'), 'raison inconnue : la phrase par défaut, jamais « undefined »');
+    assert.equal(A.liveReasonText(undefined), A.liveReasonText('unsupported'));
+  });
+
+  it('choix de la caméra : la première relisible est ouverte d’abord ; les autres restent en direct avec leur raison', () => {
+    const cams = [{ id: 'CAM-A', name: 'Hall' }, { id: 'CAM-B', name: 'Parking' }, { id: 'CAM-C', name: 'Quai' }];
+    const ts = at(2026, 10, 16, 14, 32, 5);
+    const plan = A.planVideo(cams, ['CAM-C', 'CAM-B', 'ailleurs'], ts);
+    assert.equal(plan.start, 1, 'la première relisible dans l’ordre de la porte');
+    assert.deepEqual(plan.items.map((c) => [c.id, c.replay, c.reason]), [['CAM-A', false, 'unsupported'], ['CAM-B', true, null], ['CAM-C', true, null]]);
+    assert.deepEqual(plan.items.map((c) => c.name), ['Hall', 'Parking', 'Quai'], 'les noms sont conservés');
+    assert.equal(A.planVideo(cams, [], ts).start, 0, 'aucune relisible : la première, en direct');
+    assert.deepEqual(A.planVideo(cams, [], ts).items.map((c) => c.reason), ['unsupported', 'unsupported', 'unsupported']);
+    // liste illisible (null, ou autre chose qu’un tableau) : tout en direct, « non vérifié »
+    for (const bad of [null, undefined, 'CAM-A', { ids: ['CAM-A'] }]) {
+      const p = A.planVideo(cams, bad, ts);
+      assert.deepEqual(p.items.map((c) => [c.replay, c.reason]), [[false, 'unverified'], [false, 'unverified'], [false, 'unverified']]);
+    }
+    // heure du passage inconnue : pas de relecture possible
+    assert.deepEqual(A.planVideo(cams, ['CAM-A'], null).items.map((c) => [c.replay, c.reason]), [[false, 'no-time'], [false, 'no-time'], [false, 'no-time']]);
+    // éléments hostiles dans la liste : ignorés
+    assert.equal(A.planVideo(cams, [null, 3, {}, 'CAM-B'], ts).start, 1);
+    assert.deepEqual(A.planVideo([], ['CAM-A'], ts), { items: [], start: 0 });
+    assert.deepEqual(A.planVideo(null as never, ['CAM-A'], ts), { items: [], start: 0 });
+  });
+
+  it('bandeau de la fenêtre vidéo : enregistrement, direct avec raison, ou relecture en échec', () => {
+    const ts = at(2026, 10, 17, 14, 31, 5);
+    const rec = A.videoBanner('playback', null, ts, NOW);
+    assert.equal(rec.kind, 'info');
+    assert.equal(rec.title, 'Enregistrement du 17/10/2026 à 14:31:05 (10 s avant à 20 s après).');
+    assert.doesNotMatch(`${rec.title} ${rec.detail}`, /Image en direct/);
+    const live = A.videoBanner('live', 'unsupported', ts, NOW);
+    assert.equal(live.kind, 'warning');
+    assert.equal(live.title, 'Image en direct, pas l’enregistrement de 14:31.');
+    assert.equal(live.detail, 'Cette caméra ne permet pas la relecture depuis le PSIM.');
+    const failed = A.videoBanner('failed', 'failed', ts, NOW);
+    assert.equal(failed.kind, 'warning');
+    assert.equal(failed.title, 'Enregistrement indisponible.');
+    assert.equal(failed.detail, A.PLAYBACK_FAILED_TEXT);
+    assert.match(A.PLAYBACK_FAILED_TEXT, /aucun enregistrement à cette heure, ou l’enregistreur ne répond pas/);
   });
 
   it('type, marque, lieu', () => {
@@ -1291,6 +1364,7 @@ function setup(opts: { admin?: boolean; routes?: Record<string, (call: Call) => 
     'GET /api/access/doors': () => [DOOR_CLOSED, DOOR_OFFLINE, DOOR_FORCED],
     'GET /api/access/events': () => ({ items: [PASSAGE(1), PASSAGE(2, { result: 'denied', resultLabel: 'Refusé — badge inconnu', holderName: null, credential: null, late: true, doorId: 'P-ARRIERE', doorName: 'Arrière' })], nextCursor: null, total: 2, totalCapped: false }),
     'GET /api/access/settings': () => ({ retentionDays: 90, defaultDays: 90, eventCount: 1234, oldestAt: NOW - 90 * 86_400_000, lastPurge: { at: NOW - 86_400_000, deleted: 4200, before: NOW - 91 * 86_400_000 } }),
+    'GET /api/cameras/replayable': () => ({ ids: [] }),
     'GET /api/access/controllers': () => [CONTROLLER],
     'POST /api/access/controllers': () => ({ ...CONTROLLER, id: 'CTL-2' }),
     ...opts.routes,
@@ -1541,22 +1615,188 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     view.hide();
   });
 
-  it('« Voir la vidéo » : image en direct de la caméra de la porte, avec la mise en garde ; flux arrêtés à la fermeture', async () => {
-    const { view, container, dialogState } = setup();
+  it('« Voir la vidéo » : caméra non relisible = image en direct de la caméra de la porte, avec la mise en garde et la raison ; flux arrêtés à la fermeture', async () => {
+    const { view, container, dialogState, calls } = setup();
     await view.show(container, '');
     await flush();
     const open = byText(container, 'button', 'Voir la vidéo')!;
     fakeDocument.active = open;
     open.click();
-    assert.equal(dialogState.open, true);
+    assert.equal(dialogState.open, true, 'la fenêtre s’ouvre tout de suite');
     assert.match(dialogState.heading, /Entrée personnel/);
     const content = dialogState.content as FakeEl;
+    assert.match(content.textContent, /Recherche de l’enregistrement/);
+    await flush();
+    assert.equal(calls.filter((c) => c.path === '/api/cameras/replayable').length, 1, 'la liste des caméras relisibles est lue une fois à l’ouverture');
     assert.match(content.textContent, /Image en direct, pas l’enregistrement de \d\d:\d\d\./);
-    assert.match(content.textContent, /Le PSIM ne relit pas encore l’enregistreur/);
+    assert.match(content.textContent, /Cette caméra ne permet pas la relecture depuis le PSIM\./);
+    assert.equal(content.findAll((e) => e.tagName === 'img' && e.attrs.has('src')).length, 0, 'aucune relecture demandée');
     assert.equal(rafActive.size, 1, 'un flux ouvert');
     dialogState.onClose?.();
     assert.equal(rafActive.size, 0, 'flux arrêté à la fermeture de la fenêtre');
     view.hide();
+  });
+
+  describe('« Voir la vidéo » : relecture de l’enregistrement', () => {
+    const REPLAYABLE = { 'GET /api/cameras/replayable': () => ({ ids: ['CAM-1'] }) };
+    const openFirst = async (opts: Parameters<typeof setup>[0] = {}) => {
+      const ctx = setup({ ...opts, routes: { ...REPLAYABLE, ...opts.routes } });
+      await ctx.view.show(ctx.container, '');
+      await flush();
+      byText(ctx.container, 'button', 'Voir la vidéo')!.click();
+      await flush();
+      return { ...ctx, content: ctx.dialogState.content as FakeEl };
+    };
+    const playbackImg = (content: FakeEl) => content.find((e) => e.tagName === 'img')!;
+
+    it('caméra relisible : image de relecture à l’heure du passage, bandeau « Enregistrement du … », rien en direct', async () => {
+      const { view, content, dialogState } = await openFirst();
+      const img = playbackImg(content);
+      assert.equal(img.attrs.get('src'), `/api/cameras/CAM-1/playback?at=${NOW - 60_000}`, 'l’heure du contrôleur du passage, en millisecondes');
+      assert.equal(img.hidden, false);
+      assert.match(img.attrs.get('alt') ?? '', /Enregistrement : Caméra entrée/);
+      assert.match(content.textContent, /Enregistrement du 17\/10\/2026 à 14:31:05 \(10 s avant à 20 s après\)\./);
+      assert.match(content.textContent, /Enregistrement de « Caméra entrée » \(10 s avant, 20 s après le passage\)\./);
+      assert.doesNotMatch(content.textContent, /Image en direct/);
+      assert.doesNotMatch(content.textContent, /Recherche de l’enregistrement/, 'le message d’attente a disparu');
+      assert.equal(rafActive.size, 0, 'aucun flux en direct ouvert');
+      assert.equal(content.find((e) => e.tagName === 'canvas')!.hidden, true);
+      assert.equal(byText(content, 'button', 'Voir l’image en direct')!.parent!.hidden, true, 'bouton de repli caché tant que la relecture marche');
+      dialogState.onClose?.();
+      assert.match(img.attrs.get('src') ?? '', /^data:image\/gif/, 'fermeture : la source est vidée, le navigateur coupe la connexion');
+      view.hide();
+    });
+
+    it('échec de la relecture : message clair et bouton « Voir l’image en direct », qui bascule sur le direct avec la raison', async () => {
+      const { view, content } = await openFirst();
+      const img = playbackImg(content);
+      img.dispatch('error');
+      assert.match(content.textContent, /L’enregistrement n’a pas pu être lu : aucun enregistrement à cette heure, ou l’enregistreur ne répond pas\./);
+      assert.match(content.textContent, /Enregistrement indisponible\./);
+      assert.equal(img.hidden, true);
+      const live = byText(content, 'button', 'Voir l’image en direct')!;
+      assert.ok(live, 'bouton de repli');
+      assert.equal(live.parent!.hidden, false);
+      assert.equal(rafActive.size, 0);
+      live.click();
+      assert.equal(rafActive.size, 1, 'image en direct ouverte');
+      assert.match(content.textContent, /Image en direct, pas l’enregistrement de 14:31\./);
+      assert.match(content.textContent, /L’enregistrement n’a pas pu être lu : vous voyez la caméra telle qu’elle est maintenant\./);
+      assert.match(content.textContent, /Image en direct de « Caméra entrée »\./);
+      assert.equal(live.parent!.hidden, true, 'le bouton disparaît une fois le direct affiché');
+      assert.match(img.attrs.get('src') ?? '', /^data:image\/gif/, 'la relecture en erreur est coupée');
+      view.hide();
+      assert.equal(rafActive.size, 0);
+    });
+
+    it('une erreur de l’image arrivée après la coupure ne change plus rien', async () => {
+      const { view, content, dialogState } = await openFirst();
+      const img = playbackImg(content);
+      dialogState.onClose?.();
+      img.dispatch('error');
+      assert.doesNotMatch(content.textContent, /Enregistrement indisponible/);
+      view.hide();
+    });
+
+    it('plusieurs caméras liées : la première relisible s’ouvre, le choix change de caméra (enregistrement ou direct avec la raison)', async () => {
+      const doors = () => [{ ...DOOR_FORCED, cameraIds: ['CAM-2', 'CAM-1'] }];
+      const ctx = setup({ routes: { ...REPLAYABLE, 'GET /api/access/doors': doors } });
+      core.S.devices.set('CAM-2', { id: 'CAM-2', kind: 'camera', name: 'Caméra couloir', zone: 'Couloir', streamKind: 'sim' });
+      await ctx.view.show(ctx.container, '');
+      await flush();
+      byText(ctx.container, 'button', 'Voir la vidéo')!.click();
+      await flush();
+      const content = ctx.dialogState.content as FakeEl;
+      const pickers = content.findAll((e) => e.tagName === 'button' && e.attrs.has('aria-pressed'));
+      assert.deepEqual(pickers.map((b) => b.textContent.trim()), ['Caméra couloir', 'Caméra entrée']);
+      assert.deepEqual(pickers.map((b) => b.attrs.get('aria-pressed')), ['false', 'true'], 'la caméra relisible est ouverte d’abord, même en seconde position');
+      assert.match(pickers[0].attrs.get('title') ?? '', /Image en direct/);
+      assert.match(pickers[1].attrs.get('title') ?? '', /Enregistrement/);
+      const img = playbackImg(content);
+      assert.equal(img.attrs.get('src'), `/api/cameras/CAM-1/playback?at=${NOW - 60_000}`);
+      pickers[0].click(); // caméra non relisible : direct, avec la phrase qui dit pourquoi
+      assert.equal(rafActive.size, 1);
+      assert.match(img.attrs.get('src') ?? '', /^data:image\/gif/, 'la relecture est coupée');
+      assert.match(content.textContent, /Image en direct, pas l’enregistrement de 14:31\./);
+      assert.match(content.textContent, /Cette caméra ne permet pas la relecture depuis le PSIM\./);
+      assert.match(content.textContent, /Image en direct de « Caméra couloir »\./);
+      pickers[1].click(); // retour à la caméra relisible
+      assert.equal(rafActive.size, 0, 'le direct est coupé');
+      assert.equal(img.attrs.get('src'), `/api/cameras/CAM-1/playback?at=${NOW - 60_000}`);
+      assert.match(content.textContent, /Enregistrement du 17\/10\/2026 à 14:31:05/);
+      ctx.view.hide();
+    });
+
+    it('liste des caméras relisibles illisible : image en direct, et la fenêtre dit qu’elle n’a pas pu vérifier', async () => {
+      const { view, content } = await openFirst({ routes: { 'GET /api/cameras/replayable': () => { throw new Error('Serveur indisponible'); } } });
+      assert.equal(content.findAll((e) => e.tagName === 'img' && e.attrs.has('src')).length, 0);
+      assert.equal(rafActive.size, 1);
+      assert.match(content.textContent, /Image en direct, pas l’enregistrement de 14:31\./);
+      assert.match(content.textContent, /n’a pas pu vérifier si cette caméra se relit/);
+      view.hide();
+      for (const body of [{}, { ids: 'CAM-1' }, null]) {
+        const again = await openFirst({ routes: { 'GET /api/cameras/replayable': () => body } });
+        assert.equal(again.content.findAll((e) => e.tagName === 'img' && e.attrs.has('src')).length, 0, JSON.stringify(body));
+        again.view.hide();
+      }
+    });
+
+    it('fenêtre fermée pendant la lecture de la liste : rien ne s’ouvre après coup', async () => {
+      let release!: (v: unknown) => void;
+      const { view, container, dialogState } = setup({ routes: { 'GET /api/cameras/replayable': () => new Promise((r) => (release = r)) } });
+      await view.show(container, '');
+      await flush();
+      byText(container, 'button', 'Voir la vidéo')!.click();
+      await flush();
+      const content = dialogState.content as FakeEl;
+      assert.match(content.textContent, /Recherche de l’enregistrement/);
+      dialogState.onClose?.(); // l’opérateur ferme (Échap, Fermer…)
+      release({ ids: ['CAM-1'] });
+      await flush();
+      assert.equal(content.findAll((e) => e.tagName === 'img').length, 0, 'aucune relecture démarrée');
+      assert.equal(rafActive.size, 0, 'aucun flux démarré');
+      view.hide();
+    });
+
+    it('seconde fenêtre ouverte avant la fin de la première lecture : la réponse tardive de la première n’écrit rien', async () => {
+      const releases: ((v: unknown) => void)[] = [];
+      const { view, container, dialogState } = setup({ routes: { 'GET /api/cameras/replayable': () => new Promise((r) => releases.push(r)) } });
+      await view.show(container, '');
+      await flush();
+      const open = byText(container, 'button', 'Voir la vidéo')!;
+      open.click();
+      const first = dialogState.content as FakeEl;
+      dialogState.onClose?.();
+      open.click();
+      const second = dialogState.content as FakeEl;
+      releases[0]({ ids: ['CAM-1'] });
+      await flush();
+      assert.equal(first.findAll((e) => e.tagName === 'img').length, 0);
+      assert.equal(second.findAll((e) => e.tagName === 'img').length, 0, 'la seconde attend encore sa propre réponse');
+      releases[1]({ ids: ['CAM-1'] });
+      await flush();
+      assert.equal(second.findAll((e) => e.tagName === 'img' && e.attrs.has('src')).length, 1);
+      view.hide();
+    });
+
+    it('quitter l’écran pendant une relecture : fenêtre fermée, flux coupé', async () => {
+      const { view, content, dialogState } = await openFirst();
+      const img = playbackImg(content);
+      assert.equal(img.attrs.get('src')?.startsWith('/api/cameras/'), true);
+      view.hide();
+      assert.equal(dialogState.open, false);
+      assert.match(img.attrs.get('src') ?? '', /^data:image\/gif/, 'la relecture est coupée');
+    });
+
+    it('les noms de caméra venus du serveur restent du texte', async () => {
+      const hostile = '<img src=x onerror=alert(1)>';
+      core.S.devices.set('CAM-1', { id: 'CAM-1', kind: 'camera', name: hostile, zone: 'Hall', streamKind: 'sim' });
+      const { view, content } = await openFirst();
+      assert.ok(content.textContent.includes(hostile));
+      assert.equal(content.findAll((e) => e.tagName === 'img').length, 1, 'une seule image : celle de la relecture');
+      assert.equal(playbackImg(content).attrs.get('src'), `/api/cameras/CAM-1/playback?at=${NOW - 60_000}`);
+      view.hide();
+    });
   });
 
   it('quitter l’écran (alarme) ferme la fenêtre vidéo, arrête les flux et retire l’écouteur du clavier', async () => {
@@ -1566,6 +1806,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     await flush();
     assert.equal(fakeDocument.count('keydown'), keydownBefore + 1);
     byText(container, 'button', 'Voir la vidéo')!.click();
+    await flush();
     assert.equal(dialogState.open, true);
     assert.equal(rafActive.size, 1);
     view.hide();
@@ -1587,6 +1828,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     await view.show(container, '');
     await flush();
     byText(container, 'button', 'Voir la vidéo')!.click();
+    await flush();
     assert.equal(rafActive.size, 1);
     dialogBody.replaceChildren('Mon compte : mot de passe à changer'); // une autre fenêtre a pris la place sans fermer la nôtre
     const closes = dialogState.closeCalls;
