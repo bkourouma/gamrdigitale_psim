@@ -47,12 +47,16 @@ import { createSnapshotService } from './snapshots.ts';
 import type { SnapshotService } from './snapshots.ts';
 import { createDeviceKeys } from './devicekeys.ts';
 import { createDeviceImages } from './deviceimages.ts';
+import { createActuators } from './actuators.ts';
+import { parseAllowList } from './actuatorhttp.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import { createSystemStatus } from './system.ts';
 import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
 import type { PsimEvent } from './types.ts';
 import { createUsersService } from './users.ts';
+import { createAgents } from './agents.ts';
+import { createPatrols } from './patrols.ts';
 import { createVideoService } from './video.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -302,6 +306,18 @@ deviceImages = createDeviceImages({
   publishIncident: (id) => publish({ type: 'incident', incident: engine.incidentView(id) }),
 });
 deviceImages.start();
+// Commandes des equipements (sirenes, relais, gaches...) : voir docs/COMMANDES.md. Au demarrage, aucune commande n'est rejouee.
+const actuators = createActuators({
+  db,
+  key: secretKey,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  publish,
+  httpAllow: parseAllowList(config.actuatorHttpHosts),
+});
+// Incident clos : ses commandes en attente sont annulees, ses commandes temporisees en cours ramenees a l'etat sur.
+bus.on('event', (event: PsimEvent) => {
+  if (event.type === 'incident' && event.incident.status === 'closed') actuators.incidentChanged(event.incident.id, 'closed');
+});
 notifier = createNotifier({
   db,
   engine,
@@ -396,12 +412,15 @@ const broker = await startBroker(engine, {
   tls: mqttTlsFiles,
   gateways: config.mqttGateways,
   onGateway: (user, connected, client) => gatewayLink?.connection(user, connected, client),
+  onActuatorAck: (id, payload) => actuators.handleAck(id, payload),
   onGatewayMessage: (user) => gatewayLink?.message(user),
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
   releaseLock();
   process.exit(1);
 });
+
+actuators.attachMqtt({ listeners: (id) => broker.actuatorListeners(id), publishCommand: (id, payload) => broker.publishCommand(id, payload) });
 
 const system = createSystemStatus({
   db,
@@ -526,6 +545,17 @@ const reportTimer = setInterval(() => {
   reportMail.tick().catch((err) => console.error('[psim] rapport periodique :', err));
 }, 60_000);
 
+// Application des agents (telephones appaires, service, alarmes, SOS) et rondes (points de controle, circuits, scans, main courante).
+const agents = createAgents({
+  db,
+  engine,
+  users,
+  certPath: config.tls.cert || null,
+  readSnapshot: (id) => snapshots?.read(id) ?? null,
+  liveStream: (cameraId, res) => video.attachViewer(cameraId, res),
+});
+const patrols = createPatrols({ db, engine, agents, dataDir });
+
 const app = createApp({
   db,
   engine,
@@ -567,8 +597,12 @@ const app = createApp({
   triggerSim: (id, payload) => broker.publishDetector(id, payload),
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
   deviceImages,
+  actuators,
   proofs,
   access: createAccessApi(access),
+  agents,
+  patrols,
+  publicUrl: notify.publicUrl,
 });
 
 const server: Server = createWebServer(app, tlsFiles);
@@ -601,7 +635,8 @@ server.on('upgrade', (req, socket, head) => {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   const session = sessionFromRequest(req);
   // Une session restreinte (mot de passe a changer, 2FA a activer) n'a pas acces au temps reel.
-  if (pathname !== '/ws' || !sameOrigin || !session || session.restricted || !token) {
+  // Le role « agent » n'a pas le temps reel du poste de garde (l'application interroge /api/agent/alarms).
+  if (pathname !== '/ws' || !sameOrigin || !session || session.restricted || session.role === 'agent' || !token) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return void socket.destroy();
   }
@@ -619,7 +654,7 @@ function sweepSockets(): void {
   for (const client of wss.clients) {
     const t = wsToken.get(client);
     const s = t ? getSession(t) : null;
-    if (!s || s.restricted) client.close(4401, 'session terminee');
+    if (!s || s.restricted || s.role === 'agent') client.close(4401, 'session terminee');
   }
 }
 
@@ -629,7 +664,7 @@ bus.on('event', (event: PsimEvent) => {
     if (client.readyState !== client.OPEN) continue;
     const t = wsToken.get(client);
     const s = t ? getSession(t) : null;
-    if (!s || s.restricted) client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
+    if (!s || s.restricted || s.role === 'agent') client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
     else client.send(event.type === 'audit' && s.role !== 'admin' ? JSON.stringify({ type: 'audit', entry: maskAudit(event.entry, s.role) }) : message);
   }
 });
@@ -643,8 +678,11 @@ const tickTimer = setInterval(() => {
   try {
     arming?.tick(); // armements et desarmements dus au planning
     rules.tick(); // regles de presence : durees, plages horaires, repos
+    agents.tick(); // fin automatique des services, detecteurs d'agent acquittes
+    patrols.tick(); // rondes : debuts de plage, echeances, rondes incompletes ou ratees
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
     access.tick(); // portes maintenues ouvertes -> alarme ; purge du journal des passages
+    actuators.tick(); // commandes sans accuse, retours automatiques a l'etat sur
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
       sweepSockets();

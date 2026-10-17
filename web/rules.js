@@ -42,6 +42,10 @@ export const RELIABILITY_NOTE = 'recommandé tant que l’essai de fiabilité n�
 export const CAUTION_NOTE = 'une reconnaissance peut se tromper : un humain doit vérifier avant d’agir';
 export const NO_LIST_NOTE = 'Aucune liste de visages : ajoutez une caméra à reconnaissance faciale et créez-y une base.';
 export const STAYS_FACE_NOTE = 'Pas proposé pour un visage : un visage est vu à un instant, pas pendant une durée.';
+// Règle de liste ou de personne enregistrée sans caméra source (ou dont la caméra a disparu) : elle ne se déclenche plus.
+export const REVIEW_NOTE = 'Cette règle doit être réenregistrée : choisissez à nouveau la liste.';
+export const REVIEW_PERSON_NOTE = 'Cette règle doit être réenregistrée : choisissez à nouveau la caméra qui connaît cette personne.';
+export const UNSPECIFIED_CAMERA = '(caméra non précisée)';
 
 const DAY_SHORT = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
 const DAY_LONG = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
@@ -69,7 +73,9 @@ const intIn = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 export function defaultForm() {
   return {
     name: '',
-    who: { type: 'anyone' }, // { type: 'anyone' | 'unknown' } | { type: 'list', listId, listName } | { type: 'person', personId, personName }
+    // { type: 'anyone' | 'unknown' } | { type: 'list', cameraId, listId, listName } | { type: 'person', cameraId, personId, personName }
+    // `cameraId` : la caméra du PSIM par laquelle la base est lue (les numéros de liste et de personne sont propres à chaque appareil).
+    who: { type: 'anyone' },
     whereMode: 'cameras', // 'cameras' | 'zones'
     cameras: [],
     zones: [],
@@ -94,13 +100,16 @@ const faceText = (v) => String(v ?? '').normalize('NFC').trim().replace(/\s+/gu,
 /** Vrai pour une règle de reconnaissance faciale (liste, personne, visage inconnu). */
 export const isFaceWho = (who) => ['list', 'person', 'unknown'].includes(who?.type);
 
+/** Vrai pour une identité numérotée par appareil (liste, personne) : elle porte la caméra par laquelle la base est lue. */
+export const isDeviceWho = (who) => who?.type === 'list' || who?.type === 'person';
+
 /** Copie d'un « Qui » (jamais partagée avec le formulaire). Une forme inconnue vaut « n'importe qui ». */
 export function cloneWho(who) {
   switch (who?.type) {
     case 'list':
-      return { type: 'list', listId: String(who.listId ?? ''), listName: String(who.listName ?? '') };
+      return { type: 'list', cameraId: String(who.cameraId ?? ''), listId: String(who.listId ?? ''), listName: String(who.listName ?? '') };
     case 'person':
-      return { type: 'person', personId: String(who.personId ?? ''), personName: String(who.personName ?? '') };
+      return { type: 'person', cameraId: String(who.cameraId ?? ''), personId: String(who.personId ?? ''), personName: String(who.personName ?? '') };
     case 'unknown':
       return { type: 'unknown' };
     default:
@@ -111,9 +120,44 @@ export function cloneWho(who) {
 /** Le « Qui » envoyé au serveur : textes d'identité rangés comme lui (il les normalise de la même façon). */
 export function buildWho(who) {
   const w = cloneWho(who);
-  if (w.type === 'list') return { type: 'list', listId: faceText(w.listId), listName: faceText(w.listName) };
-  if (w.type === 'person') return { type: 'person', personId: faceText(w.personId), personName: faceText(w.personName) };
+  // L'identifiant de caméra part tel quel : c'est celui du PSIM, que le serveur compare sans le retoucher.
+  if (w.type === 'list') return { type: 'list', cameraId: w.cameraId, listId: faceText(w.listId), listName: faceText(w.listName) };
+  if (w.type === 'person') return { type: 'person', cameraId: w.cameraId, personId: faceText(w.personId), personName: faceText(w.personName) };
   return w;
+}
+
+/** « Qui » d'une règle à réenregistrer : la liste (ou la caméra de la personne) est à choisir à nouveau, rien d'autre n'est repris. */
+export function whoToReview(who) {
+  const w = cloneWho(who);
+  if (w.type === 'list') return { type: 'list', cameraId: '', listId: '', listName: '' };
+  if (w.type === 'person') return { ...w, cameraId: '' };
+  return w;
+}
+
+/** Message d'une règle à réenregistrer (liste ou personne), ou '' pour les autres. */
+export const reviewNote = (who) => (who?.type === 'list' ? REVIEW_NOTE : who?.type === 'person' ? REVIEW_PERSON_NOTE : '');
+
+/**
+ * État d'une règle pour la liste : une règle « à revoir » (liste ou personne sans caméra source valable) ne se déclenche pas,
+ * même si elle est « activée » en base. { running, review, word, title } ; `running` = ce que l'interrupteur doit montrer.
+ */
+export function ruleState(rule) {
+  if (rule?.needsReview === true) {
+    return { running: false, review: true, word: 'À revoir', title: 'À revoir : la règle ne se déclenche pas. Touchez « Modifier » pour la réenregistrer.' };
+  }
+  if (rule?.enabled) return { running: true, review: false, word: 'Active', title: 'Active : touchez pour la désactiver' };
+  return { running: false, review: false, word: 'Inactive', title: 'Inactive : touchez pour la réactiver' };
+}
+
+/**
+ * Un message du serveur sur une case : « Qui : camera inconnue … » -> la case « Qui », « Ou : aucune camera choisie … » -> la case
+ * « Où ». { key, box, text } ; `key` est null pour tout autre message (il reste en bas du formulaire). Le texte perd son préfixe.
+ */
+export function serverProblem(message) {
+  const raw = String(message ?? '').trim();
+  const m = /^(Qui|Ou|Où)\s*:\s*([\s\S]+)$/u.exec(raw);
+  if (!m) return { key: null, box: '', text: raw ? sentence(raw) : 'Le serveur n’a donné aucune explication.' };
+  return m[1] === 'Qui' ? { key: 'who', box: 'Qui', text: sentence(m[2]) } : { key: 'where', box: 'Où', text: sentence(m[2]) };
 }
 
 /** « Si » après un changement de « Qui » : pour un visage, « reste plus de N minutes » n'existe pas, on revient à « apparaît ». */
@@ -168,33 +212,69 @@ export function appearsTexts(who) {
 }
 
 /**
- * Entrées du menu des listes de visages. `lists` : [{ id, name, cameraId, cameraName }] lues sur l'enregistreur.
- * Le nom de la caméra source n'est précisé que s'il y a plusieurs sources. Une liste déjà choisie qui n'est plus dans la
- * lecture reste proposée (« Liste non retrouvée ») avec son nom enregistré.
+ * Les caméras du PSIM lues par le même appareil que la liste : `deviceCameraIds` (la caméra représentante `cameraId` comprise).
+ * Une ancienne réponse du serveur sans ce champ : la seule caméra représentante.
  */
-export function listChoices(lists, ...whos) {
-  const sources = new Set(lists.map((l) => l.cameraId ?? l.cameraName ?? ''));
-  const several = sources.size > 1;
-  const items = lists.map((l) => ({ id: String(l.id), label: l.name || String(l.id), note: several ? l.cameraName || l.cameraId || '' : '', missing: false }));
-  // `whos` : le choix en cours, et la liste enregistrée avec la règle (elle reste proposée même si l'enregistreur ne la montre plus).
-  for (const who of whos) {
-    if (who?.type === 'list' && who.listId && !items.some((i) => i.id === who.listId)) {
-      items.push({ id: who.listId, label: who.listName || who.listId, note: 'Liste non retrouvée', missing: true });
-    }
+function deviceCameras(list) {
+  const own = list?.cameraId === undefined || list?.cameraId === null ? '' : String(list.cameraId);
+  const ids = Array.isArray(list?.deviceCameraIds) ? list.deviceCameraIds.filter((c) => typeof c === 'string' && c !== '') : [];
+  if (own !== '' && !ids.includes(own)) ids.push(own);
+  return ids;
+}
+
+/**
+ * LA comparaison entre une liste lue sur un appareil et une règle : même numéro de liste, ET la caméra de la règle est lue par
+ * cet appareil (la règle a pu être créée depuis une autre voie du même enregistreur que la caméra représentante). Deux listes
+ * de même numéro sur deux appareils ne se confondent donc jamais. `list` : { id, cameraId, deviceCameraIds? } ; `who` : { listId, cameraId }.
+ */
+export function listMatches(list, who) {
+  const cameraId = String(who?.cameraId ?? '');
+  const listId = String(who?.listId ?? '');
+  if (cameraId === '' || listId === '' || list?.id === undefined || list?.id === null || String(list.id) !== listId) return false;
+  return deviceCameras(list).includes(cameraId);
+}
+
+/**
+ * Entrées du menu des listes de visages. `lists` : [{ id, name, cameraId, cameraName, deviceCameraIds? }] lues sur les enregistreurs
+ * (une entrée par appareil et par liste, avec UNE caméra représentante `cameraId`, stable).
+ * Les numéros de liste sont propres à chaque appareil : deux appareils peuvent chacun avoir une liste « 1 ». Une entrée est donc
+ * le COUPLE (caméra, liste) ; elle n'est jamais confondue avec une autre qui n'a que le même numéro.
+ * Dès qu'il y a plusieurs sources (au moins deux caméras différentes, ou deux entrées de même nom), l'étiquette dit d'où vient
+ * la liste : « Famille — caméra Portail ». Avec une seule source, c'est le nom seul.
+ * `whos` : le choix en cours et la liste enregistrée avec la règle ; une liste qui n'est plus dans la lecture reste proposée
+ * (« Liste non retrouvée ») avec son nom enregistré. `cameraName(id)` donne le nom d'une caméra quand la lecture ne le dit pas.
+ * Entrée : { key, id, cameraId, deviceCameraIds, cameraName, name, label, note, missing }.
+ */
+export function listChoices(lists, whos = [], cameraName = (id) => id) {
+  const items = [];
+  for (const l of Array.isArray(lists) ? lists : []) {
+    if (l === null || typeof l !== 'object' || l.id === undefined || l.id === null) continue;
+    const cameraId = String(l.cameraId ?? '');
+    items.push({ id: String(l.id), cameraId, deviceCameraIds: deviceCameras(l), cameraName: String(l.cameraName || (cameraId ? cameraName(cameraId) : '') || cameraId), name: String(l.name || l.id), note: '', missing: false });
   }
+  for (const who of Array.isArray(whos) ? whos : [whos]) {
+    if (who?.type !== 'list' || !who.listId || !who.cameraId) continue;
+    if (items.some((i) => listMatches(i, who))) continue;
+    items.push({ id: who.listId, cameraId: who.cameraId, deviceCameraIds: [who.cameraId], cameraName: String(cameraName(who.cameraId) || who.cameraId), name: who.listName || who.listId, note: 'Liste non retrouvée', missing: true });
+  }
+  const several = new Set(items.map((i) => i.cameraId)).size > 1 || new Set(items.map((i) => i.name)).size < items.length;
+  for (const i of items) i.label = several ? `${i.name} — caméra ${i.cameraName || i.cameraId || 'inconnue'}` : i.name;
+  // Même nom sur la même caméra : le numéro de la liste les distingue.
+  const labels = items.map((i) => i.label);
+  for (const i of items) if (labels.filter((l) => l === i.label).length > 1) i.label = `${i.label} (n° ${i.id})`;
+  for (const i of items) i.key = `${i.cameraId}|${i.id}`;
   return items;
 }
 
-/** Index de l'entrée choisie dans `items` (identifiant ET nom d'abord, car deux caméras peuvent numéroter pareil), ou -1. */
+/** Index de l'entrée choisie dans `items` : l'appareil de la caméra ET l'identifiant de la liste (jamais l'identifiant seul), ou -1. */
 export function selectedListIndex(items, who) {
-  if (who?.type !== 'list' || !who.listId) return -1;
-  const exact = items.findIndex((i) => i.id === who.listId && i.label === who.listName);
-  return exact >= 0 ? exact : items.findIndex((i) => i.id === who.listId);
+  if (who?.type !== 'list' || !who.listId || !who.cameraId) return -1;
+  return items.findIndex((i) => listMatches(i, who));
 }
 
 /** Ce que montre la zone des listes : lecture en cours, erreur, aucune liste, ou le menu. `faces` : { status, lists, notes }. */
-export function facesView(faces, who, stored = null) {
-  const items = listChoices(faces.lists ?? [], who, stored);
+export function facesView(faces, who, stored = null, cameraName = (id) => id) {
+  const items = listChoices(faces.lists ?? [], [who, stored], cameraName);
   const notes = (faces.notes ?? []).filter((n) => typeof n === 'string' && n.trim() !== '');
   if (faces.status === 'loading' || (faces.status === 'idle' && items.length === 0)) return { kind: 'loading', items, notes: [] };
   if (faces.status === 'error') return { kind: 'error', items, notes: [] };
@@ -202,13 +282,23 @@ export function facesView(faces, who, stored = null) {
   return { kind: 'select', items, notes };
 }
 
-/** Formulaire prérempli depuis une règle enregistrée (Modifier). */
+/** Caméras proposées pour une personne précise (elle se lit par l'appareil d'une caméra). Une caméra enregistrée qui a disparu reste visible. */
+export function personCameraChoices(cameras, current) {
+  const items = cameras.map((c) => ({ id: c.id, label: c.zone ? `${c.name || c.id} (${c.zone})` : c.name || c.id, missing: false }));
+  if (current && !cameras.some((c) => c.id === current)) items.push({ id: current, label: `${current} (caméra introuvable)`, missing: true });
+  return items;
+}
+
+/**
+ * Formulaire prérempli depuis une règle enregistrée (Modifier). Une règle « à revoir » (`needsReview`) rouvre avec la liste (ou la
+ * caméra de la personne) vide : elle est à choisir à nouveau, l'ancien choix ne se déclenchait plus.
+ */
 export function formFromRule(rule) {
   const s = rule.spec;
   const form = defaultForm();
   form.name = rule.name;
   form.enabled = rule.enabled;
-  form.who = cloneWho(s.who);
+  form.who = rule.needsReview === true ? whoToReview(s.who) : cloneWho(s.who);
   if ('zones' in s.where) {
     form.whereMode = 'zones';
     form.zones = [...s.where.zones];
@@ -276,6 +366,9 @@ export function formProblems(form, ctx = null) {
     if (!id) out.push({ key: 'who', message: who.type === 'list' ? 'Choisissez une liste de visages.' : 'Choisissez une personne.' });
     else if (id.length > MAX_FACE_ID || shownName.length > MAX_FACE_NAME || !shownName) out.push({ key: 'who', message: `Le nom ou l’identifiant de ${label} est invalide (${MAX_FACE_NAME} caractères au plus pour le nom).` });
     else if (FORBIDDEN_CHARS.test(id) || FORBIDDEN_CHARS.test(shownName)) out.push({ key: 'who', message: `Le nom de ${label} contient un caractère invisible : choisissez-la à nouveau.` });
+    // La caméra par laquelle la base est lue : les numéros sont propres à chaque appareil, sans elle la règle ne correspond à rien.
+    else if (who.cameraId === '') out.push({ key: 'who', message: who.type === 'list' ? 'Choisissez à nouveau la liste : la caméra qui la lit n’est pas précisée.' : 'Choisissez la caméra qui connaît cette personne.' });
+    else if (ctx && !ctx.cameraIds.has(who.cameraId)) out.push({ key: 'who', message: who.type === 'list' ? `La caméra de la liste n’existe plus (« ${who.cameraId} ») : choisissez à nouveau la liste.` : `La caméra de la personne n’existe plus (« ${who.cameraId} ») : choisissez-en une autre.` });
   }
 
   const zones = form.whereMode === 'zones';
@@ -343,13 +436,16 @@ export function windowText(w) {
   return `de ${w.from} à ${w.to}${w.from > w.to ? ' le lendemain' : ''}, ${describeDays(w.days)}`;
 }
 
+/** « (caméra « Portail ») » ; sans caméra : « (caméra non précisée) », comme le serveur. */
+const faceCameraPhrase = (cameraId, cameraName) => (typeof cameraId === 'string' && cameraId !== '' ? `(caméra « ${cameraName(cameraId)} »)` : UNSPECIFIED_CAMERA);
+
 /** La phrase d'une règle (RuleSpec), comme le serveur l'écrit. `cameraName(id)` donne le nom d'une caméra. */
 export function describeSpec(spec, cameraName = (id) => id) {
   const action = spec.then.severity === 'critical' ? 'Prévenir (alerte critique)' : 'Prévenir (avertissement)';
   let cause;
   if (spec.who?.type === 'unknown') cause = 'si un visage inconnu est vu';
-  else if (spec.who?.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » est reconnue`;
-  else if (spec.who?.type === 'person') cause = `si la personne « ${spec.who.personName} » est reconnue`;
+  else if (spec.who?.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » ${faceCameraPhrase(spec.who.cameraId, cameraName)} est reconnue`;
+  else if (spec.who?.type === 'person') cause = `si la personne « ${spec.who.personName} » ${faceCameraPhrase(spec.who.cameraId, cameraName)} est reconnue`;
   else cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${minutesText(spec.trigger.minutes)}`;
   let where;
   if ('cameras' in spec.where) {
@@ -407,7 +503,7 @@ const quoted = (items) => items.map((i) => `« ${i} »`).join(', ');
  * Le formulaire que décrit une proposition de l'assistant ({ name, spec, summary }), et ce qui n'a pas pu être repris :
  * { form, issues }. Les cases sont celles du formulaire : une caméra, une zone ou une liste que cet écran ne connaît pas n'est
  * PAS reprise (la case reste à compléter) et `issues` le dit en français. `ctx` : { cameraIds: Set, zones: Set,
- * lists: [{ id, name }] | null } ; une valeur absente (ou lists à null : listes pas encore lues) désactive la vérification.
+ * lists: [{ id, name, cameraId, deviceCameraIds? }] | null } ; une valeur absente (ou lists à null : listes pas encore lues) désactive la vérification.
  * Le choix « activer dès l'enregistrement » n'est jamais celui de l'assistant (à la charge de l'appelant).
  */
 export function formFromProposal(proposal, ctx = {}) {
@@ -417,9 +513,15 @@ export function formFromProposal(proposal, ctx = {}) {
   form.name = faceText(proposal?.name).slice(0, MAX_NAME);
 
   form.who = cloneWho(spec.who);
-  if (form.who.type === 'list' && Array.isArray(ctx.lists) && !ctx.lists.some((l) => String(l.id) === form.who.listId)) {
+  // Une liste se retrouve par sa caméra ET son numéro : le même numéro sur un autre appareil est une autre liste.
+  if (form.who.type === 'list' && form.who.cameraId === '') {
+    issues.push(`La proposition ne dit pas de quelle caméra vient la liste « ${form.who.listName} ». Choisissez-la dans la case « Qui ».`);
+    form.who = { type: 'list', cameraId: '', listId: '', listName: '' };
+  } else if (form.who.type === 'list' && Array.isArray(ctx.lists) && !ctx.lists.some((l) => listMatches(l, form.who))) {
     issues.push(`La liste « ${form.who.listName} » n’existe pas dans les listes lues sur l’enregistreur. Choisissez-la dans la case « Qui ».`);
-    form.who = { type: 'list', listId: '', listName: '' };
+    form.who = { type: 'list', cameraId: '', listId: '', listName: '' };
+  } else if (form.who.type === 'person' && form.who.cameraId === '') {
+    issues.push(`La proposition ne dit pas de quelle caméra vient la personne « ${form.who.personName} ». Choisissez la caméra dans la case « Qui ».`);
   }
 
   const where = spec.where ?? {};
@@ -641,7 +743,9 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     }
     emptyBox.hidden = rules.length > 0;
     list.hidden = rules.length === 0;
-    countEl.textContent = rules.length ? `${plural(rules.length, 'règle')}, dont ${rules.filter((r) => r.enabled).length} active${rules.filter((r) => r.enabled).length > 1 ? 's' : ''}` : '';
+    const running = rules.filter((r) => ruleState(r).running).length;
+    const review = rules.filter((r) => ruleState(r).review).length;
+    countEl.textContent = rules.length ? `${plural(rules.length, 'règle')}, dont ${running} active${running > 1 ? 's' : ''}${review ? ` et ${review} à revoir` : ''}` : '';
     newButtons[0].hidden = rules.length === 0; // l'état vide a son propre bouton
     const order = [];
     const seen = new Set();
@@ -678,6 +782,10 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     const meta = h('p', { class: 'hint rl-meta' });
     const live = h('p', { class: 'rl-live', hidden: true });
     const editingTag = h('span', { class: 'tag is-info', hidden: true }, icon('pencil', 'icon-sm'), 'En cours de modification');
+    // Règle de liste ou de personne à réenregistrer : elle ne se déclenche pas, on le dit en mots (pas seulement par une couleur).
+    const reviewTag = h('span', { class: 'tag is-warning', hidden: true }, icon('state-warning', 'icon-sm'), 'À revoir');
+    const reviewText = h('p');
+    const reviewBox = h('div', { class: 'notice is-warning', role: 'status', hidden: true }, icon('state-warning'), reviewText);
 
     const toggle = h('input', { type: 'checkbox', role: 'switch', class: 'rl-switch-input', 'aria-describedby': `${uid}-state` });
     const stateIcon = h('span', { class: 'rl-switch-icon' });
@@ -700,8 +808,9 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     c.el = h(
       'li',
       { class: 'panel rl-rule' },
-      h('div', { class: 'rl-rule-head' }, nameEl, editingTag, toggleLabel),
+      h('div', { class: 'rl-rule-head' }, nameEl, reviewTag, editingTag, toggleLabel),
       phrase,
+      reviewBox,
       live,
       meta,
       h('div', { class: 'actions rl-rule-actions' }, edit, remove),
@@ -787,14 +896,14 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       try {
         const next = await api(`/api/rules/${c.id}`, { method: 'PUT', body: { enabled: on } });
         c.busy = false;
-        toggle.disabled = false;
+        toggle.disabled = ruleState(next).review;
         upsert(next);
         toast(on ? `Règle « ${next.name} » activée` : `Règle « ${next.name} » désactivée`, 'ok');
         return true;
       } catch (err) {
         c.busy = false;
-        toggle.disabled = false;
-        toggle.checked = c.rule.enabled; // l'interrupteur dit ce que fait vraiment la règle
+        toggle.disabled = ruleState(c.rule).review;
+        toggle.checked = ruleState(c.rule).running; // l'interrupteur dit ce que fait vraiment la règle
         actionError.textContent = `Le changement n’a pas été pris en compte : ${sentence(err.message)}`;
         toggle.focus();
         return false;
@@ -809,11 +918,20 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       c.rule = rule;
       nameEl.textContent = rule.name;
       phrase.textContent = rule.summary;
-      c.el.classList.toggle('is-inactive', !rule.enabled);
-      if (!c.busy) toggle.checked = rule.enabled;
-      stateIcon.replaceChildren(icon(rule.enabled ? 'state-ok' : 'state-offline'));
-      stateWord.textContent = rule.enabled ? 'Active' : 'Inactive';
-      toggleLabel.setAttribute('title', rule.enabled ? 'Active : touchez pour la désactiver' : 'Inactive : touchez pour la réactiver');
+      // Une règle à revoir n'est jamais montrée « active » (elle ne se déclenche pas) et son interrupteur est verrouillé : le
+      // serveur refuserait de l'activer tant qu'elle n'est pas réenregistrée (« Modifier »).
+      const state = ruleState(rule);
+      c.el.classList.toggle('is-inactive', !state.running);
+      if (!c.busy) {
+        toggle.checked = state.running;
+        toggle.disabled = state.review;
+      }
+      stateIcon.replaceChildren(icon(state.review ? 'state-warning' : state.running ? 'state-ok' : 'state-offline'));
+      stateWord.textContent = state.word;
+      toggleLabel.setAttribute('title', state.title);
+      reviewTag.hidden = !state.review;
+      reviewBox.hidden = !state.review;
+      reviewText.textContent = state.review ? `${reviewNote(rule.spec?.who) || REVIEW_NOTE} Elle ne se déclenche pas tant que ce n’est pas fait : touchez « Modifier ».` : '';
       toggle.setAttribute('aria-label', `Règle « ${rule.name} »`);
       const created = `Créée par ${rule.createdBy} le ${dateText(rule.createdAt)}`;
       meta.textContent = rule.updatedAt > rule.createdAt + 1000 ? `${created}. Modifiée par ${rule.updatedBy} le ${dateText(rule.updatedAt)}.` : `${created}.`;
@@ -826,7 +944,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       const rule = c.rule;
       if (!rule) return;
       const ids = scopeCameras(rule.spec, cameras()).filter((id) => presence[id]);
-      live.hidden = !rule.enabled || ids.length === 0;
+      live.hidden = !ruleState(rule).running || ids.length === 0;
       if (live.hidden) return;
       const since = Math.min(...ids.map((id) => presence[id].since));
       live.replaceChildren(icon('user', 'icon-sm'), `Quelqu’un est vu en ce moment (depuis ${clockText(since)}).`);
@@ -881,6 +999,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     let lastList = null;
     let storedList = null; // la liste enregistrée avec la règle ouverte (ou reprise d'une proposition)
     let keptPerson = null;
+    let reviewWho = false; // la règle ouverte est « à revoir » : sa liste (ou la caméra de sa personne) est à choisir à nouveau
     let severityTouched = false; // la gravité a été choisie à la main (ou par une proposition de l'assistant)
     let autoTrigger = false; // « reste plus de N » ramené à « apparaît » par le passage à un visage (à remettre au retour)
     let autoSeverity = null; // gravité d'avant le passage automatique à « avertissement »
@@ -975,7 +1094,20 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     const facesField = h('div', { class: 'field rl-faces-field' }, h('label', { for: facesSelect.id, text: 'Liste de visages' }), facesSelect);
     const facesBox = h('div', { class: 'rl-faces', hidden: true }, facesField, facesLoading, facesFail, facesEmpty, facesNotes, facesReload);
     const whoCaution = h('p', { class: 'hint rl-who-caution', hidden: true, text: 'Un visage reconnu est une présomption, pas une preuve : un humain doit vérifier avant d’agir.' });
-    const whoBox = box('who', 'Qui', 'Qui est concerné ?', h('div', { class: 'rl-choices is-column' }, whoAnyone.el, whoList.el, whoUnknown.el, whoPerson.el), facesBox, whoCaution, whoErr);
+    // Règle « à revoir » : tant que la liste n'est pas rechoisie, le même message que sur la carte de la règle.
+    const whoReviewText = h('p');
+    const whoReview = h('div', { class: 'notice is-warning', role: 'status', hidden: true }, icon('state-warning'), whoReviewText);
+    // Personne précise : ses numéros sont ceux d'un appareil, on garde donc la caméra par laquelle on la lit (à choisir si elle manque).
+    const personSelect = h('select', { id: `${id}-person-camera`, 'aria-describedby': `${id}-person-camera-hint ${whoErr.id}` });
+    const personField = h(
+      'div',
+      { class: 'field rl-faces-field' },
+      h('label', { for: personSelect.id, text: 'Caméra qui connaît cette personne' }),
+      personSelect,
+      h('span', { class: 'hint', id: `${id}-person-camera-hint`, text: 'Les personnes sont numérotées par enregistreur : indiquez une caméra branchée sur celui où cette personne est enregistrée.' }),
+    );
+    const personBox = h('div', { class: 'rl-faces', hidden: true }, personField);
+    const whoBox = box('who', 'Qui', 'Qui est concerné ?', h('div', { class: 'rl-choices is-column' }, whoAnyone.el, whoList.el, whoUnknown.el, whoPerson.el), whoReview, facesBox, personBox, whoCaution, whoErr);
 
     // -- Où
     const whereGroup = `${id}-where`;
@@ -1102,7 +1234,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
 
     const targets = () => ({
       name: { input: nameInput, err: nameErr },
-      who: { input: state.who.type === 'list' ? facesSelect : whoAnyone.input, err: whoErr },
+      who: { input: state.who.type === 'list' ? facesSelect : state.who.type === 'person' ? personSelect : whoAnyone.input, err: whoErr },
       trigger: { input: ifAppears.input, err: minutesErr },
       where: { input: picks.querySelector('input') ?? (state.whereMode === 'zones' ? whereZones.input : whereCams.input), err: whereErr },
       windows: { input: addWindow, err: windowsErr },
@@ -1388,7 +1520,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       const isList = state.who.type === 'list';
       facesBox.hidden = !isList;
       if (!isList) return;
-      const view = facesView(faces, state.who, storedList);
+      const view = facesView(faces, state.who, storedList, cameraName);
       const index = selectedListIndex(view.items, state.who);
       facesSelect.replaceChildren(
         h('option', { value: '', text: 'Choisissez une liste…' }),
@@ -1439,14 +1571,34 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       }
       whoCaution.hidden = type === 'anyone';
       drawFaces();
+      drawPersonCamera();
+      drawWhoReview();
       drawWhoEffects();
+    }
+
+    /** Caméra d'une personne précise : le menu n'existe que pour ce choix, et garde la caméra enregistrée même disparue. */
+    function drawPersonCamera() {
+      const isPerson = state.who.type === 'person';
+      personBox.hidden = !isPerson;
+      if (!isPerson) return;
+      const items = personCameraChoices(cameras(), state.who.cameraId);
+      personSelect.replaceChildren(h('option', { value: '', text: 'Choisissez une caméra…' }), ...items.map((i) => h('option', { value: i.id, text: i.label })));
+      personSelect.value = state.who.cameraId;
+    }
+
+    /** Message « à réenregistrer » : tant que la règle ouverte attend une nouvelle liste (ou caméra de personne). */
+    function drawWhoReview() {
+      const t = state.who.type;
+      const pending = reviewWho && ((t === 'list' && !state.who.listId) || (t === 'person' && !state.who.cameraId));
+      whoReview.hidden = !pending;
+      whoReviewText.textContent = pending ? reviewNote(state.who) : '';
     }
 
     function chooseWho(type) {
       const prev = state.who.type;
       if (type === prev) return;
       if (prev === 'list' && state.who.listId) lastList = cloneWho(state.who);
-      const next = type === 'list' ? (lastList ? cloneWho(lastList) : { type: 'list', listId: '', listName: '' }) : type === 'person' ? cloneWho(keptPerson) : { type };
+      const next = type === 'list' ? (lastList ? cloneWho(lastList) : { type: 'list', cameraId: '', listId: '', listName: '' }) : type === 'person' ? cloneWho(keptPerson) : { type };
       state.who = next;
       const trigger = triggerForWho(next, state.triggerMode);
       state.triggerMode = trigger.triggerMode;
@@ -1476,10 +1628,19 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     for (const [c, t] of WHO_CHOICES) c.input.addEventListener('change', () => chooseWho(t));
 
     facesSelect.addEventListener('change', () => {
-      const view = facesView(faces, state.who, storedList);
+      const view = facesView(faces, state.who, storedList, cameraName);
       const item = view.items[Number(facesSelect.value)];
-      state.who = item && facesSelect.value !== '' ? { type: 'list', listId: item.id, listName: item.label } : { type: 'list', listId: '', listName: '' };
+      // Le choix est le couple (caméra, liste) de l'entrée : la caméra par laquelle l'enregistreur la lit part avec la règle.
+      state.who = item && facesSelect.value !== '' ? { type: 'list', cameraId: item.cameraId, listId: item.id, listName: item.name } : { type: 'list', cameraId: '', listId: '', listName: '' };
       lastList = state.who.listId ? cloneWho(state.who) : lastList;
+      drawWhoReview();
+      changed();
+    });
+    personSelect.addEventListener('change', () => {
+      if (state.who.type !== 'person') return;
+      state.who = { ...state.who, cameraId: personSelect.value };
+      keptPerson = cloneWho(state.who);
+      drawWhoReview();
       changed();
     });
     facesRetry.addEventListener('click', async () => {
@@ -1764,7 +1925,11 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       } catch (err) {
         if (n !== trialSeq) return;
         setTrialBusy(false);
-        trialError.textContent = `L’essai n’a pas pu avoir lieu : ${sentence(err.message)}`;
+        const problem = serverProblem(err.message);
+        if (problem.key) {
+          showProblems([{ key: problem.key, message: problem.text }]);
+          trialError.textContent = `L’essai n’a pas pu avoir lieu : corrigez la case « ${problem.box} ».`;
+        } else trialError.textContent = `L’essai n’a pas pu avoir lieu : ${problem.text}`;
       }
     });
 
@@ -1799,8 +1964,15 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
         saving = false;
         for (const b of el.querySelectorAll('button')) b.disabled = false;
         busy(save, false);
-        formError.textContent = `La règle n’a pas été enregistrée : ${sentence(err.message)}`;
-        save.focus();
+        const problem = serverProblem(err.message);
+        if (problem.key) {
+          // Refus du serveur sur une case (« Qui : … », « Où : … ») : le message est posé sur la case, qui reçoit le focus.
+          showProblems([{ key: problem.key, message: problem.text }]);
+          formError.textContent = `La règle n’a pas été enregistrée : corrigez la case « ${problem.box} ».`;
+        } else {
+          formError.textContent = `La règle n’a pas été enregistrée : ${problem.text}`;
+          save.focus();
+        }
       }
     });
 
@@ -1834,6 +2006,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       resetTrial();
       resetAssist();
       rememberWho();
+      reviewWho = Boolean(rule?.needsReview) && isDeviceWho(rule?.spec?.who);
       severityTouched = false;
       autoTrigger = false;
       autoSeverity = null;
@@ -1855,6 +2028,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
     function close(restoreFocus) {
       open = false;
       editing = null;
+      reviewWho = false;
       el.hidden = true;
       formSlot.hidden = true;
       resetTrial();
@@ -1877,7 +2051,9 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
       focus: () => focusSoon(title),
       showPresence,
       refreshChoices: () => {
-        if (open) drawPlaces();
+        if (!open) return;
+        drawPlaces();
+        drawPersonCamera();
       },
       /**
        * La liste vient d'être relue : si la règle ouverte a changé ailleurs (ou disparu), on le dit, la saisie reste intacte.
@@ -1898,6 +2074,7 @@ export function createRulesView({ api, h, icon, toast, getMe, getDevices = () =>
         if (open) close(false);
         state = defaultForm();
         editing = null;
+        reviewWho = false;
         resetAssist();
         rememberWho();
         severityTouched = false;

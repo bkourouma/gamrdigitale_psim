@@ -35,8 +35,12 @@ export interface Received {
   payload: { state?: string; event?: string; value?: number; ts?: number; msgId?: string };
 }
 
-/** Broker du PSIM (code reel) avec un moteur factice qui enregistre ce qu'il recoit. */
-export async function psimBroker(port: number, received: Received[], gateways?: Gateway[]): Promise<Broker> {
+/**
+ * Broker du PSIM (code reel) avec un moteur factice qui enregistre ce qu'il recoit.
+ * `extra` : options supplementaires du broker, par exemple `onActuatorAck` (accuses de commande) ; le compte de passerelle d'un
+ * essai de commandes se declare avec `actuators: ['GACHE-1']` dans `gateways`.
+ */
+export async function psimBroker(port: number, received: Received[], gateways?: Gateway[], extra: { onActuatorAck?: (actuatorId: string, payload: Buffer) => void } = {}): Promise<Broker> {
   const engine = { handleDetectorMessage: (id: string, payload: unknown) => void received.push({ id, payload: payload as Received['payload'] }) } as never;
   return startBroker(engine, {
     host: '127.0.0.1',
@@ -44,6 +48,7 @@ export async function psimBroker(port: number, received: Received[], gateways?: 
     user: 'psim',
     password: 'Mot-de-passe-mqtt-solide-3',
     gateways: gateways ?? [{ user: GW_USER, password: GW_PASSWORD, detectors: ['D-*', 'GW-*'] }],
+    ...extra,
   });
 }
 

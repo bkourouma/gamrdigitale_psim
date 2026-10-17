@@ -176,7 +176,8 @@ export const config = {
   logFile: env.PSIM_LOG_FILE === undefined ? production : env.PSIM_LOG_FILE === '1',
   // Passerelles : un compte MQTT PAR passerelle, limite a ses detecteurs (JSON : [{"user":"gw1","password":"...","detectors":["D-*","A-01"]}]).
   // Un identifiant partage par tous les equipements permettrait a n'importe lequel de forger ou de masquer l'alarme d'un autre.
-  mqttGateways: ((): { user: string; password: string; detectors: string[] }[] => {
+  // `actuators` (facultatif) : actionneurs dont la passerelle recoit les ordres et publie les accuses (voir docs/COMMANDES.md).
+  mqttGateways: ((): { user: string; password: string; detectors: string[]; actuators?: string[] }[] => {
     const raw = env.PSIM_MQTT_GATEWAYS;
     if (!raw || raw.trim() === '') return [];
     let parsed: unknown;
@@ -188,14 +189,22 @@ export const config = {
     if (!Array.isArray(parsed) || parsed.length > 50) throw new Error('PSIM_MQTT_GATEWAYS : une liste de 50 passerelles au plus est attendue');
     const principal = env.PSIM_MQTT_USER ?? 'psim';
     return parsed.map((g, i) => {
-      const gw = g as { user?: unknown; password?: unknown; detectors?: unknown };
+      const gw = g as { user?: unknown; password?: unknown; detectors?: unknown; actuators?: unknown };
       const n = i + 1;
       if (typeof gw.user !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(gw.user) || gw.user === principal) throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : identifiant invalide (ou identique au compte principal)`);
       if (typeof gw.password !== 'string' || gw.password.length < 12) throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : mot de passe de 12 caracteres minimum`);
-      if (!Array.isArray(gw.detectors) || gw.detectors.length === 0 || gw.detectors.some((d) => typeof d !== 'string' || !/^[A-Za-z0-9_-]{1,32}\*?$/.test(d))) {
+      // Liste d'actionneurs : memes regles que les detecteurs (« * » seul refuse : jamais tous les actionneurs d'un coup).
+      const actuators = gw.actuators === undefined ? undefined : gw.actuators;
+      if (actuators !== undefined && (!Array.isArray(actuators) || actuators.length === 0 || actuators.length > 50 || actuators.some((d) => typeof d !== 'string' || !/^[A-Za-z0-9_-]{1,32}\*?$/.test(d)))) {
+        throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : actuators doit lister des identifiants (« SIR-01 ») ou des prefixes (« R-* »), jamais « * » seul`);
+      }
+      // Un compte qui ne sert qu'aux actionneurs peut ne lister aucun detecteur.
+      const detectorsOptional = actuators !== undefined && (gw.detectors === undefined || (Array.isArray(gw.detectors) && gw.detectors.length === 0));
+      if (!detectorsOptional && (!Array.isArray(gw.detectors) || gw.detectors.length === 0 || gw.detectors.some((d) => typeof d !== 'string' || !/^[A-Za-z0-9_-]{1,32}\*?$/.test(d)))) {
         throw new Error(`PSIM_MQTT_GATEWAYS[${n}] : detectors doit lister des identifiants (« D-01 ») ou des prefixes (« D-* »)`);
       }
-      return { user: gw.user, password: gw.password, detectors: gw.detectors as string[] };
+      const detectors = detectorsOptional ? [] : (gw.detectors as string[]);
+      return actuators ? { user: gw.user, password: gw.password, detectors, actuators: actuators as string[] } : { user: gw.user, password: gw.password, detectors };
     });
   })(),
   // Passerelle deconnectee du broker depuis N secondes : ses capteurs sont « non surveilles », avec UN avertissement, au lieu
@@ -208,6 +217,9 @@ export const config = {
   ingestMaxAgeS: num('PSIM_INGEST_MAX_AGE_S', 7 * 86_400, 60, 30 * 86_400),
   // Controle d'acces : duree de conservation du journal des passages (donnees personnelles), en jours, de 7 a 3650. Reglable ensuite dans l'interface.
   accessRetentionDays: num('PSIM_ACCESS_RETENTION_DAYS', 90, 7, 3650),
+  // Commandes HTTP vers des relais IP (voir docs/COMMANDES.md) : hotes autorises (noms, adresses, blocs IPv4 a.b.c.d/n).
+  // Vide = adresses IP privees seulement (10/8, 172.16/12, 192.168/16, fc00::/7). Metadonnees cloud et lien local toujours refuses.
+  actuatorHttpHosts: list('PSIM_ACTUATOR_HTTP_HOSTS'),
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',
   dataDir: env.PSIM_DATA_DIR ?? 'data',

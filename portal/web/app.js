@@ -17,7 +17,7 @@ import {
   pill, sitePill, devicePill, dataTable, emptyBlock, notice, panel, facts,
 } from './ui.js';
 import { createRing, createThermometer, createTube, BANDS } from './gauge.js';
-import { disposeCharts, downtimeChart, riskTrend } from './charts.js';
+import { disposeCharts, downtimeChart, patrolsChart, riskTrend } from './charts.js';
 import { clientsPage, crumbs, groupHref, groupPage, orgPage, orgTrail, railTree, soloGroupId } from './groups.js';
 
 const DAY_MS = 86_400_000;
@@ -42,7 +42,7 @@ const state = {
   /** Écran affiché : { kind: 'home' }, { kind: 'org', id }, { kind: 'group', id } ou { kind: 'site', id, tab, days }. */
   page: null,
   /** Bascules « Voir en tableau », gardées d'un rafraîchissement à l'autre. */
-  prefs: { downtime: false, risk: false },
+  prefs: { downtime: false, risk: false, patrols: false },
   timer: null,
   seq: 0,
   loadedAt: 0,
@@ -836,6 +836,14 @@ function riskSummary(d) {
   return panel({ title: 'Indice de sécurité', iconName: 'gauge' }, h('div', { class: 'risk-summary' }, ring.el, h('div', { class: 'risk-summary-text' }, ...text, link)));
 }
 
+/**
+ * Rondes de sécurité par semaine : seulement si le site transmet l'application des agents (`d.patrols`). Sans elle, rien
+ * n'apparaît : beaucoup de sites n'ont pas d'agents, une carte « non transmis » sur chacun serait du bruit. Que des compteurs.
+ */
+function patrolsPanel(d) {
+  return d.patrols ? patrolsChart(d.patrols, { prefs: state.prefs, stale: Boolean(staleSince(d)) }) : null;
+}
+
 // ---- onglet Synthèse
 
 function tabSynthese(d, r) {
@@ -853,7 +861,7 @@ function tabSynthese(d, r) {
   } else equipNote = down.length ? `${plural(down.length, 'hors service', 'hors service')} sur ${monitored.length} suivis.` : `Les ${monitored.length} équipements suivis répondent.`;
   const equipment = ['Équipements', d.devices.length ? plural(d.devices.length, 'équipement', 'équipements') : 'Aucun déclaré', equipNote];
   if (d.status.level === 'unknown') {
-    return h('div', { class: 'grid-2' }, panel({ title: 'En bref', iconName: 'list' }, facts([equipment]), notice('info', 'info', 'La disponibilité et le temps d’arrêt apparaîtront quand l’état des équipements sera mesuré.')), riskSummary(d));
+    return [h('div', { class: 'grid-2' }, panel({ title: 'En bref', iconName: 'list' }, facts([equipment]), notice('info', 'info', 'La disponibilité et le temps d’arrêt apparaîtront quand l’état des équipements sera mesuré.')), riskSummary(d)), patrolsPanel(d)];
   }
   const a = d.availability;
   const inc = incidentSummary(d);
@@ -877,8 +885,80 @@ function tabSynthese(d, r) {
   ]);
   return [
     h('div', { class: 'grid-2' }, panel({ title: periodTitle(d, r), iconName: 'list' }, list), riskSummary(d)),
+    accessCard(d),
     downtimeChart(d.daily, { prefs: state.prefs, title: 'Arrêts par jour', stale: Boolean(since), blind: { periods: d.blindPeriods, offsetMin: d.utcOffsetMin } }),
+    patrolsPanel(d),
   ];
+}
+
+// ---- carte « Contrôle d'accès » (synthèse)
+
+/** Les états d'une porte, du plus grave au plus serein : classe de pastille, icône, mot (singulier, pluriel). Jamais la couleur seule. */
+const ACCESS_STATES = [
+  ['offline', 'is-offline', 'state-offline', 'hors ligne', 'hors ligne'],
+  ['fault', 'is-fault', 'wrench', 'en défaut', 'en défaut'],
+  ['forced', 'is-solid-alarm', 'state-alarm', 'forcée', 'forcées'],
+  ['heldOpen', 'is-warning', 'clock', 'maintenue ouverte', 'maintenues ouvertes'],
+  ['unknown', 'is-dashed is-unknown', 'state-unknown', 'd’état inconnu', 'd’état inconnu'],
+  ['open', 'is-ok', 'unlock', 'ouverte', 'ouvertes'],
+  ['closed', 'is-ok', 'lock', 'fermée', 'fermées'],
+];
+
+/** Les incidents d'accès de la fenêtre, par type, en une phrase (les types à zéro sont omis). */
+function accessIncidentParts(i) {
+  return [
+    i.forced && plural(i.forced, 'porte forcée', 'portes forcées'),
+    i.heldOpen && plural(i.heldOpen, 'porte maintenue ouverte', 'portes maintenues ouvertes'),
+    i.repeatedDenials && plural(i.repeatedDenials, 'série de refus de badge', 'séries de refus de badge'),
+    i.tamper && plural(i.tamper, 'sabotage', 'sabotages'),
+    i.other && plural(i.other, 'autre incident', 'autres incidents'),
+  ].filter(Boolean);
+}
+
+/**
+ * Contrôle d'accès du site : que des comptes (portes, états, disponibilité, incidents), jamais un nom, un badge ni un passage.
+ * Un site sans porte n'a pas de carte ; un site dont les portes existent mais dont le système n'envoie pas encore ce détail le dit.
+ */
+function accessCard(d) {
+  const a = d.access;
+  if (!a) {
+    if (!d.devices.some((x) => x.category === 'access')) return null;
+    return panel({ title: 'Contrôle d’accès', iconName: 'door', id: 'access' }, h('p', { class: 'lead' }, 'Non transmis'), h('p', { class: 'hint' }, 'Ce site n’envoie pas encore le détail de son contrôle d’accès : système de surveillance à mettre à jour, ou portes pas encore déclarées.'));
+  }
+  const since = staleSince(d);
+  const av = a.availability;
+  const incidents = a.incidents;
+  const parts = accessIncidentParts(incidents);
+  const states = ACCESS_STATES.filter(([key]) => a.states[key] > 0).map(([key, cls, iconName, one, many]) => {
+    const n = a.states[key];
+    return h('li', null, pill(cls, iconName, `${plural(n, 'porte', 'portes')} ${n > 1 ? many : one}`));
+  });
+  const windowText = `${a.windowDays} derniers jours`;
+  const list = facts([
+    ['Portes', plural(a.doors, 'porte', 'portes'), 'Portes déclarées sur ce site (portes, portails, barrières, tourniquets).'],
+    [
+      'Disponibilité',
+      av.pct === null ? 'Pas encore mesurée' : `${fmtAvail(av.pct, av.downS)} du temps`,
+      av.pct === null ? 'Aucune porte n’a encore été observée.' : `Part du temps où les portes répondaient, sur les ${windowText}.${av.unmonitoredS > 0 ? ' Les arrêts du système du site ne sont pas comptés.' : ''}`,
+    ],
+    [
+      'Incidents d’accès',
+      incidents.total ? plural(incidents.total, 'incident', 'incidents') : incidents.openNow ? 'Aucun nouveau' : 'Aucun',
+      [
+        incidents.total ? `Sur les ${windowText}${NB}: ${parts.join(', ')}.` : `Aucun incident d’accès sur les ${windowText}.`,
+        incidents.openNow ? `${plural(incidents.openNow, 'incident est encore ouvert', 'incidents sont encore ouverts')}${since ? ' au dernier signal' : ''}.` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    ],
+  ]);
+  return panel(
+    { title: 'Contrôle d’accès', iconName: 'door', id: 'access' },
+    since && notice('warning', 'state-offline', `Site injoignable${NB}: ces portes sont dans l’état de son dernier signal (${since}). Leur état actuel n’est pas connu.`),
+    h('p', { class: 'hint' }, since ? 'État des portes au dernier signal' : 'État des portes en ce moment'),
+    h('ul', { class: 'state-row', 'aria-label': 'Portes par état' }, states),
+    list,
+  );
 }
 
 // ---- onglet Sécurité

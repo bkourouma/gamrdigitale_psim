@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { PsimError } from './engine.ts';
 import { CATEGORIES, CATEGORY_LABEL } from './sources.ts';
+import { accessSectionHtml, computeAccessReport } from './accessreport.ts';
 import type { DeviceCategory } from './types.ts';
 
 /**
@@ -344,6 +345,33 @@ export function createReports(db: DatabaseSync, siteName: () => string = () => '
 
   const percent = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)} %`);
 
+  // Sections additionnelles du rapport (ex. « Rondes » des agents) : chaque module qui a quelque chose a dire sur la
+  // periode s'enregistre ici ; reports.ts ne connait aucun d'eux.
+  const sections: ((range: Range) => string | null)[] = [];
+  /** Enregistre une section ; renvoie la fonction qui la retire. Le HTML rendu est place avant le pied du rapport. */
+  function addSection(fn: (range: Range) => string | null): () => void {
+    sections.push(fn);
+    return () => {
+      const i = sections.indexOf(fn);
+      if (i >= 0) sections.splice(i, 1);
+    };
+  }
+  /** HTML des sections pour la periode. Une section vide ou en erreur n'ajoute rien : le rapport n'est JAMAIS casse par elle. */
+  function sectionsHtml(range: Range): string {
+    let out = '';
+    for (const fn of [...sections]) {
+      try {
+        const html: unknown = fn(range);
+        // Une section est synchrone : une promesse (erreur de programmation) est ecartee, sans rejet non gere.
+        if (html instanceof Promise) html.catch(() => {});
+        else if (typeof html === 'string' && html !== '') out += `${html}\n`;
+      } catch (err) {
+        console.warn('[rapports] section ignoree :', err instanceof Error ? err.message : err);
+      }
+    }
+    return out;
+  }
+
   // Pages servies par le PSIM : feuille de style et script externes (politique de securite). Piece jointe : tout est integre.
   let standaloneCss: string | null = null;
   const PAGE_HEAD = (title: string) =>
@@ -399,8 +427,8 @@ ${table(
     esc(qualificationText(r.category, r.qualification)),
     esc(r.comment ?? ''),
   ]),
-)}`}
-<p class="foot">Document généré par le PSIM à partir de son journal. Les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur.</p>
+)}`}${accessSectionHtml(computeAccessReport(db, range, now))}
+${sectionsHtml(range)}<p class="foot">Document généré par le PSIM à partir de son journal. Les durées sont mesurées entre l'ouverture de l'incident et l'action de l'opérateur.</p>
 ${anchorLine()}
 ${PAGE_FOOT()}`;
   }
@@ -431,7 +459,7 @@ ${anchorLine()}
 ${PAGE_FOOT()}`;
   }
 
-  return { query, auditCsv, detail, reportHtml, standaloneReportHtml, incidentHtml, incidentsCsv: (range: Range) => incidentsCsv(query(range)) };
+  return { query, auditCsv, detail, reportHtml, standaloneReportHtml, incidentHtml, addSection, incidentsCsv: (range: Range) => incidentsCsv(query(range)) };
 }
 
 export type Reports = ReturnType<typeof createReports>;

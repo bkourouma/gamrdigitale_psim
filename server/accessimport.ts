@@ -1,5 +1,5 @@
 /**
- * Import CSV des titulaires (F25, docs/ACCES.md § 10.5).
+ * Import CSV des titulaires (F25, docs/ACCES.md § 11.5).
  *
  *  - `parseHolderCsv` est PURE : decodage, separateur, RFC 4180 en une passe, controle de tout ce qui releve du fichier.
  *  - `runImport` applique les lignes valides par l'interface `HoldersService` (dans `batch`, ou `simulate` pour un essai a blanc),

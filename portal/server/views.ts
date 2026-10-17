@@ -126,6 +126,30 @@ export function riskOf(summary: SiteSummary | null | undefined): RiskView | null
   return { index: r.index, level: named?.level ?? null, levelLabel: named?.label ?? null, worstZone: r.worstZone, assessedZones: r.assessedZones, totalZones: r.totalZones, at: summary.generatedAt };
 }
 
+export interface AccessView {
+  /** Portes declarees (aucun nom : les detecteurs-portes figurent deja dans la liste des equipements). */
+  doors: number;
+  /** Portes par etat du moment (hors ligne, en defaut, forcee, maintenue ouverte, ouverte, fermee, inconnue). */
+  states: NonNullable<SiteSummary['access']>['states'];
+  /** Disponibilite des portes sur la fenetre du resume ; `pct` null : rien observe (jamais 100 %). */
+  availability: NonNullable<SiteSummary['access']>['availability'];
+  incidents: NonNullable<SiteSummary['access']>['incidents'];
+  /** Longueur de la fenetre des comptes et de la disponibilite (jours). */
+  windowDays: number;
+  /** Date du calcul (celle du dernier resume) : un site injoignable garde son dernier etat connu, date. */
+  at: number;
+}
+
+/**
+ * Le controle d'acces tel que le site l'a envoye ; `null` s'il n'est pas transmis (site sans porte, ou PSIM plus ancien) :
+ * rien d'invente. Ne contient que des comptes (voir server/accessportal.ts).
+ */
+export function accessOf(summary: SiteSummary | null | undefined): AccessView | null {
+  const a = summary?.access;
+  if (!summary || !a) return null;
+  return { doors: a.doors, states: a.states, availability: a.availability, incidents: a.incidents, windowDays: summary.windowDays, at: summary.generatedAt };
+}
+
 /** Les N derniers jours d'indice connus du site (le plus ancien d'abord). */
 export function lastRiskDays(db: DatabaseSync, siteId: string, days: number): { day: string; index: number }[] {
   return (db.prepare('SELECT day, idx FROM site_risk_day WHERE site_id = ? ORDER BY day DESC LIMIT ?').all(siteId, days) as { day: string; idx: number }[]).reverse().map((r) => ({ day: r.day, index: r.idx }));
@@ -274,10 +298,14 @@ export function siteDetail(db: DatabaseSync, site: VisibleSite, days: number, no
     notifications: s?.notifications ?? null,
     utcOffsetMin: s?.utcOffsetMin ?? 0,
     risk: riskOf(s),
+    access: accessOf(s),
     // Les zones les plus exposees d'abord ; une zone non evaluee le dit (pas de note supposee).
     riskZones: (s?.risk?.zones ?? [])
       .map((z) => ({ zone: z.zone, index: z.index, stale: z.stale, ...(z.index === null ? { level: null, levelLabel: null } : { level: levelOf(z.index).level, levelLabel: levelOf(z.index).label }) }))
       .sort((a, b) => (b.index ?? -1) - (a.index ?? -1) || a.zone.localeCompare(b.zone, 'fr')),
     riskHistory: lastRiskDays(db, site.id, days),
+    // Rondes de securite par semaine, telles que le site les a envoyees (fenetre de l'instantane, pas la plage choisie) :
+    // des compteurs seulement. `null` : ce site n'a pas l'application des agents (ou un ancien PSIM) : rien n'est invente.
+    patrols: s?.patrols ?? null,
   };
 }

@@ -517,6 +517,9 @@ ul.formula li::marker { color: var(--ink-3); }
 .chart-svg .bar.hot { fill: var(--brand-ink); }
 .chart-svg .nodata { fill: var(--line-strong); }
 .chart-svg .cross { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
+/* Bande des SOS du graphique des rondes : rond plein (forme) avec le nombre ; le texte est sur la couleur d'encre du niveau critique. */
+.chart-svg .sos-dot { fill: var(--lvl-critique-ink); }
+.chart-svg text.sos-num { font-weight: 800; fill: var(--surface); }
 .trend .band { opacity: 0.16; }
 .trend .band.faible { fill: var(--lvl-faible); }
 .trend .band.modere { fill: var(--lvl-modere); opacity: 0.22; }

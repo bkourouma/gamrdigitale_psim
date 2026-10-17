@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { accessSectionMailHtml, accessSectionText, computeAccessReport } from './accessreport.ts';
 import { PsimError } from './engine.ts';
 import type { Mailer } from './notifications.ts';
 import { validateAddress } from './recipients.ts';
@@ -173,6 +174,7 @@ export function createReportMail(deps: ReportMailDeps) {
     const integrity = (db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'journal_integrity_failed' AND ts >= ? AND ts < ?").get(range.from, range.to) as { n: number }).n;
     const offline = (db.prepare("SELECT COUNT(*) AS n FROM device WHERE kind = 'detector' AND status IN ('offline', 'fault')").get() as { n: number }).n;
     const period = range.fromDay === range.toDay ? range.fromDay : `${range.fromDay} au ${range.toDay}`;
+    const access = computeAccessReport(db, range, at);
     const rate = sum.falseAlarmRate === null ? '—' : `${Math.round(sum.falseAlarmRate * 100)} %`;
 
     const lines: string[] = [
@@ -187,6 +189,7 @@ export function createReportMail(deps: ReportMailDeps) {
       gaps.length === 0 ? 'Surveillance : aucune periode sans surveillance pendant cette periode.' : `ATTENTION - surveillance interrompue ${gaps.length} fois : ${gaps.map((g) => g.details ?? '').join(' ; ')}`,
       offline > 0 ? `ATTENTION - ${offline} detecteur(s) actuellement hors service.` : 'Detecteurs : aucun hors service actuellement.',
       integrity > 0 ? `ATTENTION - le journal a ete signale ALTERE ${integrity} fois pendant la periode.` : '',
+      ...(access ? ['', ...accessSectionText(access)] : []),
       '',
       head ? `Empreinte du journal (a conserver) : ${head.id}:${head.hash}` : '',
       deps.publicUrl ? `Ouvrir le PSIM : ${deps.publicUrl}` : '',
@@ -204,6 +207,7 @@ ${sum.total === 0 ? '<p>Aucun incident sur la période.</p>' : `<table style="bo
 ${gaps.length === 0 ? '<p style="margin:6px 0;color:#2a7a3b">Surveillance : aucune période sans surveillance.</p>' : warn(`Surveillance interrompue ${gaps.length} fois pendant la période : ${gaps.map((g) => g.details ?? '').join(' ; ')}`)}
 ${offline > 0 ? warn(`${offline} détecteur(s) actuellement hors service.`) : ''}
 ${integrity > 0 ? warn(`Le journal a été signalé ALTÉRÉ ${integrity} fois pendant la période.`) : ''}
+${accessSectionMailHtml(access)}
 ${head ? `<p style="margin:12px 0 4px;font-size:12px;color:#55606b">Empreinte du journal (à conserver, voir <code>npm run verify-journal</code>) :<br><code>${head.id}:${head.hash}</code></p>` : ''}
 <p style="font-size:12px;color:#55606b">Le rapport complet (à ouvrir dans un navigateur ou à imprimer en PDF) et l'export CSV sont en pièces jointes.</p>
 </body></html>`;

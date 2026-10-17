@@ -7,7 +7,7 @@
  *  - Import (administrateur) : fichier CSV, vérification à blanc, puis import pour de bon ;
  *  - Synchronisation : un état par contrôleur, clé de la passerelle (montrée une seule fois), suppressions à confirmer.
  *
- * Contrat : docs/ACCES.md § 10 (routes, formes JSON). Les calculs et les textes sont dans holdersfmt.js (fonctions pures,
+ * Contrat : docs/ACCES.md § 11 (routes, formes JSON). Les calculs et les textes sont dans holdersfmt.js (fonctions pures,
  * testées sans navigateur) ; ce fichier ne fait que le DOM et les appels au serveur.
  *
  * Règles tenues ici :

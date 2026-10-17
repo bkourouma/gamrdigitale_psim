@@ -5,7 +5,7 @@
  *
  * Garde-fous verifies : route ouverte a l'operateur comme a l'administrateur, menu et page presents, feuille de style
  * chargee, aucune mise en forme en ligne ni HTML construit a partir de donnees (CSP stricte), aucun nom ni badge dans une
- * adresse, formes des corps de requete conformes a docs/ACCES.md § 10, modele CSV accepte par l'import du serveur.
+ * adresse, formes des corps de requete conformes a docs/ACCES.md § 11, modele CSV accepte par l'import du serveur.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

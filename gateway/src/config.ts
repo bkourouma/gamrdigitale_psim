@@ -5,6 +5,8 @@
  * Les chemins relatifs (dataDir, passwordFile, ca, $file) sont relatifs au DOSSIER DU FICHIER de configuration.
  * Le mot de passe du PSIM vient de `passwordFile` (recommande), de `passwordEnv` ou de `password` ; il n'est jamais journalise.
  * Dans la section `config` d'un module, `{"$env": "NOM"}` et `{"$file": "chemin"}` sont remplaces par le secret correspondant.
+ * La section `actuators` declare les actionneurs commandables par le PSIM (cle HMAC par actionneur : `keyFile`, `keyEnv` ou `key`,
+ * comme le mot de passe, jamais journalisee) ; voir docs/PASSERELLE.md et docs/COMMANDES.md.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -24,6 +26,30 @@ export interface ModuleSpec {
   /** Nom affiche dans le journal (plusieurs instances d'un meme module : « modbus-ups », « modbus-clim »). */
   label: string;
   config: Record<string, unknown>;
+}
+
+/** Plafond local d'une action d'actionneur (defense en profondeur : le PSIM peut etre compromis). */
+export interface ActuatorActionSpec {
+  /** Duree maximale en secondes ; null = action instantanee (un ordre AVEC durationS est refuse). */
+  maxS: number | null;
+  /** Vrai = un ordre sans durationS est accepte meme si maxS existe (a l'administrateur de le decider). */
+  unbounded: boolean;
+}
+
+export interface ActuatorSpec {
+  id: string;
+  /** Cle HMAC-SHA256 : 64 hexadecimaux minuscules. JAMAIS journalisee. */
+  key: string;
+  /** D'ou vient la cle (affichable : jamais la cle elle-meme). */
+  keySource: string;
+  /** Etiquette du module de la passerelle qui execute les ordres. */
+  module: string;
+  /** Action -> plafond. Toujours lire avec Object.hasOwn (« constructor » est un nom d'action possible). */
+  actions: Record<string, ActuatorActionSpec>;
+  /** Action de repos appelee au bout de durationS ; null = aucun retour automatique (portail, barriere). */
+  rest: string | null;
+  /** Issue de secours : l'action `lock` est INTERDITE (configuration et execution). */
+  emergencyExit: boolean;
 }
 
 export interface GatewayConfig {
@@ -46,6 +72,8 @@ export interface GatewayConfig {
   moduleRetry: { minMs: number; maxMs: number };
   log: { file: boolean; level: 'info' | 'warn' | 'error' };
   modules: ModuleSpec[];
+  /** Actionneurs commandables par le PSIM (vide = le pilote de commandes est inactif). */
+  actuators: ActuatorSpec[];
 }
 
 /** Dossier des modules livres avec la passerelle. */
@@ -55,6 +83,12 @@ export const MODULE_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const LABEL = /^[A-Za-z0-9._-]{1,32}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const DETECTOR_PATTERN = /^[A-Za-z0-9_-]{1,32}\*?$/;
+/** Memes formats que le PSIM (server/actuatorproto.ts) : identifiant, action, cle de 256 bits en hexadecimal. */
+export const ACTUATOR_ID = /^[A-Za-z0-9_-]{1,32}$/;
+export const ACTION_NAME = /^[a-z_]{1,16}$/;
+const ACTUATOR_KEY = /^[0-9a-fA-F]{64}$/;
+const MAX_ACTUATORS = 256;
+const MAX_ACTIONS = 16;
 
 /**
  * Fichier d'entree d'un module, ou null si le nom est refuse ou si le module n'existe pas.
@@ -124,7 +158,7 @@ export function loadConfig(file: string, opts: LoadOptions = {}): GatewayConfig 
     return v;
   };
 
-  onlyKeys(raw, 'racine', ['name', 'psim', 'dataDir', 'queue', 'retry', 'moduleRetry', 'log', 'modules']);
+  onlyKeys(raw, 'racine', ['name', 'psim', 'dataDir', 'queue', 'retry', 'moduleRetry', 'log', 'modules', 'actuators']);
 
   let name = 'passerelle';
   if (raw.name !== undefined) {
@@ -254,6 +288,8 @@ export function loadConfig(file: string, opts: LoadOptions = {}): GatewayConfig 
 
   // --- Modules ----------------------------------------------------------------------------------------------------
   const modules: ModuleSpec[] = [];
+  /** Etiquettes de tous les modules valides declares, y compris `enabled: false` (un actionneur peut viser un module coupe). */
+  const declaredLabels = new Set<string>();
   if (!Array.isArray(raw.modules)) {
     errors.push('modules : liste obligatoire ([{ "name": "zigbee", "config": { ... } }])');
   } else {
@@ -281,6 +317,7 @@ export function loadConfig(file: string, opts: LoadOptions = {}): GatewayConfig 
       }
       if (labels.has(label)) errors.push(`${where} : « ${label} » apparait deux fois (donner un « label » different a chaque instance)`);
       labels.add(label);
+      declaredLabels.add(label);
       let config: Obj = {};
       if (m.config !== undefined) {
         if (!isObj(m.config)) errors.push(`${where}.config : objet attendu`);
@@ -290,8 +327,152 @@ export function loadConfig(file: string, opts: LoadOptions = {}): GatewayConfig 
     });
   }
 
+  // --- Actionneurs ------------------------------------------------------------------------------------------------
+  const actuators: ActuatorSpec[] = [];
+  if (raw.actuators !== undefined) {
+    if (!Array.isArray(raw.actuators)) {
+      errors.push('actuators : liste attendue ([{ "id": "GACHE-1", "keyFile": "secrets/gache-1.key", "module": "dahua-acces", "actions": { ... } }])');
+    } else if (raw.actuators.length > MAX_ACTUATORS) {
+      errors.push(`actuators : ${MAX_ACTUATORS} actionneurs au plus`);
+    } else {
+      const ids = new Set<string>();
+      const keyOwner = new Map<string, string>();
+      raw.actuators.forEach((a, i) => {
+        const where = `actuators[${i}]`;
+        if (!isObj(a)) {
+          errors.push(`${where} : objet attendu`);
+          return;
+        }
+        onlyKeys(a, where, ['id', 'key', 'keyEnv', 'keyFile', 'module', 'actions', 'rest', 'emergencyExit']);
+        let id = '';
+        if (typeof a.id !== 'string' || !ACTUATOR_ID.test(a.id)) errors.push(`${where}.id : 1 a 32 caracteres (lettres, chiffres, _ et -), comme dans le PSIM`);
+        else if (ids.has(a.id)) errors.push(`${where}.id : « ${a.id} » apparait deux fois`);
+        else {
+          id = a.id;
+          ids.add(id);
+        }
+        const shown = id || `#${i}`;
+
+        // Cle : meme logique que le mot de passe du PSIM (une seule source) ; sa valeur n'apparait JAMAIS dans une erreur.
+        let key = '';
+        let keySource = '';
+        const sources = ['key', 'keyEnv', 'keyFile'].filter((k) => a[k] !== undefined);
+        if (sources.length !== 1) {
+          errors.push(`${where} (${shown}) : indiquer UNE source de cle : keyFile (recommande), keyEnv ou key`);
+        } else {
+          let value = '';
+          if (sources[0] === 'key') {
+            if (typeof a.key !== 'string' || !a.key) errors.push(`${where}.key : texte de 64 hexadecimaux attendu`);
+            else {
+              value = a.key;
+              keySource = 'fichier de configuration';
+            }
+          } else if (sources[0] === 'keyEnv') {
+            if (typeof a.keyEnv !== 'string' || !ENV_NAME.test(a.keyEnv)) errors.push(`${where}.keyEnv : nom de variable d'environnement attendu`);
+            else if (!env[a.keyEnv]) errors.push(`${where}.keyEnv : la variable d'environnement ${a.keyEnv} est absente ou vide`);
+            else {
+              value = env[a.keyEnv] as string;
+              keySource = `variable ${a.keyEnv}`;
+            }
+          } else if (typeof a.keyFile !== 'string' || !a.keyFile) {
+            errors.push(`${where}.keyFile : chemin attendu`);
+          } else {
+            try {
+              value = readSecretFile(at(a.keyFile));
+              keySource = `fichier ${at(a.keyFile)}`;
+              if (!value) errors.push(`${where}.keyFile : le fichier ${at(a.keyFile)} est vide`);
+            } catch (err) {
+              errors.push(`${where}.keyFile : lecture impossible de ${at(a.keyFile)} (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})`);
+            }
+          }
+          if (value) {
+            if (!ACTUATOR_KEY.test(value)) errors.push(`${where} (${shown}) : la cle doit etre 64 caracteres hexadecimaux (celle affichee a la creation de l'actionneur dans le PSIM)`);
+            else if (/^(.)\1+$/.test(value)) errors.push(`${where} (${shown}) : cle triviale (un seul caractere repete) : est-ce bien la cle affichee par le PSIM ?`);
+            else {
+              key = value.toLowerCase();
+              const owner = keyOwner.get(key);
+              if (owner !== undefined) errors.push(`${where} (${shown}) : meme cle que l'actionneur ${owner} : une cle par actionneur (en renouveler une dans le PSIM)`);
+              else keyOwner.set(key, shown);
+            }
+          }
+        }
+
+        let moduleLabel = '';
+        if (typeof a.module !== 'string' || !LABEL.test(a.module)) errors.push(`${where}.module : etiquette (« label », ou nom par defaut) d'un module declare dans « modules »`);
+        else if (!declaredLabels.has(a.module)) errors.push(`${where}.module : aucun module d'etiquette « ${a.module} » dans « modules » (etiquettes : ${[...declaredLabels].join(', ') || 'aucune'})`);
+        else moduleLabel = a.module;
+
+        if (a.emergencyExit !== undefined && typeof a.emergencyExit !== 'boolean') errors.push(`${where}.emergencyExit : true ou false`);
+        const emergencyExit = a.emergencyExit === true;
+
+        // Actions : Object.keys ne parcourt que les cles PROPRES du JSON ; la table construite ne s'interroge qu'avec Object.hasOwn.
+        const actions: Record<string, ActuatorActionSpec> = {};
+        let actionsOk = false;
+        if (!isObj(a.actions)) {
+          errors.push(`${where}.actions : objet attendu ({ "unlock": { "maxS": 10 }, "lock": {} })`);
+        } else {
+          const names = Object.keys(a.actions);
+          if (names.length === 0) errors.push(`${where}.actions : au moins une action`);
+          else if (names.length > MAX_ACTIONS) errors.push(`${where}.actions : ${MAX_ACTIONS} actions au plus`);
+          else {
+            actionsOk = true;
+            for (const n of names) {
+              const w = `${where}.actions.${n.slice(0, 20)}`;
+              const spec = a.actions[n];
+              if (!ACTION_NAME.test(n)) {
+                errors.push(`${w} : nom d'action invalide (1 a 16 minuscules ou _)`);
+                actionsOk = false;
+                continue;
+              }
+              if (!isObj(spec)) {
+                errors.push(`${w} : objet attendu ({ "maxS": 10 } ou {})`);
+                actionsOk = false;
+                continue;
+              }
+              onlyKeys(spec, w, ['maxS', 'unbounded']);
+              let maxS: number | null = null;
+              if (spec.maxS !== undefined) {
+                if (typeof spec.maxS !== 'number' || !Number.isInteger(spec.maxS) || spec.maxS < 1 || spec.maxS > 86_400) {
+                  errors.push(`${w}.maxS : entier entre 1 et 86400 attendu`);
+                  actionsOk = false;
+                } else maxS = spec.maxS;
+              }
+              let unbounded = false;
+              if (spec.unbounded !== undefined) {
+                if (typeof spec.unbounded !== 'boolean') {
+                  errors.push(`${w}.unbounded : true ou false`);
+                  actionsOk = false;
+                } else unbounded = spec.unbounded;
+              }
+              if (unbounded && spec.maxS === undefined) {
+                errors.push(`${w}.unbounded : n'a de sens qu'avec maxS (une action instantanee n'a pas de duree)`);
+                actionsOk = false;
+              }
+              // defineProperty : une action nommee « __proto__ » reste une simple donnee (jamais le prototype de la table).
+              Object.defineProperty(actions, n, { value: { maxS, unbounded }, enumerable: true, writable: true, configurable: true });
+            }
+          }
+        }
+
+        let rest: string | null = null;
+        if (a.rest !== undefined && a.rest !== null) {
+          if (typeof a.rest !== 'string' || !ACTION_NAME.test(a.rest)) errors.push(`${where}.rest : nom de l'action de repos (ex. "lock"), ou absent pour aucun retour automatique`);
+          else if (actionsOk && !Object.hasOwn(actions, a.rest)) errors.push(`${where}.rest : l'action de repos « ${a.rest} » doit figurer dans « actions »`);
+          else if (actionsOk && (actions[a.rest] as ActuatorActionSpec).maxS !== null) errors.push(`${where}.rest : l'action de repos « ${a.rest} » est appelee sans duree : pas de maxS`);
+          else rest = a.rest;
+        }
+        if (emergencyExit) {
+          if (isObj(a.actions) && Object.hasOwn(a.actions, 'lock')) errors.push(`${where} (${shown}) : issue de secours (emergencyExit) : l'action « lock » est interdite dans « actions »`);
+          if (a.rest === 'lock') errors.push(`${where}.rest : issue de secours (emergencyExit) : le repos ne peut pas etre « lock »`);
+        }
+
+        if (id && key && moduleLabel && actionsOk) actuators.push({ id, key, keySource, module: moduleLabel, actions, rest, emergencyExit });
+      });
+    }
+  }
+
   if (errors.length > 0) throw new ConfigError(abs, errors);
-  return { file: abs, name, psim, dataDir, queue, retry, moduleRetry, log, modules };
+  return { file: abs, name, psim, dataDir, queue, retry, moduleRetry, log, modules, actuators };
 }
 
 /** Remplace `{"$env":"NOM"}` et `{"$file":"chemin"}` par le secret ; copie profonde (le module ne modifie pas l'original). */

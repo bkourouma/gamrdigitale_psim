@@ -19,10 +19,14 @@ export type { RuleSpec };
 
 /** Contexte donne au modele : NOMS ET IDENTIFIANTS SEULEMENT (jamais d'image, d'adresse, de photo ni d'empreinte). */
 export interface AssistantContext {
-  cameras: { id: string; name: string; zone: string }[];
+  /** `device` : repere OPAQUE de l'appareil (« appareil 1 »...), jamais une adresse ; absent = inconnu. */
+  cameras: { id: string; name: string; zone: string; device?: string }[];
   zones: string[];
-  /** Bases de visages lues sur l'enregistreur ; absente ou vide = aucune base. */
-  lists?: { id: string; name: string }[];
+  /**
+   * Bases de visages, avec la camera par laquelle chacune est lue ; absente ou vide = aucune base.
+   * Chaque appareil numerote ses listes lui-meme : seul le couple (cameraId, id) designe une liste sans ambiguite.
+   */
+  lists?: { cameraId: string; cameraName: string; device?: string; id: string; name: string }[];
 }
 
 /** `assistant` = la question posee plus tot par l'assistant. */
@@ -70,14 +74,24 @@ export const RULE_SPEC_JSON_SCHEMA: object = {
         {
           type: 'object',
           additionalProperties: false,
-          required: ['type', 'listId', 'listName'],
-          properties: { type: { type: 'string', enum: ['list'] }, listId: { type: 'string', minLength: 1 }, listName: { type: 'string', minLength: 1 } },
+          required: ['type', 'cameraId', 'listId', 'listName'],
+          properties: {
+            type: { type: 'string', enum: ['list'] },
+            cameraId: { type: 'string', minLength: 1 },
+            listId: { type: 'string', minLength: 1 },
+            listName: { type: 'string', minLength: 1 },
+          },
         },
         {
           type: 'object',
           additionalProperties: false,
-          required: ['type', 'personId', 'personName'],
-          properties: { type: { type: 'string', enum: ['person'] }, personId: { type: 'string', minLength: 1 }, personName: { type: 'string', minLength: 1 } },
+          required: ['type', 'cameraId', 'personId', 'personName'],
+          properties: {
+            type: { type: 'string', enum: ['person'] },
+            cameraId: { type: 'string', minLength: 1 },
+            personId: { type: 'string', minLength: 1 },
+            personName: { type: 'string', minLength: 1 },
+          },
         },
         { type: 'object', additionalProperties: false, required: ['type'], properties: { type: { type: 'string', enum: ['unknown'] } } },
       ],
@@ -164,9 +178,9 @@ const INVITE = `Tu es l'assistant de rédaction de règles de PRÉSENCE d'un log
 Une règle tient en 5 cases :
 1. Qui (who) :
    - { "type": "anyone" } : n'importe qui ;
-   - { "type": "list", "listId": "...", "listName": "..." } : une personne reconnue d'une LISTE de visages (« les résidents », « les personnes interdites »...). listId = l'identifiant EXACT d'une liste de la section « Listes de visages » plus bas, listName = son nom EXACT. N'invente JAMAIS un identifiant ni un nom de liste ;
+   - { "type": "list", "cameraId": "...", "listId": "...", "listName": "..." } : une personne reconnue d'une LISTE de visages (« les résidents », « les personnes interdites »...). Chaque liste appartient à UN appareil (une caméra à reconnaissance faciale) : la règle doit porter le cameraId, le listId et le listName EXACTS d'une MÊME ligne de la section « Listes de visages » plus bas. Ne mélange jamais le cameraId d'une ligne avec l'identifiant ou le nom d'une autre ligne : deux appareils peuvent avoir une liste de même identifiant (par exemple « 1 »), mais ce ne sont pas les mêmes listes. N'invente JAMAIS une caméra, un identifiant ni un nom de liste. Si l'utilisateur dit « la liste Famille » et qu'elle existe sur plusieurs caméras, ou si le nom est ambigu, pose une question en citant les caméras concernées. Le repère « appareil N » (quand il figure sur une caméra ou sur une ligne de liste) désigne l'enregistreur : deux caméras de même repère sont deux voies du MÊME enregistreur, qui partage la même base de visages. La portée (where) d'une règle de liste ou de personne doit donc contenir AU MOINS UNE caméra du même appareil que la liste choisie (même repère « appareil N ») ; en cas de doute sur l'appareil, pose une question ;
    - { "type": "unknown" } : « un visage inconnu », « un inconnu » (un visage détecté qui ne correspond à aucune liste) ;
-   - { "type": "person", "personId": "...", "personName": "..." } : une personne précise, UNIQUEMENT si l'utilisateur te donne son identifiant. Tu ne connais pas les personnes (seulement les listes) : sinon propose la liste qui lui correspond, ou pose une question.
+   - { "type": "person", "cameraId": "...", "personId": "...", "personName": "..." } : une personne précise, UNIQUEMENT si l'utilisateur te donne son identifiant. Les personnes sont numérotées par appareil, elles aussi : cameraId = la caméra de la liste à laquelle appartient la personne, fournie par l'utilisateur ; sinon pose une question. Tu ne connais pas les personnes (seulement les listes) : sinon propose la liste qui lui correspond, ou pose une question.
    Si l'utilisateur nomme une liste qui n'est pas dans la section « Listes de visages » (ou si elle est « (aucune) »), ne devine rien : pose une question en disant qu'aucune base de visages n'est encore disponible sur l'enregistreur (ou en citant les listes qui existent), ou propose « un visage inconnu » ou « n'importe qui ».
    Pour toute règle d'identité (list, person, unknown) : « Si » vaut TOUJOURS { "type": "appears" } (pas de durée « reste N minutes ») et "then.severity" vaut "warning" (signalement) par défaut ; mets "critical" seulement si l'utilisateur demande explicitement une alarme. La reconnaissance d'un visage est un simple signalement qu'une personne doit confirmer : elle peut se tromper. Ne la présente jamais comme une preuve ni comme une certitude.
 2. Où (where) : soit { "cameras": [identifiants de caméras] }, soit { "zones": [noms de zones] }. Utilise UNIQUEMENT les caméras et zones de la liste fournie plus bas, avec leur identifiant ou leur nom EXACT. Si l'utilisateur cite un nom qui n'existe pas dans la liste, pose une question en citant les noms disponibles.
@@ -199,9 +213,9 @@ function contextBlock(ctx: AssistantContext, nowMs: number): string {
   const d = new Date(nowMs);
   const date = `${d.toISOString().slice(0, 10)} (${WEEKDAYS[d.getUTCDay()]}, heure UTC)`;
   const zones = ctx.zones.length ? ctx.zones.map((z) => `- ${oneLine(z, 80)}`).join('\n') : '(aucune)';
-  const cameras = ctx.cameras.length ? ctx.cameras.map((c) => `- ${oneLine(c.id, 80)} : ${oneLine(c.name, 80)} (zone ${oneLine(c.zone, 80)})`).join('\n') : '(aucune)';
-  const lists = ctx.lists?.length ? ctx.lists.map((l) => `- ${oneLine(l.id, 80)} : ${oneLine(l.name, 80)}`).join('\n') : '(aucune)';
-  return `Date du jour : ${date}\n\nZones :\n${zones}\n\nCaméras :\n${cameras}\n\nListes de visages (identifiant : nom) :\n${lists}`;
+  const cameras = ctx.cameras.length ? ctx.cameras.map((c) => `- ${oneLine(c.id, 80)} : ${oneLine(c.name, 80)} (zone ${oneLine(c.zone, 80)})${c.device ? ` (${oneLine(c.device, 40)})` : ''}`).join('\n') : '(aucune)';
+  const lists = ctx.lists?.length ? ctx.lists.map((l) => `- camera ${oneLine(l.cameraId, 80)} (« ${oneLine(l.cameraName, 80)} »${l.device ? `, ${oneLine(l.device, 40)}` : ''}) : liste ${oneLine(l.id, 80)} : ${oneLine(l.name, 80)}`).join('\n') : '(aucune)';
+  return `Date du jour : ${date}\n\nZones :\n${zones}\n\nCaméras :\n${cameras}\n\nListes de visages (une par ligne : caméra, identifiant de la liste, nom) :\n${lists}`;
 }
 
 // ---------------------------------------------------------------- outils
@@ -372,13 +386,27 @@ export function createRuleAssistant<S = RuleSpec>(deps: {
       } catch (e) {
         throw new ReadFailure(e instanceof PsimError ? oneLine(e.message, 300) : 'la règle est invalide', text);
       }
-      // Une liste de visages doit exister dans le contexte fourni (identifiant ET nom) : le modele n'en invente pas.
-      const who = (spec as { who?: { type?: unknown; listId?: unknown; listName?: unknown } } | null)?.who;
+      // Une liste de visages doit exister dans le contexte fourni, sur CETTE camera (camera, identifiant ET nom) : le modele n'en invente pas
+      // et ne melange pas les lignes (chaque appareil numerote ses listes).
+      const who = (spec as { who?: { type?: unknown; cameraId?: unknown; listId?: unknown; listName?: unknown } } | null)?.who;
       if (who?.type === 'list') {
-        const known = (ctx.lists ?? []).some((l) => [String(l.id), oneLine(l.id, 80)].includes(String(who.listId)) && [String(l.name), oneLine(l.name, 80)].includes(String(who.listName)));
+        const known = (ctx.lists ?? []).some(
+          (l) =>
+            [String(l.cameraId), oneLine(l.cameraId, 80)].includes(String(who.cameraId)) &&
+            [String(l.id), oneLine(l.id, 80)].includes(String(who.listId)) &&
+            [String(l.name), oneLine(l.name, 80)].includes(String(who.listName)),
+        );
         if (!known) {
-          throw new ReadFailure(`la liste « ${oneLine(String(who.listName), 80)} » n'existe pas dans le contexte fourni ; utilise l'identifiant exact d'une liste fournie, ou pose une question`, text);
+          throw new ReadFailure(
+            `la liste « ${oneLine(String(who.listName), 80)} » (identifiant ${oneLine(String(who.listId), 80)}) n'existe pas sur la caméra ${oneLine(String(who.cameraId), 80)} dans le contexte fourni ; reprends le cameraId, le listId et le listName EXACTS d'une même ligne de la section « Listes de visages », ou pose une question`,
+            text,
+          );
         }
+      }
+      // Une personne se lit par une camera : elle doit etre une de celles du contexte (le reste releve de `validate`).
+      const whoP = (spec as { who?: { type?: unknown; cameraId?: unknown } } | null)?.who;
+      if (whoP?.type === 'person' && !ctx.cameras.some((c) => [String(c.id), oneLine(c.id, 80)].includes(String(whoP.cameraId)))) {
+        throw new ReadFailure(`la caméra ${oneLine(String(whoP.cameraId), 80)} de la personne n'existe pas dans le contexte fourni ; utilise l'identifiant exact d'une caméra fournie, ou pose une question`, text);
       }
       const name = clean(p.name, 80) || oneLine(summary, 60);
       return { kind: 'rule', name, spec, summary };

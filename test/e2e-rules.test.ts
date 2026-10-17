@@ -54,7 +54,10 @@ const freePort = () =>
 
 // ---------------------------------------------------------------- faux enregistreur Dahua (Digest + flux multipart)
 
-function fakeRecorder() {
+const GROUPS_PATH = '/cgi-bin/faceRecognitionServer.cgi?action=findGroup';
+
+/** `address` : adresse locale d'ecoute (127.0.0.x : plusieurs appareils) ; `groups` : reponse de findGroup (absent : 404). */
+function fakeRecorder(opts: { address?: string; groups?: string } = {}) {
   const md5 = (s: string) => createHash('md5').update(s).digest('hex');
   const realm = 'Login to XVR';
   const nonce = randomBytes(8).toString('hex');
@@ -68,13 +71,18 @@ function fakeRecorder() {
       res.writeHead(401, { 'WWW-Authenticate': `Digest realm="${realm}", qop="auth", nonce="${nonce}", opaque="abc"` }).end();
       return;
     }
+    if (req.url === GROUPS_PATH) {
+      if (opts.groups === undefined) res.writeHead(404).end();
+      else res.writeHead(200, { 'Content-Type': 'text/plain' }).end(opts.groups);
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'multipart/x-mixed-replace; boundary=myboundary' });
     streams.add(res);
     res.on('close', () => streams.delete(res));
     send(res, 'Heartbeat');
   });
   return {
-    start: () => new Promise<number>((r) => server.listen(0, '127.0.0.1', () => r((server.address() as AddressInfo).port))),
+    start: () => new Promise<number>((r) => server.listen(0, opts.address ?? '127.0.0.1', () => r((server.address() as AddressInfo).port))),
     stop: () => {
       for (const s of streams) s.destroy();
       server.close();
@@ -87,13 +95,13 @@ function fakeRecorder() {
 
 // ---------------------------------------------------------------- serveur reel
 
-async function start(): Promise<{ proc: ChildProcess; base: string; output: () => string }> {
+async function start(opts: { dataDir?: string } = {}): Promise<{ proc: ChildProcess; base: string; output: () => string }> {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const env: NodeJS.ProcessEnv = {};
   for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'USERPROFILE']) if (process.env[k]) env[k] = process.env[k];
   Object.assign(env, {
-    PSIM_DATA_DIR: join(mkdtempSync(join(tmpdir(), 'psim-e2e-rules-')), 'data'),
+    PSIM_DATA_DIR: opts.dataDir ?? join(mkdtempSync(join(tmpdir(), 'psim-e2e-rules-')), 'data'),
     PSIM_PORT: String(port),
     PSIM_MQTT_PORT: String(await freePort()),
     PSIM_ADMIN_PASSWORD: ADMIN_PW,
@@ -116,6 +124,26 @@ async function start(): Promise<{ proc: ChildProcess; base: string; output: () =
   }
   proc.kill();
   throw new Error(`serveur non demarre :\n${output}`);
+}
+
+/** Arrete le serveur et attend sa sortie (le fichier de base est alors libre). */
+async function stop(proc: ChildProcess): Promise<void> {
+  if (proc.exitCode !== null) return;
+  const done = new Promise<void>((r) => proc.once('exit', () => r()));
+  proc.kill();
+  await done;
+}
+
+function caller(base: () => string) {
+  return async (method: string, path: string, cookie: string | null, body?: unknown) => {
+    const res = await fetch(`${base()}${path}`, {
+      method,
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) },
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : null };
+  };
 }
 
 async function login(base: string, username: string, password: string): Promise<string> {
@@ -620,5 +648,340 @@ describe("regles d'identite : branchement observeAll -> visages -> regle -> inci
       dahua.stop();
       db.close();
     }
+  });
+});
+
+// ---------------------------------------------------------------- listes et personnes propres a chaque appareil
+
+/** Reponse de findGroup d'un appareil qui n'a qu'une base. */
+const groupsText = (id: string, name: string, size: number): string =>
+  `found=1\nGroupList[0].groupID=${id}\nGroupList[0].groupName=${name}\nGroupList[0].groupType=BlackListDB\nGroupList[0].groupSize=${size}\n`;
+
+/** Visage reconnu sur la voie `channel` (1, 2...) : un seul candidat, la personne `uid` de la base `groupId`. */
+function recognized(channel: number, uid: string, groupId: string, name: string, groupName: string): string {
+  const candidate = { Similarity: 91, Person: { UID: uid, GroupID: groupId, Name: name, GroupName: groupName } };
+  return `Code=FaceRecognition;action=Pulse;index=${channel - 1};data=${JSON.stringify({ Candidates: [candidate] })}`;
+}
+
+const identitySpec = (who: unknown, where: unknown = { cameras: ['C-01'] }) => ({
+  who,
+  where,
+  when: { type: 'always' },
+  trigger: { type: 'appears' },
+  then: { severity: 'warning' },
+  cooldownMinutes: 10,
+});
+
+describe("regles d'identite : listes et personnes propres a chaque appareil (deux faux appareils Dahua, processus reel)", { timeout: 240_000 }, () => {
+  // Appareil 1 (127.0.0.1) : enregistreur a DEUX voies, cameras C-01 (voie 1) et C-02 (voie 2), base « 1 » = Famille.
+  // Appareil 2 (127.0.0.2) : camera C-03 (voie 1), base « 1 » = Visiteurs. Memes numeros de base et de personne sur les deux.
+  const devA = fakeRecorder({ address: '127.0.0.1', groups: groupsText('1', 'Famille', 2) });
+  const devB = fakeRecorder({ address: '127.0.0.2', groups: groupsText('1', 'Visiteurs', 3) });
+  let s: Awaited<ReturnType<typeof start>>;
+  let admin = '';
+  const call = caller(() => s.base);
+  const asAdmin = (method: string, path: string, body?: unknown) => call(method, path, admin, body);
+
+  const famille = { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Famille' };
+  const alice = { type: 'person', cameraId: 'C-01', personId: '1', personName: 'Alice' };
+  const visiteurs = { type: 'list', cameraId: 'C-03', listId: '1', listName: 'Visiteurs' };
+  const bob = { type: 'person', cameraId: 'C-03', personId: '1', personName: 'Bob' };
+  const BOTH = ['C-01', 'C-03'];
+
+  const incidentsOf = async (rule: { deviceId: string }): Promise<any[]> => (await asAdmin('GET', '/api/state')).body.incidents.filter((i: any) => i.detectorId === rule.deviceId);
+  const seenCount = async (): Promise<number> => (await asAdmin('GET', '/api/faces/recent')).body.length;
+  /** Un visage vient de l'appareil ; on attend qu'il soit enregistre (donc deja remis aux regles) et on laisse le temps aux incidents. */
+  const emit = async (dev: ReturnType<typeof fakeRecorder>, event: string): Promise<void> => {
+    const n = await seenCount();
+    dev.emit(event);
+    await until(async () => (await seenCount()) === n + 1, 5000, `visage enregistre\n${s.output().slice(-500)}`);
+    await wait(100);
+  };
+  const make = async (name: string, who: unknown, cameras: string[] = BOTH) => {
+    const r = await asAdmin('POST', '/api/rules', { name, spec: identitySpec(who, { cameras }) });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    return r.body;
+  };
+  const refusal = async (method: string, path: string, body: unknown, message: RegExp) => {
+    const r = await asAdmin(method, path, body);
+    assert.equal(r.status, 400, `${method} ${path} -> ${JSON.stringify(r.body)}`);
+    assert.match(r.body.error, message);
+  };
+
+  before(async () => {
+    const portA = await devA.start();
+    const portB = await devB.start();
+    s = await start();
+    admin = await login(s.base, 'admin', ADMIN_PW);
+    const source = async (camera: string, host: string, channel: number) => {
+      const r = await asAdmin('PUT', `/api/cameras/${camera}/source`, { kind: 'rtsp', host, port: 554, rtspPath: `/cam/realmonitor?channel=${channel}&subtype=1`, username: USER, password: PASSWORD });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+    };
+    await source('C-01', '127.0.0.1', 1);
+    await source('C-02', '127.0.0.1', 2);
+    await source('C-03', '127.0.0.2', 1);
+    // Le port HTTP vient du detecteur lie a l'hote (sinon 80) : un detecteur par appareil.
+    const created = await asAdmin('POST', '/api/devices', { id: 'I-10', kind: 'detector', category: 'intrusion', name: 'Mouvement serveurs', zone: 'Salle serveurs' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const detA = await asAdmin('PUT', '/api/detectors/I-01/source', { cameraId: 'C-01', channel: 1, events: ['SmartMotionVehicle'], httpPort: portA });
+    assert.equal(detA.status, 200, JSON.stringify(detA.body));
+    const detB = await asAdmin('PUT', '/api/detectors/I-10/source', { cameraId: 'C-03', channel: 1, events: ['SmartMotionVehicle'], httpPort: portB });
+    assert.equal(detB.status, 200, JSON.stringify(detB.body));
+    for (const id of ['I-01', 'I-10']) await until(async () => (await asAdmin('GET', `/api/detectors/${id}/source`)).body.connection.state === 'connected', 8000, `liaison ${id}\n${s.output().slice(-500)}`);
+  });
+  after(async () => {
+    devA.stop();
+    devB.stop();
+    if (s) await stop(s.proc);
+  });
+
+  it("GET /api/faces/lists : une entree par (appareil, liste), meme numero « 1 » sur les deux ; la camera annoncee est celle de l'appareil proprietaire et ne change pas d'une lecture a l'autre", async () => {
+    const first = await asAdmin('GET', '/api/faces/lists');
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(first.body.hosts, 2);
+    assert.deepEqual(first.body.notes, []);
+    assert.deepEqual(
+      first.body.lists.map((l: any) => [l.id, l.name, l.size, l.cameraId, l.cameraName]),
+      [
+        ['1', 'Famille', 2, 'C-01', 'Camera accueil'],
+        ['1', 'Visiteurs', 3, 'C-03', 'Camera serveurs'],
+      ],
+    );
+
+    // Chaque liste porte les cameras de TOUTES les voies de son appareil (triees, representante comprise) ; deux appareils : disjoints. Aucune adresse.
+    assert.deepEqual(first.body.lists.map((l: any) => l.deviceCameraIds), [['C-01', 'C-02'], ['C-03']]);
+    assert.doesNotMatch(JSON.stringify(first.body), /127\.0\.0\./);
+
+    // Une camera d'identifiant plus petit arrive sur le premier appareil : ce n'est pas elle qui devient la camera annoncee.
+    assert.equal((await asAdmin('POST', '/api/devices', { id: 'C-00', kind: 'camera', name: 'Camera ajoutee', zone: 'Accueil' })).status, 201);
+    const added = await asAdmin('PUT', '/api/cameras/C-00/source', { kind: 'rtsp', host: '127.0.0.1', port: 554, rtspPath: '/cam/realmonitor?channel=3&subtype=1', username: USER, password: PASSWORD });
+    assert.equal(added.status, 200, JSON.stringify(added.body));
+    for (let i = 0; i < 3; i++) {
+      const again = await asAdmin('GET', '/api/faces/lists');
+      assert.deepEqual(again.body.lists.map((l: any) => l.cameraId), ['C-01', 'C-03'], `lecture ${i + 1}`);
+      assert.deepEqual(again.body.lists[0].deviceCameraIds, ['C-00', 'C-01', 'C-02'], 'relu a chaque lecture (pas en cache) : la nouvelle voie y est');
+      assert.deepEqual(again.body.lists[1].deviceCameraIds, ['C-03']);
+    }
+    // Retiree, la camera annoncee reste la meme.
+    assert.equal((await asAdmin('DELETE', '/api/devices/C-00')).status, 204);
+    const afterRemoval = (await asAdmin('GET', '/api/faces/lists')).body.lists;
+    assert.deepEqual(afterRemoval.map((l: any) => l.cameraId), ['C-01', 'C-03']);
+    assert.deepEqual(afterRemoval[0].deviceCameraIds, ['C-01', 'C-02']);
+  });
+
+  it("une regle sur la liste « 1 » (ou la personne « 1 ») d'un appareil ne declenche pas sur le « 1 » de l'autre appareil, et declenche sur le sien", async () => {
+    const ruleFamille = await make('Famille (appareil 1)', famille);
+    const ruleAlice = await make('Alice (appareil 1)', alice);
+    const ruleVisiteurs = await make('Visiteurs (appareil 2)', visiteurs);
+    const ruleBob = await make('Bob (appareil 2)', bob);
+
+    // Visage « base 1, personne 1 » vu par l'appareil 2 : seules les regles de l'appareil 2 sonnent.
+    await emit(devB, recognized(1, '1', '1', 'Bob', 'Visiteurs'));
+    assert.equal((await incidentsOf(ruleVisiteurs)).length, 1, 'la liste de l\'appareil 2 sonne');
+    assert.equal((await incidentsOf(ruleBob)).length, 1, 'la personne de l\'appareil 2 sonne');
+    assert.equal((await incidentsOf(ruleFamille)).length, 0, "la liste « 1 » de l'appareil 1 ne sonne pas");
+    assert.equal((await incidentsOf(ruleAlice)).length, 0, "la personne « 1 » de l'appareil 1 ne sonne pas");
+    const snap = (await asAdmin('GET', '/api/state')).body;
+    for (const r of [ruleFamille, ruleAlice]) assert.equal(snap.devices.find((d: any) => d.id === r.deviceId).status, 'normal');
+    const hit = (await incidentsOf(ruleVisiteurs))[0];
+    assert.equal(hit.event, 'face_noticed');
+    assert.equal(hit.severity, 'warning');
+    assert.deepEqual([...hit.cameraIds].sort(), BOTH, "l'incident porte les cameras de la portee de la regle");
+
+    // Meme visage « base 1, personne 1 » vu par l'appareil 1 : ses regles sonnent maintenant.
+    await emit(devA, recognized(1, '1', '1', 'Alice', 'Famille'));
+    for (const r of [ruleFamille, ruleAlice]) {
+      const found = await incidentsOf(r);
+      assert.equal(found.length, 1, r.name);
+    }
+    assert.equal((await incidentsOf(ruleVisiteurs)).length, 1);
+    assert.equal((await incidentsOf(ruleBob)).length, 1);
+  });
+
+  it("enregistreur a deux voies : un visage reconnu sur l'une ou l'autre voie correspond a la meme base, que la regle vienne de la camera de l'une ou de l'autre", async () => {
+    const fromVoie1 = await make('Famille, creee depuis la voie 1', famille, ['C-01', 'C-02']);
+    const fromVoie2 = await make('Famille, creee depuis la voie 2', { ...famille, cameraId: 'C-02' }, ['C-01']);
+
+    // Voie 2 (camera C-02) : la regle portee sur les deux voies sonne, l'autre (portee sur la voie 1 seulement) l'ignore.
+    await emit(devA, recognized(2, '1', '1', 'Alice', 'Famille'));
+    const onVoie2 = await incidentsOf(fromVoie1);
+    assert.equal(onVoie2.length, 1);
+    assert.deepEqual([...onVoie2[0].cameraIds].sort(), ['C-01', 'C-02']);
+    assert.equal((await incidentsOf(fromVoie2)).length, 0);
+
+    // Voie 1 (camera C-01) : la regle creee depuis la camera de l'AUTRE voie sonne aussi (meme appareil, meme base).
+    await emit(devA, recognized(1, '1', '1', 'Alice', 'Famille'));
+    const onVoie1 = await incidentsOf(fromVoie2);
+    assert.equal(onVoie1.length, 1);
+    assert.deepEqual(onVoie1[0].cameraIds, ['C-01']);
+    assert.equal(fromVoie2.needsReview, false);
+  });
+
+  it("creation refusee (400, « Ou : ... ») quand aucune camera choisie n'est sur l'appareil de la liste ; cameraId absent ou inconnu refuse ; meme message pour l'essai et la modification", async () => {
+    const rulesBefore = (await asAdmin('GET', '/api/rules')).body.length;
+    const create = (who: unknown, where: unknown) => ({ name: 'Refusee', spec: identitySpec(who, where) });
+
+    // Toutes les cameras choisies sont sur l'autre appareil.
+    const ou1 = /^Ou : aucune camera choisie n'appartient a l'appareil de la liste « Famille » \(camera « Camera accueil »\) : elle ne pourrait jamais se declencher$/;
+    await refusal('POST', '/api/rules', create(famille, { cameras: ['C-03'] }), ou1);
+    await refusal('POST', '/api/rules', create(famille, { zones: ['Salle serveurs'] }), ou1);
+    await refusal('POST', '/api/rules', create(bob, { cameras: ['C-01', 'C-02'] }), /^Ou : aucune camera choisie n'appartient a l'appareil de la personne « Bob » \(camera « Camera serveurs »\)/);
+    // Le message arrive tel quel par l'essai sur le passe.
+    await refusal('POST', '/api/rules/simulate', { spec: identitySpec(famille, { cameras: ['C-03'] }), days: 7 }, ou1);
+
+    // cameraId absent, vide, inconnu ; camera sans source video.
+    const { cameraId: _list, ...listWithout } = famille;
+    const { cameraId: _person, ...personWithout } = alice;
+    await refusal('POST', '/api/rules', create(listWithout, { cameras: ['C-01'] }), /^Qui : la camera de la liste est requise$/);
+    await refusal('POST', '/api/rules', create(personWithout, { cameras: ['C-01'] }), /^Qui : la camera de la personne est requise$/);
+    await refusal('POST', '/api/rules', create({ ...famille, cameraId: '' }, { cameras: ['C-01'] }), /la camera de la liste est requise/);
+    await refusal('POST', '/api/rules', create({ ...famille, cameraId: 'C-99' }, { cameras: ['C-01'] }), /^Qui : camera inconnue « C-99 »$/);
+    await refusal('POST', '/api/rules', create({ ...alice, cameraId: 'C-99' }, { cameras: ['C-01'] }), /^Qui : camera inconnue « C-99 »$/);
+    await refusal('POST', '/api/rules', create({ ...famille, cameraId: 'C-04' }, { cameras: ['C-04', 'C-01'] }), /n'est reliee a aucun appareil/);
+    await refusal('POST', '/api/rules/simulate', { spec: identitySpec(listWithout), days: 7 }, /^Qui : la camera de la liste est requise$/);
+
+    // Modification d'une regle existante : la portee ne peut pas quitter l'appareil de la liste.
+    const existing = (await asAdmin('GET', '/api/rules')).body.find((r: any) => r.name === 'Famille, creee depuis la voie 1');
+    await refusal('PUT', `/api/rules/${existing.id}`, { spec: identitySpec(famille, { cameras: ['C-03'] }) }, ou1);
+    const unchanged = (await asAdmin('GET', '/api/rules')).body.find((r: any) => r.id === existing.id);
+    assert.deepEqual(unchanged.spec.where, { cameras: ['C-01', 'C-02'] }, 'la regle est restee telle quelle');
+    assert.equal((await asAdmin('GET', '/api/rules')).body.length, rulesBefore, 'aucune regle creee par les refus');
+  });
+
+  it("GET /api/rules : needsReview figure sur chaque regle (faux pour les regles saisies avec leur camera), et chaque regle d'identite garde son cameraId", async () => {
+    const rules = (await asAdmin('GET', '/api/rules')).body;
+    assert.ok(rules.length >= 6);
+    for (const r of rules) {
+      assert.equal(typeof r.needsReview, 'boolean', r.name);
+      assert.equal(r.needsReview, false, r.name);
+      if (r.spec.who.type === 'list' || r.spec.who.type === 'person') assert.match(r.spec.who.cameraId, /^C-0[1-3]$/);
+    }
+    assert.match(rules[0].summary, /caméra « Camera accueil »/);
+    assert.ok(rules.some((r: any) => r.spec.who.cameraId === 'C-03'));
+  });
+
+  it("changement d'adresse d'une camera : l'appareil de la regle est relu a chaque visage (aucun redemarrage), mais la liste « 1 » du nouvel appareil porte un autre nom : PAS de correspondance, avertissement unique", async () => {
+    // Regle sur la voie 2 de l'appareil 1, jamais encore declenchee.
+    const rule = await make('Famille voie 2', { ...famille, cameraId: 'C-02' }, ['C-02']);
+    // La camera C-02 passe sur l'appareil 2 (voie 2) : comportement du coeur, l'hote de la source video est relu a chaque comparaison.
+    const moved = await asAdmin('PUT', '/api/cameras/C-02/source', { kind: 'rtsp', host: '127.0.0.2', port: 554, rtspPath: '/cam/realmonitor?channel=2&subtype=1', username: USER, password: PASSWORD });
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+    assert.equal((await asAdmin('GET', `/api/rules`)).body.find((r: any) => r.id === rule.id).needsReview, false);
+
+    // L'appareil 1 n'a plus de camera sur sa voie 2 : son visage n'est rattache a aucune camera, rien n'est enregistre.
+    const n = await seenCount();
+    devA.emit(recognized(2, '1', '1', 'Alice', 'Famille'));
+    await wait(400);
+    assert.equal(await seenCount(), n);
+    assert.equal((await incidentsOf(rule)).length, 0);
+    // La voie 2 de l'appareil 2 est maintenant celle de C-02 : la regle « Famille » (liste « 1 ») est lue par l'appareil 2, dont la liste « 1 »
+    // est « Visiteurs ». Meme appareil, meme numero, mais un AUTRE NOM : la garde de nom empeche la correspondance (risque sur une liste
+    // « Interdits » qui deviendrait celle d'un autre appareil). La regle est a reenregistrer, et le serveur le dit une seule fois.
+    await emit(devB, recognized(2, '1', '1', 'Bob', 'Visiteurs'));
+    await emit(devB, recognized(2, '1', '1', 'Bob', 'Visiteurs'));
+    assert.equal((await incidentsOf(rule)).length, 0, 'la liste « 1 » du nouvel appareil n\'est pas « Famille »');
+    assert.equal(((await asAdmin('GET', '/api/state')).body.devices.find((d: any) => d.id === rule.deviceId)).status, 'normal');
+    const warning = `[rules] regle ${rule.id} : la liste « Famille » n'est plus trouvee sur l'appareil de la camera « Camera couloir » : reenregistrez la regle`;
+    await until(async () => s.output().includes(warning), 5000, `avertissement\n${s.output().slice(-500)}`);
+    assert.equal(s.output().split(warning).length - 1, 1, 'avertissement unique malgre deux visages');
+    // Un visage de cet appareil qui porte le bon nom (ou aucun) correspondrait toujours : seule la garde de nom a ecarte « Visiteurs ».
+    await emit(devB, recognized(2, '1', '1', 'Alice', 'famille'));
+    const found = await incidentsOf(rule);
+    assert.equal(found.length, 1);
+    assert.deepEqual(found[0].cameraIds, ['C-02']);
+
+    // La camera annoncee pour chaque appareil ne bouge pas, meme si C-02 (identifiant plus petit) arrive sur l'appareil 2.
+    assert.deepEqual((await asAdmin('GET', '/api/faces/lists')).body.lists.map((l: any) => l.cameraId), ['C-01', 'C-03']);
+  });
+});
+
+// ---------------------------------------------------------------- regle ancienne, sans camera
+
+describe("regle d'identite ancienne (sans cameraId), inseree directement en base : le serveur demarre, la regle est a reenregistrer et ne declenche pas", { timeout: 180_000 }, () => {
+  const dev = fakeRecorder({ address: '127.0.0.1', groups: groupsText('1', 'Famille', 2) });
+  let proc: ChildProcess | null = null;
+  after(async () => {
+    dev.stop();
+    if (proc) await stop(proc);
+  });
+
+  it('GET /api/rules la renvoie avec needsReview ; aucun declenchement sur un visage « 1 » ; la reactiver telle quelle est refuse (400) ; la reenregistrer avec sa camera la remet en service', async () => {
+    const port = await dev.start();
+    const dataDir = join(mkdtempSync(join(tmpdir(), 'psim-e2e-rules-old-')), 'data');
+
+    // Premier demarrage : cree la base et le site de demonstration ; on l'arrete pour ecrire la regle ancienne.
+    const first = await start({ dataDir });
+    await stop(first.proc);
+    const OLD_SPEC = {
+      who: { type: 'list', listId: '1', listName: 'Famille' },
+      where: { cameras: ['C-01'] },
+      when: { type: 'always' },
+      trigger: { type: 'appears' },
+      then: { severity: 'warning' },
+      cooldownMinutes: 10,
+    };
+    const db = openDb(join(dataDir, 'psim.db'));
+    try {
+      const t = Date.now();
+      db.prepare('INSERT INTO presence_rule (id, name, enabled, spec, device_id, source_text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        1, 'Famille a l accueil (ancienne)', 1, JSON.stringify(OLD_SPEC), 'R-1', null, 'admin', t, 'admin', t,
+      );
+    } finally {
+      db.close();
+    }
+
+    // Deuxieme demarrage : la regle ancienne est reprise sans erreur.
+    const s = await start({ dataDir });
+    proc = s.proc;
+    const admin = await login(s.base, 'admin', ADMIN_PW);
+    const call = caller(() => s.base);
+    const asAdmin = (method: string, path: string, body?: unknown) => call(method, path, admin, body);
+    assert.doesNotMatch(s.output(), /\[rules\] regle 1/, 'aucune erreur au chargement de la regle');
+
+    const listed = (await asAdmin('GET', '/api/rules')).body;
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].needsReview, true);
+    assert.equal(listed[0].enabled, true);
+    assert.match(listed[0].summary, /liste « Famille »/);
+    assert.match(listed[0].summary, /caméra non précisée/);
+    assert.ok((await asAdmin('GET', '/api/state')).body.devices.some((d: any) => d.id === 'R-1'), 'son detecteur existe');
+
+    // La camera C-01 devient une camera de l'appareil (voie 1) : le flux est ouvert, la regle active l'observe.
+    const src = await asAdmin('PUT', '/api/cameras/C-01/source', { kind: 'rtsp', host: '127.0.0.1', port: 554, rtspPath: '/cam/realmonitor?channel=1&subtype=1', username: USER, password: PASSWORD });
+    assert.equal(src.status, 200, JSON.stringify(src.body));
+    const det = await asAdmin('PUT', '/api/detectors/I-01/source', { cameraId: 'C-01', channel: 1, events: ['SmartMotionVehicle'], httpPort: port });
+    assert.equal(det.status, 200, JSON.stringify(det.body));
+    await until(async () => (await asAdmin('GET', '/api/detectors/I-01/source')).body.connection.state === 'connected', 8000, `liaison\n${s.output().slice(-500)}`);
+
+    const incidents = async () => (await asAdmin('GET', '/api/state')).body.incidents.filter((i: any) => i.detectorId === 'R-1');
+    const seen = async () => (await asAdmin('GET', '/api/faces/recent')).body.length;
+    const emit = async () => {
+      const n = await seen();
+      dev.emit(recognized(1, '1', '1', 'Alice', 'Famille'));
+      await until(async () => (await seen()) === n + 1, 5000, 'visage enregistre');
+      await wait(100);
+    };
+    await emit();
+    assert.equal((await incidents()).length, 0, 'la regle ancienne ne declenche pas sur un visage « 1 »');
+    assert.equal((await asAdmin('GET', '/api/state')).body.devices.find((d: any) => d.id === 'R-1').status, 'normal');
+
+    // On peut la desactiver, mais pas la reactiver telle quelle.
+    assert.equal((await asAdmin('PUT', '/api/rules/1', { enabled: false })).status, 200);
+    const refused = await asAdmin('PUT', '/api/rules/1', { enabled: true });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(refused.body.error, 'Cette regle doit etre reenregistree : choisissez a nouveau la liste');
+    const still = (await asAdmin('GET', '/api/rules')).body[0];
+    assert.equal(still.enabled, false);
+    assert.equal(still.needsReview, true);
+
+    // Reenregistree avec sa camera, elle redevient une regle ordinaire et declenche.
+    const fixed = await asAdmin('PUT', '/api/rules/1', { spec: { ...OLD_SPEC, who: { ...OLD_SPEC.who, cameraId: 'C-01' } }, enabled: true });
+    assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+    assert.equal(fixed.body.needsReview, false);
+    assert.equal(fixed.body.enabled, true);
+    await emit();
+    const after = await incidents();
+    assert.equal(after.length, 1, 'declenche apres reenregistrement');
+    assert.deepEqual(after[0].cameraIds, ['C-01']);
   });
 });

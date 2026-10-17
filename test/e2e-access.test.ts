@@ -204,7 +204,7 @@ describe('controle d acces : API, ingestion, journal, export (processus reel)', 
 
     it("session « restreinte » (mot de passe a changer) : tout est refuse, meme la consultation", async () => {
       const pw = 'Hippopotame-bleu-42-lune';
-      assert.equal((await api('POST', '/api/users', admin, { username: 'restreint', role: 'admin', password: pw })).status, 201);
+      assert.equal((await api('POST', '/api/users', admin, { username: 'restreint', role: 'admin', password: pw, reauth: ADMIN_PW })).status, 201);
       const restricted = await login(s.base, 'restreint', pw);
       for (const [method, path] of routes) {
         const r = await api(method, path, restricted, method === 'GET' || method === 'DELETE' ? undefined : {});

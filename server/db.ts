@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrateFloors } from './floors.ts';
 import { migrateEvidence } from './evidence.ts';
 import { migrateAccess } from './access.ts';
+import { migrateActuators } from './actuators.ts';
 
 const SCHEMA = `
 -- plan_file / plan_version : ancien plan unique, repris par le premier etage a la migration (voir floors.ts), plus utilises ensuite.
@@ -165,7 +166,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE TABLE IF NOT EXISTS app_user (
   username TEXT PRIMARY KEY,
-  role TEXT NOT NULL CHECK (role IN ('operator', 'admin')),
+  role TEXT NOT NULL CHECK (role IN ('operator', 'admin', 'agent')),
   salt TEXT NOT NULL,
   hash TEXT NOT NULL,
   display_name TEXT,
@@ -273,6 +274,10 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'app_user', column: 'totp_secret', definition: 'TEXT' },
   { table: 'app_user', column: 'totp_enabled_at', definition: 'INTEGER' },
   { table: 'app_user', column: 'totp_last_step', definition: 'INTEGER' },
+  // Session d'un agent : le telephone appaire sur lequel elle a ete ouverte (voir agents.ts) ; NULL = session ordinaire.
+  { table: 'app_session', column: 'phone_id', definition: 'INTEGER' },
+  // Precision en clair portee par le message de l'equipement (ex. motif d'une ronde ratee) ; NULL = aucune.
+  { table: 'incident', column: 'detail', definition: 'TEXT' },
 ];
 
 /**
@@ -310,6 +315,73 @@ function migrateRecipientChannels(db: DatabaseSync): void {
   }
 }
 
+/** Colonnes de `app_user`, dans l'ordre : la table recreee par migrateAgentRole doit les porter TOUTES. */
+const APP_USER_COLUMNS = [
+  'username',
+  'role',
+  'salt',
+  'hash',
+  'display_name',
+  'active',
+  'must_change_password',
+  'created_at',
+  'last_login_at',
+  'password_changed_at',
+  'session_epoch',
+  'totp_secret',
+  'totp_enabled_at',
+  'totp_last_step',
+];
+
+/**
+ * Role `agent` pour une base creee avant lui : le CHECK de `app_user` n'accepte que operator et admin et ne se modifie pas,
+ * la table est donc recreee puis ses lignes recopiees. `app_session` et `recovery_code` la referencent avec ON DELETE CASCADE :
+ * un DROP TABLE avec les cles etrangeres actives effacerait leurs lignes. Procedure officielle de SQLite : cles etrangeres
+ * coupees (hors transaction, sinon sans effet), recreation en transaction, `foreign_key_check`, puis cles etrangeres
+ * remises quoi qu'il arrive. Sans effet si c'est deja fait (bases neuves comprises). A appeler APRES migrate() : les
+ * colonnes ajoutees apres la premiere version doivent exister pour etre recopiees.
+ */
+export function migrateAgentRole(db: DatabaseSync): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'app_user'").get() as { sql: string } | undefined;
+  if (!row || row.sql.includes("'agent'")) return;
+  const columns = APP_USER_COLUMNS.join(', ');
+  // Violations deja presentes avant nous (base ancienne, outil externe) : seules celles que NOUS causerions font echouer.
+  const violations = () => db.prepare('PRAGMA foreign_key_check(app_session)').all().length + db.prepare('PRAGMA foreign_key_check(recovery_code)').all().length;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const before = violations();
+      db.exec(`CREATE TABLE app_user_v2 (
+        username TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('operator', 'admin', 'agent')),
+        salt TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        display_name TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        must_change_password INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER,
+        last_login_at INTEGER,
+        password_changed_at INTEGER,
+        session_epoch INTEGER NOT NULL DEFAULT 0,
+        totp_secret TEXT,
+        totp_enabled_at INTEGER,
+        totp_last_step INTEGER
+      );
+      INSERT INTO app_user_v2 (${columns}) SELECT ${columns} FROM app_user;
+      DROP TABLE app_user;
+      ALTER TABLE app_user_v2 RENAME TO app_user;`);
+      if (violations() > before) throw new Error("migration du role agent : cle etrangere rompue (app_session ou recovery_code)");
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 function migrate(db: DatabaseSync): void {
   for (const { table, column, definition } of ADDED_COLUMNS) {
     const existing = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -325,8 +397,10 @@ export function openDb(path: string): DatabaseSync {
   // AVANT l'ajout des colonnes : la table recreee porte deja la colonne des zones, que migrate() trouvera donc en place.
   migrateRecipientChannels(db); // canaux WhatsApp et appel vocal acceptes pour les destinataires saisis dans l'interface
   migrate(db); // les donnees existantes sont conservees
+  migrateAgentRole(db); // APRES migrate : role `agent` accepte par app_user (table recreee, sessions et codes de secours conserves)
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
   migrateEvidence(db); // images d'incident : origine et empreinte scellee ; images en attente ; cles d'equipement
   migrateAccess(db); // controle d'acces : controleurs, portes, journal des passages (voir access.ts)
+  migrateActuators(db); // commandes des equipements : tables nouvelles seulement (voir actuators.ts)
   return db;
 }

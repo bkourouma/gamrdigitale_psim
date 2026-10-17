@@ -10,8 +10,9 @@ import { icon, hasUnsavedInput } from './core.js';
 import { randomPassword, setBusy, field, markInvalid, clearInvalid, copyButton } from './account.js';
 import { CHANNEL, channelTag } from './notifications.js';
 import { timeEl } from './system.js';
+import { withReauth } from './reauth.js';
 
-const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur' };
+const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur', agent: 'Agent' };
 const ROLE_HINT = {
   operator: 'Surveille le site, traite les alarmes, arme ou désarme les zones, consulte les rapports et le journal.',
   admin: "Tout ce que fait l’opérateur, plus les réglages : équipements et plan, personnes prévenues, comptes et système.",
@@ -75,7 +76,9 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
     const me = getMe();
     const key = focusKeyIn(usersBox);
     // Votre compte d'abord : c'est celui qu'on cherche le plus souvent, et il a ses propres règles.
-    const sorted = [...list].sort((a, b) => (b.username === me.username) - (a.username === me.username));
+    // Les agents de terrain (rôle « agent ») se gèrent dans Rondes : ils n'ont pas leur place ici.
+    const shown = list.filter((u) => u.role !== 'agent');
+    const sorted = [...shown].sort((a, b) => (b.username === me.username) - (a.username === me.username));
     usersBox.replaceChildren(
       h(
         'div',
@@ -83,7 +86,7 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
         h(
           'table',
           { class: 'data adm-stack adm-users' },
-          h('caption', { class: 'sr-only', text: `${plural(list.length, 'compte')}` }),
+          h('caption', { class: 'sr-only', text: `${plural(shown.length, 'compte')}` }),
           h('thead', {}, h('tr', {}, th('Compte'), th('Rôle'), th('Double authentification'), th('Dernière connexion'), th('Actif'), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
           h('tbody', {}, ...sorted.map((u) => userRow(u, u.username === me.username))),
         ),
@@ -109,9 +112,9 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
         details: ROLE_HINT[next],
         confirmLabel: `Passer ${word}`,
         danger: self,
-        onConfirm: () => api(path, { method: 'PATCH', body: { role: next } }),
       });
-      if (!ok) {
+      // Changer un rôle donne ou retire la main sur les portes : le mot de passe du compte connecté est redemandé.
+      if (!ok || !(await withReauth(`changer le rôle de ${u.username}`, (reauth) => api(path, { method: 'PATCH', body: { role: next, reauth } })))) {
         role.value = u.role;
         return;
       }
@@ -129,9 +132,8 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           message: `${u.username} ne pourra plus se connecter, et sa session ouverte est fermée tout de suite.`,
           details: 'Le compte et son historique sont conservés : vous pourrez le réactiver en recochant « Actif ».',
           confirmLabel: 'Désactiver le compte',
-          onConfirm: () => api(path, { method: 'PATCH', body: { active: false } }),
         });
-        if (!ok) {
+        if (!ok || !(await withReauth(`désactiver le compte ${u.username}`, (reauth) => api(path, { method: 'PATCH', body: { active: false, reauth } })))) {
           active.checked = true;
           return;
         }
@@ -141,8 +143,8 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
       pendingKey = k('active');
       active.disabled = true;
       try {
-        await api(path, { method: 'PATCH', body: { active: true } });
-        toast(`Compte ${u.username} réactivé`, 'ok');
+        const done = await withReauth(`réactiver le compte ${u.username}`, (reauth) => api(path, { method: 'PATCH', body: { active: true, reauth } }));
+        if (done) toast(`Compte ${u.username} réactivé`, 'ok');
       } catch (err) {
         toast(err.message);
       }
@@ -160,9 +162,8 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           message: `Téléphone perdu ou changé ? La double authentification est retirée du compte ${u.username}, et ses sessions ouvertes sont fermées.`,
           details: 'À sa prochaine connexion, le mot de passe suffira ; la personne pourra (ou devra, si elle est imposée) la réactiver depuis « Mon compte ».',
           confirmLabel: 'Réinitialiser',
-          onConfirm: () => api(`${path}/reset-2fa`, { method: 'POST' }),
         });
-        if (!ok) return;
+        if (!ok || !(await withReauth(`réinitialiser la double authentification de ${u.username}`, (reauth) => api(`${path}/reset-2fa`, { method: 'POST', body: { reauth } })))) return;
         toast(`Double authentification de ${u.username} réinitialisée`, 'ok');
         loadUsers();
       });
@@ -183,10 +184,11 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           message: 'Mot de passe temporaire : la personne devra le changer à sa prochaine connexion, et ses sessions ouvertes sont fermées. Communiquez-le-lui par un canal sûr, de vive voix par exemple.',
           label: 'Mot de passe temporaire',
           generate: true,
-          confirmLabel: 'Enregistrer le mot de passe',
-          onSubmit: (password) => api(`${path}/reset-password`, { method: 'POST', body: { password } }),
+          confirmLabel: 'Continuer',
         });
         if (value === null) return;
+        // `password` est le NOUVEAU mot de passe du compte ; `reauth` est celui de l'administrateur connecté.
+        if (!(await withReauth(`remplacer le mot de passe de ${u.username}`, (reauth) => api(`${path}/reset-password`, { method: 'POST', body: { password: value, reauth } })))) return;
         toast(`Mot de passe de ${u.username} remplacé`, 'ok');
         loadUsers();
       });
@@ -197,9 +199,8 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           message: `Supprimer définitivement le compte ${u.username}${u.displayName ? ` (${u.displayName})` : ''} ? La personne ne pourra plus se connecter. Le journal garde la trace de ses actions.`,
           details: 'Pour une absence, décochez plutôt « Actif » : le compte pourra être réactivé.',
           confirmLabel: 'Supprimer le compte',
-          onConfirm: () => api(path, { method: 'DELETE' }),
         });
-        if (!ok) return;
+        if (!ok || !(await withReauth(`supprimer le compte ${u.username}`, (reauth) => api(path, { method: 'DELETE', body: { reauth } })))) return;
         toast(`Compte ${u.username} supprimé`, 'ok');
         loadUsers();
       });
@@ -267,7 +268,9 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
           setBusy(submit, true);
           const temp = password.value;
           try {
-            await api('/api/users', { method: 'POST', body: { username: id, displayName: displayName.value, role: role.value, password: temp } });
+            // Mot de passe de l'administrateur redemandé : annuler laisse le formulaire intact.
+            const done = await withReauth(`créer le compte ${id}`, (reauth) => api('/api/users', { method: 'POST', body: { username: id, displayName: displayName.value, role: role.value, password: temp, reauth } }));
+            if (!done) return;
             form.reset();
             roleField.querySelector('.hint').textContent = ROLE_HINT.operator;
             const code = h('code', { class: 'adm-mono', text: temp });

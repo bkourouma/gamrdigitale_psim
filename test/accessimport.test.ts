@@ -1,5 +1,5 @@
 /**
- * Import CSV des titulaires (docs/ACCES.md § 10.5) : analyse pure du fichier, puis application par un FAUX service en memoire
+ * Import CSV des titulaires (docs/ACCES.md § 11.5) : analyse pure du fichier, puis application par un FAUX service en memoire
  * (qui applique les memes refus que le vrai : badge pris, matricule pris, groupe inconnu).
  */
 import assert from 'node:assert/strict';

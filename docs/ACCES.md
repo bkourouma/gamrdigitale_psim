@@ -252,14 +252,46 @@ Base de 900 000 passages (10 000 par jour sur 90 jours, 20 portes, 500 badges) ;
 - **Vidéo à l'heure du passage** : voir § 5. Relecture de l'enregistreur Dahua : point « à qualifier » sur matériel réel.
 - **Sabotage** : l'alarme `tamper` passe par l'incident habituel ; l'état affiché de la porte ne le montre pas séparément.
 
-## 10. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
+## 10. Rapports et portail (F27, F28)
+
+Lot « Rapports et portail » (branche `acces-rapports`). Règle commune : **aucun nom de titulaire, numéro de badge, `holderRef`, identifiant ou adresse de contrôleur** ne sort du journal des passages vers un rapport ou vers le portail ; seulement des comptes et des noms de portes (le nom du détecteur). Il n'y a pas d'option nominative dans cette version.
+
+### 10.1 Rapport périodique : section « Contrôle d'accès » (F27)
+
+Le rapport d'incidents (écran imprimable `/api/reports/incidents`, pièce jointe HTML autonome et courriel hebdomadaire ou mensuel, texte et HTML) comporte, pour un site qui a au moins une porte déclarée, une section « Contrôle d'accès ». Elle est **absente** pour un site sans porte et quand le rapport est filtré sur une autre catégorie que « accès » : le rapport d'un site sans porte est identique à avant. Calcul en lecture seule dans `server/accessreport.ts`.
+
+- chiffres clés : portes déclarées, passages, accordés, refusés, passages reçus en différé ;
+- incidents d'accès par porte et par type (porte forcée, maintenue ouverte, refus répétés, sabotage, autre), d'après `incident.event` ;
+- portes les plus en défaut ou hors ligne : durée cumulée, disponibilité, nombre de coupures, plus longue coupure ; le temps non surveillé (PSIM arrêté) est indiqué à part, jamais compté comme panne ;
+- refus par porte et par motif ; les passages d'une porte retirée sont regroupés sous « Porte retirée » (ses incidents et pannes, eux, ne sont plus rapportés) ;
+- si la période commence avant la durée de conservation du journal, une note prévient que les chiffres de passages et de refus peuvent être incomplets.
+
+Les requêtes sont agrégées en SQL (filtre sur l'heure du contrôleur, comme le journal). Le CSV joint reste le CSV des incidents existant.
+
+### 10.2 Portail (F28)
+
+Le PSIM ajoute à son résumé un bloc **facultatif** `access` (le format reste `v: 1`), seulement si le site a une porte déclarée (`server/accessportal.ts`, qui ne lit ni `access_event` ni `access_controller`) :
+
+```
+access: { doors, states: { offline, fault, forced, heldOpen, open, closed, unknown },
+          availability: { upS, downS, unmonitoredS, pct },     // portes, fenêtre de 35 jours
+          incidents: { total, forced, heldOpen, repeatedDenials, tamper, other, openNow, byDay: [{ day, n }] } }
+```
+
+Le portail le valide champ par champ (bloc mal formé : résumé refusé en 400 ; champ inconnu : ignoré, jamais stocké) et affiche une carte « Contrôle d'accès » dans la Synthèse du site (absente sans porte, « Non transmis » si le site a des détecteurs d'accès mais aucun bloc), et, dans les groupes, le nombre de portes hors ligne ou en défaut (les sites muets à part, dans « À vérifier »). Périmètre et comptes limités à des groupes inchangés. Détails et lecture des chiffres : `docs/PORTAIL.md`.
+
+**Compatibilité** (essai croisé réel avec le code de `dc21510`, dans les deux sens) : un portail ancien ignore le bloc ; un PSIM ancien n'en envoie pas et le portail récent le dit « non transmis ». Ordre de mise à jour inchangé : le portail avant les PSIM.
+
+**Preuve de confidentialité** : `test/portal-access-privacy.test.ts` fouille le corps de `buildSiteSummary`, le corps réellement envoyé par `createPortalSender`, les réponses du portail pour cinq rôles et toutes les tables du portail, à la recherche du nom, du badge, de la `holderRef`, de l'identifiant et de l'hôte du contrôleur ; `test/e2e-portal-access.test.ts` le refait avec un vrai PSIM et un vrai portail, octets échangés enregistrés.
+
+## 11. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
 
 Contrat commun : `docs/CONTROLE-ACCES.md` § 1 (le code PIN n'est **pas** géré par le PSIM) et § 7 (protocole de synchronisation).
 PRD : F21 à F26, parcours P3. Types partagés (figés) : `server/accessholderstypes.ts`. Fichiers : `server/accessholders.ts`
 (titulaires, droits), `server/accesssync.ts` (synchronisation), `server/accessimport.ts` (import CSV), `server/accessholdersapi.ts`
 (routes), `web/holders.js` et `web/holders.css` (écran « Titulaires »).
 
-### 10.1 Principe
+### 11.1 Principe
 
 Le PSIM est la **référence** des titulaires. Il calcule, pour chaque contrôleur, ce que celui-ci doit contenir (titulaires,
 plages horaires, jours fériés) d'après les droits des groupes, puis le **pousse**, une opération à la fois, par la passerelle.
@@ -270,7 +302,7 @@ Rien de biométrique ni de secret ne circule : ni code PIN, ni gabarit d'emprein
 au plus, JPEG, PNG ou WebP) reste dans la base du PSIM ; elle n'est jamais envoyée ni au portail ni aux contrôleurs, ni mise
 dans un journal ou un export.
 
-### 10.2 Modèle de données
+### 11.2 Modèle de données
 
 Tables (`CREATE TABLE IF NOT EXISTS`, créées par `createHolders`) :
 
@@ -316,7 +348,7 @@ contrôleur n'a pas donné de nom, `holder_name` et `holder_key` sont remplis av
 passe `returned`, le visiteur est retiré des contrôleurs (le contrôleur l'avait déjà expiré seul par `validTo`). La fiche du visiteur est
 supprimée après la durée de conservation du journal des passages.
 
-### 10.3 API `/api/access/*` des titulaires
+### 11.3 API `/api/access/*` des titulaires
 
 Session obligatoire, anti-CSRF commun pour toute écriture, erreurs `{"error":"…"}` en français (400, 401, 403, 404, 409, 413, 428, 429).
 **Opérateur** : consulter les titulaires, les visiteurs, la synchronisation ; créer un visiteur et mettre fin à sa visite. **Administrateur** :
@@ -364,7 +396,7 @@ nominative, une fois par minute et par recherche), `access_sync_key_issued` (jam
 `access_sync_ack_invalid` (système, accusé à signature fausse, une fois par heure et par contrôleur). Les détails portent des **identifiants**
 (`H12`, `B5`, `G3`), jamais un nom ni un numéro de badge : le journal ne s'efface pas.
 
-### 10.4 Synchronisation (précisions du § 7 du contrat)
+### 11.4 Synchronisation (précisions du § 7 du contrat)
 
 Le § 7 de `docs/CONTROLE-ACCES.md` fait foi. Précisions de réalisation, à respecter côté passerelle :
 
@@ -389,7 +421,7 @@ Le § 7 de `docs/CONTROLE-ACCES.md` fait foi. Précisions de réalisation, à re
 - Transport : interface `SyncTransport.publish(controllerId, payload)` et entrée `receiveAck(controllerId, payload)`. Le câblage MQTT
   (`server/mqtt.ts`, droits du compte de la passerelle) est fait après la fusion de la vague 1.
 
-### 10.5 Import CSV (F25)
+### 11.5 Import CSV (F25)
 
 Fichier de 1 Mo et 5 000 lignes au plus. Encodage UTF-8 (avec ou sans BOM) ; si le fichier n'est pas de l'UTF-8 valide, il est lu en
 Windows-1252 (Excel français) et le rapport le dit. Séparateur détecté (`;`, `,` ou tabulation). Guillemets selon la RFC 4180. Une ligne d'en-tête
@@ -412,7 +444,7 @@ Avec matricule : le titulaire existant est mis à jour, sinon créé. Sans matri
 (avertissement « homonyme » si le nom existe déjà). Une colonne vide laisse la valeur actuelle inchangée ; les groupes listés **remplacent** ceux du titulaire
 seulement si la colonne `groupe` est présente et non vide. Les visiteurs ne s'importent pas. Une seule entrée de journal (`access_import`) résume l'import.
 
-### 10.6 Écran « Titulaires » (`web/holders.js`)
+### 11.6 Écran « Titulaires » (`web/holders.js`)
 
 Entrée « Titulaires » dans le menu (opérateur et administrateur). Onglets : **Titulaires** (recherche, fiche), **Visiteurs** (création rapide au poste de
 garde, liste « en cours » avec temps restant et dernier passage), **Groupes et horaires** (administrateur : groupes, plages, jours fériés), **Import**

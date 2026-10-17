@@ -181,11 +181,25 @@ export function attentionPanel(ctx, stats) {
   if (stats.neverSeen > 0) lines.push(line('state-unknown', h('strong', null, plural(stats.neverSeen, 'site n’a', 'sites n’ont')), ` encore rien envoyé au portail : rien ne permet de dire ${stats.neverSeen > 1 ? 'qu’ils sont protégés' : 'qu’il est protégé'}.`));
   if (stats.unmeasured > 0) lines.push(line('state-unknown', h('strong', null, plural(stats.unmeasured, 'site envoie', 'sites envoient')), ` des données mais aucun équipement n’y est mesuré : rien ne permet de dire que ${stats.unmeasured > 1 ? 'leurs équipements fonctionnent' : 'ses équipements fonctionnent'}.`));
   if (stats.incidents.openUnverified > 0) lines.push(line('state-alarm', h('strong', null, plural(stats.incidents.openUnverified, 'incident', 'incidents')), ` ${stats.incidents.openUnverified > 1 ? 'étaient' : 'était'} en cours au dernier signal ${stats.silent.count > 1 ? 'de sites muets' : 'd’un site muet'}${NB}: à vérifier.`));
+  if (stats.access.unverifiedDown > 0) lines.push(line('state-warning', h('strong', null, plural(stats.access.unverifiedDown, 'porte', 'portes')), ` ${stats.access.unverifiedDown > 1 ? 'étaient hors service' : 'était hors service'} (hors ligne ou en défaut) au dernier signal ${stats.silent.count > 1 ? 'de sites muets' : 'd’un site muet'}${NB}: à vérifier.`));
   if (!lines.length) return null;
   return panel({ title: 'À vérifier', iconName: 'state-warning', cls: 'panel-attention' }, h('ul', { class: 'lines' }, lines));
 }
 
 // ------------------------------------------------------------------ les 30 derniers jours et l'indice, agrégés
+
+/**
+ * Les portes du contrôle d'accès, en une ligne : combien, et combien sont hors ligne ou en défaut (sites qui répondent seulement ;
+ * le dernier état connu des sites muets est dit à part, dans « À vérifier »). Aucune porte transmise : pas de ligne.
+ */
+function accessLine(access, line, strong) {
+  if (!access || access.sites === 0) return null;
+  const down = access.offline + access.fault;
+  const where = `dans ${plural(access.sites, 'site équipé', 'sites équipés')}`;
+  if (down === 0) return line('door', 'Contrôle d’accès', `${NB}: `, strong(plural(access.doors, 'porte', 'portes')), ` ${where}, aucune hors ligne ni en défaut.`);
+  const detail = [access.offline && `${access.offline} hors ligne`, access.fault && `${access.fault} en défaut`].filter(Boolean).join(', ');
+  return line('state-warning', 'Contrôle d’accès', `${NB}: `, strong(plural(down, 'porte hors service', 'portes hors service')), ` (${detail}) sur ${plural(access.doors, 'porte', 'portes')} ${where}. ${down > 1 ? 'Ces portes ne sont' : 'Cette porte n’est'} plus suivie${down > 1 ? 's' : ''} normalement.`);
+}
 
 /** « Les 30 derniers jours » d'un ensemble de sites : protection, incidents, en cours, prise en charge. */
 export function monthPanel(stats, noun) {
@@ -214,6 +228,7 @@ export function monthPanel(stats, noun) {
         ? line('state-alarm', strong(plural(stats.incidents.open, 'incident encore en cours', 'incidents encore en cours')), `${NB}: ${open.map((p) => p.text).join(', ')}. À suivre en priorité.`)
         : line('state-ok', stats.silent.count > 0 ? 'Aucun incident en cours sur les sites qui répondent.' : 'Aucun incident en cours.'),
       inc.ackMedianS !== null && line('clock', 'Prise en charge en ', strong(fmtDur(inc.ackMedianS)), ' en général (délai médian entre l’alerte et sa prise en charge).'),
+      accessLine(stats.access, line, strong),
     ),
   );
 }

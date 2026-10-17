@@ -53,10 +53,10 @@ describe('categories energie et personnes : liste fermee des evenements', () => 
     for (const event of NEW_ALARMS) {
       assert.equal(EVENTS[event], 'alarm', `${event} doit etre une alarme`);
       const r = interpret(settings('environment'), { event });
-      assert.deepEqual(r, { ok: true, state: 'alarm', event, alive: false, value: null });
+      assert.deepEqual(r, { ok: true, state: 'alarm', event, alive: false, value: null, detail: null });
     }
     assert.equal(EVENTS.power_restored, 'normal');
-    assert.deepEqual(interpret(settings('energy'), { event: 'power_restored' }), { ok: true, state: 'normal', event: 'power_restored', alive: false, value: null });
+    assert.deepEqual(interpret(settings('energy'), { event: 'power_restored' }), { ok: true, state: 'normal', event: 'power_restored', alive: false, value: null, detail: null });
   });
 
   it('les categories energie et personnes existent, avec leurs libelles accentues et sans accent', () => {
