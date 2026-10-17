@@ -20,6 +20,7 @@ import type { Arming } from './arming.ts';
 import { maskAudit, maskSnapshot } from './visibility.ts';
 import type { JournalGuard } from './journal.ts';
 import type { ReportMail } from './reportmail.ts';
+import { createPatrolReport, mountPatrolReport } from './patrolreport.ts';
 import { parseRange } from './reports.ts';
 import type { Reports } from './reports.ts';
 import type { Engine } from './engine.ts';
@@ -1085,6 +1086,7 @@ export function createApp(deps: ApiDeps) {
     };
     deps.agents?.mount(app, ctx);
     deps.patrols?.mount(app, ctx);
+    if (deps.patrols) mountPatrolReport(app, { reports: deps.reports, report: createPatrolReport({ db }), staff: ctx.staff, audit: (actor, action, ref) => engine.audit(actor, action, ref), actorOf });
   }
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------
