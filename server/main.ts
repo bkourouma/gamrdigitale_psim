@@ -55,7 +55,7 @@ import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
 import type { PsimEvent } from './types.ts';
 import { createUsersService } from './users.ts';
-import { createAgents } from './agents.ts';
+import { createAgents, isVirtualDetector } from './agents.ts';
 import { createPatrols } from './patrols.ts';
 import { createVideoService } from './video.ts';
 
@@ -185,6 +185,8 @@ const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
 let arming: Arming | undefined;
 let gatewayLink: GatewayLink | undefined;
+// Detecteurs virtuels (agents, circuits) : le moteur est cree avant `agents`, dont la reponse n'existe qu'ensuite.
+let virtualDetector: ((id: string) => boolean) | undefined;
 // Journal des acces (portes, passages) : cree AVANT le moteur qui l'appelle ; ses fermetures atteignent le moteur a l'usage, jamais a la creation.
 const access = createAccess({
   db,
@@ -201,6 +203,8 @@ const engine = createEngine(db, publish, Date.now, {
   confirmWindowMs: config.confirmWindowS * 1000,
   persistMs: config.confirmPersistS * 1000,
   hintMs: config.falseAlarmHintS * 1000,
+  // SOS d'agents et rondes manquees : pas de confirmation par persistance ni par voisin (voir EngineOptions.virtualDetector).
+  virtualDetector: (id) => virtualDetector?.(id) ?? false,
   // Sur chaque etape d'un incident : le texte part tout de suite, les images en complement des qu'elles
   // sont prises. Tout en tache de fond : rien ne retarde ni ne fait echouer l'alarme.
   onIncidentEvent: (incident, kind) => {
@@ -555,6 +559,7 @@ const agents = createAgents({
   liveStream: (cameraId, res) => video.attachViewer(cameraId, res),
 });
 const patrols = createPatrols({ db, engine, agents, dataDir });
+virtualDetector = (id) => isVirtualDetector(db, id);
 
 const app = createApp({
   db,
