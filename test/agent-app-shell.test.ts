@@ -91,9 +91,19 @@ describe('modules JavaScript de l\'application', () => {
     assert.match(app, /installAudioUnlock\(\)/);
   });
 
-  it('app.js efface les cles psim-agent-* sauf le mode discret a la fin du service', () => {
+  it('app.js efface les cles psim-agent-* a la fin du service, sauf les reglages du telephone (discret, appairage, dernier agent, journal des refus)', () => {
     assert.match(app, /KEY_DISCREET = 'psim-agent-discreet'/);
-    assert.match(app, /key !== KEY_DISCREET/);
+    assert.match(app, /KEEP_AT_END = new Set\(\[KEY_DISCREET, KEY_PAIRED, KEY_LAST, KEY_REJECTS\]\)/);
+    assert.match(app, /!KEEP_AT_END\.has\(key\)/);
+  });
+
+  it('Avenant 1 : file et SOS vivent hors session ; plus de discardForeign ; 401 « non appaire » renvoie a l\'appairage', () => {
+    assert.doesNotMatch(app, /discardForeign/);
+    assert.match(app, /core = buildCore\(\)/);
+    assert.match(app, /kinds: \(\) => \(hasSession\(\) \? null : \['sos'\]\)/);
+    assert.match(app, /non appair/);
+    assert.match(app, /setAuthLostHandler\(onAuthLost\)/);
+    assert.match(app, /keepKinds: \['sos'\]/);
   });
 });
 

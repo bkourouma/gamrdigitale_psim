@@ -10,7 +10,12 @@ import { createLogbook } from './logbook.js';
 
 const KEY_ME = 'psim-agent-me';
 const KEY_DISCREET = 'psim-agent-discreet';
+const KEY_PAIRED = 'psim-agent-paired'; // ce téléphone est appairé (le SOS est alors proposé dès l'écran de connexion)
+const KEY_LAST = 'psim-agent-last'; // dernier agent connecté ici : le SOS le nomme même sans session
+const KEY_REJECTS = 'psim-agent-rejets'; // journal local des envois refusés pour de bon (compte rendu)
 const KEY_PREFIX = 'psim-agent-';
+// Réglages du téléphone, pas des données de l'agent : la fin de service ne les efface pas.
+const KEEP_AT_END = new Set([KEY_DISCREET, KEY_PAIRED, KEY_LAST, KEY_REJECTS]);
 const SS_TAB = 'psim-agent-tab';
 const SS_CP = 'psim-agent-cp';
 const TABS = ['alarms', 'ronde', 'sos'];
@@ -26,7 +31,8 @@ let bootedOffline = false; // entré en mode principal sans réseau
 let endingService = false; // fin de service en cours (un 401 est alors attendu)
 let loggingOut = false;
 let cleanupScreen = null; // retire les écouteurs de l'écran affiché
-let services = null; // { queue, sos, alarms, ronde, logbook }
+let core = null; // { queue, sos } : vivent tant que la page est ouverte, avec ou sans session (un SOS ne s'arrête jamais)
+let services = null; // { alarms, ronde, logbook } : seulement en service
 let shell = null; // éléments de l'écran principal
 let summary = { total: 0, unacked: 0 };
 let activeTab = 'alarms';
@@ -82,13 +88,23 @@ function brandBlock() {
     'div',
     { class: 'sh-brand' },
     h('img', { src: 'icon.svg', alt: '', width: 48, height: 48 }),
-    h('div', null, h('div', { class: 'sh-brand-name', text: 'GAMR-DIGITALE' }), h('div', { class: 'sh-brand-sub', text: 'Application des agents' })),
+    h('div', { class: 'sh-brand-text' }, h('div', { class: 'sh-brand-name', text: 'GAMR-DIGITALE' }), h('div', { class: 'sh-brand-sub', text: 'Application des agents' })),
+    // Le SOS est là dès que le téléphone est appairé, même sans agent connecté (Avenant 1).
+    phonePaired() && core ? core.sos.holdButton({ variant: 'compact' }) : null,
   );
 }
 
 function page(...children) {
-  return h('main', { class: 'sh-page' }, brandBlock(), ...children);
+  // Le bandeau d'état du SOS (« non transmis, nouvel essai… ») suit l'agent d'un écran à l'autre.
+  return h('main', { class: 'sh-page' }, brandBlock(), phonePaired() && core ? core.sos.statusEl : null, ...children);
 }
+
+const phonePaired = () => local.get(KEY_PAIRED, false) === true;
+const setPaired = (value) => (value ? local.set(KEY_PAIRED, true) : local.remove(KEY_PAIRED));
+const lastAgent = () => {
+  const last = local.get(KEY_LAST);
+  return typeof last?.username === 'string' ? last.username : null;
+};
 
 function showLoading(text = 'Chargement…') {
   state = 'boot';
@@ -138,7 +154,12 @@ async function readHash() {
 
 async function loadPhone() {
   const r = await api('/api/agent/phone');
-  if (r.ok) agents = Array.isArray(r.data?.agents) ? r.data.agents : [];
+  if (r.ok) {
+    agents = Array.isArray(r.data?.agents) ? r.data.agents : [];
+    setPaired(true);
+  } else if (r.status === 401 || r.status === 403) {
+    setPaired(false);
+  }
   return r;
 }
 
@@ -172,6 +193,7 @@ function offlineStart() {
 function applyMe(next) {
   me = next;
   local.set(KEY_ME, me);
+  local.set(KEY_LAST, { username: me.username, at: Date.now() });
   if (me.shift) void enterMain();
   else showService();
 }
@@ -374,17 +396,37 @@ async function notMe() {
 }
 
 // ----------------------------------------------------------------------------------------------------- services (modules)
-function buildServices() {
+/** Une session existe-t-elle ? Sans elle, seuls les SOS peuvent partir (cookie du téléphone seul). */
+const hasSession = () => state === 'main' || state === 'service';
+
+/** Un envoi refusé pour de bon : on le dit, et on le garde dans le journal local (30 derniers). */
+function logRejected(item, response) {
+  const message = response?.error ?? item?.lastError ?? 'erreur inconnue';
+  const journal = local.get(KEY_REJECTS, []);
+  journal.push({ at: Date.now(), kind: item?.kind ?? '?', username: item?.username ?? null, clientId: item?.clientId ?? null, message: String(message).slice(0, 200) });
+  local.set(KEY_REJECTS, journal.slice(-30));
+  toast(`Envoi refusé : ${message}`, 'error');
+}
+
+/** Ce qui vit tant que la page est ouverte : la file d'envois et le SOS (jamais arrêtés par une déconnexion). */
+function buildCore() {
   const queue = createQueue({
     store: idbStore(),
     send: makeSend(api),
     onChange: (info) => updatePending(info?.count ?? 0),
     onResult: (item, outcome, response) => {
-      if (outcome === 'rejected') toast(`Envoi refusé : ${response?.error ?? item?.lastError ?? 'erreur inconnue'}`, 'error');
+      if (outcome === 'rejected') logRejected(item, response);
     },
   });
-  const getUser = () => me?.username ?? null;
+  // Même sans connexion, le SOS porte le nom du dernier agent connecté ici (le serveur vérifie qu'il est récent).
+  const getUser = () => me?.username ?? lastAgent();
   const sos = createSos({ queue, getUser, toast });
+  return { queue, sos };
+}
+
+function buildServices() {
+  const { queue } = core;
+  const getUser = () => me?.username ?? null;
   const alarms = createAlarms({ api, toast, onSummary: onAlarmSummary });
   const logbook = createLogbook({
     queue,
@@ -393,13 +435,14 @@ function buildServices() {
     getLastCheckpoint: () => ronde.lastCheckpoint() ?? (me?.position ? { id: me.position.checkpointId, name: me.position.name } : null),
   });
   const ronde = createRonde({ api, queue, toast, getUser, openLogbook: (opts) => logbook.open(opts) });
-  return { queue, sos, alarms, ronde, logbook };
+  return { alarms, ronde, logbook };
 }
 
+/** Arrête ce qui n'a de sens qu'en service. La file et le SOS continuent : un SOS non parti doit rester visible et réessayer. */
 function teardown() {
   stopMonitor();
   if (services) {
-    for (const stop of [() => services.sos.dispose(), () => services.alarms.stop(), () => services.ronde.stop(), () => services.queue.stop()]) {
+    for (const stop of [() => services.alarms.stop(), () => services.ronde.stop()]) {
       try {
         stop();
       } catch {
@@ -422,20 +465,15 @@ async function enterMain() {
   state = 'main';
   if (services) teardown();
   services = buildServices();
-  const { queue, sos, alarms, ronde } = services;
-  try {
-    await queue.discardForeign(me.username);
-  } catch {
-    // la file n'est pas lisible : on continue
-  }
+  const { alarms, ronde } = services;
   buildShell();
   show(shell.el);
   renderHeader();
   updateOnline();
-  updatePending(queue.count());
+  updatePending(core.queue.count());
   setTab(readSavedTab());
-  queue.start({ intervalMs: 15000 });
-  void sos.resume();
+  // La session existe maintenant : on vide tout de suite ce que l'agent précédent a laissé (chaque envoi porte son auteur).
+  void core.queue.flush().catch(() => {});
   alarms.start();
   ronde.start();
   hadShift = Boolean(me.shift);
@@ -453,7 +491,8 @@ function readSavedTab() {
 }
 
 function buildShell() {
-  const { sos, alarms, ronde, logbook } = services;
+  const { alarms, ronde, logbook } = services;
+  const { sos } = core;
   const netDot = h('span', { class: 'sh-net', role: 'img', 'aria-label': 'En ligne', text: '●' });
   const whoName = h('span', { class: 'sh-who-name' });
   const whoService = h('span', { class: 'sh-who-service' });
@@ -530,7 +569,7 @@ function updatePending(count) {
 
 async function flushNow() {
   if (!services) return;
-  const { queue } = services;
+  const { queue } = core;
   shell.badge.disabled = true;
   try {
     await queue.flush();
@@ -647,7 +686,7 @@ async function openEndSheet(afterAction) {
   });
   const confirmEnd = async () => {
     if (!services) return sheet.close();
-    const { queue } = services;
+    const { queue } = core;
     confirm.disabled = true;
     cancel.disabled = true;
     error.textContent = '';
@@ -687,17 +726,17 @@ async function openEndSheet(afterAction) {
   };
 }
 
-/** Fin de service réussie : plus rien de l'agent ne reste sur le téléphone (sauf le réglage discret). */
+/** Fin de service réussie : plus rien de l'agent ne reste sur le téléphone, sauf les réglages du téléphone et un SOS pas encore parti. */
 async function wipeAndLeave() {
   try {
-    await services?.queue.clear();
+    await core?.queue.clear({ keepKinds: ['sos'] });
   } catch {
     // rien
   }
   try {
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
-    for (const key of keys) if (key?.startsWith(KEY_PREFIX) && key !== KEY_DISCREET) localStorage.removeItem(key);
+    for (const key of keys) if (key?.startsWith(KEY_PREFIX) && !KEEP_AT_END.has(key)) localStorage.removeItem(key);
   } catch {
     // rien
   }
@@ -749,13 +788,25 @@ async function checkMe() {
 async function shiftEnded() {
   if (services) {
     try {
-      await services.queue.flush();
+      await core.queue.flush();
     } catch {
       // la file reste sur le téléphone
     }
   }
   teardown();
   showService('Votre service est terminé.');
+}
+
+/** Un 401 : « Téléphone non appairé » renvoie à l'appairage, « Session terminée » à la connexion (Avenant 1, art. 3). */
+function onAuthLost(res) {
+  if (/non appair/i.test(String(res?.error ?? ''))) {
+    if (state === 'pair' || state === 'boot') return; // le démarrage et l'appairage traitent eux-mêmes leur réponse
+    teardown();
+    setPaired(false);
+    void showPair('Ce téléphone n’est plus appairé. Demandez un nouveau QR d’appairage au responsable.');
+    return;
+  }
+  onSessionLost();
 }
 
 function onSessionLost() {
@@ -805,7 +856,11 @@ function start() {
       // pas de service worker : l'application marche, sans mode hors ligne
     });
   }
-  setAuthLostHandler(onSessionLost);
+  setAuthLostHandler(onAuthLost);
+  // File d'envois et SOS : créés une fois, jamais arrêtés. Sans session, seuls les SOS partent (cookie du téléphone).
+  core = buildCore();
+  core.queue.start({ intervalMs: 15000, kinds: () => (hasSession() ? null : ['sos']) });
+  void core.sos.resume();
   // La pastille « En ligne / Hors ligne » suit les vrais appels (alarmes, rondes, envois), pas seulement le Wi-Fi.
   setNetworkHandler((ok) => {
     netOk = ok;

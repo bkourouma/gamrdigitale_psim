@@ -814,3 +814,11 @@ noscript p {
 .sh-net-off {
   color: var(--warn);
 }
+
+/* Ecrans hors session (connexion, prise de service) : le SOS reste a portee, a droite du nom de l application. */
+.sh-brand .sos-btn {
+  margin-left: auto;
+}
+.sh-brand-text {
+  min-width: 0;
+}

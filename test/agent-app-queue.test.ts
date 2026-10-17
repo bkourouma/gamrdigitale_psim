@@ -226,12 +226,16 @@ describe('file hors ligne : submit', () => {
     assert.equal(h.results.length, 1);
   });
 
-  it('un agent inconnu (chaine vide) est range sans nom : jamais efface par discardForeign', async () => {
+  it('un agent inconnu (chaine vide) est range sans nom', async () => {
     const h = make(offline);
     await h.queue.submit('sos', { clientId: 'inc', phoneAt: 1, discreet: false }, { username: '' });
     assert.equal((await h.store.getAll())[0].username, null);
-    assert.equal(await h.queue.discardForeign('ann'), 0);
     assert.equal(h.queue.count(), 1);
+  });
+
+  it('Avenant 1 : discardForeign n’existe plus, rien n’est jamais jete', async () => {
+    const h = make(offline);
+    assert.equal(h.queue.discardForeign, undefined);
   });
 
   it('refuse un type inconnu et un contenu qui n’est pas un objet', async () => {
@@ -645,17 +649,24 @@ describe('file hors ligne : etat, effacement, ecouteurs', () => {
     assert.deepEqual(h.changes.at(-1), { count: 0, kinds: { scan: 0, logbook: 0, sos: 0 } });
   });
 
-  it('discardForeign(username) efface les items des autres agents et renvoie leur nombre', async () => {
+  it("clear({ keepKinds: ['sos'] }) : la fin de service garde un SOS pas encore parti", async () => {
     const h = make(offline);
-    await h.store.put(rawItem('a1', 'scan', { username: 'ann' }));
-    await h.store.put(rawItem('b1', 'sos', { username: 'bob' }));
-    await h.store.put(rawItem('b2', 'scan', { username: 'bob' }));
-    await h.store.put(rawItem('c1', 'scan', { username: 'cleo' }));
-    await h.store.put(rawItem('n1', 'sos', { username: null })); // agent inconnu : on ne perd jamais un SOS
-    assert.equal(await h.queue.discardForeign('ann'), 3);
-    assert.deepEqual((await h.queue.pending()).map((i: any) => i.clientId).sort(), ['a1', 'n1']);
-    assert.equal(h.queue.count(), 2);
-    assert.equal(await h.queue.discardForeign('ann'), 0);
+    await h.queue.submit('scan', { clientId: '1', code: 'a', method: 'qr', phoneAt: 1 }, { username: 'ann' });
+    await h.queue.submit('logbook', { clientId: '2', category: 'other', text: 'x', phoneAt: 1 }, { username: 'ann' });
+    await h.queue.submit('sos', { clientId: '3', phoneAt: 1, discreet: false }, { username: 'ann' });
+    await h.queue.clear({ keepKinds: ['sos'] });
+    assert.deepEqual((await h.queue.pending()).map((i: any) => i.clientId), ['3']);
+    assert.equal(h.queue.count(), 1);
+    assert.deepEqual(h.changes.at(-1), { count: 1, kinds: { scan: 0, logbook: 0, sos: 1 } });
+  });
+
+  it('un SOS passe toujours le filtre par username (sans session, il part quand même)', async () => {
+    const h = make(ok);
+    await h.store.put(rawItem('s', 'sos', { username: null, createdAt: 1 }));
+    await h.store.put(rawItem('a', 'scan', { username: 'bob', createdAt: 2 }));
+    const result = await h.queue.flush({ username: 'ann' });
+    assert.deepEqual(h.calls.map((c) => c.clientId), ['s']);
+    assert.deepEqual(result, { sent: 1, remaining: 0 });
   });
 
   it('subscribe() ajoute des ecouteurs et les retire', async () => {
@@ -769,6 +780,22 @@ describe('file hors ligne : start / stop', () => {
     h.queue.stop();
   });
 
+  it('start({ kinds }) : sans session (kinds = [sos]) seuls les SOS partent, puis tout une fois connecte', async () => {
+    const target = fakeTarget();
+    let connected = false;
+    const h = make(ok, { env: { target, doc: fakeTarget() } });
+    await h.store.put(rawItem('scan-1', 'scan', { username: 'ann', createdAt: 1 }));
+    await h.store.put(rawItem('sos-1', 'sos', { username: 'ann', createdAt: 2 }));
+    h.queue.start({ kinds: () => (connected ? null : ['sos']) });
+    await settle();
+    assert.deepEqual(h.calls.map((c) => c.clientId), ['sos-1']);
+    connected = true;
+    target.emit('online');
+    await settle();
+    assert.deepEqual(h.calls.map((c) => c.clientId), ['sos-1', 'scan-1']);
+    h.queue.stop();
+  });
+
   it('un echec de vidange automatique ne leve rien', async () => {
     const target = fakeTarget();
     const h = make(async () => {
@@ -818,7 +845,32 @@ describe('makeSend : statuts du contrat', () => {
       assert.equal(requests.length, 1);
       assert.equal(requests[0].path, path);
       assert.equal(requests[0].method, 'POST');
-      assert.deepEqual(requests[0].body, it.payload);
+      assert.deepEqual(requests[0].body, { ...it.payload, username: 'ann' }, 'le payload part avec l’auteur de l’envoi (Avenant 1)');
+    }
+  });
+
+  it('l’auteur de l’item part dans le champ username ; un username déjà dans le payload n’est pas écrasé ; sans auteur rien n’est ajouté', async () => {
+    const { send, requests } = sendWith({ status: 200 });
+    await send({ ...item('scan'), username: 'bob' });
+    assert.equal(requests[0].body.username, 'bob');
+    await send({ ...item('sos'), username: 'bob', payload: { clientId: 'c1', phoneAt: 1, username: 'ann' } });
+    assert.equal(requests[1].body.username, 'ann');
+    await send({ ...item('sos'), username: null });
+    assert.equal('username' in requests[2].body, false);
+  });
+
+  it('403 « Envoi d’un autre agent refusé » : rejet définitif ; les autres 403 restent à réessayer', async () => {
+    const data = { error: 'Envoi d’un autre agent refusé' };
+    const { send } = sendWith({ status: 403, data });
+    assert.deepEqual(await send(item('scan')), { status: 'rejected', error: 'Envoi d’un autre agent refusé', response: data });
+    const other = await sendWith({ status: 403, data: { error: 'Accès refusé' } }).send(item('scan'));
+    assert.equal(other.status, 'retry');
+  });
+
+  it('401 « Téléphone non appairé » et « Session terminée » : retry avec auth (l’application les distingue par le message)', async () => {
+    for (const error of ['Téléphone non appairé', 'Session terminée']) {
+      const result = await sendWith({ status: 401, data: { error } }).send(item('sos'));
+      assert.deepEqual(result, { status: 'retry', error, auth: true });
     }
   });
 

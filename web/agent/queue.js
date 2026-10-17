@@ -67,7 +67,8 @@ function filterKey(filter) {
 
 function matchesFilter(item, filter) {
   if (filter.kinds && !filter.kinds.includes(item.kind)) return false;
-  if (filter.username !== undefined && item.username !== filter.username) return false;
+  // un SOS ne depend jamais de l'agent connecte : il part toujours
+  if (filter.username !== undefined && item.kind !== 'sos' && item.username !== filter.username) return false;
   return true;
 }
 
@@ -329,9 +330,12 @@ export function makeSend(api) {
   return async function send(item, { signal, timeoutMs } = {}) {
     const path = ROUTES[item?.kind];
     if (!path) return { status: 'rejected', error: 'Type d’envoi inconnu' };
+    // L'auteur de l'envoi part avec lui (champ `username`, Avenant 1) : un envoi laisse par l'agent precedent sur un
+    // telephone partage est enregistre a son nom si le serveur confirme son service ici, refuse (403) sinon.
+    const body = item.username && item.payload?.username === undefined ? { ...item.payload, username: item.username } : item.payload;
     const res = await api(path, {
       method: 'POST',
-      body: item.payload,
+      body,
       signal,
       timeoutMs: timeoutMs ?? SEND_TIMEOUT_MS,
     });
@@ -345,6 +349,9 @@ export function interpretResponse(res) {
   if (res.ok) return { status: 'sent', response: res.data };
   const message = serverMessage(res);
   if (res.status === 401) return { status: 'retry', error: message, auth: true };
+  // 403 « Envoi d'un autre agent refusé » : l'auteur n'a pas eu de service sur ce telephone a cette heure-la. Definitif :
+  // on le retire (sans bloquer la file) ; l'application le journalise localement. Les autres 403 restent a reessayer.
+  if (res.status === 403 && /autre agent/i.test(message)) return { status: 'rejected', error: message, response: res.data };
   if (res.status === 403 || res.status === 408 || res.status === 429) return { status: 'retry', error: message };
   if (res.status >= 500) {
     const result = { status: 'retry', error: message };
@@ -660,28 +667,26 @@ export function createQueue({ store, send, now = Date.now, onChange, onResult, e
     return meta.size;
   }
 
-  /** Efface TOUT (fin de service). */
-  function clear() {
+  /**
+   * Efface TOUT (fin de service). `keepKinds` (ex. ['sos']) garde les items de ces types : un SOS pas encore parti
+   * ne doit pas disparaitre avec la fin du service. Rien n'est jamais jete autrement (Avenant 1) : l'envoi d'un agent
+   * precedent sur un telephone partage part sous son nom, le serveur decide.
+   */
+  function clear({ keepKinds } = {}) {
     return locked(async () => {
+      if (Array.isArray(keepKinds) && keepKinds.length > 0) {
+        const items = await readAll();
+        for (const item of items) {
+          if (keepKinds.includes(item.kind)) continue;
+          await safe.delete(item.clientId);
+          meta.delete(item.clientId);
+        }
+        emitChange();
+        return;
+      }
       await safe.clear();
       meta = new Map();
       emitChange();
-    });
-  }
-
-  /** Efface les items d'un AUTRE agent (telephone partage). Les items sans agent connu sont gardes. -> nombre efface */
-  function discardForeign(username) {
-    return locked(async () => {
-      const items = await readAll();
-      let removed = 0;
-      for (const item of items) {
-        if (!item.username || item.username === username) continue;
-        await safe.delete(item.clientId);
-        meta.delete(item.clientId);
-        removed += 1;
-      }
-      emitChange();
-      return removed;
     });
   }
 
@@ -690,15 +695,21 @@ export function createQueue({ store, send, now = Date.now, onChange, onResult, e
 
   /**
    * Demarre la vidange automatique : au demarrage, toutes les `intervalMs` (15 s), au retour du reseau (`online`)
-   * et au retour au premier plan. `username` (texte, ou fonction qui le donne) limite la vidange a cet agent.
+   * et au retour au premier plan. `username` (texte, ou fonction qui le donne) limite la vidange a cet agent (les SOS
+   * passent toujours) ; `kinds` (tableau, ou fonction qui le donne ; null = tout) limite les types : sans session,
+   * l'application ne vide que les SOS.
    */
-  function start({ intervalMs = DEFAULT_INTERVAL_MS, username } = {}) {
+  function start({ intervalMs = DEFAULT_INTERVAL_MS, username, kinds } = {}) {
     if (started) return;
     const target = env.target ?? globalThis.window ?? globalThis;
     const doc = env.doc ?? globalThis.document;
     const tick = () => {
       const name = typeof username === 'function' ? username() : username;
-      flush(name ? { username: name } : {}).catch(() => {});
+      const only = typeof kinds === 'function' ? kinds() : kinds;
+      const opts = {};
+      if (name) opts.username = name;
+      if (Array.isArray(only)) opts.kinds = only;
+      flush(opts).catch(() => {});
     };
     const onVisible = () => {
       if (!doc || doc.visibilityState === 'visible') tick();
@@ -739,7 +750,6 @@ export function createQueue({ store, send, now = Date.now, onChange, onResult, e
     count,
     refresh,
     clear,
-    discardForeign,
     start,
     stop,
     subscribe,
