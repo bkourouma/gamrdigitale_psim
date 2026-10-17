@@ -7,9 +7,10 @@ ouvrir une gâche ou une barrière, diffuser un message sur un haut-parleur.
 Une faille ici n'est plus une fausse alarme : c'est une porte ouverte, une barrière levée sur un véhicule, une sirène
 coupée pendant un feu. Chaque décision ci-dessous est prise **en se plaçant du côté de l'attaquant**.
 
-Statut : conception validée (phase 1), cœur côté PSIM implémenté (phase 2). Le **pilote côté passerelle** (qui reçoit
-les ordres et les exécute) viendra après revue ; la section 5 lui donne une spécification complète, avec des vecteurs de
-test signés, pour qu'il soit trivial à écrire.
+Statut : conception validée (phase 1), cœur côté PSIM implémenté (phase 2), **revue de sécurité indépendante faite et
+correctifs appliqués** (section 8), **pilote côté passerelle implémenté** (`gateway/src/actuators.ts`, usage dans
+`docs/PASSERELLE.md` section 8, sections 5.1 à 5.3 ci-dessous), essai de bout en bout avec le processus PSIM complet et une
+passerelle réelle (`test/e2e-pilote-passerelle.test.ts`).
 
 ---
 
@@ -43,12 +44,12 @@ Pour chaque menace : ce que l'attaquant veut, ce qui l'en empêche, ce qui reste
 |---|---|---|---|
 | M1 | **Broker MQTT compromis** (ou réseau du broker écouté) : forger un ordre « ouvrir », rejouer un ordre capturé | Chaque ordre est **signé** HMAC-SHA256 avec une **clé propre à l'actionneur**, que le broker ne connaît pas. Ordre daté (`ts`) et à durée de vie courte (`ttlS` ≤ 30 s) ; identifiant unique `cmdId` de 128 bits, mémorisé par le récepteur (anti-rejeu). | Un broker compromis peut **supprimer** des ordres (déni de service) : il ne peut pas en fabriquer. L'absence d'accusé est alors affichée « échec ». |
 | M2 | **Passerelle compromise** | Son compte MQTT ne peut s'abonner **qu'aux** ordres de **ses** actionneurs (identifiants listés, jamais `*`) et ne publier que **leurs** accusés. Les clés des autres actionneurs ne sont pas sur elle. | Elle peut actionner **ses** actionneurs (elle détient leurs clés) et mentir sur leurs accusés. Limiter le périmètre de chaque passerelle est une décision d'installation. |
-| M3 | **Compte opérateur volé** | Rôles par action ; `confirm:true` ; raison obligatoire pour `lock` / `gate` ; **mot de passe redemandé** pour toute action non sûre d'un `lock` / `gate` ; 4 commandes / minute / utilisateur / actionneur ; tout est journalisé (journal infalsifiable). | Le voleur qui a aussi le mot de passe peut ouvrir ce que le rôle permet. Le code 2FA n'est pas redemandé (voir 7). |
+| M3 | **Compte opérateur volé** | Rôles par action ; `confirm:true` ; raison obligatoire pour `lock` / `gate` / actionneur déclaré « sensible » ; **mot de passe redemandé** pour toute action non sûre de ceux-ci (l'action sûre, dont le `stop` du portail, reste immédiate : sans raison ni mot de passe) ; 4 commandes / minute / utilisateur / actionneur ; tout est journalisé (journal infalsifiable). | Le voleur qui a aussi le mot de passe peut ouvrir ce que le rôle permet. Le code 2FA n'est pas redemandé (voir 7). |
 | M4 | **Rejeu** d'une commande (réseau, broker, sauvegarde de trames) | `cmdId` aléatoire + `ts` + `ttlS` signés ; le récepteur refuse un ordre hors fenêtre et un `cmdId` déjà vu. Côté PSIM, un accusé n'est accepté que pour un `cmdId` **en attente** de CET actionneur, signé, et daté de façon plausible. | — |
 | M5 | **Commande forgée en interne** (bogue d'un autre module, ligne insérée en base) | Un seul chemin d'envoi : le service des commandes, qui journalise **avant** d'envoyer. Les lignes de `actuator_command` ne sont **jamais** relues pour être envoyées (pas de file persistante, pas de rejeu au démarrage). La clé n'est déchiffrée qu'au moment de signer. | Un attaquant qui exécute du code dans le processus du PSIM a la clé de chiffrement : hors modèle. |
 | M6 | **Déni de service par rafale** (opérateur, script, double-clic tenu) | 4 commandes / minute / utilisateur / actionneur (en base, survit au redémarrage) ; dédoublonnage des commandes identiques en vol ; messages bornés (1 Ko) ; accusés invalides comptés et journalisés une fois par minute au plus. | Le broker reste exposé aux rafales d'un client authentifié (limite générale de connexions de `mqtt.ts`). |
-| M7 | **Commande « fantôme » après perte de liaison** (ordre mis en file pendant la coupure puis exécuté des minutes plus tard) | Aucun ordre n'est mis en file : abonnements aux ordres forcés en **QoS 0** par le broker (pas de file hors ligne), jamais `retain` ; TTL ≤ 30 s vérifié par le récepteur ; commande **refusée** si aucune passerelle autorisée n'écoute l'actionneur ; HTTP : un seul essai, jamais rejoué. | — |
-| M8 | **Double-clic / double envoi** | Commande identique (même actionneur, action, paramètres) déjà en vol : la requête renvoie la commande existante (`deduplicated:true`), rien n'est réémis. | — |
+| M7 | **Commande « fantôme » après perte de liaison** (ordre mis en file pendant la coupure puis exécuté des minutes plus tard) | Aucun ordre n'est mis en file : abonnements aux ordres forcés en **QoS 0** par le broker (pas de file hors ligne), jamais `retain` ; TTL ≤ 30 s vérifié par le récepteur ; commande **refusée** si aucune passerelle autorisée n'écoute l'actionneur ; HTTP : un seul essai, jamais rejoué pour une commande manuelle (seul le **retour automatique** à l'état sûr est réessayé : toutes les 5 s, 5 envois au plus, puis avertissement visible `returnUnconfirmed`). | — |
+| M8 | **Double-clic / double envoi** | Commande identique (même actionneur, action, paramètres) déjà en vol : la requête du **même compte** renvoie la commande existante (`deduplicated:true`), rien n'est réémis ; pour un **autre compte**, 409 sans rien révéler (raison, auteur). Le dédoublonnage vient APRÈS la ré-authentification. | — |
 | M9 | **Opérateur sans droit** | Rôles par action, vérifiés côté serveur ; configuration réservée à l'administrateur ; session restreinte refusée. | — |
 | M10 | **État incohérent après redémarrage** | Au démarrage, toute commande `pending` / `sent` passe `expired` (journalisée), **aucune n'est réémise**. Seuls les **retours à l'état sûr** prévus et non faits sont replanifiés (envoyer `off` à une sirène est toujours sûr). | Le PSIM ne connaît pas l'état physique réel tant qu'aucun état n'est remonté (hors périmètre). |
 | M11 | **CSRF** (page piégée qui fait cliquer l'opérateur) | Contrôle d'origine (`Sec-Fetch-Site`, `Origin`) commun à toutes les routes mutantes ; cookie `SameSite=Strict` ; le corps JSON `confirm:true` impose `Content-Type: application/json`, qu'un formulaire inter-sites ne peut pas envoyer sans prévol CORS. | — |
@@ -69,20 +70,20 @@ Pour chaque menace : ce que l'attaquant veut, ce qui l'en empêche, ce qui reste
 | `ttlS` | 10 s par défaut, borné 2 à 30 s |
 | Tolérance d'horloge | 5 s (un ordre daté de plus de 5 s dans le futur est refusé) |
 | Délai d'accusé `ackTimeoutS` | 5 s par défaut, borné 1 à 30 s ; HTTP : c'est aussi le délai de la requête |
-| Limite | 4 commandes / minute / utilisateur / actionneur (hors retours automatiques) ; l'action sûre (`off`, `stop`, `lock`) a sa propre limite de 12 / minute pour ne jamais empêcher d'arrêter une sirène |
+| Limite | 4 commandes / minute / utilisateur / actionneur (hors retours automatiques) ; l'action sûre (`off`, `lock`, `stop` du haut-parleur, `stop` du portail) a sa propre limite de 12 / minute pour ne jamais empêcher d'arrêter une sirène ou un portail |
 | Taille | message ≤ 1 024 octets (même borne que les détecteurs) ; raison ≤ 200 caractères |
 | Durées | toute action temporisée exige `durationS` entier dans [min, max] ; max ≤ plafond du type ; **sans durée = refus**, sauf action déclarée `unbounded:true` par un administrateur (possible seulement pour `siren.on`, `light.on`, `relay.on`, `lock.unlock`), journalisé |
 | Retour à l'état sûr | planifié côté PSIM à `envoi + durationS + 1 s` (même sans accusé : l'équipement a pu exécuter), ET porté par le message (`durationS`) pour que l'équipement s'arrête seul si la liaison tombe |
-| Confirmation | `confirm:true` toujours exigé ; `lock` / `gate` : raison obligatoire et mot de passe redemandé (sauf pour leur action sûre, `lock`, qui doit rester immédiate) ; un admin peut exiger le mot de passe pour tout actionneur (`confirm:"reauth"`), jamais l'abaisser pour `lock` / `gate` |
-| Ré-authentification | mot de passe du compte dans la requête (`password`), vérifié avec `auth.ts` (`checkCredentials`), 5 échecs / minute puis refus, échecs journalisés. Le code 2FA n'est pas redemandé (voir 7) |
-| Verrou global | « mode maintenance / sans commandes » (admin) : refuse **tout**, y compris les retours automatiques (annulés et journalisés à l'activation) ; les équipements s'arrêtent seuls grâce à `durationS` |
+| Confirmation | `confirm:true` toujours exigé ; `lock` / `gate` / actionneur « sensible » : raison obligatoire et mot de passe redemandé (sauf pour leur action sûre — `lock` pour une serrure, `stop` pour un portail — qui doit rester immédiate) ; un admin peut exiger le mot de passe pour tout actionneur (`confirm:"reauth"`), jamais l'abaisser pour ceux-ci |
+| Ré-authentification | mot de passe du compte dans la requête (`password` pour une commande, `reauth` pour la gestion des comptes et la configuration des actionneurs, voir `server/reauth.ts`), vérifié avec `auth.ts` (`checkCredentials`). Le compteur d'échecs est **celui de la connexion** (5 par minute au total, pas 5 + 5) ; au 5e échec, les sessions du compte sont fermées ; échecs journalisés. Le code 2FA n'est pas redemandé (voir 7) |
+| Verrou global | « mode maintenance / sans commandes » (admin) : refuse toute commande SAUF l'**action sûre demandée à la main** (arrêter une sirène, reverrouiller une serrure, arrêter un portail) et l'arrêt anticipé d'une commande en cours (faire cesser une action ne doit jamais être impossible, même « sans limite ») ; les retours automatiques sont annulés et journalisés à l'activation ; les équipements s'arrêtent seuls grâce à `durationS` |
 | Liaison | MQTT : commande refusée si aucun compte de passerelle autorisé pour l'actionneur n'est **abonné** à son topic d'ordres ; HTTP : pas d'état de liaison (la requête répond ou non) |
 | Incident | une commande peut citer un incident (`incidentId`) ; refusée si l'incident est clos ; à la clôture, les commandes en attente sont annulées et les commandes temporisées en cours ramenées à l'état sûr |
 | Désactivation | actionneur désactivé : plus aucune commande ; commandes en attente annulées ; retours à l'état sûr en cours envoyés quand même (ils sont sûrs) |
 | Suppression | refusée tant qu'une commande est en vol ; l'historique (`actuator_command`) est conservé |
 | Annulation | `pending` → `cancelled` (jamais envoyée) ; `sent` / `acked` avec durée en cours → **arrêt anticipé** : l'action sûre part tout de suite, le retour planifié est retiré, l'état de la commande d'origine n'est pas réécrit |
 | HTTP | un seul essai, jamais rejoué ; redirections refusées ; accusé = code 2xx ; délai dépassé = `failed` « exécution incertaine » ; corps de réponse lu au plus 4 Ko et jamais journalisé |
-| SSRF | refus permanent : `169.254.0.0/16`, `fe80::/10`, `100.100.100.200`, `fd00:ec2::254`, `metadata.google.internal`, `0.0.0.0/8`, `127.0.0.0/8`, `::1`, multidiffusion, diffusion ; acceptés par défaut : `10/8`, `172.16/12`, `192.168/16`, `fc00::/7` ; `PSIM_ACTUATOR_HTTP_HOSTS` (liste d'hôtes ou d'adresses) remplace ce défaut — la boucle locale n'est possible que nommée explicitement (essais) ; la vérification porte sur l'adresse **résolue** (pas de contournement par DNS) |
+| SSRF | refus permanent : `169.254.0.0/16`, `fe80::/10`, `100.100.100.200`, `fd00:ec2::254`, `metadata.google.internal`, `0.0.0.0/8`, `127.0.0.0/8`, `::1`, multidiffusion, diffusion ; acceptés par défaut : `10/8`, `172.16/12`, `192.168/16`, `fc00::/7` ; `PSIM_ACTUATOR_HTTP_HOSTS` (liste d'hôtes ou d'adresses) remplace ce défaut — la boucle locale n'est possible que nommée explicitement (essais) ; la vérification porte sur l'adresse **résolue** (pas de contournement par DNS) ; les adresses IPv6 qui embarquent une IPv4 (IPv4 inscrite, y compris en hexadécimal, IPv4-compatible, NAT64 `64:ff9b::/96`) sont ramenées à l'IPv4 avant la décision ; un **nom** autorisé ne rend pas acceptable n'importe quelle adresse résolue : elle doit rester privée, sauf si l'entrée de la liste est elle-même cette adresse |
 | Compte de passerelle | `PSIM_MQTT_GATEWAYS=[{"user":"gw1","password":"...","detectors":["D-*"],"actuators":["SIR-01","R-*"]}]` ; un compte réservé aux actionneurs peut omettre `detectors` |
 | MQTT, droits | compte principal : ni abonnement ni publication sur `psim/actuators/...` ; compte de passerelle : abonnement exact à `psim/actuators/<id>/command` pour SES ids (liste `actuators` de `PSIM_MQTT_GATEWAYS`, préfixes `X-*` admis, `*` seul refusé), publication de `psim/actuators/<id>/ack` pour ces mêmes ids, rien d'autre ; filtres `+` / `#` refusés ; abonnements forcés en QoS 0 ; `retain` toujours retiré ; seul le PSIM (publication interne) publie des ordres |
 
@@ -95,7 +96,7 @@ Pour chaque menace : ce que l'attaquant veut, ce qui l'en empêche, ce qui reste
 `id`, `name`, `type`, `zone`, `floor_id`, `transport` (`mqtt` | `http`), `transport_config` (JSON non secret : requêtes
 HTTP), `transport_secret` (en-tête secret HTTP, **chiffré**), `actions` (JSON : `{ "<action>": { "maxS", "minS", "roles",
 "unbounded" } }`), `safe_action`, `confirm` (`simple` | `reauth`), `emergency_exit`, `ack_timeout_s`, `ttl_s`, `key_sealed`
-(clé HMAC **chiffrée**), `key_version`, `active`, dates et auteurs.
+(clé HMAC **chiffrée**), `key_version`, `sensitive` (0/1 : actionneur déclaré sensible), `active`, dates et auteurs.
 
 ### 4.2 `actuator_command`
 
@@ -109,8 +110,9 @@ canonique), `duration_s`, `requested_by`, `reason`, `incident_id`, `auto` (retou
 
 Une ligne : verrou global (mode maintenance), auteur, date, raison.
 
-Migrations : `CREATE TABLE IF NOT EXISTS` uniquement (aucune table existante n'est modifiée) ; une base ancienne
-rouverte gagne les trois tables, rien d'autre ne change.
+Migrations : `CREATE TABLE IF NOT EXISTS` ; une base ancienne rouverte gagne les trois tables. Seule exception : la colonne
+`sensitive` de `actuator`, ajoutée par un `ALTER TABLE` protégé (vérification de `table_info`) pour une base de développement
+qui aurait déjà la table.
 
 ### 4.4 États d'une commande
 
@@ -125,13 +127,14 @@ rouverte gagne les trois tables, rien d'autre ne change.
 
 ### 4.5 à 4.8 Règles par type
 
-- **4.5 sirène, projecteur, relais** : `on` temporisé ; `off` = état sûr, toujours autorisé aux mêmes rôles.
+- **4.5 sirène, projecteur, relais** : `on` temporisé ; `off` = état sûr, toujours permis à `operator` + `admin` (rôles imposés à la configuration).
 - **4.6 serrure / gâche** : `unlock` est une impulsion (1 à 10 s par défaut) ; l'état sûr est `lock` ; issue de secours :
   `lock` interdit, pas de retour automatique (la gâche se referme seule à la fin de `durationS`, côté équipement).
 - **4.7 haut-parleur** : `play` exige `clip` (identifiant de message préenregistré sur l'équipement, jamais un texte libre ni
   une URL) ; `stop` = état sûr.
 - **4.8 portail / barrière** : **aucun retour automatique** : fermer automatiquement une barrière sur un véhicule ou une
-  personne est plus dangereux que la laisser ouverte ; les cellules de sécurité de l'automatisme gèrent la fermeture.
+  personne est plus dangereux que la laisser ouverte ; les cellules de sécurité de l'automatisme gèrent la fermeture. `stop` est l'**action sûre immédiate** du portail : ni raison ni
+  mot de passe, limite de 12 / minute à part, permise à `operator` + `admin`, y compris sous verrou global.
 
 ---
 
@@ -221,7 +224,10 @@ Pour un relais IP qui ne parle que HTTP, le PSIM appelle directement l'équipeme
 hôte et port pour toutes les actions. Variables remplacées (valeurs encodées pour l'URL) : `{action}`, `{durationS}`,
 `{clip}`, `{cmdId}`, `{ts}`, `{sig}` (signature de la section 5.1, pour un équipement capable de la vérifier). Un en-tête
 secret facultatif (`Authorization: Basic ...`, jeton) est chiffré en base. Accusé = code 2xx ; un code 2xx ne prouve que
-la réception par le relais (`ack_kind = http`), ce qui est affiché comme tel.
+la réception par le relais (`ack_kind = http`), ce qui est affiché comme tel. Une action temporisée qui n'est pas `unbounded` **doit**
+contenir `{durationS}` (URL ou corps) : sinon le relais ne s'éteindrait pas seul, et la configuration est refusée. Le transport HTTP est
+**interdit** pour une serrure, un portail et tout actionneur sensible (requête en clair, rejouable) : ils passent par le canal MQTT signé
+et une passerelle.
 
 ---
 
@@ -241,7 +247,11 @@ Toutes les routes : session obligatoire ; routes mutantes soumises au contrôle 
 | `GET /api/actuators/:id/commands` | opérateur, admin | Historique (100 dernières) |
 | `POST /api/actuators/commands/:cmdId/cancel` | rôle de l'action d'origine | Annulation / arrêt anticipé (voir 3) |
 
-Codes : `400` (paramètres), `403` (rôle, issue de secours, mot de passe faux), `404`, `409` (verrou global, actionneur
+Les routes de configuration (comptes, actionneurs, clé, mode maintenance) exigent le champ `reauth` (mot de passe du compte
+connecté). Pour un non-administrateur, les URL HTTP des relais sont renvoyées sans identifiants ni chaîne de requête. La vue d'une
+commande porte `returnUnconfirmed` (vrai si le retour automatique à l'état sûr n'a pas été confirmé après ses 5 envois).
+
+Codes : `400` (paramètres, y compris une action `lock` absente de la configuration d'une issue de secours), `403` (rôle, issue de secours, mot de passe faux), `404`, `409` (verrou global, actionneur
 inactif, liaison coupée, incident clos, commande non annulable), `428` (sans `confirm:true`, raison ou mot de passe
 manquants), `429` (limite).
 
@@ -254,7 +264,7 @@ Journal (scellé, sans secret) : `commande_demandee` (**avant** l'envoi), `comma
 
 ## 7. Hors périmètre et menaces non couvertes (pour la revue de sécurité)
 
-- **Pilote côté passerelle** : à écrire d'après la section 5 (plafonds locaux, retour au repos local, anti-rejeu).
+- **Pilote côté passerelle** : implémenté (voir section 8) ; reste à qualifier sur matériel réel avec un module d'accès.
 - **Fumigène, PTZ, dock** : seulement prévus.
 - **État physique réel** : le PSIM sait ce qu'il a ordonné et ce qui a été accusé, pas la position réelle d'une porte
   (contact de position à remonter comme un détecteur d'accès).
@@ -262,7 +272,43 @@ Journal (scellé, sans secret) : `commande_demandee` (**avant** l'envoi), `comma
 - **Équipement qui détient la clé** : peut forger des accusés pour lui-même. Pas de clé asymétrique (l'équipement ne
   peut pas prouver qu'il a agi, seulement qu'il détient la clé).
 - **Horloge** : la fraîcheur suppose des horloges synchronisées à quelques secondes (NTP sur la passerelle).
-- **HTTP en clair sur le réseau local** : l'en-tête secret circule en clair si le relais ne parle pas HTTPS ; réseau
-  dédié recommandé. HTTPS vers une adresse IP exige un certificat valable pour cette adresse.
+- **HTTP en clair sur le réseau local** (relais non sensibles seulement ; serrures et portails ne passent plus par HTTP) :
+  l'en-tête secret circule en clair si le relais ne parle pas HTTPS ; réseau dédié recommandé. HTTPS vers une adresse IP exige
+  un certificat valable pour cette adresse.
 - **Notification** des commandes sensibles (porte ouverte) : journalisées et visibles en direct, pas envoyées par e-mail.
 - **Processus du PSIM compromis** : hors modèle (il détient la clé de chiffrement des secrets).
+
+---
+
+## 8. Pilote côté passerelle et revue de sécurité
+
+### 8.1 Pilote implémenté
+
+`gateway/src/actuators.ts` applique la section 5.1 : formats, signature HMAC en temps constant sans accusé en cas d'échec,
+anti-rejeu (120 s, mémoire sur disque qui survit à un redémarrage), fraîcheur, plafonds locaux (`maxS`, action absente de la liste,
+durée obligatoire ou interdite), refus de `lock` sur une issue de secours, exécution par le module (`ModuleContext.onActuator`),
+**retour local au repos** à la fin de `durationS` quoi qu'il arrive (liaison perdue, PSIM arrêté ; réessais toutes les 5 s, 20 au
+plus ; repris après un redémarrage de la passerelle), accusé signé non bloquant. Écarts voulus par rapport à l'ordre de 5.1 :
+(a) le rejeu (règle 4) est vérifié **avant** la fraîcheur, pour qu'un ordre déjà exécuté puis périmé ne reçoive pas un accusé
+`stale` qui contredirait le premier accusé ; (b) règle ajoutée : un ordre dont le `ts` est antérieur au dernier ordre accepté est
+refusé (`out_of_order`) ; (c) la passerelle garde en mémoire aussi les ordres signés et frais qu'elle refuse. Configuration, démarrage
+et dépannage : `docs/PASSERELLE.md` section 8. Essais : `gateway/test/actuators.test.ts` (unitaires et contre le vrai broker),
+`test/e2e-pilote-passerelle.test.ts` (processus PSIM complet + passerelle réelle + module factice).
+
+### 8.2 Correctifs de la revue de sécurité
+
+Faits (garde-fous durables dans `test/garde-commandes.test.ts`, `test/garde-mqtt-commandes.test.ts`,
+`test/garde-e2e-commandes.test.ts` ; chacun échoue si le défaut revient) : **M3** (abonnement joker mémorisé dans une session
+persistante : `authorizeForward` + seuls les abonnements accordés sont mémorisés), **M1** (abonnements aux ordres bornés à 200 par
+connexion), **A6** (ré-authentification, `server/reauth.ts`), **H2** (HTTP interdit pour serrure, portail, sensible), **S1** (`stop`
+du portail immédiat), **S2** (verrou global et action sûre manuelle), **S3** (`{durationS}` obligatoire, retour réessayé,
+avertissement), **S4** (retour échu gardé jusqu'au retour de la liaison), **S5** (rôles de l'action sûre imposés), **S6** (issue de
+secours revérifiée à l'envoi et au retour automatique), **A1** (clés héritées de `Object.prototype`), **A2** (dédoublonnage après
+la ré-authentification, jamais pour un autre compte), **A3** (compteur de ré-authentification partagé avec la connexion, sessions
+fermées au 5e échec), **A4** (URL des relais masquées aux non-admins), **A5** (drapeau « sensible »), **H1** (SSRF : IPv6 ramenées
+à l'IPv4, nom autorisé limité aux adresses privées), `catch` sur l'envoi HTTP.
+
+**Restants** : **AAD** sur la clé chiffrée (lier le chiffrement à l'identifiant de l'actionneur, `server/secrets.ts` partagé) ;
+**M2** (le SUBACK annonce la QoS demandée alors que l'abonnement est ramené à 0 : sans effet, documenté dans `server/mqtt.ts`).
+Pas de reprise automatique d'une serrure après un « retour au repos ABANDONNE » du pilote (20 échecs) : le journal le dit, un humain
+vérifie sur place.
