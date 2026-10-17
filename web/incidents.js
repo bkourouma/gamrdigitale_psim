@@ -112,6 +112,72 @@ export function dateTime(ts) {
     : d.toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// DEBUT-HELPERS-DEPLACEMENT (fonctions pures, testées sans navigateur)
+
+/** Durée écoulée en mots courts : « à l'instant », « il y a 30 s », « il y a 2 min », « il y a 1 h 05 ». */
+export function agoText(ts, now = Date.now()) {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 5) return 'à l’instant';
+  if (s < 60) return `il y a ${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `il y a ${m} min`;
+  return `il y a ${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
+}
+
+/** Un agent par ligne, avec son DERNIER statut (le plus récent), trié par heure. Entrées invalides ignorées. */
+export function latestDispatch(list) {
+  if (!Array.isArray(list)) return [];
+  const last = new Map();
+  for (const e of list) {
+    if (!e || typeof e.username !== 'string' || (e.status !== 'en_route' && e.status !== 'on_site') || !Number.isFinite(e.at)) continue;
+    const prev = last.get(e.username);
+    if (!prev || e.at >= prev.at) last.set(e.username, e);
+  }
+  return [...last.values()].sort((a, b) => a.at - b.at);
+}
+
+/** « Kouassi — en route (il y a 2 min) » */
+export function dispatchLine(e, now = Date.now()) {
+  const name = (typeof e.displayName === 'string' && e.displayName.trim()) || e.username;
+  return `${name} — ${e.status === 'on_site' ? 'sur place' : 'en route'} (${agoText(e.at, now)})`;
+}
+
+// FIN-HELPERS-DEPLACEMENT
+
+const DISPATCH_REFRESH_MS = 10_000;
+
+/** Interroge « qui se déplace » : au plus toutes les 10 s, tant que la fiche est dépliée et visible ; une seule fois pour
+ *  un incident clos. Silence total en cas d'erreur (404 : application des agents absente, 403, réseau). */
+function pollDispatch(card, incident, expanded) {
+  const st = card.dispatch;
+  if (st.busy || !expanded || document.hidden) return;
+  const active = isActive(incident);
+  const now = Date.now();
+  if (st.at !== 0 && (!active || now - st.at < DISPATCH_REFRESH_MS)) return;
+  st.busy = true;
+  st.at = now;
+  const id = incident.id;
+  api(`/api/incidents/${id}/dispatch`)
+    .then((list) => {
+      if (cards.get(id) !== card) return; // fiche retirée ou recréée entre-temps : réponse périmée
+      st.list = latestDispatch(list);
+    })
+    .catch(() => {})
+    .finally(() => {
+      st.busy = false;
+      if (cards.get(id) === card) renderDispatch(card);
+    });
+}
+
+/** Affiche le bloc « Agents en déplacement » (masqué s'il n'y a personne), sur place, en texte seulement. */
+function renderDispatch(card) {
+  const { refs, dispatch: st } = card;
+  const now = Date.now();
+  refs.dispatchBlock.hidden = st.list.length === 0;
+  if (!st.list.length) return;
+  refs.dispatchList.replaceChildren(...st.list.map((e) => h('li', { class: `inc-dispatch-item is-${e.status}`, text: dispatchLine(e, now) })));
+}
+
 const levelWord = (incident) => (incident.severity === 'critical' ? 'Alarme' : 'Préalarme');
 
 /** Pastille de niveau (forme + icône + mot). Reconstruite seulement quand le niveau change. */
@@ -252,6 +318,10 @@ function buildCard(incident) {
 
   // Ce qui qualifie l'alarme : confirmation, conseil, images.
   refs.conf = h('p', { class: 'inc-conf-line' });
+  refs.detail = h('p', { class: 'inc-conf-line inc-detail' });
+  refs.dispatchList = h('ul', { class: 'inc-dispatch-list' });
+  refs.dispatchBlock = h('div', { class: 'inc-dispatch' }, h('p', { class: 'inc-label', text: 'Agents en déplacement' }), refs.dispatchList);
+  refs.dispatchBlock.hidden = true;
   refs.advice = h('div', { class: 'notice is-info inc-advice' }, icon('info'), h('span'));
   refs.shots = h('div', { class: 'shots' });
   refs.shotsBlock = h('div', { class: 'inc-shots' }, h('p', { class: 'inc-label', text: 'Images prises' }), refs.shots);
@@ -306,7 +376,7 @@ function buildCard(incident) {
       h('p', { class: 'inc-meta' }, h('span', {}, icon('pin', 'icon-sm'), refs.place), h('span', {}, icon('clock', 'icon-sm'), refs.opened), refs.measure),
       h('div', { class: 'inc-wait' }, refs.waitLine, refs.bar, refs.escalated),
     ),
-    h('div', { class: 'inc-main' }, refs.conf, refs.advice, refs.shotsBlock, commandsButton(current), h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li), h('div', { class: 'actions' }, proofLink(id))),
+    h('div', { class: 'inc-main' }, refs.conf, refs.detail, refs.dispatchBlock, refs.advice, refs.shotsBlock, commandsButton(current), h('ol', { class: 'steps', 'aria-label': 'Traitement de cette alarme' }, s1.li, s2.li, s3.li), h('div', { class: 'actions' }, proofLink(id))),
   );
 
   async function acknowledge() {
@@ -350,7 +420,7 @@ function buildCard(incident) {
 
   const el = h('article', { class: 'incident', 'aria-labelledby': `inc-title-${id}` }, refs.row, refs.body);
   refs.title.id = `inc-title-${id}`;
-  return { el, refs };
+  return { el, refs, dispatch: { list: [], at: 0, busy: false } };
 }
 
 /** Attente : « En attente depuis 02:14 » et la barre ; une fois acquittée, qui, quand, après combien d'attente. */
@@ -461,6 +531,11 @@ function updateCard(card, incident, followed) {
     ? `Confirmée : ${confirmationText(incident.confirmationReason)}.`
     : 'Rien ne confirme encore le feu. Traitez-la comme une vraie alarme.';
   refs.conf.hidden = !confirmed && !open && !blocked;
+  const detailText = typeof incident.detail === 'string' ? incident.detail.trim() : '';
+  refs.detail.textContent = detailText;
+  refs.detail.hidden = detailText === '';
+  renderDispatch(card);
+  pollDispatch(card, incident, expanded);
   refs.advice.hidden = !incident.hint;
   refs.advice.lastChild.textContent = incident.hint ? `Fausse alarme probable : ${hintText(incident.hintDetails)} À vérifier : l’incident reste ouvert.` : '';
   renderShots(refs.shots, incident);
@@ -723,6 +798,10 @@ export function tickIncidents() {
     if (!incident) continue;
     updateWait(card, incident);
     updateCameraStep(card, incident, incident.id === followed?.id);
+    if (!card.refs.body.hidden) {
+      renderDispatch(card); // « il y a … » reste à jour
+      pollDispatch(card, incident, true);
+    }
   }
   for (const row of $('alarms-rows').children) {
     const incident = S.incidents.get(Number(row.dataset.id));

@@ -448,3 +448,30 @@
 @media (max-width: 599px) {
   .surv-grid { grid-template-areas: 'alarms' 'video' 'plan'; }
 }
+
+/* ------------------------------------------------------------------------------------------------ agents en service (S4)
+   Pastille distincte des équipements : ronde bleu-vert, avec une étiquette « nom + il y a N min ». Jamais interactive
+   (pointer-events: none) : ni glisser, ni sélection. Aucune animation. */
+.agent-pin {
+  --pin: 30px;
+  position: absolute; z-index: 1; pointer-events: none;
+  transform: translate(-50%, calc(var(--pin) / -2));
+  display: grid; justify-items: center; gap: 3px;
+}
+.agent-glyph {
+  display: grid; place-items: center; width: var(--pin); height: var(--pin);
+  border: 2.5px solid #ffffff; border-radius: 50%;
+  background: #0f766e; color: #ffffff; box-shadow: 0 0 0 2px #0f766e, var(--shadow-1);
+}
+.agent-glyph .icon { width: 16px; height: 16px; }
+.agent-label {
+  display: grid; justify-items: center; padding: 1px 6px; border-radius: 999px;
+  background: #ffffff; color: #0b3b37; border: 1.5px solid #0f766e; box-shadow: var(--shadow-1);
+  font-size: var(--fs-xs); line-height: 1.25; white-space: nowrap;
+}
+.agent-label strong { font-weight: 700; }
+.agent-label span { font-size: 0.9em; }
+.agent-pin:is(.lbl-left, .lbl-right, .lbl-top) .agent-label { position: absolute; }
+.agent-pin.lbl-left .agent-label { right: calc(100% + 3px); top: calc(var(--pin) / 2); translate: 0 -50%; }
+.agent-pin.lbl-right .agent-label { left: calc(100% + 3px); top: calc(var(--pin) / 2); translate: 0 -50%; }
+.agent-pin.lbl-top .agent-label { bottom: calc(100% + 3px); left: 50%; translate: -50% 0; }

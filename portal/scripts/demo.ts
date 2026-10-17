@@ -51,6 +51,33 @@ interface Plan {
   riskP?: Record<string, number | null>;
   /** Detecteurs d'une autre categorie que l'incendie (l'etape 2 du PSIM en envoie : energie, personnes...). */
   categories?: Record<string, 'energy' | 'people' | 'environment'>;
+  /** Le site a l'application des agents : des rondes de nuit sur 35 jours (tables minimales) et quelques SOS. */
+  patrols?: boolean;
+}
+
+/**
+ * Rondes de demonstration : trois par nuit, la plupart effectuees, quelques-unes incompletes ou ratees, les dernieres encore
+ * a venir ; deux SOS. Seules les colonnes lues par le resume (statut, heures) sont creees : le portail ne voit que des compteurs.
+ */
+function addPatrolDemo(db: ReturnType<typeof openDb>, at: number, random: () => number): void {
+  db.exec(`CREATE TABLE patrol_route (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+    CREATE TABLE patrol_run (id INTEGER PRIMARY KEY AUTOINCREMENT, route_id INTEGER NOT NULL, due_start INTEGER NOT NULL, due_end INTEGER NOT NULL, status TEXT NOT NULL, UNIQUE (route_id, due_start))`);
+  db.prepare("INSERT INTO patrol_route (name) VALUES ('Circuit de nuit')").run();
+  const insert = db.prepare('INSERT INTO patrol_run (route_id, due_start, due_end, status) VALUES (1, ?, ?, ?)');
+  for (let day = 34; day >= 0; day--) {
+    const base = new Date(new Date(at).getFullYear(), new Date(at).getMonth(), new Date(at).getDate() - day).getTime();
+    for (const hour of [22, 24, 26]) {
+      const start = base + hour * HOUR;
+      if (start > at + 3 * HOUR) continue;
+      const r = random();
+      // Une semaine un peu moins bonne (jours 14 a 20) pour que la courbe ne soit pas plate.
+      const bad = day >= 14 && day <= 20 ? 0.25 : 0.06;
+      const status = start > at ? 'pending' : r < bad ? 'missed' : r < bad * 2 ? 'incomplete' : 'done';
+      insert.run(start, start + HOUR, status);
+    }
+  }
+  const sos = db.prepare("INSERT INTO incident (detector_id, severity, status, opened_at, closed_at, event) VALUES ('D-01', 'critical', 'closed', ?, ?, 'sos')");
+  for (const ago of [20, 9]) sos.run(at - ago * 24 * HOUR, at - ago * 24 * HOUR + 10 * MIN);
 }
 
 function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSummary; at: number } {
@@ -109,6 +136,7 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
     e.run();
   }
   clock = at;
+  if (plan.patrols) addPatrolDemo(db, at, random);
   return { summary: buildSiteSummary(db, { siteId, version: '0.1.0', startedAt: at - 3 * 24 * HOUR, now: at, risk: () => risk.overview() }), at };
 }
 
@@ -133,6 +161,7 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number; 
       cameras: ['C-01', 'C-02', 'C-03', 'C-04'],
       outages: [[700, 25, 'D-03', 'offline'], [610, 130, 'D-02', 'fault'], [400, 12, 'D-03', 'offline'], [300, 45, 'D-01', 'fault'], [150, 75, 'C-02', 'offline'], [97, 190, 'D-03', 'offline'], [30, 18, 'D-02', 'offline']],
       incidents: [[760, 'D-01', 'false_alarm'], [520, 'D-02', 'false_alarm'], [333, 'D-04', 'fire'], [200, 'D-01', 'false_alarm'], [60, 'D-03', 'false_alarm']],
+      patrols: true,
     },
   },
   {

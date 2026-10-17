@@ -6,7 +6,7 @@
  * son contenu en une phrase (aria-label) et se bascule en tableau qui donne les mêmes valeurs. Dessinés en SVG à la
  * largeur disponible, redessinés quand elle change (rotation du téléphone, fenêtre).
  */
-import { h, s, icon, dataTable, dayTime, fmtAvail, fmtDay, fmtDayText, fmtDur, nf, shortDay, NB } from './ui.js';
+import { h, s, icon, dataTable, dayTime, fmtAvail, fmtDay, fmtDayText, fmtDur, nf, plural, shortDay, NB } from './ui.js';
 import { BANDS, levelOf } from './gauge.js';
 
 const DAY_MS = 86_400_000;
@@ -445,5 +445,149 @@ export function riskTrend(history, { prefs, days }) {
     tableView,
     lead: h('p', { class: 'trend-sentence' }, trendSentence(history)),
     note: n < days ? `Indice connu depuis le ${fmtDayText(history[0].day)}${NB}: un point par jour de calcul.` : `Un point par jour${NB}: l’indice du site tel qu’il a été calculé ce jour-là.`,
+  });
+}
+
+// ------------------------------------------------------------------ rondes de sécurité par semaine
+
+/** « 83 % » : un taux de rondes effectuées, ou un tiret quand aucune ronde n'était échue. */
+const fmtRate = (w) => (w.ratePct === null ? '—' : `${w.ratePct}${NB}%`);
+
+/** Phrase d'ensemble : ce que le site a fait de ses rondes sur la période, en mots (le site n'envoie ni nom d'agent ni lieu). */
+function patrolsSentence(totals, stale) {
+  const due = totals.done + totals.incomplete + totals.missed;
+  const pending = totals.planned - due;
+  const parts = [];
+  if (due === 0) parts.push('Aucune ronde n’est encore échue sur cette période.');
+  else {
+    const extra = [totals.incomplete && plural(totals.incomplete, 'incomplète', 'incomplètes'), totals.missed && plural(totals.missed, 'non faite', 'non faites')].filter(Boolean);
+    parts.push(`${totals.ratePct}${NB}% des rondes échues ont été effectuées (${totals.done} sur ${due})${extra.length ? `, ${extra.join(' et ')}` : ''}.`);
+  }
+  if (pending > 0) parts.push(`${plural(pending, 'ronde est', 'rondes sont')} encore à venir ou en cours.`);
+  parts.push(totals.sos === 0 ? 'Aucun appel de détresse (SOS).' : `${plural(totals.sos, 'appel de détresse (SOS)', 'appels de détresse (SOS)')}.`);
+  if (stale) parts.push('Chiffres arrêtés au dernier signal du site.');
+  return parts.join(' ');
+}
+
+/**
+ * Rondes de sécurité par semaine : colonnes du taux de rondes effectuées (échelle fixe 0 à 100 %), et sous elles, le
+ * nombre de SOS de la semaine. Une semaine sans ronde échue n'a pas de taux : un petit trait gris, ni bon ni mauvais.
+ * `patrols` : { weeks: [{ weekStart, planned, done, incomplete, missed, ratePct, sos }], totals } ; uniquement des
+ * compteurs (le site n'envoie ni nom d'agent, ni circuit, ni position).
+ */
+export function patrolsChart(patrols, { prefs, stale = false } = {}) {
+  const title = 'Rondes de sécurité';
+  const weeks = patrols.weeks;
+  const n = weeks.length;
+  const totals = patrols.totals;
+  if (n === 0 || (totals.planned === 0 && totals.sos === 0)) {
+    return h('section', { class: 'panel', 'data-key': 'patrols-empty' }, h('div', { class: 'panel-head' }, h('h2', null, icon('shield'), title)), h('div', { class: 'panel-body' }, h('p', { class: 'chart-empty' }, icon('state-unknown'), 'Aucune ronde prévue ni appel de détresse sur cette période.')));
+  }
+  const weekName = (w) => `Semaine du ${fmtDayText(w.weekStart)}`;
+  const due = (w) => w.done + w.incomplete + w.missed;
+  const busiest = weeks.reduce((a, w) => (w.sos > a.sos ? w : a), weeks[0]);
+
+  const tableView = () =>
+    dataTable(
+      [['Semaine'], ['Prévues', true], ['Effectuées', true], ['Incomplètes', true], ['Non faites', true], ['Taux', true], ['SOS', true]],
+      [...weeks].reverse().map((w) => h('tr', null, h('th', { scope: 'row' }, weekName(w)), h('td', { class: 'num' }, String(w.planned)), h('td', { class: 'num' }, String(w.done)), h('td', { class: 'num' }, String(w.incomplete)), h('td', { class: 'num' }, String(w.missed)), h('td', { class: 'num' }, fmtRate(w)), h('td', { class: 'num' }, String(w.sos)))),
+      { caption: title },
+    );
+
+  function draw(wrap, W) {
+    const H = 218;
+    const m = { l: 46, r: 12, t: 12 };
+    const plotH = 130;
+    const base = m.t + plotH;
+    const plotW = W - m.l - m.r;
+    const slot = plotW / n;
+    const bw = Math.min(28, Math.max(3, slot * 0.62));
+    const y = (v) => base - (v / 100) * plotH;
+    const sosY = base + 50;
+    const svg = s('svg', {
+      viewBox: `0 0 ${W} ${H}`,
+      width: W,
+      height: H,
+      class: 'chart-svg',
+      role: 'img',
+      tabindex: 0,
+      'data-key': 'chart-patrols',
+      'aria-label': `Rondes de sécurité par semaine sur ${n} ${n > 1 ? 'semaines' : 'semaine'}${NB}: ${totals.ratePct === null ? 'aucune ronde échue' : `${totals.ratePct}${NB}% des rondes échues effectuées`}, ${plural(totals.sos, 'appel de détresse', 'appels de détresse')}${busiest.sos ? ` (le plus de SOS${NB}: ${busiest.sos}, ${weekName(busiest).toLowerCase()})` : ''}. Flèches gauche et droite pour lire chaque semaine${NB}; le tableau donne les mêmes valeurs.`,
+    });
+    for (const v of [0, 50, 100]) svg.append(s('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: v === 0 ? 'base' : 'grid' }), svgText({ x: m.l - 8, y: y(v) + 4, 'text-anchor': 'end' }, `${v}${NB}%`));
+    const marks = [];
+    weeks.forEach((w, i) => {
+      const x = m.l + i * slot + (slot - bw) / 2;
+      if (w.ratePct === null) {
+        const tick = s('rect', { class: 'nodata', x, y: base - 5, width: bw, height: 3, rx: 1.5 });
+        marks.push(tick);
+        svg.append(tick);
+        return;
+      }
+      const hgt = Math.max(2, base - y(w.ratePct));
+      const r = Math.min(4, hgt, bw / 2);
+      const bar = s('path', { class: 'bar', d: `M${x},${base - hgt + r} a${r},${r} 0 0 1 ${r},${-r} h${bw - 2 * r} a${r},${r} 0 0 1 ${r},${r} v${hgt - r} h${-bw} z` });
+      marks.push(bar);
+      svg.append(bar);
+    });
+    // Repères de date : le lundi de chaque semaine, un sur `every`, en partant de la dernière.
+    const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(plotW / 62))));
+    for (let i = n - 1; i >= 0; i -= every) {
+      const px = m.l + i * slot + slot / 2;
+      const atEdge = px + 18 > W;
+      svg.append(svgText({ x: atEdge ? W - 2 : px, y: base + 20, 'text-anchor': atEdge ? 'end' : 'middle' }, shortDay(weeks[i].weekStart)));
+    }
+    // Bande des SOS : un rond par semaine qui en compte, avec le nombre quand la place le permet.
+    svg.append(svgText({ x: m.l - 8, y: sosY + 4, 'text-anchor': 'end' }, 'SOS'), s('line', { x1: m.l, x2: W - m.r, y1: sosY + 16, y2: sosY + 16, class: 'grid' }));
+    weeks.forEach((w, i) => {
+      if (w.sos === 0) return;
+      const px = m.l + i * slot + slot / 2;
+      const r = Math.max(3, Math.min(11, slot / 2 - 1));
+      svg.append(s('circle', { class: 'sos-dot', cx: px, cy: sosY, r }));
+      if (r >= 7) svg.append(svgText({ x: px, y: sosY + 4, 'text-anchor': 'middle', class: 'sos-num' }, String(w.sos)));
+    });
+    const cross = s('line', { class: 'cross', y1: m.t, y2: sosY + 16, visibility: 'hidden' });
+    svg.append(cross);
+    const cx = (i) => m.l + i * slot + slot / 2;
+    scrub(svg, {
+      W,
+      H,
+      count: n,
+      indexAt: (vx) => Math.floor((vx - m.l) / slot),
+      anchor: (i) => [cx(i), m.t],
+      mark: (i) => {
+        marks[i]?.classList.add('hot');
+        cross.setAttribute('x1', cx(i));
+        cross.setAttribute('x2', cx(i));
+        cross.setAttribute('visibility', 'visible');
+      },
+      unmark: (i) => {
+        marks[i]?.classList.remove('hot');
+        cross.setAttribute('visibility', 'hidden');
+      },
+      tip: (i) => {
+        const w = weeks[i];
+        const d = due(w);
+        return [
+          h('div', { class: 't-date' }, weekName(w)),
+          h('div', { class: 't-value' }, w.ratePct === null ? 'Aucune ronde échue' : `Rondes effectuées${NB}: ${w.ratePct}${NB}% (${w.done} sur ${d})`),
+          (w.incomplete > 0 || w.missed > 0) && h('div', { class: 't-sub' }, [w.incomplete && plural(w.incomplete, 'incomplète', 'incomplètes'), w.missed && plural(w.missed, 'non faite', 'non faites')].filter(Boolean).join(', ')),
+          w.planned > d && h('div', { class: 't-sub' }, plural(w.planned - d, 'ronde à venir ou en cours', 'rondes à venir ou en cours')),
+          h('div', { class: 't-sub' }, `SOS${NB}: ${w.sos}`),
+        ];
+      },
+    });
+    wrap.replaceChildren(svg);
+  }
+
+  return chartPanel({
+    key: 'patrols',
+    title,
+    iconName: 'shield',
+    prefs,
+    draw,
+    tableView,
+    lead: h('p', { class: 'trend-sentence' }, patrolsSentence(totals, stale)),
+    note: 'Taux = rondes effectuées sur rondes échues (effectuées, incomplètes ou non faites). La première et la dernière semaine peuvent être partielles. Le portail ne reçoit que ces chiffres : ni nom d’agent, ni lieu.',
   });
 }
