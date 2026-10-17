@@ -162,7 +162,8 @@ describe('actionneurs : configuration (administrateur)', () => {
     const { svc } = setup();
     assert.equal(status(() => svc.create('admin', { id: 'P1', name: 'p', type: 'lock', transport: 'mqtt', emergencyExit: true, actions: { unlock: {}, lock: {} } })), 400);
     const v = svc.create('admin', { id: 'P2', name: 'Issue nord', type: 'lock', transport: 'mqtt', emergencyExit: true, confirm: 'simple' }).actuator;
-    assert.deepEqual(Object.keys(v.actions), ['unlock']);
+    assert.deepEqual(Object.keys(v.actions).sort(), ['evacuate', 'unlock'], "seules les ouvertures existent, jamais « lock »");
+    assert.ok(!Object.hasOwn(v.actions, 'lock'));
     assert.equal(v.safeAction, null);
     assert.equal(v.confirm, 'reauth', 'jamais abaissable pour une serrure');
     assert.equal(status(() => svc.create('admin', { id: 'P3', name: 'p', type: 'siren', transport: 'mqtt', emergencyExit: true })), 400);
@@ -436,6 +437,225 @@ describe('actionneurs : commandes', () => {
     s.clock.t += 40_000;
     s.svc.tick();
     assert.equal(s.sent.length, 1, 'pas de retour pour un actionneur supprime');
+  });
+});
+
+describe("action evacuate (« Tout ouvrir ») : reservee a l'administrateur, retour automatique selon le type", () => {
+  /** Compte administrateur neuf : le compteur de mots de passe faux (en memoire, par compte) ne doit pas venir d'un autre essai. */
+  function chef(s: ReturnType<typeof setup>, name = 'chef') {
+    createUser(s.db, name, 'admin', ADMIN_PW);
+    return { username: name, role: 'admin' as const };
+  }
+  const evacuate = (extra: Record<string, unknown> = {}) => ({ action: 'evacuate', confirm: true, reason: 'evacuation', password: ADMIN_PW, ...extra });
+  const rowsOf = (s: ReturnType<typeof setup>, id: string) => s.db.prepare('SELECT * FROM actuator_command WHERE actuator_id = ? ORDER BY rowid').all(id) as Record<string, unknown>[];
+  const messageOf = (fn: () => unknown): string => {
+    try {
+      fn();
+    } catch (err) {
+      if (err instanceof PsimError) return err.message;
+      throw err;
+    }
+    return '';
+  };
+
+  it('actionneurs neufs : evacuate par defaut sur la serrure (900 s, plafond 3600, admin seulement) et le portail (sans duree)', () => {
+    const { svc } = setup();
+    const lock = svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt' }).actuator;
+    assert.deepEqual(lock.actions.evacuate, { roles: ['admin'], minS: 1, maxS: 900 });
+    assert.deepEqual(lock.actions.unlock.roles, ['operator', 'admin'], 'unlock reste ouvert aux operateurs');
+    assert.equal(lock.actions.unlock.maxS, 10, 'impulsion inchangee : 10 s');
+    assert.equal(lock.safeAction, 'lock');
+    const gate = svc.create('admin', { id: 'G1', name: 'Portail', type: 'gate', transport: 'mqtt' }).actuator;
+    assert.deepEqual(gate.actions.evacuate, { roles: ['admin'] }, 'instantanee : ni minS ni maxS');
+    assert.equal(gate.safeAction, 'stop');
+    // Une issue de secours a evacuate aussi, mais jamais lock.
+    const issue = svc.create('admin', { id: 'I1', name: 'Issue', type: 'lock', transport: 'mqtt', emergencyExit: true }).actuator;
+    assert.deepEqual(Object.keys(issue.actions).sort(), ['evacuate', 'unlock']);
+    assert.deepEqual(issue.actions.evacuate, { roles: ['admin'], minS: 1, maxS: 900 });
+    // Les autres types n'ont pas cette action.
+    const siren = svc.create('admin', { id: 'S1', name: 'Sirene', type: 'siren', transport: 'mqtt' }).actuator;
+    assert.ok(!Object.hasOwn(siren.actions, 'evacuate'));
+    assert.equal(status(() => svc.create('admin', { id: 'S2', name: 's', type: 'siren', transport: 'mqtt', actions: { evacuate: {} } })), 400);
+  });
+
+  it('configuration : jamais operator sur evacuate (400), plafond 3600 s, portail sans duree', () => {
+    const { svc } = setup();
+    const lockWith = (id: string, evac: Record<string, unknown>) => () => svc.create('admin', { id, name: id, type: 'lock', transport: 'mqtt', actions: { evacuate: evac } });
+    assert.equal(status(lockWith('L1', { roles: ['operator', 'admin'] })), 400);
+    assert.equal(status(lockWith('L2', { roles: ['operator'] })), 400);
+    assert.equal(status(lockWith('L3', { roles: ['admin', 'operator'] })), 400);
+    assert.match(messageOf(lockWith('L4', { roles: ['operator'] })), /administrateur/);
+    assert.equal(status(lockWith('L5', { maxS: 3601 })), 400, 'plafond du type serrure : 3600 s');
+    assert.equal(status(lockWith('L6', { maxS: 0 })), 400);
+    assert.equal(status(lockWith('L7', { minS: 5, maxS: 4 })), 400);
+    assert.equal(status(lockWith('L8', { unbounded: true })), 400, 'jamais sans limite de duree');
+    assert.equal(lockWith('L9', { maxS: 3600, roles: ['admin'] })().actuator.actions.evacuate.maxS, 3600);
+    assert.equal(lockWith('L10', {})().actuator.actions.evacuate.maxS, 900, 'defaut 900 s meme declaree vide');
+    const gateWith = (id: string, evac: Record<string, unknown>) => () => svc.create('admin', { id, name: id, type: 'gate', transport: 'mqtt', actions: { evacuate: evac } });
+    assert.equal(status(gateWith('G1', { roles: ['operator'] })), 400);
+    assert.equal(status(gateWith('G2', { roles: ['operator', 'admin'] })), 400);
+    assert.equal(status(gateWith('G3', { maxS: 5 })), 400, 'portail : action instantanee, sans duree');
+    assert.equal(status(gateWith('G4', { minS: 1 })), 400);
+    assert.equal(status(gateWith('G5', { unbounded: true })), 400);
+    assert.deepEqual(gateWith('G6', { roles: ['admin'] })().actuator.actions.evacuate, { roles: ['admin'] });
+    // Meme a la modification d'un actionneur existant.
+    assert.equal(status(() => svc.update('admin', 'L9', { actions: { unlock: {}, evacuate: { roles: ['operator', 'admin'] } } })), 400);
+    assert.equal(svc.get('L9')!.actions.evacuate.maxS, 3600, 'rien de modifie par le refus');
+  });
+
+  it('un operateur ne peut pas evacuer (403, rien ne part, aucune commande) ; un administrateur sans mot de passe : 428, avec un faux : 403', async () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt' });
+    s.svc.create('admin', { id: 'G1', name: 'Portail', type: 'gate', transport: 'mqtt' });
+    s.svc.create('admin', { id: 'I1', name: 'Issue', type: 'lock', transport: 'mqtt', emergencyExit: true });
+    const boss = chef(s);
+    for (const id of ['L1', 'I1']) assert.equal(status(() => s.svc.request(OP, id, evacuate({ params: { durationS: 60 }, password: OP_PW }))), 403, id);
+    assert.equal(status(() => s.svc.request(OP, 'G1', evacuate({ password: OP_PW }))), 403);
+    // Sans raison ni confirmation : le droit est verifie d'abord.
+    assert.equal(status(() => s.svc.request(OP, 'L1', { action: 'evacuate', params: { durationS: 60 } })), 403);
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate({ params: { durationS: 60 }, password: undefined }))), 428);
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate({ params: { durationS: 60 }, password: 'faux-mot-de-passe' }))), 403);
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate({ params: { durationS: 60 }, reason: undefined }))), 428, 'raison obligatoire');
+    await flush();
+    assert.equal(s.sent.length, 0);
+    assert.equal(rowsOf(s, 'L1').length + rowsOf(s, 'G1').length + rowsOf(s, 'I1').length, 0);
+    // L'administrateur avec son mot de passe peut.
+    const ok = s.svc.request(boss, 'L1', evacuate({ params: { durationS: 60 } }));
+    assert.equal(ok.status, 201);
+    assert.equal(ok.command.action, 'evacuate');
+    assert.equal(ok.command.requestedBy, 'chef');
+    await flush();
+    assert.equal(s.sent.length, 1);
+    assert.equal(s.sent[0].msg.action, 'evacuate');
+    assert.equal(s.sent[0].msg.params.durationS, 60);
+  });
+
+  it('duree de la serrure : requise, entre minS et maxS ; refus hors bornes', () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt', actions: { evacuate: { minS: 5, maxS: 1200 } } });
+    const boss = chef(s);
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate())), 400, "jamais d'ouverture permanente");
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate({ params: { durationS: 4 } }))), 400);
+    assert.equal(status(() => s.svc.request(boss, 'L1', evacuate({ params: { durationS: 1201 } }))), 400);
+    assert.equal(s.svc.request(boss, 'L1', evacuate({ params: { durationS: 1200 } })).status, 201);
+  });
+
+  it('serrure ordinaire : evacuate planifie le retour automatique a lock (envoi + duree + 1 s), puis la commande auto lock part', async () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt' });
+    const boss = chef(s);
+    const t0 = s.clock.t;
+    const cmd = s.svc.request(boss, 'L1', evacuate({ params: { durationS: 120 } })).command;
+    await flush();
+    assert.equal(cmd.offDueAt, t0 + 120_000 + 1000);
+    assert.match(audits(s.db, 'commande_envoyee').at(-1)!, /retour a « lock » prevu dans 120 s/);
+    s.clock.t = t0 + 120_000;
+    s.svc.tick();
+    assert.equal(s.sent.length, 1, "pas avant l'echeance + 1 s");
+    s.clock.t = t0 + 121_000;
+    s.svc.tick();
+    await flush();
+    assert.equal(s.sent.length, 2);
+    assert.equal(s.sent[1].msg.action, 'lock');
+    const auto = s.svc.command(s.sent[1].msg.cmdId)!;
+    assert.equal(auto.auto, true);
+    assert.equal(auto.requestedBy, 'systeme');
+    assert.equal(auto.parentId, cmd.cmdId);
+    assert.equal(s.svc.command(cmd.cmdId)!.offCmdId, auto.cmdId);
+  });
+
+  it('serrure ordinaire : une nouvelle evacuation remplace le retour prevu par le sien (une seule fermeture, a la fin de la derniere)', async () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt' });
+    const boss = chef(s);
+    const t0 = s.clock.t;
+    const first = s.svc.request(boss, 'L1', evacuate({ params: { durationS: 60 } })).command;
+    s.clock.t = t0 + 30_000;
+    s.svc.tick();
+    const second = s.svc.request(boss, 'L1', evacuate({ params: { durationS: 900 } })).command;
+    assert.equal(s.svc.command(first.cmdId)!.offCmdId, 'remplace');
+    s.clock.t = t0 + 30_000 + 100_000;
+    s.svc.tick();
+    await flush();
+    assert.equal(s.sent.filter((m) => m.msg.action === 'lock').length, 0, "l'ancien retour ne ferme pas la porte en pleine evacuation");
+    s.clock.t = t0 + 30_000 + 901_000;
+    s.svc.tick();
+    await flush();
+    assert.equal(s.sent.filter((m) => m.msg.action === 'lock').length, 1);
+    assert.equal(s.svc.command(second.cmdId)!.offCmdId, s.sent.at(-1)!.msg.cmdId);
+  });
+
+  it("issue de secours : evacuate sans aucun retour, et aucune commande lock n'est jamais creee ni envoyee", async () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'I1', name: 'Issue', type: 'lock', transport: 'mqtt', emergencyExit: true });
+    const boss = chef(s);
+    const cmd = s.svc.request(boss, 'I1', evacuate({ params: { durationS: 300 } })).command;
+    await flush();
+    assert.equal(cmd.offDueAt, null, 'aucun retour planifie');
+    assert.doesNotMatch(audits(s.db, 'commande_envoyee').at(-1)!, /retour/);
+    for (let i = 0; i < 4; i++) {
+      s.clock.t += 3600_000;
+      s.svc.tick();
+    }
+    await flush();
+    assert.equal(s.sent.length, 1);
+    assert.ok(s.sent.every((m) => m.msg.action !== 'lock'));
+    assert.ok(rowsOf(s, 'I1').every((r) => r.action !== 'lock'), 'aucune commande lock en base');
+    assert.equal(rowsOf(s, 'I1').length, 1);
+    // Et un ordre lock demande a la main reste refuse, evacuate ou pas.
+    assert.equal(status(() => s.svc.request(boss, 'I1', { action: 'lock', confirm: true, reason: 'x', password: ADMIN_PW })), 400);
+    assert.equal(rowsOf(s, 'I1').length, 1);
+  });
+
+  it('portail : evacuate sans duree (durationS refuse), message sans duree, aucun retour automatique jamais', async () => {
+    const s = setup();
+    s.svc.create('admin', { id: 'G1', name: 'Portail', type: 'gate', transport: 'mqtt' });
+    const boss = chef(s);
+    assert.equal(status(() => s.svc.request(boss, 'G1', evacuate({ params: { durationS: 30 } }))), 400, 'instantanee, sans duree');
+    assert.equal(status(() => s.svc.request(boss, 'G1', evacuate({ params: { durationS: 0 } }))), 400);
+    assert.equal(rowsOf(s, 'G1').length, 0);
+    const cmd = s.svc.request(boss, 'G1', evacuate()).command;
+    await flush();
+    assert.equal(cmd.durationS, null);
+    assert.equal(cmd.offDueAt, null);
+    assert.deepEqual(s.sent[0].msg.params, {});
+    assert.equal(s.sent[0].msg.action, 'evacuate');
+    for (let i = 0; i < 3; i++) {
+      s.clock.t += 3600_000;
+      s.svc.tick();
+    }
+    await flush();
+    assert.equal(s.sent.length, 1, "ni close ni stop envoyes d'office");
+    assert.equal(rowsOf(s, 'G1').length, 1);
+    // « stop » (action sure) reste possible a l'operateur, immediat.
+    assert.equal(s.svc.request(OP, 'G1', { action: 'stop', confirm: true }).status, 201);
+  });
+
+  it('base « ancienne » : un actionneur cree avec des actions explicites ne gagne PAS evacuate en etant modifie', () => {
+    const { svc, db } = setup();
+    svc.create('admin', { id: 'L1', name: 'Serrure', type: 'lock', transport: 'mqtt', actions: { unlock: { maxS: 10 } } });
+    svc.create('admin', { id: 'G1', name: 'Portail', type: 'gate', transport: 'mqtt', actions: { open: {}, close: {} } });
+    // Etat ecrit comme le faisait la version precedente (aucune trace d'evacuate).
+    db.prepare("UPDATE actuator SET actions = ? WHERE id = 'L1'").run(JSON.stringify({ unlock: { roles: ['operator', 'admin'], minS: 1, maxS: 10 }, lock: { roles: ['operator', 'admin'] } }));
+    db.prepare("UPDATE actuator SET actions = ? WHERE id = 'G1'").run(JSON.stringify({ open: { roles: ['operator', 'admin'], minS: 1, maxS: 10 }, close: { roles: ['operator', 'admin'], minS: 1, maxS: 10 }, stop: { roles: ['operator', 'admin'] } }));
+    const stored = (id: string) => JSON.parse((db.prepare('SELECT actions FROM actuator WHERE id = ?').get(id) as { actions: string }).actions) as Record<string, unknown>;
+    for (const id of ['L1', 'G1']) {
+      assert.ok(!Object.hasOwn(svc.get(id)!.actions, 'evacuate'), id);
+      svc.update('admin', id, { name: `Renomme ${id}` });
+      svc.update('admin', id, { zone: 'Hall', active: false });
+      svc.update('admin', id, { active: true, ackTimeoutS: 8 });
+      assert.ok(!Object.hasOwn(svc.get(id)!.actions, 'evacuate'), `${id} : modifier un autre champ ne declare pas evacuate`);
+      assert.ok(!Object.hasOwn(stored(id), 'evacuate'), `${id} : rien non plus en base`);
+    }
+    // Redemarrage du service sur la meme base : toujours rien d'ajoute.
+    const again = createActuators({ db, key: randomBytes(32), audit: () => {}, publish: () => {}, httpAllow: parseAllowList([]), now: () => 0 });
+    assert.ok(!Object.hasOwn(again.get('L1')!.actions, 'evacuate'));
+    assert.ok(!Object.hasOwn(again.get('G1')!.actions, 'evacuate'));
+    // L'administrateur la declare explicitement : roles admin par defaut, duree par defaut.
+    const l1 = svc.update('admin', 'L1', { actions: { unlock: { maxS: 10 }, evacuate: {} } });
+    assert.deepEqual(l1.actions.evacuate, { roles: ['admin'], minS: 1, maxS: 900 });
+    const g1 = svc.update('admin', 'G1', { actions: { open: {}, close: {}, evacuate: {} } });
+    assert.deepEqual(g1.actions.evacuate, { roles: ['admin'] });
   });
 });
 

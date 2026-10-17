@@ -387,6 +387,23 @@ describe('fiche de porte : `remote` (F17)', () => {
 /** Une issue de secours n'accepte jamais l'action lock : pour en faire une, on retire lock des actions. */
 const ONLY_UNLOCK = { unlock: {} };
 
+describe('evacuate : reservee a l administrateur meme si la base est modifiee a la main (defense en profondeur)', () => {
+  beforeEach(setup);
+
+  it('roles operator ajoutes en base : recalcules a l execution, l operateur recoit 403 et rien n est cree ni envoye', () => {
+    actuator('LOCK-1', 'lock');
+    db.prepare("UPDATE actuator SET actions = ? WHERE id = 'LOCK-1'").run(
+      JSON.stringify({ unlock: { minS: 1, maxS: 10, roles: ['operator', 'admin'] }, evacuate: { minS: 1, maxS: 900, roles: ['operator', 'admin'] }, lock: { roles: ['operator', 'admin'] } }),
+    );
+    assert.deepEqual(actuators.get('LOCK-1')!.actions.evacuate.roles, ['admin']);
+    const op = { username: 'agent', role: 'operator' as const };
+    assert.equal(status(() => actuators.request(op, 'LOCK-1', { action: 'evacuate', params: { durationS: 600 }, confirm: true, reason: 'essai' })), 403);
+    assert.equal(commandRows().length, 0);
+    assert.equal(sent.length, 0);
+    assert.ok(!actuators.list('operator').actuators.find((a) => a.id === 'LOCK-1')!.allowed.includes('evacuate'));
+  });
+});
+
 describe('actionneur relie a une porte : suppression et issue de secours protegees (F18, service des commandes)', () => {
   beforeEach(setup);
 
@@ -466,11 +483,12 @@ describe('issue de secours : le PSIM ne verrouille jamais (refus a l\'execution,
     assert.equal(status(() => actuators.request(user, 'ISSUE-1', { action: 'lock', confirm: true })), 403);
   });
 
-  it('issue de secours : aucune action sure n\'est exposee (jamais « lock »), seul le deverrouillage est possible', () => {
+  it('issue de secours : aucune action sure n\'est exposee (jamais « lock »), seules les ouvertures (unlock, evacuate) sont possibles', () => {
     actuator('ISSUE-1', 'lock', { emergencyExit: true });
     const v = actuators.get('ISSUE-1')!;
     assert.equal(v.safeAction, null);
-    assert.deepEqual(Object.keys(v.actions), ['unlock']);
+    assert.deepEqual(Object.keys(v.actions).sort(), ['evacuate', 'unlock']);
+    assert.ok(!Object.hasOwn(v.actions, 'lock'));
   });
 });
 
@@ -690,12 +708,20 @@ describe('« Tout ouvrir » (F20)', () => {
     assert.equal(by['A-03'].status, 'refused');
     assert.match(by['A-03'].error ?? '', /désactivé/);
     assert.equal(by['A-04'].status, 'sent');
-    // Les ordres partis : « unlock » pour la serrure, « open » pour la barriere, durees reelles rapportees.
-    assert.deepEqual(sent.map((s) => [s.id, s.msg.action]).sort(), [['GATE-1', 'open'], ['LOCK-1', 'unlock']]);
+    // Les ordres partis : « evacuate » pour la serrure ET pour la barriere (actions par defaut des actionneurs neufs).
+    assert.deepEqual(sent.map((s) => [s.id, s.msg.action]).sort(), [['GATE-1', 'evacuate'], ['LOCK-1', 'evacuate']]);
     assert.equal(commandRows().length, 2, 'aucune commande pour les portes refusees');
-    assert.equal(by['A-01'].durationS, 10, 'duree demandee 300 s ramenee au maximum de la serrure (10 s)');
-    assert.equal(by['A-04'].durationS, 10);
-    assert.equal(sent.find((s) => s.id === 'LOCK-1')!.msg.params.durationS, 10);
+    assert.equal(by['A-01'].action, 'evacuate');
+    assert.equal(by['A-01'].durationS, 900, "duree par defaut de l'evacuation : 15 minutes");
+    assert.equal(by['A-01'].warning, null);
+    assert.equal(sent.find((s) => s.id === 'LOCK-1')!.msg.params.durationS, 900);
+    // Portail : ouvert sans duree, ni dans le resultat ni dans l'ordre signe.
+    assert.equal(by['A-04'].action, 'evacuate');
+    assert.ok(!Object.hasOwn(by['A-04'], 'durationS'));
+    assert.deepEqual(sent.find((s) => s.id === 'GATE-1')!.msg.params, {});
+    assert.equal(by['A-04'].warning, null);
+    // Les portes refusees portent aussi l'action prevue.
+    assert.equal(by['A-02'].action, 'evacuate');
     // L'ordre dans la reponse suit les noms de porte.
     assert.deepEqual(res.results.map((r) => r.doorId), ['A-02', 'A-03', 'A-04', 'A-01']);
   });
@@ -800,32 +826,215 @@ describe('« Tout ouvrir » (F20)', () => {
     assert.equal(status(() => evacuation.run(admin, body())), 0, 'deuxieme evacuation de la minute : encore permise');
   });
 
-  it('duree demandee : bornee au maximum de CHAQUE actionneur (et a son minimum), la duree reelle est rapportee', () => {
-    actuator('LOCK-1', 'lock', { actions: { unlock: { minS: 3, maxS: 60 } } });
+  it('duree demandee : bornee au minimum et au maximum de evacuate de CHAQUE actionneur, la duree reelle est rapportee (portail : aucune)', () => {
+    actuator('LOCK-1', 'lock', { actions: { evacuate: { minS: 3, maxS: 60 } } });
     actuator('LOCK-2', 'lock');
     actuator('GATE-1', 'gate');
     declare('A-01', 1, { actuatorId: 'LOCK-1' });
     declare('A-02', 2, { actuatorId: 'LOCK-2' });
     declare('A-03', 3, { kind: 'gate', actuatorId: 'GATE-1' });
-    let res = evacuation.run(admin, body({ durationS: 45 }));
-    assert.deepEqual(Object.fromEntries(res.results.map((r) => [r.doorId, r.durationS])), { 'A-01': 45, 'A-02': 10, 'A-03': 10 });
+    const durations = (res: ReturnType<EvacuationService['run']>) => Object.fromEntries(res.results.map((r) => [r.doorId, r.durationS]));
+    let res = evacuation.run(admin, body({ durationS: 60 }));
+    assert.deepEqual(durations(res), { 'A-01': 60, 'A-02': 60, 'A-03': undefined });
     clock += 2 * MIN;
     actuators.tick();
     res = evacuation.run(admin, body({ durationS: 1 }));
-    assert.deepEqual(Object.fromEntries(res.results.map((r) => [r.doorId, r.durationS])), { 'A-01': 3, 'A-02': 1, 'A-03': 1 });
+    assert.deepEqual(durations(res), { 'A-01': 3, 'A-02': 1, 'A-03': undefined });
     clock += 2 * MIN;
     actuators.tick();
-    res = evacuation.run(admin, body()); // defaut : 300 s
-    assert.deepEqual(Object.fromEntries(res.results.map((r) => [r.doorId, r.durationS])), { 'A-01': 60, 'A-02': 10, 'A-03': 10 });
-    assert.deepEqual(sent.slice(-3).map((s) => s.msg.params.durationS).sort((a, b) => (a ?? 0) - (b ?? 0)), [10, 10, 60]);
+    res = evacuation.run(admin, body({ durationS: 3600 }));
+    assert.deepEqual(durations(res), { 'A-01': 60, 'A-02': 900, 'A-03': undefined }, 'borne au maximum configure de chaque serrure (900 s par defaut)');
+    clock += 2 * MIN;
+    actuators.tick();
+    res = evacuation.run(admin, body()); // defaut : 900 s, ramene a 60 s pour la serrure bornee
+    assert.deepEqual(durations(res), { 'A-01': 60, 'A-02': 900, 'A-03': undefined });
+    const evac = sent.filter((s) => s.msg.action === 'evacuate');
+    assert.deepEqual(evac.slice(-3).map((s) => [s.id, s.msg.params.durationS]).sort(), [['GATE-1', undefined], ['LOCK-1', 60], ['LOCK-2', 900]]);
+    // Aucun ordre de portail ne porte de duree, quelle que soit la duree demandee.
+    assert.ok(sent.filter((s) => s.id === 'GATE-1').every((s) => s.msg.action === 'evacuate' && !Object.hasOwn(s.msg.params, 'durationS')));
   });
 
-  it('une issue de secours est deverrouillee comme les autres (jamais verrouillee)', () => {
+  it('une issue de secours est ouverte en evacuate (jamais verrouillee, aucun ordre lock ne part ni commande creee)', () => {
     actuator('ISSUE-1', 'lock', { emergencyExit: true });
     declare('A-01', 1, { emergencyExit: true, actuatorId: 'ISSUE-1' });
     const res = evacuation.run(admin, body());
     assert.equal(res.results[0].status, 'sent');
-    assert.equal(sent[0].msg.action, 'unlock');
+    assert.equal(res.results[0].action, 'evacuate');
+    assert.equal(res.results[0].durationS, 900);
+    assert.equal(sent[0].msg.action, 'evacuate');
+    // Meme longtemps apres la fin de l'ouverture : le PSIM ne referme jamais une issue de secours.
+    clock += 2 * 3600 * S;
+    actuators.tick();
+    assert.ok(sent.every((s) => s.msg.action !== 'lock'), 'aucun ordre lock envoye');
+    assert.ok(commandRows().every((c) => c.action !== 'lock'), 'aucune commande lock creee');
+    assert.equal(commandRows()[0].off_due_at, null, 'aucun retour automatique planifie');
+  });
+
+  it('succes avec evacuate : action evacuate, duree 900 s rapportee, commande creee avec params durationS 900 (retour lock prevu a +901 s)', () => {
+    actuator('LOCK-1', 'lock');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    const res = evacuation.run(admin, body());
+    assert.equal(res.results[0].status, 'sent');
+    assert.equal(res.results[0].action, 'evacuate');
+    assert.equal(res.results[0].durationS, 900);
+    assert.equal(res.results[0].warning, null);
+    const rows = commandRows();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].action, 'evacuate');
+    assert.deepEqual(JSON.parse(rows[0].params as string), { durationS: 900 });
+    assert.equal(rows[0].duration_s, 900);
+    assert.equal(rows[0].off_due_at, T + 901 * S, 'retour automatique a lock : envoi + duree + 1 s');
+    assert.deepEqual(sent.map((m) => [m.id, m.msg.action, m.msg.params.durationS]), [['LOCK-1', 'evacuate', 900]]);
+    assert.doesNotMatch(audits('access_evacuation_bilan')[0].details ?? '', /breve/, 'aucune mention d\'ouverture breve quand evacuate existe');
+  });
+
+  it('repli sans l\'action evacuate (actionneur ancien) : unlock / open borne par maxS, avertissement dans l\'apercu ET dans le resultat, ouverture breve au bilan', () => {
+    // Actions explicites sans `evacuate` : ce que declare une base existante.
+    actuator('LOCK-1', 'lock', { actions: { unlock: { maxS: 10 } } });
+    actuator('GATE-1', 'gate', { actions: { open: {}, close: {} } });
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    declare('A-02', 2, { kind: 'gate', actuatorId: 'GATE-1' });
+    const preview = Object.fromEntries(evacuation.preview().doors.map((d) => [d.doorId, d]));
+    assert.equal(preview['A-01'].action, 'unlock');
+    assert.equal(preview['A-01'].maxDurationS, 10);
+    assert.equal(preview['A-01'].ready, true);
+    assert.equal(preview['A-01'].warning, "ne s'ouvrira que 10 s : ajoutez l'action évacuation");
+    assert.equal(preview['A-02'].action, 'open');
+    assert.equal(preview['A-02'].maxDurationS, 10);
+    assert.equal(preview['A-02'].warning, "ne s'ouvrira que brièvement (impulsion de 10 s) : ajoutez l'action évacuation");
+
+    const res = evacuation.run(admin, body());
+    const by = Object.fromEntries(res.results.map((r) => [r.doorId, r]));
+    assert.equal(by['A-01'].status, 'sent');
+    assert.equal(by['A-01'].action, 'unlock');
+    assert.equal(by['A-01'].durationS, 10, 'duree par defaut 900 s ramenee au maxS de l\'impulsion');
+    assert.equal(by['A-01'].warning, "ne s'ouvrira que 10 s : ajoutez l'action évacuation");
+    assert.equal(by['A-02'].action, 'open');
+    assert.equal(by['A-02'].durationS, 10);
+    assert.equal(by['A-02'].warning, "ne s'ouvrira que brièvement (impulsion de 10 s) : ajoutez l'action évacuation");
+    assert.deepEqual(sent.map((m) => [m.id, m.msg.action, m.msg.params.durationS]).sort(), [['GATE-1', 'open', 10], ['LOCK-1', 'unlock', 10]]);
+    assert.deepEqual(commandRows().map((c) => c.action).sort(), ['open', 'unlock']);
+    // Le bilan du journal dit quelles portes ne se sont ouvertes que brievement.
+    const bilan = audits('access_evacuation_bilan');
+    assert.equal(bilan.length, 1);
+    assert.match(bilan[0].details ?? '', /2 porte\(s\) sur 2 en cours d'ouverture/);
+    assert.match(bilan[0].details ?? '', /ouverture breve faute d'action evacuation : (A-01, A-02|A-02, A-01)$/);
+    assert.equal(verify(db).ok, true);
+  });
+
+  it('repli : le maxS propre de l\'actionneur est cite dans l\'avertissement ; une porte refusee n\'est pas dite « breve » au bilan', () => {
+    actuator('LOCK-1', 'lock', { actions: { unlock: { maxS: 30 } } });
+    actuator('LOCK-2', 'lock', { actions: { unlock: { maxS: 5 } } }, false);
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    declare('A-02', 2, { actuatorId: 'LOCK-2' });
+    const warnings = Object.fromEntries(evacuation.preview().doors.map((d) => [d.doorId, d.warning]));
+    assert.deepEqual(warnings, { 'A-01': "ne s'ouvrira que 30 s : ajoutez l'action évacuation", 'A-02': "ne s'ouvrira que 5 s : ajoutez l'action évacuation" });
+    const res = evacuation.run(admin, body({ durationS: 60 }));
+    const by = Object.fromEntries(res.results.map((r) => [r.doorId, r]));
+    assert.equal(by['A-01'].durationS, 30, 'duree demandee 60 s ramenee a 30 s');
+    assert.equal(by['A-02'].status, 'no_gateway');
+    const bilan = audits('access_evacuation_bilan')[0].details ?? '';
+    assert.match(bilan, /ouverture breve faute d'action evacuation : A-01$/);
+    assert.doesNotMatch(bilan, /breve[^;]*A-02/);
+  });
+
+  it('un actionneur ancien et un neuf dans le meme lot : chacun suit sa regle, seul l\'ancien porte l\'avertissement', () => {
+    actuator('LOCK-1', 'lock', { actions: { unlock: { maxS: 10 } } });
+    actuator('LOCK-2', 'lock');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    declare('A-02', 2, { actuatorId: 'LOCK-2' });
+    const res = evacuation.run(admin, body());
+    const by = Object.fromEntries(res.results.map((r) => [r.doorId, r]));
+    assert.deepEqual([by['A-01'].action, by['A-01'].durationS, by['A-01'].warning === null], ['unlock', 10, false]);
+    assert.deepEqual([by['A-02'].action, by['A-02'].durationS, by['A-02'].warning], ['evacuate', 900, null]);
+    assert.match(audits('access_evacuation_bilan')[0].details ?? '', /ouverture breve faute d'action evacuation : A-01$/);
+  });
+
+  it('portail avec evacuate : ouvert sans duree (params vides, maxDurationS null, aucun durationS dans le resultat ni la commande), jamais refermé', () => {
+    actuator('GATE-1', 'gate');
+    declare('A-01', 1, { kind: 'gate', actuatorId: 'GATE-1' });
+    const d = evacuation.preview().doors[0];
+    assert.equal(d.action, 'evacuate');
+    assert.equal(d.maxDurationS, null);
+    assert.equal(d.warning, null);
+    assert.equal(d.ready, true);
+    // Une duree demandee n'y change rien : elle ne concerne pas le portail.
+    for (const durationS of [undefined, 60]) {
+      const res = evacuation.run(newAdmin(), body(durationS === undefined ? {} : { durationS }));
+      assert.equal(res.results[0].status, 'sent');
+      assert.equal(res.results[0].action, 'evacuate');
+      assert.ok(!Object.hasOwn(res.results[0], 'durationS'));
+      clock += 2 * MIN;
+      actuators.tick();
+    }
+    assert.ok(sent.every((m) => m.msg.action === 'evacuate' && Object.keys(m.msg.params).length === 0));
+    for (const c of commandRows().filter((x) => x.action === 'evacuate')) {
+      assert.deepEqual(JSON.parse(c.params as string), {});
+      assert.equal(c.duration_s, null);
+      assert.equal(c.off_due_at, null);
+    }
+    // Jamais de fermeture d'office, meme des heures plus tard.
+    clock += 5 * 3600 * S;
+    actuators.tick();
+    assert.ok(commandRows().every((c) => c.action === 'evacuate'));
+  });
+
+  it('retours automatiques d\'un lot : la serrure ordinaire revient a lock, l\'issue de secours et le portail jamais', () => {
+    actuator('LOCK-1', 'lock');
+    actuator('ISSUE-1', 'lock', { emergencyExit: true });
+    actuator('GATE-1', 'gate');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    declare('A-02', 2, { emergencyExit: true, actuatorId: 'ISSUE-1' });
+    declare('A-03', 3, { kind: 'gate', actuatorId: 'GATE-1' });
+    const res = evacuation.run(admin, body({ durationS: 120 }));
+    assert.equal(res.counts.sent, 3);
+    const byActuator = (id: string) => commandRows().filter((c) => c.actuator_id === id);
+    assert.equal(byActuator('LOCK-1')[0].off_due_at, T + 121 * S);
+    assert.equal(byActuator('ISSUE-1')[0].off_due_at, null);
+    assert.equal(byActuator('GATE-1')[0].off_due_at, null);
+    clock += 3 * 3600 * S;
+    actuators.tick();
+    assert.deepEqual(byActuator('LOCK-1').map((c) => c.action), ['evacuate', 'lock'], 'la serrure ordinaire est refermee a la fin');
+    assert.deepEqual(byActuator('ISSUE-1').map((c) => c.action), ['evacuate'], 'jamais d\'ordre lock sur une issue de secours');
+    assert.deepEqual(byActuator('GATE-1').map((c) => c.action), ['evacuate'], 'jamais de fermeture d\'un portail');
+    assert.deepEqual(sent.filter((m) => m.msg.action === 'lock').map((m) => m.id), ['LOCK-1']);
+  });
+
+  it('issue de secours sans l\'action evacuate (ancienne) : repli unlock borne, avertissement, toujours aucun lock', () => {
+    actuator('ISSUE-1', 'lock', { emergencyExit: true, actions: { unlock: { maxS: 10 } } });
+    declare('A-01', 1, { emergencyExit: true, actuatorId: 'ISSUE-1' });
+    assert.equal(evacuation.preview().doors[0].action, 'unlock');
+    const res = evacuation.run(admin, body());
+    assert.equal(res.results[0].action, 'unlock');
+    assert.equal(res.results[0].durationS, 10);
+    assert.equal(res.results[0].warning, "ne s'ouvrira que 10 s : ajoutez l'action évacuation");
+    clock += 3600 * S;
+    actuators.tick();
+    assert.ok(sent.every((m) => m.msg.action !== 'lock'));
+    assert.ok(commandRows().every((c) => c.action !== 'lock'));
+  });
+
+  it('evacuate declaree puis retiree (base modifiee) : repli sur l\'impulsion, jamais d\'echec silencieux', () => {
+    actuator('LOCK-1', 'lock');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    assert.equal(evacuation.preview().doors[0].action, 'evacuate');
+    actuators.update('admin', 'LOCK-1', { actions: { unlock: { maxS: 10 } } });
+    const d = evacuation.preview().doors[0];
+    assert.equal(d.action, 'unlock');
+    assert.equal(d.ready, true);
+    assert.equal(d.warning, "ne s'ouvrira que 10 s : ajoutez l'action évacuation");
+    assert.equal(evacuation.run(admin, body()).results[0].action, 'unlock');
+  });
+
+  it('operateur : evacuate reste refusee par le service des commandes (403) meme si la route « Tout ouvrir » est contournee ; rien n\'est cree', () => {
+    actuator('LOCK-1', 'lock');
+    actuator('GATE-1', 'gate');
+    createUser(db, 'operateur1', 'operator', 'Mot-de-passe-operateur-2');
+    const op = { username: 'operateur1', role: 'operator' as const };
+    assert.equal(status(() => actuators.request(op, 'LOCK-1', { action: 'evacuate', params: { durationS: 60 }, confirm: true, reason: 'x', password: 'Mot-de-passe-operateur-2' })), 403);
+    assert.equal(status(() => actuators.request(op, 'GATE-1', { action: 'evacuate', confirm: true, reason: 'x', password: 'Mot-de-passe-operateur-2' })), 403);
+    assert.equal(commandRows().length, 0);
+    assert.equal(sent.length, 0);
   });
 
   it('lien incoherent ou actionneur supprime : porte `refused` avec un message, jamais ignoree en silence', () => {
@@ -967,8 +1176,10 @@ describe('« Tout ouvrir » (F20)', () => {
     const { doors } = evacuation.preview();
     assert.equal(doors.length, 4);
     const by = Object.fromEntries(doors.map((d) => [d.doorId, d]));
-    assert.deepEqual(by['A-01'], { doorId: 'A-01', doorName: 'Porte de service entrepot', actuatorId: 'LOCK-1', actuatorName: 'Actionneur LOCK-1', action: 'unlock', maxDurationS: 10, ready: true, problem: null });
-    assert.equal(by['A-04'].action, 'open');
+    assert.deepEqual(by['A-01'], { doorId: 'A-01', doorName: 'Porte de service entrepot', actuatorId: 'LOCK-1', actuatorName: 'Actionneur LOCK-1', action: 'evacuate', maxDurationS: 900, ready: true, problem: null, warning: null });
+    assert.equal(by['A-04'].action, 'evacuate');
+    assert.equal(by['A-04'].maxDurationS, null, 'portail : ouvert sans duree');
+    assert.equal(by['A-04'].warning, null);
     assert.equal(by['A-04'].ready, true);
     assert.equal(by['A-02'].ready, false);
     assert.match(by['A-02'].problem ?? '', /passerelle/);
@@ -992,10 +1203,12 @@ describe('« Tout ouvrir » (F20)', () => {
     declare('A-01', 1, { actuatorId: 'LOCK-1' });
     db.prepare("UPDATE actuator SET actions = ? WHERE id = 'LOCK-1'").run(JSON.stringify({}));
     const d = evacuation.preview().doors[0];
-    // `toView` ajoute toujours l'action sure ; « unlock » a disparu de la configuration.
+    // `toView` ajoute toujours l'action sure ; ni « evacuate » ni « unlock » ne figurent plus dans la configuration : repli sur « unlock », introuvable.
     assert.equal(d.ready, false);
+    assert.equal(d.action, 'unlock');
     assert.match(d.problem ?? '', /unlock/);
     assert.equal(d.maxDurationS, null);
+    assert.equal(d.warning, null, "pas d'avertissement de repli quand rien ne peut s'ouvrir");
   });
 
   it('redemarrage du PSIM en cours de route : rien n\'est renvoye (pas de file, pas de rejeu)', () => {

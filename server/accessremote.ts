@@ -233,7 +233,8 @@ export function remoteOf(db: DatabaseSync, door: DoorLinkInput): DoorRemote {
 // ---- « Tout ouvrir » (F20) ---------------------------------------------------------------------------------------------------
 
 export const EVACUATION_PHRASE = 'TOUT OUVRIR';
-export const EVACUATION_DEFAULT_DURATION_S = 300;
+/** 15 minutes, puis reverrouillage automatique (serrures) : duree propre a l'evacuation, distincte de l'impulsion des operateurs. */
+export const EVACUATION_DEFAULT_DURATION_S = 900;
 const EVACUATION_MAX_DURATION_S = 3600;
 const EVACUATION_MAX_REASON = 150;
 /** Au plus 2 evacuations par minute et par administrateur. */
@@ -245,10 +246,14 @@ export interface EvacuationDoor {
   doorName: string;
   actuatorId: string;
   actuatorName: string | null;
-  action: 'unlock' | 'open';
+  /** `evacuate` si l'actionneur a l'action d'evacuation ; sinon repli `unlock` (serrure) ou `open` (portail) borne par son maxS. */
+  action: 'evacuate' | 'unlock' | 'open';
+  /** Duree maximale de l'ouverture ; `null` pour un portail en `evacuate` (ouvert sans duree, jamais refermé par le PSIM). */
   maxDurationS: number | null;
   ready: boolean;
   problem: string | null;
+  /** Non null quand l'ouverture sera plus courte que l'evacuation attendue (repli sans l'action `evacuate`). */
+  warning: string | null;
 }
 
 export type EvacuationStatus = 'sent' | 'no_gateway' | 'refused' | 'error';
@@ -258,9 +263,11 @@ export interface EvacuationDoorResult {
   doorName: string;
   actuatorId: string;
   status: EvacuationStatus;
+  action?: EvacuationDoor['action'];
   cmdId?: string;
   durationS?: number;
   error?: string;
+  warning?: string | null;
 }
 
 export interface EvacuationResult {
@@ -318,10 +325,19 @@ export function createEvacuation(deps: EvacuationDeps): EvacuationService {
       const view = actuators.get(actuatorId);
       const facts: ActuatorFacts | null = view ? { id: view.id, name: view.name, type: view.type, emergencyExit: view.emergencyExit, active: view.active } : null;
       const link: DoorLinkInput = { kind: r.kind as string, emergencyExit: r.emergency_exit === 1, actuatorId };
-      const action: 'unlock' | 'open' = facts?.type === 'gate' ? 'open' : 'unlock';
+      const isGate = facts?.type === 'gate';
+      // Action d'evacuation si l'administrateur l'a declaree sur cet actionneur ; sinon repli sur l'impulsion, avec avertissement.
+      const hasEvacuate = view !== null && Object.hasOwn(view.actions, 'evacuate');
+      const action: EvacuationDoor['action'] = hasEvacuate ? 'evacuate' : isGate ? 'open' : 'unlock';
       let problem = linkProblem(link, facts);
       let failure: Plan['failure'] = 'refused';
       const config = view && Object.hasOwn(view.actions, action) ? view.actions[action] : null;
+      const warning =
+        hasEvacuate || !config
+          ? null
+          : isGate
+            ? `ne s'ouvrira que brièvement (impulsion de ${config.maxS ?? '?'} s) : ajoutez l'action évacuation`
+            : `ne s'ouvrira que ${config.maxS ?? '?'} s : ajoutez l'action évacuation`;
       if (problem === null && !config) problem = `L'action « ${action} » n'est pas disponible sur cet actionneur`;
       if (problem === null && view && view.transport === 'mqtt' && view.linkUp === false) {
         problem = "Aucune passerelle n'écoute cet actionneur (liaison coupée) : la porte ne peut pas être ouverte d'ici";
@@ -338,6 +354,7 @@ export function createEvacuation(deps: EvacuationDeps): EvacuationService {
           maxDurationS: config?.maxS ?? null,
           ready: problem === null,
           problem,
+          warning,
         },
         failure,
         minS: config?.minS ?? null,
@@ -400,23 +417,23 @@ export function createEvacuation(deps: EvacuationDeps): EvacuationService {
 
     const results: EvacuationDoorResult[] = [];
     for (const p of plans) {
-      const base = { doorId: p.door.doorId, doorName: p.door.doorName, actuatorId: p.door.actuatorId };
+      const base = { doorId: p.door.doorId, doorName: p.door.doorName, actuatorId: p.door.actuatorId, action: p.door.action, warning: p.door.warning };
       if (!p.door.ready) {
         results.push({ ...base, status: p.failure, error: p.door.problem ?? 'Porte non ouvrable' });
         continue;
       }
-      // Duree demandee, ramenee dans les bornes de l'action de CET actionneur.
-      const maxS = p.door.maxDurationS ?? requestedS;
-      const durationS = Math.min(Math.max(requestedS, p.minS ?? 1), maxS);
+      // Duree demandee, ramenee dans les bornes de l'action de CET actionneur. Portail en `evacuate` : instantane, aucune duree.
+      const untimed = p.door.maxDurationS === null;
+      const durationS = untimed ? undefined : Math.min(Math.max(requestedS, p.minS ?? 1), p.door.maxDurationS!);
       try {
         const out = actuators.request({ username: actor, role: 'admin' }, p.door.actuatorId, {
           action: p.door.action,
-          params: { durationS },
+          params: durationS === undefined ? {} : { durationS },
           confirm: true,
           reason: clipText(`Tout ouvrir (lot ${short}) : ${reason}`, 200),
           password,
         });
-        results.push({ ...base, status: 'sent', cmdId: out.command.cmdId, durationS });
+        results.push({ ...base, status: 'sent', cmdId: out.command.cmdId, ...(durationS === undefined ? {} : { durationS }) });
       } catch (err) {
         if (err instanceof PsimError) {
           const noGateway = err.status === 409 && err.message.startsWith('Liaison coupee');
@@ -432,7 +449,7 @@ export function createEvacuation(deps: EvacuationDeps): EvacuationService {
     const failedDoors = results.filter((r) => r.status !== 'sent').map((r) => r.doorId);
     try {
       audit(actor, 'access_evacuation_bilan', {
-        details: clipText(`TOUT OUVRIR (lot ${short}) : ${sent} porte(s) sur ${results.length} en cours d'ouverture${failedDoors.length > 0 ? ` ; echec : ${failedDoors.join(', ')}` : ''}`, 300),
+        details: clipText(`TOUT OUVRIR (lot ${short}) : ${sent} porte(s) sur ${results.length} en cours d'ouverture${failedDoors.length > 0 ? ` ; echec : ${failedDoors.join(', ')}` : ''}${results.some((r) => r.status === 'sent' && r.warning) ? ` ; ouverture breve faute d'action evacuation : ${results.filter((r) => r.status === 'sent' && r.warning).map((r) => r.doorId).join(', ')}` : ''}`, 300),
       });
     } catch (err) {
       // Les ordres sont partis : le bilan manquant ne doit pas faire croire a l'operateur que rien n'a ete fait.

@@ -226,6 +226,10 @@ interface ActSpec {
   emergencyExit?: boolean;
   /** Detecteur de la porte a lier a cet actionneur dans le PSIM des la mise en place (sinon : liaison faite par l'essai). */
   link?: string;
+  /** Actionneur cree dans le PSIM avec les actions PAR DEFAUT (donc avec `evacuate`), au lieu des actions explicites d'une base ancienne. */
+  psimDefaultActions?: boolean;
+  /** La passerelle declare aussi l'action `evacuate` (plafond 900 s) dans sa liste locale. */
+  gatewayEvacuate?: boolean;
 }
 interface ChainOpts {
   tag: string;
@@ -292,7 +296,7 @@ async function buildChain(o: ChainOpts): Promise<Chain> {
       name: `Serrure ${a.id}`,
       type: 'lock',
       ...(a.emergencyExit ? { emergencyExit: true } : {}),
-      actions: { unlock: { maxS: a.maxS ?? 30 } },
+      ...(a.psimDefaultActions ? {} : { actions: { unlock: { maxS: a.maxS ?? 30 } } }),
     });
     assert.equal(r.status, 201, r.text);
     assert.match(r.body.key, /^[0-9a-f]{64}$/);
@@ -331,7 +335,7 @@ async function buildChain(o: ChainOpts): Promise<Chain> {
       module: 'acces-dahua',
       ...(a.emergencyExit
         ? { emergencyExit: true, actions: { unlock: { maxS: a.maxS ?? 30 } } }
-        : { actions: { unlock: { maxS: a.maxS ?? 30 }, lock: {} }, rest: 'lock' }),
+        : { actions: { unlock: { maxS: a.maxS ?? 30 }, ...(a.gatewayEvacuate ? { evacuate: { maxS: 900 } } : {}), lock: {} }, rest: 'lock' }),
     }));
   }
   const file = join(dir, 'config.json');
@@ -600,6 +604,109 @@ describe('chaine complete : faux controleur Dahua -> module acces-dahua -> socle
     assert.equal((await api('POST', '/api/system/journal/verify', admin)).body.ok, true);
     assert.ok(!c.log().includes(c.keys[ACT]!), 'la cle n\'apparait pas dans le journal de la passerelle');
     assert.ok(!psim!.output().includes(c.keys[ACT]!), 'ni dans celui du PSIM');
+  });
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  // 2b. « Tout ouvrir » reel (evacuation) jusqu'au faux controleur, par la passerelle reelle
+  // ------------------------------------------------------------------------------------------------------------------------
+
+  it("2b. « Tout ouvrir » reel : repli sur unlock pour un actionneur ancien (la porte s'ouvre) ; l'action evacuate n'est pas encore traduite par la passerelle : commande « refused », aucune ouverture, aucun faux « ouvert »", { timeout: 60_000 }, async () => {
+    // Etat d'integration : la traduction de `evacuate` dans gateway/src/modules/acces-commun/actuator.ts n'est pas encore faite.
+    // Cet essai constate et documente le comportement actuel ; il changera avec le lot d'integration (la porte s'ouvrira alors).
+    const D_OLD = 'ACC-S2B-OLD';
+    const D_DECL = 'ACC-S2B-DECL';
+    const D_NONE = 'ACC-S2B-NONE';
+    const A_OLD = 'LK-S2B-OLD';
+    const A_DECL = 'LK-S2B-DECL';
+    const A_NONE = 'LK-S2B-NONE';
+    const c = await buildChain({
+      tag: 's2b',
+      doors: [
+        { id: D_OLD, no: 1, name: 'Porte ancienne' },
+        { id: D_DECL, no: 2, name: 'Porte evacuate declaree' },
+        { id: D_NONE, no: 3, name: 'Porte evacuate non declaree' },
+      ],
+      actuators: [
+        // Actionneur d'une base ancienne : actions explicites sans `evacuate`.
+        { id: A_OLD, doorNo: 1, maxS: 30, link: D_OLD },
+        // Actionneurs neufs : actions par defaut du PSIM (avec `evacuate`) ; la passerelle declare ou non l'action dans sa liste locale.
+        { id: A_DECL, doorNo: 2, maxS: 10, link: D_DECL, psimDefaultActions: true, gatewayEvacuate: true },
+        { id: A_NONE, doorNo: 3, maxS: 10, link: D_NONE, psimDefaultActions: true },
+      ],
+    });
+
+    // Apercu : le repli est annonce pour l'ancien, rien pour les neufs.
+    const preview = await api('GET', '/api/access/evacuation', admin);
+    assert.equal(preview.status, 200, preview.text);
+    const pv = Object.fromEntries((preview.body.doors as any[]).map((d) => [d.doorId, d]));
+    assert.equal(pv[D_OLD].action, 'unlock');
+    assert.equal(pv[D_OLD].maxDurationS, 30);
+    assert.equal(pv[D_OLD].warning, "ne s'ouvrira que 30 s : ajoutez l'action évacuation");
+    for (const id of [D_DECL, D_NONE]) {
+      assert.equal(pv[id].action, 'evacuate', id);
+      assert.equal(pv[id].maxDurationS, 900, id);
+      assert.equal(pv[id].warning, null, id);
+      assert.equal(pv[id].ready, true, id);
+    }
+
+    const watch = watchCommands(c.fake);
+    const res = await api('POST', '/api/access/evacuation', admin, { reason: 'Exercice evacuation', password: ADMIN_PW, confirm: true, confirmPhrase: 'TOUT OUVRIR', durationS: 20 });
+    assert.equal(res.status, 200, res.text);
+    const by = Object.fromEntries((res.body.results as any[]).map((r) => [r.doorId, r]));
+    // Le PSIM de l'essai est partage : les portes liees par les scenarios precedents (passerelle arretee) sont rapportees sans passerelle.
+    const sentDoors = (res.body.results as any[]).filter((r) => r.status === 'sent').map((r) => r.doorId).sort();
+    assert.deepEqual(sentDoors, [D_DECL, D_NONE, D_OLD].sort(), "le PSIM a envoye les trois ordres : le refus ne vient qu'apres, avec l'accuse");
+    for (const r of res.body.results as any[]) if (!sentDoors.includes(r.doorId)) assert.equal(r.status, 'no_gateway', `${r.doorId} : aucune passerelle a l'ecoute`);
+    assert.deepEqual([by[D_OLD].action, by[D_OLD].durationS], ['unlock', 20]);
+    assert.equal(by[D_OLD].warning, "ne s'ouvrira que 30 s : ajoutez l'action évacuation");
+    for (const id of [D_DECL, D_NONE]) {
+      assert.deepEqual([by[id].status, by[id].action, by[id].durationS, by[id].warning], ['sent', 'evacuate', 20, null], id);
+    }
+
+    // 1. Repli : unlock accuse, openDoor REELLEMENT recu par le faux controleur sur le canal 1.
+    const acked = await until('ouverture de repli accusee', async () => {
+      const v = (await commandsOf(A_OLD)).find((x) => x.cmdId === by[D_OLD].cmdId);
+      return v?.state === 'acked' ? v : null;
+    });
+    assert.equal(acked.action, 'unlock');
+    assert.equal(acked.ackKind, 'signed');
+    await until('openDoor recu sur la porte 1', () => watch.seen.some((s) => s.action === 'openDoor'));
+
+    // 2. evacuate : le pilote ou le module refuse. Le PSIM l'affiche « refused » (accuse signe), l'ordre n'a rien ouvert.
+    const refusal = async (actuatorId: string, doorId: string) =>
+      until(`commande evacuate de ${actuatorId} refusee`, async () => {
+        const v = (await commandsOf(actuatorId)).find((x) => x.cmdId === by[doorId].cmdId);
+        return v && v.state !== 'sent' && v.state !== 'pending' ? v : null;
+      });
+    const declared = await refusal(A_DECL, D_DECL);
+    const undeclared = await refusal(A_NONE, D_NONE);
+    assert.equal(declared.action, 'evacuate');
+    assert.equal(declared.state, 'refused', JSON.stringify(declared));
+    assert.equal(declared.ackKind, 'signed', 'refus SIGNE par la passerelle, verifie par le PSIM');
+    assert.match(declared.ack, /not_supported/, 'declaree dans la passerelle : le module du controleur ne sait pas la traduire (comportement actuel)');
+    assert.equal(undeclared.state, 'refused', JSON.stringify(undeclared));
+    assert.equal(undeclared.ackKind, 'signed');
+    assert.match(undeclared.ack, /not_allowed/, 'absente de la liste locale de la passerelle');
+
+    // Aucune ouverture pour les deux portes refusees : ni cote controleur, ni cote PSIM (jamais de faux « ouvert »).
+    await wait(500);
+    watch.stop();
+    assert.deepEqual(watch.seen.map((s) => `${s.action}:${s.channel}`), ['openDoor:1'], 'le controleur n\'a recu qu\'une ouverture, celle de la porte ancienne');
+    assert.equal(c.fake.doorStates[0], 'Open');
+    assert.notEqual(c.fake.doorStates[1], 'Open');
+    assert.notEqual(c.fake.doorStates[2], 'Open');
+    for (const id of [D_DECL, D_NONE]) {
+      const sheet = await doorOf(id);
+      assert.notEqual(sheet.door.doorState, 'open', `${id} : la fiche ne dit pas « ouverte »`);
+    }
+    // Le refus est au journal infalsifiable ; la chaine reste integre.
+    const log = await auditLog();
+    for (const id of [A_DECL, A_NONE]) assert.ok(log.some((e) => e.action === 'commande_refusee' && e.deviceId === id), `${id} : commande_refusee au journal`);
+    assert.ok(log.some((e) => e.action === 'access_evacuation'));
+    const bilan = log.find((e) => e.action === 'access_evacuation_bilan');
+    assert.ok(bilan, 'bilan');
+    assert.match(bilan.details, /ouverture breve faute d'action evacuation : ACC-S2B-OLD/);
+    assert.equal((await api('POST', '/api/system/journal/verify', admin)).body.ok, true);
   });
 
   // ------------------------------------------------------------------------------------------------------------------------

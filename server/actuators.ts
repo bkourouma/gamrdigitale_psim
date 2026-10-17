@@ -48,6 +48,8 @@ interface ActionSpec {
   unboundable?: boolean;
   /** Identifiant de message preenregistre exige (haut-parleur). */
   clip?: boolean;
+  /** Reservee a l'administrateur : `roles` ne peut jamais contenir `operator` (evacuation « Tout ouvrir »). */
+  adminOnly?: boolean;
 }
 
 /** Catalogue : actions possibles par type, plafonds de duree, action sure, sensibilite (raison + mot de passe). */
@@ -59,11 +61,23 @@ export const CATALOG: Record<ActuatorType, { actions: Record<string, ActionSpec>
     safe: 'off',
     sensitive: false,
   },
-  lock: { actions: { unlock: { timed: true, ceilingS: 3600, defaultMaxS: 10, unboundable: true }, lock: { timed: false } }, safe: 'lock', sensitive: true },
+  // `evacuate` (docs/ACCES.md § 11.5) : ouverture longue de « Tout ouvrir », 15 minutes par defaut, administrateur seulement ; comme
+  // `unlock`, le retour a `lock` est automatique (jamais pour une issue de secours : pas d'action sure, le PSIM n'envoie jamais `lock`).
+  lock: {
+    actions: { unlock: { timed: true, ceilingS: 3600, defaultMaxS: 10, unboundable: true }, evacuate: { timed: true, ceilingS: 3600, defaultMaxS: 900, adminOnly: true }, lock: { timed: false } },
+    safe: 'lock',
+    sensitive: true,
+  },
   // Pas de retour automatique : fermer d'office une barriere sur un vehicule ou une personne est plus dangereux (docs, 4.8).
   // `stop` est tout de meme l'action sure (immediate, sans raison ni mot de passe, limite de debit a part) : arreter une
   // barriere en mouvement ne doit jamais etre plus difficile que la declencher.
-  gate: { actions: { open: { timed: true, ceilingS: 10, defaultMaxS: 10 }, close: { timed: true, ceilingS: 10, defaultMaxS: 10 }, stop: { timed: false } }, safe: 'stop', sensitive: true, noAutoReturn: true },
+  // `evacuate` = ouvrir et laisser ouvert (instantane, sans duree, jamais de fermeture envoyee par le PSIM), administrateur seulement.
+  gate: {
+    actions: { open: { timed: true, ceilingS: 10, defaultMaxS: 10 }, close: { timed: true, ceilingS: 10, defaultMaxS: 10 }, evacuate: { timed: false, adminOnly: true }, stop: { timed: false } },
+    safe: 'stop',
+    sensitive: true,
+    noAutoReturn: true,
+  },
   speaker: { actions: { play: { timed: true, ceilingS: 300, defaultMaxS: 60, clip: true }, stop: { timed: false } }, safe: 'stop', sensitive: false },
 };
 const TYPES = Object.keys(CATALOG) as ActuatorType[];
@@ -313,6 +327,8 @@ export function createActuators(deps: ActuatorsDeps) {
     const safe = safeOf(r);
     // L'action sure est toujours disponible, a tous les roles (meme si la base dit autre chose).
     if (safe) actions[safe] = { ...(Object.hasOwn(actions, safe) ? actions[safe] : {}), roles: [...ROLES] };
+    // Actions reservees a l'administrateur (evacuate) : rôles recalcules, jamais lus tels quels dans la base (une base modifiee a la main n'ouvre rien a un operateur).
+    for (const [name, cfg] of Object.entries(actions)) if (specOf(type, name)?.adminOnly) actions[name] = { ...cfg, roles: ['admin'] };
     return {
       id: r.id as string,
       name: r.name as string,
@@ -411,8 +427,9 @@ export function createActuators(deps: ActuatorsDeps) {
       if (emergencyExit && action === 'lock') throw new PsimError(400, 'Issue de secours : le PSIM ne doit jamais pouvoir la verrouiller (action lock interdite)');
       const cfg = (raw ?? {}) as Record<string, unknown>;
       if (typeof cfg !== 'object' || Array.isArray(cfg)) throw new PsimError(400, `actions.${action} : objet attendu`);
-      const roles = cfg.roles === undefined ? [...ROLES] : cfg.roles;
+      const roles = cfg.roles === undefined ? (spec.adminOnly ? ['admin'] : [...ROLES]) : cfg.roles;
       if (!Array.isArray(roles) || roles.length === 0 || roles.some((r) => !ROLES.includes(r as Role))) throw new PsimError(400, `actions.${action}.roles : operator et / ou admin`);
+      if (spec.adminOnly && roles.some((r) => r !== 'admin')) throw new PsimError(400, `actions.${action}.roles : action reservee a l'administrateur (admin seulement)`);
       const entry: ActionConfig = { roles: [...new Set(roles as Role[])] };
       if (spec.timed) {
         const ceiling = spec.ceilingS!;
