@@ -184,7 +184,8 @@ describe('commandes des equipements (processus reel)', { timeout: 180_000 }, () 
     assert.equal((await command(admin, 'SIR-01', { action: 'on', params: { durationS: 24 }, confirm: true })).status, 409, 'verrou : aucune mise en marche');
     assert.equal((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status, 201, 'verrou : l action sure manuelle reste possible (arreter ne doit jamais etre impossible)');
     assert.equal((await api('PUT', '/api/actuator-lock', admin, { locked: false, reauth: ADMIN_PW })).status, 200);
-    assert.equal((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status, 201);
+    // 200 si le « off » envoye sous verrou est encore en vol (dedoublonne), 201 s'il est deja termine.
+    assert.ok([200, 201].includes((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status));
   });
 
   it('redemarrage brutal : la commande en vol expire, rien n est renvoye', async () => {
