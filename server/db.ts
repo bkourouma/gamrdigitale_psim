@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { migrateFloors } from './floors.ts';
 import { migrateEvidence } from './evidence.ts';
+import { migrateActuators } from './actuators.ts';
 
 const SCHEMA = `
 -- plan_file / plan_version : ancien plan unique, repris par le premier etage a la migration (voir floors.ts), plus utilises ensuite.
@@ -398,5 +399,6 @@ export function openDb(path: string): DatabaseSync {
   migrateAgentRole(db); // APRES migrate : role `agent` accepte par app_user (table recreee, sessions et codes de secours conserves)
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
   migrateEvidence(db); // images d'incident : origine et empreinte scellee ; images en attente ; cles d'equipement
+  migrateActuators(db); // commandes des equipements : tables nouvelles seulement (voir actuators.ts)
   return db;
 }

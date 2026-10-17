@@ -168,7 +168,7 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
     admin = (await login('admin', ADMIN_PW)).cookie!;
     operator = (await login('operateur', OPERATOR_PW)).cookie!;
     // Session « restreinte » : un compte cree par l'administrateur doit changer son mot de passe avant tout.
-    const created = await http(port, 'POST', '/api/users', { cookie: admin, json: { username: 'restreint', role: 'admin', password: 'Hippopotame-bleu-42-lune' } });
+    const created = await http(port, 'POST', '/api/users', { cookie: admin, json: { username: 'restreint', role: 'admin', password: 'Hippopotame-bleu-42-lune', reauth: ADMIN_PW } });
     assert.equal(created.status, 201);
     restricted = (await login('restreint', 'Hippopotame-bleu-42-lune')).cookie!;
     // Application des agents : un agent, un telephone appaire et une session d'agent pour les routes /api/agent/*.

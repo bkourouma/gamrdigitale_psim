@@ -180,23 +180,6 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
     });
   });
 
-  describe('verrouillage de compte', () => {
-    it("cinq mauvais mots de passe venus d'AILLEURS ne bloquent pas l'administrateur depuis son adresse habituelle", async () => {
-      for (let i = 1; i <= 5; i++) assert.equal((await login('admin', 'mauvais-mot-de-passe', `10.9.0.${i}`)).status, 401);
-      const attacker = await login('admin', ADMIN_PW, '10.9.0.99');
-      assert.equal(attacker.status, 429, "une adresse inconnue reste verrouillee, meme avec le bon mot de passe");
-      const home = await login('admin', ADMIN_PW, '10.0.0.1');
-      assert.equal(home.status, 200, "l'adresse deja connue du compte passe");
-      const entries = await audit();
-      assert.equal(entries.filter((e) => e.action === 'login_locked').length, 1, 'le verrouillage est journalise, une seule fois par minute');
-      assert.match(entries.find((e) => e.action === 'login_locked')!.details ?? '', /compte admin/);
-    });
-
-    it("l'adresse seule est aussi limitee (cinq echecs par minute), et ne contourne rien en changeant de compte", async () => {
-      for (let i = 0; i < 5; i++) await login(`inconnu${i}`, 'x', '10.8.0.1');
-      assert.equal((await login('operateur', OPERATOR_PW, '10.8.0.1')).status, 429);
-    });
-  });
 
   describe('double authentification', () => {
     let secret: Buffer = Buffer.alloc(0);
@@ -241,7 +224,7 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
       assert.equal((await backup({ Origin: 'null' })).status, 403);
       assert.equal((await backup({ 'Sec-Fetch-Site': 'cross-site' })).status, 403);
       assert.equal((await backup({ 'Sec-Fetch-Site': 'same-site' })).status, 403, 'un site « frere » n est pas la meme origine');
-      assert.equal((await http(srv.port, 'DELETE', '/api/users/operateur', { cookie: admin, headers: { Origin: 'http://127.0.0.1:1' } })).status, 403);
+      assert.equal((await http(srv.port, 'DELETE', '/api/users/operateur', { cookie: admin, body: { reauth: ADMIN_PW }, headers: { Origin: 'http://127.0.0.1:1' } })).status, 403);
       assert.equal((await http(srv.port, 'GET', '/api/me', { cookie: admin })).body.username, 'admin', "rien n'a ete supprime");
     });
 
@@ -285,22 +268,23 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
     it("un mot de passe tape dans le champ identifiant n'est jamais inscrit au journal (seuls les comptes existants sont nommes)", async () => {
       const typed = 'Mon-MotDePasse-Perso-42';
       assert.equal((await login(typed, 'x', '10.5.0.1')).status, 401);
-      assert.equal((await login('admin', 'mauvais', '10.0.0.1')).status, 401);
+      // Compte « operateur » et non « admin » : les echecs sur « admin » comptent aussi pour sa re-authentification (compteur partage).
+      assert.equal((await login('operateur', 'mauvais', '10.0.0.2')).status, 401);
       const text = JSON.stringify((await http(srv.port, 'GET', '/api/audit?limit=300', { cookie: operator })).body).toLowerCase();
       assert.ok(!text.includes(typed.toLowerCase()), 'le texte saisi ne figure nulle part');
       const failed = (await audit()).filter((e) => e.action === 'login_failed');
       assert.ok(failed.some((e) => e.actor === '?'), 'inconnu : « ? »');
-      assert.ok(failed.some((e) => e.actor === 'admin'), 'un compte existant reste nomme');
+      assert.ok(failed.some((e) => e.actor === 'operateur'), 'un compte existant reste nomme');
     });
   });
 
   describe('mots de passe', () => {
     it("refuse les mots de passe courants, repetes ou uniquement numeriques a la creation d'un compte", async () => {
       for (const password of ['passwordpassword', '123456789012', 'azertyazertyazerty', 'aaaaaaaaaaaa']) {
-        const r = await http(srv.port, 'POST', '/api/users', { cookie: admin, body: { username: 'nouveau', role: 'operator', password } });
+        const r = await http(srv.port, 'POST', '/api/users', { cookie: admin, body: { username: 'nouveau', role: 'operator', password, reauth: ADMIN_PW } });
         assert.equal(r.status, 400, password);
       }
-      const ok = await http(srv.port, 'POST', '/api/users', { cookie: admin, body: { username: 'nouveau', role: 'operator', password: 'Hippopotame-bleu-42-lune' } });
+      const ok = await http(srv.port, 'POST', '/api/users', { cookie: admin, body: { username: 'nouveau', role: 'operator', password: 'Hippopotame-bleu-42-lune', reauth: ADMIN_PW } });
       assert.equal(ok.status, 201);
     });
   });
@@ -320,7 +304,7 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
       ws.on('close', (code) => (closeCode = code));
       await new Promise<void>((r, j) => (ws.on('open', () => r()), ws.on('error', j)));
       await until(() => received.length >= 1); // l'etat initial
-      const disabled = await http(srv.port, 'PATCH', '/api/users/nouveau', { cookie: admin, body: { active: false } });
+      const disabled = await http(srv.port, 'PATCH', '/api/users/nouveau', { cookie: admin, body: { active: false, reauth: ADMIN_PW } });
       assert.equal(disabled.status, 200);
       await until(() => closeCode !== 0);
       assert.equal(closeCode, 4401, 'fermee par le serveur : session terminee');
@@ -340,6 +324,26 @@ describe('securite (processus reel)', { timeout: 180_000 }, () => {
       assert.equal((await http(srv.port, 'POST', '/api/logout', { cookie: o.cookie })).status, 200);
       await until(() => closeCode !== 0, 3000);
       assert.equal(closeCode, 4401);
+    });
+  });
+
+  // En dernier : cinq echecs de connexion sur « admin » verrouillent aussi, une minute, la re-authentification de ce compte
+  // (compteur partage) ; les tests qui creent ou modifient des comptes avec le mot de passe admin doivent passer avant.
+  describe('verrouillage de compte', () => {
+    it("cinq mauvais mots de passe venus d'AILLEURS ne bloquent pas l'administrateur depuis son adresse habituelle", async () => {
+      for (let i = 1; i <= 5; i++) assert.equal((await login('admin', 'mauvais-mot-de-passe', `10.9.0.${i}`)).status, 401);
+      const attacker = await login('admin', ADMIN_PW, '10.9.0.99');
+      assert.equal(attacker.status, 429, "une adresse inconnue reste verrouillee, meme avec le bon mot de passe");
+      const home = await login('admin', ADMIN_PW, '10.0.0.1');
+      assert.equal(home.status, 200, "l'adresse deja connue du compte passe");
+      const entries = await audit();
+      assert.equal(entries.filter((e) => e.action === 'login_locked' && /compte admin/.test(e.details ?? '')).length, 1, 'le verrouillage est journalise, une seule fois par minute');
+      assert.match(entries.find((e) => e.action === 'login_locked')!.details ?? '', /compte admin/);
+    });
+
+    it("l'adresse seule est aussi limitee (cinq echecs par minute), et ne contourne rien en changeant de compte", async () => {
+      for (let i = 0; i < 5; i++) await login(`inconnu${i}`, 'x', '10.8.0.1');
+      assert.equal((await login('operateur', OPERATOR_PW, '10.8.0.1')).status, 429);
     });
   });
 });

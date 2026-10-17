@@ -179,6 +179,7 @@ function fakeCtx() {
       throw new Error('non utilise');
     },
     log: (level, text) => void logs.push({ level, text }),
+    onActuator: () => undefined,
     config: {},
     now: () => Date.now(),
   };

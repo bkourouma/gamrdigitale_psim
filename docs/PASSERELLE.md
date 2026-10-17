@@ -119,6 +119,7 @@ Exemple (`gateway\config.example.json`) :
 | `moduleRetry` | Idem pour un module qui n'arrive pas à démarrer. |
 | `log` | `file` : journal dans `<dataDir>\logs\gateway.log` (rotation automatique, 5 Mo × 4) ; `level` : `info`, `warn` ou `error`. |
 | `modules` | Les modules à lancer : `name` (le module), `config` (ses réglages, voir sa page), et au besoin `label` (pour lancer deux fois le même module avec des réglages différents) et `enabled: false` (désactivé sans effacer ses réglages). |
+| `actuators` | Facultatif : les actionneurs (gâches, barrières, relais…) que le PSIM peut commander, avec leur clé de signature, les actions permises et leurs plafonds locaux. Voir la section 8. |
 
 Les chemins relatifs sont relatifs au **dossier du fichier de configuration**. Toute clé inconnue est une erreur (une faute de frappe ne passe pas inaperçue) ; toutes les erreurs sont listées d'un coup.
 
@@ -222,6 +223,7 @@ Le journal est dans `<dataDir>\logs\gateway.log` (par défaut `gateway\data\logs
 | `[module] echec du demarrage (...) ; nouvel essai dans ...` | Le module n'arrive pas à joindre son équipement ou son broker (Zigbee2MQTT, ChirpStack...) | Les autres modules continuent. Corriger la cause (adresse, identifiants, câble) : le module redémarre seul au prochain essai. |
 | `Une autre passerelle utilise deja ce dossier de donnees` | Deux passerelles lancées sur la même configuration (par exemple `npm run gateway` alors que la tâche planifiée tourne) | Arrêter l'une des deux (`-Action Stop`). |
 | `ligne(s) illisible(s) ignoree(s)` | Coupure de courant pendant une écriture | Sans gravité : seule la ligne interrompue est perdue (elle n'avait pas encore été acceptée). |
+| `actionneur X non autorise pour ce compte`, `ordre ... REFUSE`, `accuse ... PERDU`, `retour au repos ... ECHOUE` | Commandes d'actionneurs (section `actuators`) | Voir la section 8.5. |
 
 **Remettre la file à zéro** (uniquement si l'on sait que les messages en attente sont sans intérêt, par exemple après des essais) : arrêter la passerelle, supprimer `<dataDir>\queue.jsonl`, relancer.
 
@@ -234,6 +236,8 @@ Le contrat entre le socle et les modules est dans `gateway/src/module.ts` (à ne
 **Événements** : un module n'émet que des événements connus du PSIM (`EVENTS` de `server/sources.ts`) ; le socle en lit directement la liste (`gateway/src/validate.ts`), et l'essai `gateway/test/contract.test.ts` échoue si une table de traduction (ou un littéral `event: '…'` du code d'un module, ou des capteurs Tuya) cite un événement inconnu du PSIM.
 
 **`msgId`** : le PSIM n'accepte que 1 à 64 caractères parmi lettres, chiffres, `.`, `_`, `:` et `-`. Un module qui fabrique ses propres `msgId` (pour l'anti-doublon après un renvoi) utilise `makeMsgId(...morceaux)` de `gateway/src/msgid.ts` : accents et caractères interdits nettoyés, longueur bornée par une empreinte courte de l'original, résultat **déterministe** (même message, même `msgId`). Par sécurité, le socle nettoie de la même façon un `msgId` hors format (avec un avertissement dans le journal) au lieu de rejeter le message. Un `msgId` doit rester unique dans le temps : y mettre l'heure de l'événement, pas seulement un compteur qui peut repartir de zéro (compteur LoRaWAN après un nouveau `join`, séquence SIA…), sinon le PSIM prendrait le nouveau message pour un doublon pendant 7 jours.
+
+**Commander un équipement** : un module qui agit sur un équipement (gâche, barrière, relais) enregistre un gestionnaire par actionneur avec `ctx.onActuator(actuatorId, async (req) => ({ result: 'done' | 'refused' | 'error', code? }))` ; l'actionneur doit être déclaré dans la section `actuators` de la configuration, pour ce module. Le socle fait la vérification des ordres, les plafonds, le retour au repos et l'accusé ; le module exécute seulement l'action. Voir la section 8.4.
 
 Essais : `npm test` (les essais de la passerelle sont dans `gateway/test/`, contre le vrai broker du PSIM) ; `npm run typecheck` (couvre `gateway/`).
 
@@ -248,3 +252,124 @@ Un équipement qui parle HTTP (caméra 4G, boîtier) et non MQTT n'utilise pas d
 - La liste montre aussi les équipements couverts, la date de création, la **dernière utilisation** et l'état (*Active*, *En rotation*, *Révoquée*).
 
 Même chose en ligne de commande (`npm run device-key`) et en API : voir le README, « Clés par équipement ».
+
+## 8. Actionneurs : exécuter les ordres du PSIM (section `actuators`)
+
+Jusqu'ici la passerelle ne fait que **remonter** des états. Avec la section `actuators`, elle devient aussi le **dernier maillon d'une commande** : le PSIM envoie un ordre signé (« ouvrir cette gâche 5 secondes »), la passerelle le vérifie, le fait exécuter par un module (qui parle à l'équipement : contrôleur d'accès, relais…) et renvoie un accusé signé. Le protocole complet est dans [docs/COMMANDES.md](COMMANDES.md), section 5 ; le contrat avec les modules dans [docs/CONTROLE-ACCES.md](CONTROLE-ACCES.md), section 3.
+
+Une faute ici n'est plus une fausse alarme : c'est une porte ouverte. Chaque règle ci-dessous est donc pensée contre un attaquant (broker compromis, PSIM compromis, rejeu, horloge truquée) et la passerelle **garde ses propres plafonds**, même si le PSIM lui demande davantage.
+
+### 8.1 Mise en place
+
+1. **Dans le PSIM** (Administration → Actionneurs) : créer l'actionneur (identifiant `GACHE-1`, type `lock`, transport MQTT). Sa **clé de signature** (64 caractères hexadécimaux) n'est affichée **qu'une seule fois** : la copier tout de suite.
+2. **Autoriser le compte de la passerelle** dans `PSIM_MQTT_GATEWAYS` (liste `actuators`, identifiants exacts ou préfixes `GACHE-*`, jamais `*` seul) puis redémarrer le PSIM :
+   ```
+   PSIM_MQTT_GATEWAYS=[{"user":"gw1","password":"un-mot-de-passe-long-et-unique","detectors":["GW-01"],"actuators":["GACHE-1"]}]
+   ```
+   Un compte limité aux actionneurs peut omettre `detectors`. **Une seule passerelle par actionneur** : deux passerelles abonnées au même actionneur exécuteraient l'ordre deux fois.
+3. **Sur la passerelle** : écrire la clé dans un fichier **sur une seule ligne** (`gateway\secrets\gache-1.key`, même protection que le mot de passe, voir l'étape 2 de la section 2) et déclarer l'actionneur dans `config.json` :
+   ```json
+   "actuators": [
+     {
+       "id": "GACHE-1",
+       "keyFile": "secrets/gache-1.key",
+       "module": "dahua-acces",
+       "actions": { "unlock": { "maxS": 10 }, "lock": {} },
+       "rest": "lock",
+       "emergencyExit": false
+     },
+     {
+       "id": "PORTAIL-1",
+       "keyFile": "secrets/portail-1.key",
+       "module": "dahua-acces",
+       "actions": { "open": { "maxS": 10 }, "close": { "maxS": 10 }, "stop": {} }
+     }
+   ]
+   ```
+   (Cet exemple n'est **pas** dans `gateway\config.example.json` : il vise un module d'accès, `dahua-acces`, qui n'existe pas dans la configuration d'exemple ; l'exemple reste ainsi valide tel quel pour `npm run gateway:check-config`.)
+4. `npm run gateway:check-config` liste chaque actionneur (module, actions, plafonds, source de la clé — jamais la clé). Puis `npm run gateway`. Au démarrage et à **chaque reconnexion**, la passerelle s'abonne à `psim/actuators/<id>/command` pour chaque actionneur, **un abonnement par actionneur** (QoS 0, jamais de joker).
+
+| Clé (par actionneur) | Rôle |
+|---|---|
+| `id` | Identifiant PSIM de l'actionneur : 1 à 32 caractères (lettres, chiffres, `_`, `-`), unique. |
+| `keyFile` | Fichier contenant la clé (64 hexadécimaux, une ligne), chemin relatif au fichier de configuration. **Recommandé.** Autres possibilités, une seule à la fois : `keyEnv` (nom d'une variable d'environnement) ou `key` (en clair dans la configuration). Chaque actionneur a **sa** clé : deux actionneurs avec la même clé sont refusés. La clé n'apparaît jamais dans les journaux ni dans les erreurs. |
+| `module` | **Étiquette** (`label`, ou nom par défaut) du module de `modules` qui exécute les ordres. Un module désactivé (`enabled: false`) reste valable : ses actionneurs répondent alors « indisponible ». |
+| `actions` | Les actions **permises**, avec leur plafond : `{ "unlock": { "maxS": 10 }, "lock": {} }`. Noms : 1 à 16 minuscules ou `_`. `maxS` : durée maximale (1 à 86 400 s). Sans `maxS` l'action est **instantanée**. `unbounded: true` (avec `maxS`) autorise aussi un ordre **sans durée** (à réserver aux sirènes ou projecteurs que l'on coupe par un ordre contraire). |
+| `rest` | L'action de **repos**, appelée par la passerelle au bout de `durationS` (par exemple `lock`, `off`). Doit figurer dans `actions`, sans `maxS`. **Absent = aucun retour automatique** : c'est le cas voulu pour un portail ou une barrière (fermer automatiquement sur une personne est plus dangereux que de laisser ouvert ; voir COMMANDES.md 4.8). |
+| `emergencyExit` | `true` pour une **issue de secours** : l'action `lock` est interdite, dans la configuration (erreur si `actions.lock` existe ou si `rest` vaut `lock`) **et** à l'exécution (tout ordre `lock` est refusé `emergency_exit`, même si la configuration est modifiée en mémoire). |
+
+Les plafonds locaux appliqués à **chaque** ordre : un ordre dont `durationS` dépasse `maxS` est refusé ; une action qui a un `maxS` refuse un ordre **sans** durée (sauf `unbounded`) ; une action **instantanée** refuse un ordre **avec** durée ; une action absente de la liste est refusée. Un PSIM compromis ne peut donc pas tenir une gâche ouverte une heure.
+
+### 8.2 Ce que la passerelle vérifie, dans cet ordre
+
+| # | Règle | Si elle échoue |
+|---|---|---|
+| 1 | Message ≤ 1 024 octets, JSON, chaque champ au bon format (`v`, `cmdId`, `action`, `params` limités à `durationS` et `clip`, `ts`, `ttlS`, `sig`) | **Ignoré**, sans accusé |
+| 2 | Signature HMAC-SHA256 recalculée avec la clé de l'actionneur, comparaison en temps constant ; l'identifiant utilisé est celui du **topic**, jamais celui du message | **Ignoré, sans accusé** (aucune réponse à exploiter pour deviner la clé) ; compté, une ligne de journal par minute au plus |
+| 4 (d'abord) | `cmdId` déjà vu dans les 120 dernières secondes | Rien n'est exécuté, **ni accusé** (journalisé) |
+| 3 | Fraîcheur : `ts − 5 s ≤ maintenant ≤ ts + ttlS` | Accusé `refused`, code `stale` |
+| 4 | `ts` plus ancien que le dernier ordre accepté pour cet actionneur (un ordre retardé par un broker malveillant) | Accusé `refused`, code `out_of_order` |
+| 5 | Issue de secours, action permise, plafonds de durée | Accusé `refused`, code `emergency_exit` ou `not_allowed` |
+| 5 | Un module a enregistré l'actionneur | Sinon accusé `refused`, code `unavailable` |
+| 6 | Exécution par le module (4 s au plus) | Accusé `done`, `refused` ou `error` selon la réponse du module (`error`/`timeout` ou `error`/`exception` s'il ne répond pas ou plante) |
+
+L'ordre est **toujours exécuté une seule fois** : la passerelle ne réessaie jamais un ordre, et un ordre signé et frais est mémorisé (même refusé). Cette mémoire **survit à un redémarrage** de la passerelle : fichier `<dataDir>\actuators-state.json`, écrit de façon atomique, qui ne contient **aucun secret** (ni clé, ni signature : seulement les `cmdId` récents, le dernier `ts` accepté et d'éventuels retours au repos en attente). Fichier illisible ou corrompu : la passerelle repart avec une mémoire vide et le dit dans le journal.
+
+Les ordres d'un même actionneur sont exécutés **un par un**, dans l'ordre d'arrivée ; un ordre qui a attendu son tour derrière un module lent et devient périmé n'est pas exécuté (refusé `stale`). Au plus 8 ordres attendent : au-delà, refus `busy`.
+
+Les **accusés** sont signés (`psim-ack-v1`) et publiés immédiatement (QoS 1). Si la liaison avec le PSIM est coupée, l'accusé est **perdu et journalisé** (« accusé … PERDU ») : il n'est **jamais mis en file** ni renvoyé après la reprise — un accusé en retard n'aurait aucune valeur (le PSIM affiche alors la commande « sans accusé »). Un ordre n'est jamais mis en file non plus (QoS 0, jamais conservé).
+
+### 8.3 Retour au repos, quoi qu'il arrive
+
+Pour un ordre avec `durationS` dont l'action n'est pas l'action de repos, la passerelle **revient localement au repos** au bout de `durationS` : elle appelle le gestionnaire du module avec l'action `rest` (`cmdId` = `<cmdId de l'ordre>:rest`, sans durée). Ceci ne dépend de rien : liaison avec le PSIM perdue, PSIM arrêté, accusé non remis, module en erreur ou qui n'a pas répondu (l'état de l'équipement est alors inconnu, le repos est donc programmé quand même). Seul un module qui répond `refused` (rien n'a été fait) n'arme pas de minuteur.
+
+- **Un nouvel ordre accepté remplace le minuteur** en cours de cet actionneur ; un ordre refusé par la passerelle (ou par le module) ne l'annule pas. L'ordre de repos lui-même (`lock`) annule le minuteur.
+- **Échec du repos** : nouvel essai toutes les 5 s, 20 au plus, avec une ligne d'erreur à chaque échec ; au bout des essais, une erreur « ABANDONNE : vérifier l'équipement sur place » est journalisée. Si le module est arrêté ou en redémarrage, le repos est retenté et part **dès que le module réenregistre son gestionnaire**.
+- **Arrêt de la passerelle** (`Stop`, `Restart`, Ctrl+C) : pour chaque actionneur dont un retour au repos est programmé, la passerelle appelle le repos **une fois, au mieux, avant d'arrêter les modules**. Si cela échoue (ou si le module est absent), le retour reste dans `actuators-state.json` et sera **repris immédiatement au prochain démarrage**. Un arrêt brutal (courant coupé) ne peut pas faire cet appel : le module doit donc, quand l'équipement le permet, **programmer aussi la durée dans l'équipement** (par exemple « ouvrir 5 s » côté contrôleur).
+- Sans `durationS` (action `unbounded`) : l'équipement est tenu **jusqu'à l'ordre contraire** ; c'est journalisé.
+
+### 8.4 Ce que le module doit faire
+
+Dans `start(ctx)`, pour chaque actionneur dont il a la charge :
+
+```ts
+ctx.onActuator('GACHE-1', async (req) => {
+  // req : { actuatorId, cmdId, action, durationS?, clip? } — déjà vérifié (signature, fraîcheur, plafonds)
+  try {
+    await controleur.ouvrirPorte(numeroDePorte, req.durationS ?? 0);
+    return { result: 'done' };
+  } catch (err) {
+    return { result: 'error', code: 'io' };
+  }
+});
+```
+
+- **Quand le module n'a pas pu agir** parce qu'il refuse l'action (porte inconnue, contrôleur en maintenance) : `{ result: 'refused', code: 'door_busy' }`. Le socle n'arme alors **pas** de retour au repos (rien n'a été fait).
+- **Quand l'exécution a échoué ou qu'on ne sait pas** : `{ result: 'error', code: 'io' }`. Le socle programme quand même le repos.
+- Le `code` est facultatif : `^[a-z0-9_]{1,32}$`, sinon la passerelle le remplace par `other`. Une exception ou une promesse rejetée est traitée comme `error` / `exception`.
+- **Répondre vite** : le socle attend 4 s au plus (après quoi l'ordre est accusé `error` / `timeout` et la réponse tardive ignorée). Si le matériel est lent, répondre dès que l'ordre est accepté par l'équipement.
+- **Idempotence** : le gestionnaire sera aussi appelé pour le repos (`<cmdId>:rest`), éventuellement plusieurs fois (réessais, reprise après redémarrage). Appeler `lock` sur une porte déjà verrouillée doit être sans effet.
+- Une erreur de `onActuator` **fait échouer le démarrage du module** (journal, nouvel essai, comme toute erreur de démarrage) : actionneur non déclaré dans `actuators`, déclaré pour **un autre** module, ou déjà enregistré. Les gestionnaires d'une instance sont **retirés quand elle s'arrête** : pendant un redémarrage du module, les ordres reçoivent `refused` / `unavailable`.
+
+### 8.5 Statut et dépannage
+
+`status.json` (et `-Action Status`) compte les ordres : `actuators` = `{ configured, executed, refused, failed, ignored, replayed, acksLost, pendingRests }`.
+
+| Symptôme (journal) | Cause probable | Que faire |
+|---|---|---|
+| `actionneur X non autorise pour ce compte : voir PSIM_MQTT_GATEWAYS, liste actuators` | Le compte de la passerelle n'a pas `X` dans `actuators` côté PSIM (ou le PSIM n'a pas été redémarré) | Ajouter `X` (identifiant exact ou préfixe) à la liste `actuators` du compte, redémarrer le PSIM, redémarrer la passerelle. Les autres actionneurs et les détecteurs fonctionnent entre-temps. |
+| Le PSIM refuse la commande : « aucune passerelle n'écoute » | La passerelle est arrêtée, déconnectée, ou l'abonnement a été refusé | Voir la ligne précédente ; `connecte au PSIM` doit apparaître au journal. |
+| `ordre ... REFUSE (stale) : date dans le futur de N s (horloge ... 5 s de tolerance)` ou ordres refusés `stale` alors que tout est branché | **Horloges désynchronisées** : la passerelle tolère 5 s d'avance du PSIM et accepte l'ordre jusqu'à `ttlS` (10 s par défaut) après son émission. Au-delà, l'ordre est refusé | Synchroniser l'heure (NTP / service « Heure Windows ») sur le PSIM et sur la passerelle. Côté PSIM, un accusé daté de plus de 5 s dans le futur est ignoré (« accusé date de facon impossible » dans le journal du PSIM). |
+| `N ordre(s) a signature fausse ignore(s)` | Clé différente de celle du PSIM (clé renouvelée côté PSIM mais pas ici), ou tentative de forgerie | Si c'est après un renouvellement de clé : remplacer le contenu du `keyFile` et redémarrer la passerelle. Sinon, c'est une alerte de sécurité : vérifier qui a accès au broker. |
+| `N ordre(s) mal forme(s) ignore(s)` | Message qui n'est pas un ordre du PSIM (autre client sur le broker) | À examiner si cela se répète. |
+| `ordre ... REFUSE (not_allowed)` | L'action ou la durée dépasse ce que `actions` permet localement | Corriger la configuration de la passerelle (si le plafond est légitime) ou la demande du PSIM. |
+| `ordre ... REFUSE (out_of_order)` | Ordre plus ancien que le dernier exécuté (retardé en route) | Normal si un ordre a été retardé ; sinon vérifier l'horloge du PSIM. |
+| `ordre ... REFUSE (unavailable)` | Aucun module n'a enregistré l'actionneur : module arrêté, en échec de démarrage, ou `enabled: false` | Voir la ligne `[module] echec du demarrage` ; le module réenregistre seul son gestionnaire à son retour. |
+| `accuse ... PERDU` | Liaison avec le PSIM coupée au moment de répondre | L'ordre a été exécuté ; le PSIM le montrera « sans accusé ». Rien à rejouer. |
+| `le module n'a pas repondu en 4 s` | Contrôleur ou relais injoignable ou lent | Vérifier l'équipement ; l'état de la porte est inconnu, le retour au repos est programmé quand même. |
+| `retour au repos « lock » ECHOUE (essai N/21)` puis `ABANDONNE` | Le module ne parvient pas à joindre l'équipement | **Vérifier la porte sur place.** Le journal dit pour quel actionneur. |
+| `ecriture du fichier d'etat impossible` | Disque plein ou droits | La protection contre le rejeu ne survivra pas à un redémarrage tant que cela dure. Libérer l'espace / corriger les droits sur `<dataDir>`. |
+| `fichier d'etat corrompu ... repartie a vide` | Coupure de courant ou fichier modifié | Sans gravité : la mémoire anti-rejeu repart à vide (les ordres déjà périmés restent refusés). |
+| `actionneur « X » non declare dans la section « actuators »` / `declare pour le module « Y »` / `deja enregistre` (échec de démarrage d'un module) | Faute dans la configuration de la passerelle ou dans le module | Corriger `actuators[].module`, ou l'identifiant passé à `ctx.onActuator`. |
+
+**Limites connues.** Un module qui ne répond pas dans les 4 s peut quand même agir sur l'équipement plus tard (on ne peut pas annuler une promesse) : le gestionnaire doit être sobre et borner lui-même ses délais. Un arrêt brutal de la passerelle ne ramène pas au repos : prévoir un temporisateur dans l'équipement.

@@ -44,7 +44,7 @@ interface World {
   open: (id: string, event?: string) => ReturnType<ReturnType<typeof createEngine>['getSnapshot']>['incidents'];
 }
 
-async function world(moduleConfig: Record<string, unknown> = {}): Promise<World> {
+async function world(moduleConfig: Record<string, unknown> = {}, gatewayExtra: Record<string, unknown> = {}): Promise<World> {
   const dir = tempDir(cleanup);
   const db = openDb(join(dir, 'psim.db'));
   cleanup.push(() => db.close());
@@ -91,6 +91,7 @@ async function world(moduleConfig: Record<string, unknown> = {}): Promise<World>
         ...moduleConfig,
       },
     }],
+    ...gatewayExtra,
   });
   const logger = memoryLogger();
   const rt = await startRuntime({ config: loadConfig(file), logger, now: () => Date.now() + shift.ms });
@@ -239,7 +240,11 @@ describe('bout en bout : appareil ZKTeco -> module -> socle -> broker du PSIM ->
   });
 
   it('actionneur declare : le module demarre et surveille, avec ou sans canal de commande dans le socle', { timeout: 60_000 }, async () => {
-    const w = await world({ controllers: [{ id: 'CTL-E2E', serial: SERIAL, doors: { '1': 'P-ENTREE' }, actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' } } }] });
+    // Le socle (lot AC0) exige que l'actionneur du module soit declare dans la section `actuators` de la passerelle, pour CE module.
+    const w = await world(
+      { controllers: [{ id: 'CTL-E2E', serial: SERIAL, doors: { '1': 'P-ENTREE' }, actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' } } }] },
+      { actuators: [{ id: 'ACT-ENTREE', key: '0'.repeat(63) + '1', module: 'acces-zkteco', actions: { unlock: { maxS: 10 }, lock: {} }, rest: 'lock' }] },
+    );
     await w.dev.handshake();
     await w.dev.push({ event: 0, card: CARD, door: 1 });
     await waitFor(() => accessMsgs(w).length === 1, 15_000, 'passage recu');

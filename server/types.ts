@@ -99,7 +99,10 @@ export type PsimEvent =
   | { type: 'device'; device: Device }
   | { type: 'incident'; incident: Incident }
   | { type: 'audit'; entry: AuditEntry }
-  | { type: 'config' };
+  | { type: 'config' }
+  // Commandes des equipements (voir actuators.ts) : etat d'une commande, ou liste des actionneurs a relire.
+  | { type: 'command'; command: import('./actuators.ts').CommandView }
+  | { type: 'actuators' };
 
 /** Un etage du site, du plus bas (`position` 0) au plus haut, avec son propre plan. */
 export interface Floor {
