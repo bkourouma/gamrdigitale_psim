@@ -13,6 +13,8 @@ import { after, describe, it } from 'node:test';
 import type { DeviceMessage, ModuleContext } from '../src/module.ts';
 import { newMsgId, prepare } from '../src/validate.ts';
 import type { ActuatorHandler } from '../src/modules/acces-commun/actuator.ts';
+import type { AccessSyncHandler, AccessSyncOp } from '../src/modules/acces-commun/sync.ts';
+import { HOLIDAYS_FILE, daySegments, deviceName, holidayDate, pinOf, timezoneFields, validityDates, windowBitmaps, zkDate } from '../src/modules/acces-zkteco/sync.ts';
 import { DeviceCommands } from '../src/modules/acces-zkteco/commands.ts';
 import { inRanges, ipv4ToInt, parseCidr, parseConfig } from '../src/modules/acces-zkteco/config.ts';
 import { DEFAULT_STATE_DIR, create, resolveStateDir } from '../src/modules/acces-zkteco/index.ts';
@@ -39,7 +41,7 @@ import {
   syntheticEventId,
   verifyMethod,
 } from '../src/modules/acces-zkteco/protocol.ts';
-import { FakeZk, deviceTimeText, rawRequest } from './fake-zkteco.ts';
+import { FAKE_FULL_CODE, FakeZk, deviceTimeText, rawRequest } from './fake-zkteco.ts';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Outils
@@ -80,6 +82,9 @@ interface Harness {
   logs: { level: string; text: string }[];
   rejected: string[];
   handlers: Map<string, ActuatorHandler>;
+  /** Gestionnaires de synchronisation des titulaires enregistres aupres du socle (par controleur). */
+  syncHandlers: Map<string, AccessSyncHandler>;
+  stateDir: string;
   accept: { value: boolean };
   dev(serial?: string, kind?: 'controller' | 'terminal'): FakeZk;
   stop(): Promise<void>;
@@ -97,12 +102,13 @@ function tempDir(): string {
 }
 
 /** Demarre un VRAI module sur un contexte d'essai : emit passe par `prepare()` du socle, comme en production. */
-async function boot(over: Record<string, unknown> = {}, opts: { actuators?: boolean; t?: number } = {}): Promise<Harness> {
+async function boot(over: Record<string, unknown> = {}, opts: { actuators?: boolean; sync?: boolean; t?: number } = {}): Promise<Harness> {
   const clock = { t: opts.t ?? T0 };
   const out: Out[] = [];
   const logs: { level: string; text: string }[] = [];
   const rejected: string[] = [];
   const handlers = new Map<string, ActuatorHandler>();
+  const syncHandlers = new Map<string, AccessSyncHandler>();
   const accept = { value: true };
   const ctx = {
     emit: (id: string, msg: DeviceMessage) => {
@@ -121,10 +127,16 @@ async function boot(over: Record<string, unknown> = {}, opts: { actuators?: bool
     log: (level: string, text: string) => logs.push({ level, text }),
     config: {},
     now: () => clock.t,
-    ...(opts.actuators === false ? {} : { onActuator: (id: string, h: ActuatorHandler) => void handlers.set(id, h) }),
+    // Comme le vrai socle : `onActuator` est toujours present et LEVE si l'actionneur n'est pas declare dans `actuators`.
+    onActuator: (id: string, h: ActuatorHandler) => {
+      if (opts.actuators === false) throw new Error(`actionneur « ${id} » non declare dans la section « actuators » de la configuration de la passerelle`);
+      handlers.set(id, h);
+    },
+    ...(opts.sync === false ? {} : { onAccessSync: (id: string, h: AccessSyncHandler) => void syncHandlers.set(id, h) }),
   } as unknown as ModuleContext;
   // Toujours un dossier d'etat temporaire : un essai n'ecrit jamais dans gateway/data.
-  const mod = create(baseConfig({ stateDir: tempDir(), ...over }));
+  const stateDir = typeof over.stateDir === 'string' ? over.stateDir : tempDir();
+  const mod = create(baseConfig({ ...over, stateDir }));
   await mod.start(ctx);
   const port = mod.addresses().http as number;
   const h: Harness = {
@@ -135,6 +147,8 @@ async function boot(over: Record<string, unknown> = {}, opts: { actuators?: bool
     logs,
     rejected,
     handlers,
+    syncHandlers,
+    stateDir,
     accept,
     dev: (serial = SERIAL_C, kind = 'controller') => new FakeZk({ port, serial, kind, now: () => clock.t }),
     stop: () => mod.stop(),
@@ -242,7 +256,7 @@ describe('acces-zkteco : protocole', () => {
 
   it('table des evenements : acces, refus et motifs, alarmes, etats', () => {
     const eff = (n: number) => classifyEvent(n).effect;
-    for (const n of [0, 1, 2, 3, 14, 202, 205, 208]) assert.equal(eff(n).kind, 'granted', String(n));
+    for (const n of [0, 1, 2, 3, 14, 202, 208]) assert.equal(eff(n).kind, 'granted', String(n));
     assert.deepEqual(eff(23), { kind: 'denied', reason: 'other' });
     assert.deepEqual(eff(27), { kind: 'denied', reason: 'unknown_credential' });
     assert.deepEqual(eff(34), { kind: 'denied', reason: 'unknown_credential' });
@@ -260,7 +274,14 @@ describe('acces-zkteco : protocole', () => {
     assert.deepEqual(eff(8), { kind: 'granted', method: 'remote' });
     assert.equal(eff(101).kind, 'duress');
     assert.equal(eff(103).kind, 'duress');
-    for (const n of [26, 32, 206, 220, 221, 204]) assert.equal(eff(n).kind, 'ignore', String(n));
+    for (const n of [26, 32, 206, 220, 221, 11]) assert.equal(eff(n).kind, 'ignore', String(n));
+    // Mode de porte (F19) : ouverture continue et retour au mode normal ne sont plus « rien », et ne sont jamais un passage.
+    assert.deepEqual(eff(205), { kind: 'mode', mode: 'always_open' });
+    for (const n of [9, 10, 204]) assert.deepEqual(eff(n), { kind: 'mode', mode: 'normal' }, String(n));
+    for (const n of Object.keys(RTLOG_EVENTS).map(Number)) {
+      const e = eff(n);
+      if (e.kind === 'mode') assert.notEqual(e.mode, 'always_closed', `aucun evenement connu ne dit « toujours fermee » (${n})`);
+    }
     assert.ok(Object.keys(RTLOG_EVENTS).length > 50);
   });
 
@@ -812,7 +833,7 @@ describe('acces-zkteco : passages', () => {
     const d = h.dev();
     await d.handshake();
     h.out.length = 0;
-    for (const ev of [206, 26, 220, 204, 206]) await d.push({ event: ev, door: 1 });
+    for (const ev of [206, 26, 220, 11, 206]) await d.push({ event: ev, door: 1 });
     assert.equal(h.out.length, 0);
     assert.equal(d.unacked, 0, 'acquittes malgre tout');
     assert.equal(h.logs.filter((l) => /evenement 206 \(/.test(l.text)).length, 1);
@@ -1271,7 +1292,9 @@ describe('acces-zkteco : ordres (ouverture a distance)', () => {
   it('socle sans canal de commande : surveillance seule, avertissement, le module fonctionne', async () => {
     const h = await boot({}, { actuators: false });
     assert.equal(h.handlers.size, 0);
-    assert.ok(h.logs.some((l) => l.level === 'warn' && /canal de commande/.test(l.text)));
+    // Le socle leve (actionneur non declare) : `registerActuator` journalise la cause, une seule fois par actionneur.
+    assert.equal(h.logs.filter((l) => l.level === 'warn' && /ouverture a distance indisponible/.test(l.text)).length, 2, allLogs(h));
+    assert.ok(h.logs.every((l) => !/n'a pas de canal de commande/.test(l.text)), 'plus de journal redondant');
     await h.dev().handshake();
     assert.ok(events(h, 'heartbeat').length > 0);
   });
@@ -1756,6 +1779,849 @@ describe('acces-zkteco : securite', () => {
     assert.equal(r?.status, 503, 'non acquitte : l\'appareil renverra');
     assert.ok(calls > 0);
     assert.equal((await d.ping()).status, 200);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Epoque du controleur (controleur remplace)
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('acces-zkteco : epoque du controleur', () => {
+  const withEpoch = (epoch: unknown, extra: Record<string, unknown> = {}) => baseConfig({ controllers: [{ ...controllerCfg, epoch }, { ...terminalCfg, ...extra }] });
+  const withTerminalEpoch = (epoch: number) => baseConfig({ controllers: [controllerCfg, { ...terminalCfg, epoch }] });
+
+  it('configuration : entier >= 0, defaut 0, validation stricte (aucune correction silencieuse)', () => {
+    assert.equal(parseConfig(baseConfig()).controllers[0]?.epoch, 0);
+    assert.equal(parseConfig(withEpoch(0)).controllers[0]?.epoch, 0);
+    assert.equal(parseConfig(withEpoch(7)).controllers[0]?.epoch, 7);
+    assert.equal(parseConfig(withEpoch(999_999_999_999)).controllers[0]?.epoch, 999_999_999_999);
+    assert.equal(parseConfig(withEpoch(undefined)).controllers[0]?.epoch, 0);
+    for (const bad of [-1, 1.5, '2', '', null, true, false, Number.NaN, Number.POSITIVE_INFINITY, 1_000_000_000_000, [1], {}]) {
+      assert.throws(() => parseConfig(withEpoch(bad)), /epoch/, String(bad));
+    }
+    assert.throws(() => parseConfig(withEpoch(-5)), /controllers\[0\]\.epoch doit etre un entier de 0 a 999999999999/);
+  });
+
+  it('epoque 0 : identifiants inchanges (n° d\'enregistrement tel quel) et curseur sous l\'identifiant du controleur', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 0, card: CARD, door: 1, index: 41 });
+    await d.push({ event: 102, door: 2, index: 42 });
+    assert.equal(passages(h)[0]?.msg.msgId, 'acc:CTL-2:41');
+    assert.equal(passages(h)[0]?.msg.access?.eventId, '41');
+    assert.ok(events(h, 'door_forced')[0]?.msg.msgId?.endsWith('-42'));
+    await h.stop();
+    const saved = JSON.parse(readFileSync(join(h.stateDir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, { cursor: string }> };
+    assert.deepEqual(Object.keys(saved.controllers), ['CTL-2']);
+  });
+
+  it('epoque 3 : eventId "<epoque>.<n°>" pour les passages, les identifiants synthetiques, les etats et la contrainte', async () => {
+    const h = await boot({ controllers: [{ ...controllerCfg, epoch: 3 }, terminalCfg] });
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 0, card: CARD, door: 1, index: 41 });
+    assert.equal(passages(h)[0]?.msg.access?.eventId, '3.41');
+    assert.equal(passages(h)[0]?.msg.msgId, 'acc:CTL-2:3.41');
+    await d.push({ event: 0, card: CARD, door: 1, index: null, at: T0 + 1000 });
+    assert.match(String(passages(h)[1]?.msg.access?.eventId), /^3\.\d{10}-[0-9a-f]{10}$/);
+    await d.push({ event: 102, door: 2, index: 42 });
+    assert.ok(events(h, 'door_forced')[0]?.msg.msgId?.endsWith('-3.42'), String(events(h, 'door_forced')[0]?.msg.msgId));
+    await d.push({ event: 101, door: 1, pin: PIN, verify: 3, index: 43, at: T0 + 2000 });
+    assert.equal(passages(h)[2]?.msg.access?.eventId, '3.43');
+    assert.equal(events(h, 'panic')[0]?.msg.msgId, `acc:CTL-2:duress-1-${T0 + 2000}-3.43`);
+    assert.deepEqual(h.rejected, []);
+  });
+
+  it('epoque d\'un terminal : l\'identifiant synthetique des pointages porte l\'epoque', async () => {
+    const h = await boot(withTerminalEpoch(2));
+    const t = h.dev(SERIAL_T, 'terminal');
+    await t.handshake();
+    h.out.length = 0;
+    t.recordAttlog({ pin: '2001', status: 0, verify: 1 });
+    await t.flush();
+    assert.match(String(passages(h)[0]?.msg.access?.eventId), /^2\.\d{10}-[0-9a-f]{10}$/);
+    assert.deepEqual(h.rejected, []);
+  });
+
+  it('changement d\'epoque : le curseur repart de zero, aucune collision de msgId avec l\'ancienne epoque', async () => {
+    const dir = tempDir();
+    const h1 = await boot({ stateDir: dir });
+    const d1 = h1.dev();
+    await d1.handshake();
+    await d1.push({ event: 0, card: CARD, door: 1, index: 1 });
+    await d1.push({ event: 0, card: CARD, door: 1, index: 2, at: T0 + 1000 });
+    await d1.push({ event: 102, door: 1, index: 3, at: T0 + 2000 });
+    const oldIds = h1.out.map((o) => o.msg.msgId);
+    await h1.stop();
+
+    // Le controleur est remplace : memoire effacee, numeros d'enregistrement repartis de 1, epoque 1.
+    const h2 = await boot({ stateDir: dir, controllers: [{ ...controllerCfg, epoch: 1 }, terminalCfg] });
+    const d2 = h2.dev();
+    const hs = await d2.handshake();
+    assert.equal(hs.options.get('ATTLOGStamp'), 'None', "la poignee de main ne reprend pas l'estampille de l'ancienne epoque");
+    assert.equal(hs.options.get('Stamp'), undefined);
+    await d2.push({ event: 0, card: CARD, door: 1, index: 1 });
+    await d2.push({ event: 0, card: CARD, door: 1, index: 2, at: T0 + 1000 });
+    await d2.push({ event: 102, door: 1, index: 3, at: T0 + 2000 });
+    const newIds = h2.out.map((o) => o.msg.msgId).filter((m) => m?.startsWith('acc:'));
+    assert.equal(passages(h2).length, 2, 'les nouveaux enregistrements n°1 et n°2 ne sont pas pris pour des doublons');
+    assert.deepEqual(passages(h2).map((o) => o.msg.access?.eventId), ['1.1', '1.2']);
+    assert.equal(new Set([...oldIds.filter((m) => m?.startsWith('acc:')), ...newIds]).size, oldIds.filter((m) => m?.startsWith('acc:')).length + newIds.length, 'aucun msgId commun aux deux epoques');
+    await h2.stop();
+    const saved = JSON.parse(readFileSync(join(dir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, { cursor: string }> };
+    assert.deepEqual(Object.keys(saved.controllers).sort(), ['CTL-2', 'CTL-2~e1']);
+    assert.equal(saved.controllers['CTL-2']?.cursor, '3');
+    assert.equal(saved.controllers['CTL-2~e1']?.cursor, '3');
+
+    // Retour a l'epoque 0 (erreur de saisie corrigee) : le curseur de l'epoque 0 est intact.
+    const h3 = await boot({ stateDir: dir });
+    assert.equal((await h3.dev().handshake()).options.get('ATTLOGStamp'), '3');
+  });
+
+  it('deux epoques successives dans un meme dossier : chacune a son curseur', async () => {
+    const dir = tempDir();
+    for (const epoch of [0, 1, 2]) {
+      const h = await boot({ stateDir: dir, controllers: [{ ...controllerCfg, epoch }, terminalCfg] });
+      const d = h.dev();
+      assert.equal((await d.handshake()).options.get('ATTLOGStamp'), 'None', `epoque ${epoch}`);
+      await d.push({ event: 0, card: CARD, door: 1, index: 1 });
+      assert.equal(passages(h).length, 1, `epoque ${epoch}`);
+      await h.stop();
+    }
+    const saved = JSON.parse(readFileSync(join(dir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, unknown> };
+    assert.deepEqual(Object.keys(saved.controllers).sort(), ['CTL-2', 'CTL-2~e1', 'CTL-2~e2']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Mode de porte (F19)
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('acces-zkteco : mode de porte (F19)', () => {
+  const modes = (h: Harness) => events(h, 'door_mode').map((o) => `${o.id}:${o.msg.doorMode}`);
+
+  it('rien n\'est invente a la connexion : ni a la poignee de main, ni par rtstate', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    await d.sendRtstate('11');
+    await d.sendRtstate('21', { alarm: '0100' });
+    assert.deepEqual(modes(h), []);
+    assert.equal(h.mod.state().controllers['CTL-2']?.doors[0]?.mode, null, 'mode inconnu');
+  });
+
+  it('ouverture permanente a distance (205) puis retour au mode normal (204, 10, 9) : un message par changement, jamais un passage', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 205, door: 1, index: 10 });
+    assert.deepEqual(modes(h), ['P-ENTREE:always_open']);
+    assert.equal(passages(h).length, 0, '205 n\'est plus un passage');
+    assert.equal(h.mod.state().controllers['CTL-2']?.doors[0]?.mode, 'always_open');
+    assert.equal(h.mod.state().controllers['CTL-2']?.doors[1]?.mode, null, 'l\'autre porte n\'est pas touchee');
+    await d.push({ event: 204, door: 1, index: 11, at: T0 + 1000 });
+    assert.deepEqual(modes(h), ['P-ENTREE:always_open', 'P-ENTREE:normal']);
+    // un mode identique n'est pas re-emis
+    await d.push({ event: 204, door: 1, index: 12, at: T0 + 2000 });
+    await d.push({ event: 10, door: 1, index: 13, at: T0 + 3000 });
+    await d.push({ event: 9, door: 1, index: 14, at: T0 + 4000 });
+    assert.equal(modes(h).length, 2);
+    await d.push({ event: 205, door: 2, index: 15, at: T0 + 5000 });
+    await d.push({ event: 9, door: 2, index: 16, at: T0 + 6000 });
+    assert.deepEqual(modes(h), ['P-ENTREE:always_open', 'P-ENTREE:normal', 'P-ARRIERE:always_open', 'P-ARRIERE:normal']);
+    assert.deepEqual(h.rejected, []);
+    assert.equal(d.unacked, 0);
+    const msg = events(h, 'door_mode')[0]?.msg as unknown as { doorMode: string; msgId: string; ts: number };
+    assert.match(msg.msgId, /^acc:CTL-2:mode-1-\d+-always_open$/);
+  });
+
+  it('« plage reactivee » (11) ne dit pas le mode : rien n\'est emis ; « toujours fermee » n\'est jamais emis', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 11, door: 1, index: 20 });
+    assert.deepEqual(modes(h), []);
+    for (const n of [0, 1, 2, 5, 8, 28, 100, 102, 200, 201, 202, 206]) await d.push({ event: n, door: 1, index: 100 + n, card: CARD, at: T0 + n });
+    assert.ok(!modes(h).some((m) => m.endsWith('always_closed')));
+    assert.deepEqual(modes(h), []);
+  });
+
+  it('enregistrement ancien (recupere apres une coupure) : l\'histoire n\'est pas le mode courant, rien n\'est emis', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 205, door: 1, index: 30, at: T0 - 10 * 60_000 });
+    assert.deepEqual(modes(h), []);
+    assert.equal(d.unacked, 0, 'acquitte quand meme');
+    await d.push({ event: 205, door: 1, index: 31, at: T0 - 100_000 });
+    assert.deepEqual(modes(h), ['P-ENTREE:always_open'], 'sous le seuil de differe (120 s) : mode courant');
+  });
+
+  it('porte non declaree : ignore sans bloquer l\'appareil', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    await d.push({ event: 205, door: 4, index: 40 });
+    await d.push({ event: 204, door: 3, index: 41 });
+    assert.deepEqual(modes(h), []);
+    assert.equal(d.unacked, 0);
+  });
+
+  it('le socle refuse le message : l\'appareil n\'a rien a renvoyer, le superviseur retente seul', async () => {
+    const h = await boot();
+    const d = h.dev();
+    await d.handshake();
+    h.out.length = 0;
+    h.accept.value = false;
+    await d.push({ event: 205, door: 1, index: 50 });
+    assert.equal(d.unacked, 0);
+    assert.deepEqual(modes(h), []);
+    h.accept.value = true;
+    h.clock.t += 2000;
+    h.mod.tick();
+    assert.deepEqual(modes(h), ['P-ENTREE:always_open']);
+  });
+
+  it('terminal : un rtlog envoye par un terminal est acquitte sans effet (pas de mode de porte)', async () => {
+    const h = await boot();
+    const t = h.dev(SERIAL_T, 'terminal');
+    await t.handshake();
+    h.out.length = 0;
+    // un terminal n'envoie pas de rtlog : l'enregistrement est acquitte sans effet
+    t.recordRaw('rtlog', t.rtlogLine({ event: 205, door: 1, index: 1 }));
+    await t.flush();
+    assert.deepEqual(modes(h), []);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Synchronisation des titulaires : formats
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('acces-zkteco : synchronisation, formats', () => {
+  const week = (from: string, to: string, days = [1, 2, 3, 4, 5]) => [{ days, from, to }];
+  const field = (fields: Array<[string, number]>, name: string): number => (fields.find(([k]) => k === name) as [string, number])[1];
+  const code = (fromHhmm: number, toHhmm: number): number => fromHhmm * 65536 + toHhmm;
+
+  it('pinOf : H + 1 a 9 chiffres sans zero de tete ; le reste n\'est pas convertible', () => {
+    assert.equal(pinOf('H101'), '101');
+    assert.equal(pinOf('H1'), '1');
+    assert.equal(pinOf('H123456789'), '123456789');
+    for (const bad of ['H0', 'H007', 'H1234567890', 'Habc', 'H12a', 'H', '101', 'h101', 'H-1', 'H1 ', 'H1\n', 'S1', '']) assert.equal(pinOf(bad), null, JSON.stringify(bad));
+  });
+
+  it('zkDate : heure locale de l\'appareil, texte AAAAMMJJ, hors 2001-2099 = null', () => {
+    assert.equal(zkDate(T0, 0), '20261017');
+    assert.equal(zkDate(Date.UTC(2026, 9, 17, 23, 30), 60), '20261018', 'minuit passe en heure locale');
+    assert.equal(zkDate(Date.UTC(2026, 9, 17, 0, 30), -60), '20261016');
+    assert.equal(zkDate(Date.UTC(2000, 11, 31), 0), null);
+    assert.equal(zkDate(Date.UTC(2100, 0, 1), 0), null);
+    assert.equal(zkDate(Date.UTC(2099, 11, 31), 0), '20991231');
+    assert.equal(holidayDate('2026-12-25'), '20261225');
+    assert.equal(holidayDate('2000-01-01'), null);
+    assert.equal(holidayDate('2100-01-01'), null);
+  });
+
+  it('validityDates : sans limite = 0, bornes hors plage ramenees sans jamais ouvrir plus', () => {
+    assert.deepEqual(validityDates(null, null, 0), { start: '0', end: '0' });
+    assert.deepEqual(validityDates(T0, T0 + 3_600_000, 0), { start: '20261017', end: '20261017' });
+    assert.deepEqual(validityDates(Date.UTC(1999, 0, 1), null, 0), { start: '0', end: '0' }, 'debut avant 2001 : sans borne utile');
+    assert.deepEqual(validityDates(Date.UTC(2150, 0, 1), null, 0), { start: '20991231', end: '0' }, 'debut apres 2099 : jamais valide dans la plage');
+    assert.deepEqual(validityDates(null, Date.UTC(1999, 0, 1), 0), { start: '0', end: '20010101' }, 'fin avant 2001 : deja echue');
+    assert.deepEqual(validityDates(null, Date.UTC(2150, 0, 1), 0), { start: '0', end: '0' }, 'fin apres 2099 : sans limite');
+  });
+
+  it('fuseau : segments (heure*100+minute) du debut << 16 + fin ; la fin est la derniere minute accordee ; 0 = inutilise', () => {
+    const f = timezoneFields(2, week('08:00', '18:00'), true);
+    assert.equal(f[0]?.[0], 'TimezoneId');
+    assert.equal(field(f, 'TimezoneId'), 2);
+    for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) assert.equal(field(f, `${day}Time1`), code(800, 1759), day);
+    for (const day of ['Sun', 'Sat']) assert.equal(field(f, `${day}Time1`), 0, day);
+    for (const day of ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']) {
+      assert.equal(field(f, `${day}Time2`), 0);
+      assert.equal(field(f, `${day}Time3`), 0);
+    }
+    assert.equal(f.length, 1 + 7 * 3 + 3 * 3, '36 segments + identifiant');
+    for (let i = 1; i <= 3; i++) for (const t of [1, 2, 3]) assert.equal(field(f, `Hol${t}Time${i}`), 0, 'ferme les jours feries');
+  });
+
+  it('fuseau : plage qui passe minuit (deborde sur le jour suivant), plusieurs plages, journee entiere', () => {
+    const night = timezoneFields(3, [{ days: [5], from: '22:00', to: '06:00' }], true);
+    assert.equal(field(night, 'FriTime1'), code(2200, 2359));
+    assert.equal(field(night, 'SatTime1'), code(0, 559));
+    assert.equal(field(night, 'SunTime1'), 0);
+    const sat = timezoneFields(3, [{ days: [6], from: '22:00', to: '06:00' }], true);
+    assert.equal(field(sat, 'SunTime1'), code(0, 559), 'samedi soir deborde sur dimanche (6 + 1 modulo 7)');
+    const multi = timezoneFields(4, [{ days: [1], from: '07:30', to: '12:00' }, { days: [1], from: '13:30', to: '17:15' }, { days: [1], from: '20:00', to: '21:00' }], true);
+    assert.equal(field(multi, 'MonTime1'), code(730, 1159));
+    assert.equal(field(multi, 'MonTime2'), code(1330, 1714));
+    assert.equal(field(multi, 'MonTime3'), code(2000, 2059));
+    const adjacent = timezoneFields(4, [{ days: [2], from: '08:00', to: '12:00' }, { days: [2], from: '12:00', to: '16:00' }], true);
+    assert.equal(field(adjacent, 'TueTime1'), code(800, 1559), 'plages contigues fusionnees');
+    assert.equal(field(adjacent, 'TueTime2'), 0);
+    const full = timezoneFields(4, [{ days: [3], from: '00:00', to: '23:59' }], true);
+    assert.equal(field(full, 'WedTime1'), code(0, 2358));
+    const lone = timezoneFields(4, [{ days: [3], from: '00:00', to: '00:01' }], true);
+    assert.equal(field(lone, 'WedTime1'), 1, 'jamais 0 (segment inutilise)');
+  });
+
+  it('fuseau : plus de trois plages dans un jour = not_supported (jamais tronque en silence)', () => {
+    const four = [{ days: [1], from: '01:00', to: '02:00' }, { days: [1], from: '03:00', to: '04:00' }, { days: [1], from: '05:00', to: '06:00' }, { days: [1], from: '07:00', to: '08:00' }];
+    assert.throws(() => timezoneFields(2, four, true), (e: unknown) => (e as { code?: string }).code === 'not_supported');
+    assert.doesNotThrow(() => timezoneFields(2, four.slice(0, 3), true));
+  });
+
+  it('jours feries : fermes si `holidays`, sinon la plage COMMUNE aux sept jours (jamais plus large que l\'horaire)', () => {
+    const closed = timezoneFields(2, week('08:00', '18:00', [0, 1, 2, 3, 4, 5, 6]), true);
+    assert.equal(field(closed, 'Hol1Time1'), 0);
+    const open = timezoneFields(2, week('08:00', '18:00', [0, 1, 2, 3, 4, 5, 6]), false);
+    assert.equal(field(open, 'Hol1Time1'), code(800, 1759));
+    const workdays = timezoneFields(2, week('08:00', '18:00'), false);
+    assert.equal(field(workdays, 'Hol1Time1'), 0, 'pas ouvert le week-end : aucune plage commune, donc ferme');
+    const mixed = timezoneFields(2, [{ days: [0, 1, 2, 3, 4, 5, 6], from: '09:00', to: '12:00' }, { days: [1, 2, 3, 4, 5], from: '14:00', to: '18:00' }], false);
+    assert.equal(field(mixed, 'Hol1Time1'), code(900, 1159));
+    assert.equal(field(mixed, 'Hol1Time2'), 0);
+    for (const t of [2, 3]) for (let i = 1; i <= 3; i++) assert.equal(field(mixed, `Hol${t}Time${i}`), 0);
+  });
+
+  it('daySegments et windowBitmaps : bornes', () => {
+    const days = windowBitmaps([]);
+    assert.equal(days.length, 7);
+    assert.deepEqual(daySegments(days[0] as Uint8Array), [0, 0, 0]);
+  });
+
+  it('deviceName : sans tabulation ni saut de ligne, au plus 24 octets UTF-8, jamais coupe au milieu d\'un caractere', () => {
+    assert.equal(deviceName('KONAN Yao'), 'KONAN Yao');
+    assert.equal(deviceName(`A\tB\r\nC${String.fromCharCode(0)}D`), 'A B C D');
+    assert.equal(deviceName('   '), '');
+    const long = deviceName('Jean-Baptiste Kouassi-Konan Amoakon');
+    assert.ok(Buffer.byteLength(long, 'utf8') <= 24, long);
+    const accents = deviceName('é'.repeat(30));
+    assert.equal(Buffer.byteLength(accents, 'utf8'), 24);
+    assert.ok(!accents.includes(String.fromCharCode(0xfffd)));
+    assert.ok(!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(deviceName(`a${String.fromCharCode(0x2028)}b${String.fromCharCode(0x85)}c`)));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Synchronisation des titulaires : essais contre le faux appareil
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('acces-zkteco : synchronisation des titulaires', () => {
+  let opSeq = 0;
+  const syncOp = (body: Record<string, unknown>): AccessSyncOp => ({ opId: `op${++opSeq}`, seq: opSeq, ...body }) as unknown as AccessSyncOp;
+  const handlerOf = (h: Harness, id = 'CTL-2'): AccessSyncHandler => h.syncHandlers.get(id) as AccessSyncHandler;
+
+  /** Fait tourner l'appareil (interrogations successives) jusqu'a ce que l'operation soit terminee : aucune attente reelle. */
+  async function drive<T>(d: FakeZk, p: Promise<T>): Promise<T> {
+    let done = false;
+    void p.then(
+      () => (done = true),
+      () => (done = true),
+    );
+    for (let i = 0; i < 400 && !done; i++) {
+      await settle();
+      await d.poll();
+      await settle();
+    }
+    assert.ok(done, 'operation jamais terminee');
+    return p;
+  }
+  const run = (h: Harness, d: FakeZk, body: Record<string, unknown>, id = 'CTL-2') => drive(d, handlerOf(h, id)(syncOp(body)));
+
+  const holderBody = (over: Record<string, unknown> = {}) => ({
+    type: 'upsert_holder',
+    holderRef: 'H101',
+    name: 'KONAN Yao',
+    active: true,
+    validFrom: null,
+    validTo: null,
+    credentials: [CARD],
+    doors: [{ doorNo: 1, scheduleRef: null }],
+    ...over,
+  });
+  const scheduleBody = (ref = 'S1', over: Record<string, unknown> = {}) => ({
+    type: 'upsert_schedule',
+    scheduleRef: ref,
+    windows: [{ days: [1, 2, 3, 4, 5], from: '08:00', to: '18:00' }],
+    holidays: true,
+    ...over,
+  });
+
+  async function world(over: Record<string, unknown> = {}, opts: { actuators?: boolean; sync?: boolean; t?: number } = {}) {
+    const h = await boot(over, opts);
+    const d = h.dev();
+    await d.handshake();
+    return { h, d };
+  }
+
+  const snapshot = (d: FakeZk): string =>
+    JSON.stringify({ u: [...d.users], a: [...d.authorizations], t: [...d.timezones], h: [...d.holidays] });
+  const authOf = (d: FakeZk, pin: string) => [...d.authorizations.values()].filter((a) => a.pin === pin).map((a) => `${a.timezone}:${a.doors}`).sort();
+  const commandTexts = (d: FakeZk) => d.received.map((c) => c.text);
+
+  it('enregistrement : une centrale recoit son gestionnaire, un terminal repond toujours « non pris en charge »', async () => {
+    const { h, d } = await world();
+    assert.deepEqual([...h.syncHandlers.keys()].sort(), ['CTL-2', 'TERM-1']);
+    const t = h.dev(SERIAL_T, 'terminal');
+    await t.handshake();
+    for (const body of [holderBody(), scheduleBody(), { type: 'delete_holder', holderRef: 'H101' }, { type: 'set_holidays', dates: ['2026-12-25'], replace: false }]) {
+      assert.deepEqual(await handlerOf(h, 'TERM-1')(syncOp(body)), { result: 'refused', code: 'not_supported' }, String(body.type));
+    }
+    assert.equal(t.received.length, 0, 'rien n\'est envoye a un terminal');
+    assert.equal(d.received.length, 0);
+  });
+
+  it('socle sans canal de synchronisation : le module journalise et continue (passages et ouvertures normaux)', async () => {
+    const h = await boot({}, { sync: false });
+    assert.equal(h.syncHandlers.size, 0);
+    assert.ok(h.logs.some((l) => l.level === 'info' && /canal de synchronisation des titulaires/.test(l.text)), allLogs(h));
+    const d = h.dev();
+    await d.handshake();
+    await d.push({ event: 0, card: CARD, door: 1 });
+    assert.equal(passages(h).length, 1);
+  });
+
+  it('socle dont onAccessSync leve : avertissement, le module demarre quand meme', async () => {
+    const dir = tempDir();
+    const out: unknown[] = [];
+    const logs: string[] = [];
+    const ctx = {
+      emit: (_id: string, m: unknown) => (out.push(m), true),
+      log: (_l: string, t: string) => logs.push(t),
+      now: () => T0,
+      onActuator: () => undefined,
+      onAccessSync: () => {
+        throw new Error('controleur non declare pour cette passerelle');
+      },
+    } as unknown as ModuleContext;
+    const mod = create(baseConfig({ stateDir: dir }));
+    await mod.start(ctx);
+    cleanups.push(() => mod.stop());
+    assert.ok(logs.some((l) => /synchronisation des titulaires non enregistree.*controleur non declare/.test(l)), logs.join('\n'));
+    assert.ok(mod.addresses().http !== null);
+  });
+
+  it('horaire : numero de fuseau libre attribue (2), ecrit dans l\'appareil, rejeu identique, plages persistees', async () => {
+    const { h, d } = await world();
+    assert.deepEqual(await run(h, d, scheduleBody('S1')), { result: 'done' });
+    assert.equal(d.timezones.get(2)?.MonTime1, String(800 * 65536 + 1759));
+    assert.equal(d.timezones.get(2)?.SunTime1, '0');
+    assert.equal(d.timezones.get(2)?.Hol1Time1, '0');
+    const first = snapshot(d);
+    assert.deepEqual(await run(h, d, scheduleBody('S1')), { result: 'done' });
+    assert.equal(snapshot(d), first, 'rejouer = meme etat final');
+    assert.equal([...d.timezones.keys()].filter((k) => k !== 1).length, 1, 'meme numero de fuseau');
+    assert.deepEqual(await run(h, d, scheduleBody('S2', { windows: [{ days: [6], from: '09:00', to: '12:00' }] })), { result: 'done' });
+    assert.equal(d.timezones.get(3)?.SatTime1, String(900 * 65536 + 1159));
+    assert.equal(d.timezones.get(1)?.preset, '1', 'le fuseau « toujours » n\'est jamais reecrit');
+    h.clock.t += 2000;
+    h.mod.tick();
+    const plages = JSON.parse(readFileSync(join(h.stateDir, 'acces-plages.json'), 'utf8')) as { controllers: Record<string, Record<string, number>> };
+    assert.deepEqual(plages.controllers['CTL-2'], { S1: 2, S2: 3 });
+  });
+
+  it('horaire : suppression = fuseau vide (jamais d\'acces), numero libere et reutilise ; absent = succes sans commande', async () => {
+    const { h, d } = await world();
+    await run(h, d, scheduleBody('S1'));
+    await run(h, d, scheduleBody('S2'));
+    assert.deepEqual(await run(h, d, { type: 'delete_schedule', scheduleRef: 'S1' }), { result: 'done' });
+    assert.ok(Object.entries(d.timezones.get(2) ?? {}).filter(([k]) => /Time\d$/.test(k)).every(([, v]) => v === '0'), 'fuseau 2 vide');
+    const before = d.received.length;
+    assert.deepEqual(await run(h, d, { type: 'delete_schedule', scheduleRef: 'S1' }), { result: 'done' });
+    assert.deepEqual(await run(h, d, { type: 'delete_schedule', scheduleRef: 'S9' }), { result: 'done' });
+    assert.equal(d.received.length, before, 'rien d\'envoye pour un horaire inconnu');
+    await run(h, d, scheduleBody('S3'));
+    assert.equal(d.timezones.get(2)?.MonTime1, String(800 * 65536 + 1759), 'S3 reprend le numero 2');
+  });
+
+  it('horaire : plus de fuseau libre = refused / full SANS appeler l\'appareil ; echec de l\'appareil = aucune attribution fantome', async () => {
+    const { h, d } = await world({ timezones: { min: 2, max: 3 } });
+    await run(h, d, scheduleBody('S1'));
+    await run(h, d, scheduleBody('S2'));
+    const before = d.received.length;
+    assert.deepEqual(await run(h, d, scheduleBody('S3')), { result: 'refused', code: 'full' });
+    assert.equal(d.received.length, before, 'aucune commande envoyee');
+    // un echec de l'appareil ne garde pas le numero
+    await run(h, d, { type: 'delete_schedule', scheduleRef: 'S2' });
+    d.dataOverride = (c) => (c.table === 'timezone' ? -5 : undefined);
+    assert.deepEqual(await run(h, d, scheduleBody('S3')), { result: 'error', code: 'io' });
+    d.dataOverride = null;
+    assert.deepEqual(await run(h, d, scheduleBody('S4')), { result: 'done' });
+    assert.ok(d.timezones.has(3), 'S4 a pris le numero 3, libre malgre l\'echec de S3');
+    // S3 n'existe pas : un titulaire qui la cite est refuse
+    assert.deepEqual(await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S3' }] })), { result: 'refused', code: 'invalid' });
+  });
+
+  it('horaire : plus de trois plages par jour = refused / not_supported, rien d\'ecrit, numero non garde', async () => {
+    const { h, d } = await world();
+    const windows = [1, 2, 3, 4].map((i) => ({ days: [1], from: `0${i}:00`, to: `0${i}:30` }));
+    assert.deepEqual(await run(h, d, scheduleBody('S1', { windows })), { result: 'refused', code: 'not_supported' });
+    assert.equal(d.received.length, 0);
+    await run(h, d, scheduleBody('S2'));
+    assert.ok(d.timezones.has(2), 'numero 2 toujours libre');
+  });
+
+  it('titulaire : utilisateur, badge, validite, droits par fuseau ; jamais de mot de passe ; commandes bien formees', async () => {
+    const { h, d } = await world();
+    await run(h, d, scheduleBody('S1'));
+    const out = await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S1' }, { doorNo: 2, scheduleRef: null }] }));
+    assert.deepEqual(out, { result: 'done' });
+    assert.deepEqual(d.users.get('101'), { CardNo: CARD, Pin: '101', StartTime: '0', EndTime: '0', Name: 'KONAN Yao', Privilege: '0' });
+    assert.deepEqual(authOf(d, '101'), ['1:2', '2:1'], 'porte 2 sans horaire = fuseau « toujours » (1), porte 1 = fuseau 2');
+    const texts = commandTexts(d);
+    const userCmd = texts.find((t) => t.includes('DATA UPDATE user')) as string;
+    assert.equal(userCmd, `DATA UPDATE user CardNo=${CARD}\tPin=101\tStartTime=0\tEndTime=0\tName=KONAN Yao\tPrivilege=0`);
+    assert.deepEqual(d.forbiddenSeen, []);
+    assert.ok(texts.every((t) => !/password|passwd|template|photo|biodata|fingerprint|face/i.test(t)));
+    assert.ok(texts.every((t) => /^(DATA (UPDATE|DELETE) [a-z]+ \S|CONTROL DEVICE)/.test(t) && !/[\r\n]/.test(t)));
+    // meme horaire sur deux portes : une seule autorisation (masque 3)
+    await run(h, d, holderBody({ holderRef: 'H102', credentials: [], doors: [{ doorNo: 1, scheduleRef: 'S1' }, { doorNo: 2, scheduleRef: 'S1' }] }));
+    assert.deepEqual(authOf(d, '102'), ['2:3']);
+    assert.equal(d.users.get('102')?.CardNo, '', 'sans badge : champ vide');
+  });
+
+  it('titulaire : rejouer = meme etat final ; changer d\'horaire retire les anciens droits (pas de superposition)', async () => {
+    const { h, d } = await world();
+    await run(h, d, scheduleBody('S1'));
+    await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] }));
+    const first = snapshot(d);
+    await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] }));
+    assert.equal(snapshot(d), first);
+    assert.deepEqual(authOf(d, '101'), ['2:1']);
+    await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: null }] }));
+    assert.deepEqual(authOf(d, '101'), ['1:1'], 'seul le nouveau droit reste');
+    await run(h, d, holderBody({ doors: [] }));
+    assert.deepEqual(authOf(d, '101'), [], 'plus aucune porte');
+    assert.ok(d.users.has('101'), 'l\'utilisateur reste');
+  });
+
+  it('titulaire : horaire inconnu = refused / invalid, reference ou badge inutilisable = refused / invalid, 2e badge = not_supported ; rien d\'envoye', async () => {
+    const { h, d } = await world();
+    const cases: Array<[Record<string, unknown>, { result: string; code: string }]> = [
+      [holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S5' }] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ holderRef: 'Habc' }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ holderRef: 'H0' }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ holderRef: 'H007' }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ holderRef: 'H1234567890' }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['AB12CD'] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['0'] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['0000'] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['12345678901'] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['4294967296'] }), { result: 'refused', code: 'invalid' }],
+      [holderBody({ credentials: ['111', '222'] }), { result: 'refused', code: 'not_supported' }],
+      [holderBody({ credentials: ['111', '222', '333', '444'] }), { result: 'refused', code: 'not_supported' }],
+    ];
+    for (const [body, expected] of cases) assert.deepEqual(await handlerOf(h)(syncOp(body)), expected, JSON.stringify(body));
+    assert.equal(d.received.length, 0, 'aucune commande');
+    assert.equal(d.users.size, 0);
+    // le plus grand badge et le plus long Pin passent
+    assert.deepEqual(await run(h, d, holderBody({ holderRef: 'H123456789', credentials: ['4294967295'] })), { result: 'done' });
+  });
+
+  it('donnees hostiles : champ interdit (PIN, mot de passe, gabarit, photo), champ inconnu ou type faux = refused / invalid, rien d\'envoye', async () => {
+    const { h, d } = await world();
+    const bad: Array<Record<string, unknown>> = [
+      holderBody({ pin: '1234' }),
+      holderBody({ password: 'x' }),
+      holderBody({ Password: 'x' }),
+      holderBody({ template: 'AAAA' }),
+      holderBody({ photo: 'AAAA' }),
+      holderBody({ extra: 1 }),
+      holderBody({ active: 'oui' }),
+      holderBody({ name: '' }),
+      holderBody({ credentials: 'x' }),
+      { type: 'format_all' },
+      { type: 'upsert_holder' },
+    ];
+    for (const body of bad) assert.deepEqual(await handlerOf(h)(syncOp(body)), { result: 'refused', code: 'invalid' }, JSON.stringify(body));
+    assert.equal(d.received.length, 0);
+  });
+
+  it('titulaire inactif : acces suspendu (droits retires), utilisateur conserve ; reactive : droits restaures', async () => {
+    const { h, d } = await world();
+    await run(h, d, scheduleBody('S1'));
+    const doors = [{ doorNo: 1, scheduleRef: 'S1' }, { doorNo: 2, scheduleRef: null }];
+    await run(h, d, holderBody({ doors }));
+    assert.deepEqual(authOf(d, '101'), ['1:2', '2:1']);
+    await run(h, d, holderBody({ doors, active: false }));
+    assert.deepEqual(authOf(d, '101'), [], 'aucun droit');
+    assert.equal(d.users.get('101')?.CardNo, CARD, 'jamais de suppression implicite');
+    await run(h, d, holderBody({ doors, active: true }));
+    assert.deepEqual(authOf(d, '101'), ['1:2', '2:1']);
+  });
+
+  it('titulaire inactif : les droits sont retires AVANT la mise a jour de l\'utilisateur (jamais d\'acces en trop si la suite echoue)', async () => {
+    const { h, d } = await world();
+    await run(h, d, holderBody());
+    d.dataOverride = (c) => (c.table === 'user' ? -5 : undefined);
+    assert.deepEqual(await run(h, d, holderBody({ active: false })), { result: 'error', code: 'io' });
+    assert.deepEqual(authOf(d, '101'), [], 'acces deja retire');
+  });
+
+  it('titulaire echu : droits retires et date de fin ecrite ; pas encore valide : date de debut ecrite, droits gardes', async () => {
+    const { h, d } = await world();
+    await run(h, d, holderBody({ validTo: T0 - 3_600_000 }));
+    assert.equal(d.users.get('101')?.EndTime, '20261017');
+    assert.deepEqual(authOf(d, '101'), [], 'echu');
+    await run(h, d, holderBody({ validFrom: T0 + 2 * 86_400_000, validTo: T0 + 9 * 86_400_000 }));
+    assert.equal(d.users.get('101')?.StartTime, '20261019');
+    assert.equal(d.users.get('101')?.EndTime, '20261026');
+    assert.deepEqual(authOf(d, '101'), ['1:1'], 'StartTime empeche d\'entrer avant la date');
+    // heure locale de l'appareil (decalage) pour les dates
+    const west = await world({ controllers: [{ ...controllerCfg, utcOffsetMin: -480 }, terminalCfg] });
+    await run(west.h, west.d, holderBody({ validTo: Date.UTC(2026, 9, 18, 2, 0) }));
+    assert.equal(west.d.users.get('101')?.EndTime, '20261017', '2 h UTC = 18 h la veille, heure locale');
+  });
+
+  it('suppression d\'un titulaire : droits puis utilisateur retires ; absent = succes ; reference non convertible = succes sans commande', async () => {
+    const { h, d } = await world();
+    await run(h, d, holderBody());
+    await run(h, d, holderBody({ holderRef: 'H102', credentials: [] }));
+    assert.deepEqual(await run(h, d, { type: 'delete_holder', holderRef: 'H101' }), { result: 'done' });
+    assert.equal(d.users.has('101'), false);
+    assert.deepEqual(authOf(d, '101'), []);
+    assert.ok(d.users.has('102'), 'les autres titulaires sont intacts');
+    const dels = d.dataLog.filter((c) => c.verb === 'DELETE').map((c) => c.table);
+    assert.deepEqual(dels.slice(-2), ['userauthorize', 'user']);
+    assert.deepEqual(await run(h, d, { type: 'delete_holder', holderRef: 'H101' }), { result: 'done' }, 'rejeu');
+    const before = d.received.length;
+    assert.deepEqual(await run(h, d, { type: 'delete_holder', holderRef: 'H0099' }), { result: 'done' });
+    assert.equal(d.received.length, before);
+  });
+
+  it('options : sans `userExtras`, ni Name ni Privilege ; nom nettoye (tabulation, saut de ligne) et borne', async () => {
+    const plain = await world({ sync: { userExtras: false } });
+    await run(plain.h, plain.d, holderBody());
+    assert.deepEqual(plain.d.users.get('101'), { CardNo: CARD, Pin: '101', StartTime: '0', EndTime: '0' });
+    const { h, d } = await world();
+    await run(h, d, holderBody({ name: 'Jean\tPaul\nKouassi-Konan Amoakon' }));
+    const cmd = commandTexts(d).find((t) => t.startsWith('DATA UPDATE user')) as string;
+    assert.equal(cmd.split('\t').length, 6, 'cinq champs apres le nom de table : aucune tabulation en trop');
+    assert.ok(Buffer.byteLength(d.users.get('101')?.Name ?? '', 'utf8') <= 24);
+    assert.ok(!/[\r\n]/.test(cmd));
+  });
+
+  it('jours feries : ecrits (type 1, non annuels) ; `replace` retire ceux qu\'il avait ecrits mais jamais ceux de l\'installateur', async () => {
+    const { h, d } = await world();
+    d.holidays.set('20250101', { Holiday: '20250101', preexisting: '1' });
+    assert.deepEqual(await run(h, d, { type: 'set_holidays', dates: ['2026-12-25', '2026-12-31'], replace: true }), { result: 'done' });
+    assert.deepEqual([...d.holidays.keys()].sort(), ['20250101', '20261225', '20261231']);
+    assert.deepEqual(d.holidays.get('20261225'), { Holiday: '20261225', HolidayType: '1', Loop: '2' });
+    // rejeu identique
+    const first = snapshot(d);
+    await run(h, d, { type: 'set_holidays', dates: ['2026-12-25', '2026-12-31'], replace: true });
+    assert.equal(snapshot(d), first);
+    // ajout sans remplacement
+    await run(h, d, { type: 'set_holidays', dates: ['2027-01-01'], replace: false });
+    assert.deepEqual([...d.holidays.keys()].sort(), ['20250101', '20261225', '20261231', '20270101']);
+    // remplacement : retire ce que le module avait ecrit et qui n'est plus voulu
+    await run(h, d, { type: 'set_holidays', dates: ['2027-01-01', '2027-05-01'], replace: true });
+    assert.deepEqual([...d.holidays.keys()].sort(), ['20250101', '20270101', '20270501']);
+    // remplacement par une liste vide
+    await run(h, d, { type: 'set_holidays', dates: [], replace: true });
+    assert.deepEqual([...d.holidays.keys()], ['20250101']);
+    assert.deepEqual(d.forbiddenSeen, []);
+  });
+
+  it('jours feries : la liste ecrite survit a un redemarrage du module (dossier d\'etat)', async () => {
+    const dir = tempDir();
+    const a = await world({ stateDir: dir });
+    await run(a.h, a.d, { type: 'set_holidays', dates: ['2026-12-25', '2026-12-31'], replace: true });
+    const device = a.d;
+    await a.h.stop();
+    assert.ok(existsSync(join(dir, HOLIDAYS_FILE)));
+    const b = await world({ stateDir: dir });
+    for (const [k, v] of device.holidays) b.d.holidays.set(k, v); // le meme appareil, qui a garde sa memoire
+    await run(b.h, b.d, { type: 'set_holidays', dates: ['2026-12-31'], replace: true });
+    assert.deepEqual([...b.d.holidays.keys()], ['20261231']);
+  });
+
+  it('jours feries : date hors de la plage de l\'appareil = refused / invalid, rien d\'ecrit', async () => {
+    const { h, d } = await world();
+    assert.deepEqual(await run(h, d, { type: 'set_holidays', dates: ['2026-12-25', '2100-01-01'], replace: false }), { result: 'refused', code: 'invalid' });
+    assert.equal(d.received.length, 0);
+    assert.equal(d.holidays.size, 0);
+  });
+
+  it('jours feries : echec au milieu = la liste suivie reste exacte, le rejeu termine le travail', async () => {
+    const { h, d } = await world();
+    let n = 0;
+    d.dataOverride = (c) => (c.table === 'holiday' && ++n === 3 ? -5 : undefined);
+    const dates = ['2026-12-25', '2026-12-26', '2026-12-27', '2026-12-28'];
+    assert.deepEqual(await run(h, d, { type: 'set_holidays', dates, replace: true }), { result: 'error', code: 'io' });
+    assert.deepEqual([...d.holidays.keys()].sort(), ['20261225', '20261226']);
+    d.dataOverride = null;
+    assert.deepEqual(await run(h, d, { type: 'set_holidays', dates, replace: true }), { result: 'done' });
+    assert.equal(d.holidays.size, 4);
+    await run(h, d, { type: 'set_holidays', dates: [], replace: true });
+    assert.equal(d.holidays.size, 0);
+  });
+
+  it('refus et erreurs de l\'appareil : -30 invalid, -1002 not_supported, autre code io, capacite pleine declaree = full', async () => {
+    const { h, d } = await world({ sync: { fullCodes: [FAKE_FULL_CODE] } });
+    d.capacity = { users: 1 };
+    assert.deepEqual(await run(h, d, holderBody()), { result: 'done' });
+    assert.deepEqual(await run(h, d, holderBody({ holderRef: 'H102' })), { result: 'refused', code: 'full' });
+    assert.ok(d.users.has('101') && !d.users.has('102'));
+    d.capacity = { holidays: 1 };
+    assert.deepEqual(await run(h, d, { type: 'set_holidays', dates: ['2026-12-25', '2026-12-26'], replace: false }), { result: 'refused', code: 'full' });
+    d.dataOverride = () => -30;
+    assert.deepEqual(await run(h, d, holderBody()), { result: 'refused', code: 'invalid' });
+    d.dataOverride = () => -1002;
+    assert.deepEqual(await run(h, d, holderBody()), { result: 'refused', code: 'not_supported' });
+    for (const code of [-1, -3, -5, -1003, 7]) {
+      d.dataOverride = () => code;
+      assert.deepEqual(await run(h, d, holderBody()), { result: 'error', code: 'io' }, String(code));
+    }
+    d.dataOverride = null;
+    // sans declaration, le code « pleine » du faux appareil reste une erreur a reessayer
+    const bare = await world();
+    bare.d.capacity = { users: 0 };
+    assert.deepEqual(await run(bare.h, bare.d, holderBody()), { result: 'error', code: 'io' });
+  });
+
+  it('fuseau « toujours » absent de l\'appareil : refus du materiel (invalid), jamais reecrit par le module', async () => {
+    const { h, d } = await world({ timezones: { min: 2, max: 8, always: 9 } });
+    assert.deepEqual(await run(h, d, holderBody()), { result: 'refused', code: 'invalid' });
+    assert.equal(d.timezones.has(9), false, 'le module n\'a pas cree le fuseau « toujours »');
+    d.timezones.set(9, { TimezoneId: '9' });
+    assert.deepEqual(await run(h, d, holderBody()), { result: 'done' });
+    assert.deepEqual(authOf(d, '101'), ['9:1']);
+  });
+
+  it('appareil jamais venu : error / unreachable tout de suite, rien en file', async () => {
+    const h = await boot();
+    const out = await handlerOf(h)(syncOp(holderBody()));
+    assert.deepEqual(out, { result: 'error', code: 'unreachable' });
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 0);
+  });
+
+  it('appareil qui n\'interroge plus : la commande expire (commandTimeoutS), est retiree, jamais remise en retard', async () => {
+    const { h, d } = await world({ thresholds: { commandTimeoutS: 5 } });
+    const p = handlerOf(h)(syncOp(holderBody()));
+    await settle();
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 1);
+    h.clock.t += 6000;
+    h.mod.tick();
+    assert.deepEqual(await p, { result: 'error', code: 'unreachable' });
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 0, 'retiree de la file');
+    const late = await d.poll();
+    assert.deepEqual(late.commands, [], 'rien n\'est remis apres coup');
+    assert.equal(d.users.size, 0);
+  });
+
+  it('appareil qui execute sans repondre : timeout, puis le rejeu donne le meme etat final (idempotence)', async () => {
+    const { h, d } = await world({ thresholds: { commandTimeoutS: 5 } });
+    await run(h, d, scheduleBody('S1'));
+    d.commandReply = 'silent';
+    const p = handlerOf(h)(syncOp(holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] })));
+    await settle();
+    await d.poll(); // remise : l'appareil execute, le resultat ne vient pas
+    assert.ok(d.users.has('101'), 'execute');
+    h.clock.t += 6000;
+    h.mod.tick();
+    assert.deepEqual(await p, { result: 'error', code: 'timeout' });
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 0);
+    d.commandReply = 'ok';
+    assert.deepEqual(await run(h, d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] })), { result: 'done' });
+    assert.deepEqual(authOf(d, '101'), ['2:1']);
+    assert.equal(d.users.size, 1);
+  });
+
+  it('operations simultanees : executees une a la fois, dans l\'ordre d\'arrivee, une seule commande en vol', async () => {
+    const { h, d } = await world();
+    const a = handlerOf(h)(syncOp(holderBody({ holderRef: 'H101' })));
+    const b = handlerOf(h)(syncOp(holderBody({ holderRef: 'H102', credentials: ['5551'] })));
+    const c = handlerOf(h)(syncOp({ type: 'delete_holder', holderRef: 'H101' }));
+    const all = Promise.all([a, b, c]);
+    const res = await drive(d, all);
+    assert.deepEqual(res, [{ result: 'done' }, { result: 'done' }, { result: 'done' }]);
+    const pins = commandTexts(d).map((t) => /Pin=(\d+)/.exec(t)?.[1]);
+    // toutes les commandes de H101 (creation), puis celles de H102, puis la suppression de H101
+    assert.deepEqual(pins, ['101', '101', '101', '102', '102', '102', '101', '101']);
+    assert.deepEqual([...d.users.keys()], ['102']);
+  });
+
+  it('une ouverture de porte demandee pendant une synchronisation attend au plus UNE commande de synchronisation (jamais toute la liste)', async () => {
+    const { h, d } = await world();
+    const p = handlerOf(h)(syncOp({ type: 'set_holidays', dates: ['2026-12-25', '2026-12-26', '2026-12-27', '2026-12-28'], replace: false }));
+    await settle();
+    await d.poll(); // premiere date ecrite
+    const unlock = (h.handlers.get('ACT-ENTREE') as ActuatorHandler)({ actuatorId: 'ACT-ENTREE', cmdId: 'c', action: 'unlock' });
+    await settle();
+    assert.deepEqual(await drive(d, p), { result: 'done' });
+    assert.deepEqual(await unlock, { result: 'done' });
+    const order = commandTexts(d).map((t) => (t.startsWith('CONTROL') ? 'ouverture' : 'jour'));
+    // la 2e date etait deja en file quand l'ouverture est arrivee ; les 3e et 4e (posees seulement apres confirmation) passent derriere
+    assert.deepEqual(order, ['jour', 'jour', 'ouverture', 'jour', 'jour']);
+  });
+
+  it('chaque commande est bornee par commandTimeoutS, meme au milieu d\'une operation', async () => {
+    const { h, d } = await world({ thresholds: { commandTimeoutS: 5 } });
+    const p = handlerOf(h)(syncOp(holderBody()));
+    await settle();
+    await d.poll(); // 1re commande (utilisateur) executee et confirmee
+    await settle();
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 1, 'la commande suivante attend');
+    h.clock.t += 6000;
+    h.mod.tick();
+    assert.equal((await p).result, 'error');
+    assert.equal(h.mod.state().controllers['CTL-2']?.commandsPending, 0);
+  });
+
+  it('journaux : jamais de nom, de numero de badge ni de reference de titulaire', async () => {
+    const { h, d } = await world();
+    await run(h, d, holderBody());
+    await run(h, d, holderBody({ holderRef: 'H1234567890' }));
+    await run(h, d, holderBody({ credentials: [CARD, '99999'] }));
+    await run(h, d, { type: 'delete_holder', holderRef: 'H101' });
+    const logs = allLogs(h);
+    assert.ok(/synchronisation upsert_holder -> done/.test(logs), logs);
+    for (const secret of ['KONAN', CARD, 'H101', '99999', 'H1234567890']) assert.ok(!logs.includes(secret), secret);
+  });
+
+  it('redemarrage du module : les numeros de fuseau attribues sont conserves (un titulaire cite son horaire sans qu\'il soit renvoye)', async () => {
+    const dir = tempDir();
+    const a = await world({ stateDir: dir });
+    await run(a.h, a.d, scheduleBody('S1'));
+    await run(a.h, a.d, scheduleBody('S2'));
+    await a.h.stop();
+    const b = await world({ stateDir: dir });
+    b.d.timezones.set(3, { TimezoneId: '3' });
+    assert.deepEqual(await run(b.h, b.d, holderBody({ doors: [{ doorNo: 1, scheduleRef: 'S2' }] })), { result: 'done' });
+    assert.deepEqual(authOf(b.d, '101'), ['3:1']);
+  });
+
+  it('configuration : timezones et sync, valeurs par defaut et validation', () => {
+    const c = parseConfig(baseConfig());
+    assert.deepEqual(c.timezones, { min: 2, max: 50, always: 1 });
+    assert.deepEqual(c.sync, { userExtras: true, fullCodes: [] });
+    const ok = parseConfig(baseConfig({ timezones: { min: 5, max: 9, always: 2 }, sync: { userExtras: false, fullCodes: [-12, -12, -13] } }));
+    assert.deepEqual(ok.timezones, { min: 5, max: 9, always: 2 });
+    assert.deepEqual(ok.sync, { userExtras: false, fullCodes: [-12, -13] });
+    const bad = (over: Record<string, unknown>, re: RegExp) => assert.throws(() => parseConfig(baseConfig(over)), re, JSON.stringify(over));
+    bad({ timezones: { max: 1 } }, /timezones\.min \(2\) ne peut pas depasser timezones\.max \(1\)/);
+    bad({ timezones: { min: 3, max: 10, always: 5 } }, /timezones\.always \(5\) doit etre hors de la plage/);
+    bad({ timezones: { max: 255 } }, /timezones\.max/);
+    bad({ timezones: { min: 0 } }, /timezones\.min/);
+    bad({ timezones: { min: 1.5 } }, /timezones\.min/);
+    bad({ timezones: { extra: 1 } }, /cle inconnue/);
+    bad({ timezones: 5 }, /timezones doit etre un objet/);
+    bad({ sync: { userExtras: 'oui' } }, /sync\.userExtras/);
+    bad({ sync: { fullCodes: [0] } }, /sync\.fullCodes\[0\]/);
+    bad({ sync: { fullCodes: [1] } }, /sync\.fullCodes\[0\]/);
+    bad({ sync: { fullCodes: 'x' } }, /sync\.fullCodes/);
+    bad({ sync: { fullCodes: Array.from({ length: 17 }, (_, i) => -i - 1) } }, /sync\.fullCodes/);
+    bad({ sync: { sendName: true } }, /cle inconnue/);
+    bad({ sync: 3 }, /sync doit etre un objet/);
   });
 });
 

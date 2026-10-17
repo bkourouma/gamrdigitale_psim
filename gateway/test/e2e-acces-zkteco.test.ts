@@ -249,5 +249,38 @@ describe('bout en bout : appareil ZKTeco -> module -> socle -> broker du PSIM ->
     await w.dev.push({ event: 0, card: CARD, door: 1 });
     await waitFor(() => accessMsgs(w).length === 1, 15_000, 'passage recu');
     assert.equal(w.rt.status().modules[0]?.state, 'running');
+    assert.equal(w.logger.has(/ouverture a distance indisponible/), false, 'actionneur declare : aucun avertissement');
+  });
+
+  it('actionneur du module NON declare dans la section `actuators` de la passerelle : le module demarre quand meme, les passages remontent, le journal le dit', { timeout: 60_000 }, async () => {
+    // Le vrai socle LEVE quand l'actionneur n'est pas declare : `registerActuator` attrape l'erreur, journalise la cause et le
+    // module continue en surveillance seule. Ici la configuration du module cite un actionneur, la passerelle n'en declare aucun.
+    const w = await world({ controllers: [{ id: 'CTL-E2E', serial: SERIAL, doors: { '1': 'P-ENTREE', '2': 'P-ARRIERE' }, actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' } } }] });
+    assert.equal(w.rt.status().modules[0]?.state, 'running', 'le module n\'est pas tombe');
+    await w.dev.handshake();
+    await w.dev.push({ event: 0, card: CARD, pin: '101', door: 1 });
+    await w.dev.push({ event: 27, card: '5551234', door: 2 });
+    await w.dev.push({ event: 102, door: 2 });
+    await waitFor(() => accessMsgs(w).length === 2, 15_000, 'passages recus malgre l\'actionneur non declare');
+    await waitFor(() => w.open('P-ARRIERE', 'door_forced').length === 1, 15_000, 'porte forcee remontee');
+    assert.deepEqual(accessMsgs(w).map((m) => m.payload.event), ['badge_granted', 'badge_denied']);
+    assert.equal(w.rt.status().modules[0]?.state, 'running');
+    const line = w.logger.lines.find((l) => /ouverture a distance indisponible/.test(l.text));
+    assert.ok(line, w.logger.lines.map((l) => l.text).join('\n'));
+    assert.equal(line.level, 'warn');
+    assert.match(line.text, /ACT-ENTREE/);
+    assert.match(line.text, /surveillance seule/);
+    assert.match(line.text, /non declare dans la section/);
+    assert.equal(w.logger.lines.filter((l) => /ACT-ENTREE/.test(l.text) && /non enregistre/.test(l.text)).length, 1, 'une seule ligne : pas de journal redondant');
+    assert.equal(w.logger.has(/n'a pas de canal de commande/), false);
+  });
+
+  it('passerelle sans synchronisation des titulaires (socle actuel) : le module demarre, journalise, et les passages remontent', { timeout: 60_000 }, async () => {
+    const w = await world();
+    await w.dev.handshake();
+    await w.dev.push({ event: 0, card: CARD, pin: '101', door: 1 });
+    await waitFor(() => accessMsgs(w).length === 1, 15_000, 'passage recu');
+    assert.equal(w.rt.status().modules[0]?.state, 'running');
+    assert.ok(w.logger.has(/canal de synchronisation des titulaires|synchronisation des titulaires non enregistree/), w.logger.lines.map((l) => l.text).join('\n'));
   });
 });
