@@ -1,1 +1,306 @@
-/* Application des agents : onglet Alarmes (fichier attribue a un seul agent). */
+/* Application des agents : onglet Alarmes (fichier attribue a un seul agent). Classes prefixees al-.
+   Un etat = une forme + un mot + une couleur. Aucune animation : rien ne clignote. */
+
+.al-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.al-banners {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+.al-banners:empty {
+  display: none;
+}
+
+.al-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: var(--tap);
+  margin: 0;
+  padding: 12px 16px;
+  border: 3px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+}
+.al-banner-audio {
+  min-height: 72px;
+  border-color: var(--brand-ink);
+  background: var(--brand);
+  color: var(--on-brand);
+  cursor: pointer;
+}
+.al-banner-net {
+  border-color: var(--warn-ink);
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.al-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* ---- Carte d'alarme (un bouton entier : toucher n'importe ou ouvre le detail) */
+.al-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 16px;
+  border: 2px solid var(--line);
+  border-left-width: 10px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.al-card-critical {
+  border-left-color: var(--alarm);
+}
+.al-card-warning {
+  border-left-color: var(--warn);
+}
+.al-card-unacked {
+  border-color: var(--alarm);
+  border-left-width: 10px;
+}
+
+.al-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  width: 100%;
+}
+
+.al-sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.al-icon {
+  flex: none;
+  width: 1.5em;
+  height: 1.5em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.al-icon-mark {
+  stroke-width: 2.6;
+}
+
+.al-age {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.al-title {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.al-place {
+  color: var(--ink-2);
+  font-size: 1.15rem;
+}
+
+/* ---- Etat d'acquittement : tres visible, forme + mot */
+.al-ack {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.al-ack-none {
+  border: 3px solid var(--alarm);
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+}
+.al-ack-done {
+  border: 3px solid var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}
+
+.al-dispatch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.al-disp {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.al-sym {
+  margin-right: 6px;
+}
+
+.al-updated {
+  margin: 0;
+  text-align: center;
+}
+
+/* ---- Etat vide rassurant */
+.al-calm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 32px 16px;
+  text-align: center;
+}
+.al-calm-title {
+  margin: 0;
+  color: var(--ok-ink);
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+/* ---- Detail plein ecran */
+.al-overlay {
+  overflow-y: auto;
+}
+.al-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.al-back {
+  align-self: flex-start;
+}
+.al-d-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.8rem;
+  line-height: 1.15;
+}
+.al-d-place {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 1.25rem;
+}
+.al-d-reason {
+  margin: 0;
+  font-size: 1.2rem;
+  line-height: 1.4;
+}
+.al-d-device {
+  margin: 0;
+}
+.al-d-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.al-snap-box {
+  width: 100%;
+}
+.al-snap-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.al-snap {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  background: #000;
+}
+.al-snap-big {
+  cursor: zoom-out;
+}
+.al-snap-big .al-snap {
+  max-height: none;
+}
+.al-snap-missing {
+  margin: 0;
+  padding: 24px 16px;
+  border: 2px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.al-live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.al-live[hidden],
+.al-live-status[hidden],
+.al-error[hidden] {
+  display: none;
+}
+.al-live-canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  background: #000;
+}
+.al-live-status {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 1.1rem;
+}
+
+.al-error {
+  margin: 0;
+  padding: 12px 14px;
+  border: 3px solid var(--alarm);
+  border-radius: var(--radius);
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.al-actions .al-act {
+  min-height: var(--tap);
+}
+.al-act[hidden] {
+  display: none;
+}

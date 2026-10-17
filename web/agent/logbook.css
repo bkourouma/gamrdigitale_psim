@@ -1,1 +1,173 @@
-/* Application des agents : main courante (fichier attribue a un seul agent). */
+/* Main courante : feuille plein ecran, choix de categorie, photo. Classes communes definies dans agent.css. */
+
+.lb-root[hidden] {
+  display: none !important;
+}
+
+.lb-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+/* Quatre grands choix exclusifs, deux par ligne */
+.lb-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap);
+}
+
+.lb-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* le vrai bouton radio reste dans la page (clavier, lecteur d'ecran) mais cache a l'oeil */
+.lb-radio {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.lb-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--ink-2);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--on-brand);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/* etat choisi : coche + contour epais + texte (jamais la couleur seule) */
+.lb-choice:has(.lb-radio:checked) {
+  border-width: 4px;
+  padding: 6px 10px;
+  border-color: var(--brand);
+  background: var(--surface-2);
+}
+
+.lb-choice:has(.lb-radio:checked) .lb-mark {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.lb-choice:has(.lb-radio:checked) .lb-mark::before {
+  content: "\2713";
+}
+
+.lb-choice:has(.lb-radio:focus-visible),
+.lb-attach-label:has(.lb-check:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.lb-attach-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.lb-check {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  accent-color: var(--brand);
+}
+
+.lb-text {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+}
+
+.lb-counter {
+  margin-top: 4px;
+  text-align: right;
+  font-size: 1rem;
+}
+
+.lb-photo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.lb-preview {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+/* champ fichier cache : on passe par le gros bouton « Prendre une photo » */
+.lb-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.lb-status {
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.lb-error {
+  padding: 12px;
+  border: 2px solid var(--alarm);
+  border-radius: var(--radius);
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+  font-weight: 700;
+}
+
+.lb-error[hidden] {
+  display: none;
+}
+
+.lb-confirm {
+  margin: 0 0 var(--gap);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.lb-actions .row > .btn {
+  flex: 1 1 0;
+}
+
+@media (max-width: 380px) {
+  .lb-group {
+    grid-template-columns: 1fr;
+  }
+}
