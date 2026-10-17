@@ -1,6 +1,6 @@
 /**
  * Garde-fous du broker MQTT embarque (server/mqtt.ts) pour la synchronisation des titulaires PSIM -> controleurs
- * (docs/CONTROLE-ACCES.md § 7, docs/ACCES.md § 11.4) : vrais clients MQTT contre un vrai broker sur un port libre.
+ * (docs/CONTROLE-ACCES.md § 7, docs/ACCES.md § 12.4) : vrais clients MQTT contre un vrai broker sur un port libre.
  *
  * « CONTROLE » : l'attaque est tentee et doit echouer.
  * « GARDE-FOU » : propriete a conserver (rattachement relu en base a chaque autorisation, plafonds, QoS...) ; l'essai ECHOUE si elle disparait.

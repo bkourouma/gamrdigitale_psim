@@ -6,7 +6,7 @@
  * Les dates sont lues et écrites à l'heure locale du navigateur (celle du poste de garde, qui est aussi celle du site).
  */
 
-// ---------------------------------------------------------------- constantes (mêmes bornes que docs/ACCES.md § 11)
+// ---------------------------------------------------------------- constantes (mêmes bornes que docs/ACCES.md § 12)
 
 export const MAX_WINDOWS = 8;
 export const MAX_HOLIDAYS = 400;
@@ -506,7 +506,7 @@ export function holidaysBody(entries) {
 
 // ---------------------------------------------------------------- import CSV
 
-/** Colonnes du fichier d'import (docs/ACCES.md § 11.5), pour l'explication à l'écran. */
+/** Colonnes du fichier d'import (docs/ACCES.md § 12.5), pour l'explication à l'écran. */
 export const IMPORT_COLUMNS = [
   { name: 'nom', required: true, text: 'Nom de famille (40 caractères au plus).' },
   { name: 'prenom', required: false, text: 'Prénom.' },

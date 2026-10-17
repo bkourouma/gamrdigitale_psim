@@ -1,6 +1,6 @@
 /**
  * Synchronisation des titulaires PSIM -> controleurs (lot AC5, phase 2). Contrats : docs/CONTROLE-ACCES.md § 7 (protocole fige),
- * docs/ACCES.md § 11.1, 11.2, 11.3 et 11.4 (precisions), types partages : server/accessholderstypes.ts.
+ * docs/ACCES.md § 12.1, 12.2, 12.3 et 12.4 (precisions), types partages : server/accessholderstypes.ts.
  *
  * Principe : le PSIM est la reference. Pour chaque controleur il sait ce que celui-ci DOIT contenir (`RightsSource.desired`) et ce que
  * le controleur a ACCUSE avoir recu. Chaque element (titulaire, plage horaire, jours feries) porte deux empreintes : `wanted_hash`
@@ -606,7 +606,7 @@ export function createSync(opts: SyncOptions): SyncService {
   }
 
   /**
-   * Regle des 20 suppressions (docs/ACCES.md § 11.4) : en attente non confirmees + deja envoyees sans confirmation dans l'heure.
+   * Regle des 20 suppressions (docs/ACCES.md § 12.4) : en attente non confirmees + deja envoyees sans confirmation dans l'heure.
    * Au-dela, les suppressions en attente sont RETENUES (`blocked`) jusqu'a confirmation ; le blocage ne se leve pas tout seul.
    */
   function refreshHold(controllerId: string): void {

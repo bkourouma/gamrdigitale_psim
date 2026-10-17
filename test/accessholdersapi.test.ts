@@ -10,7 +10,7 @@ import { openDb } from '../server/db.ts';
 import { PsimError } from '../server/errors.ts';
 
 /**
- * Routes des titulaires (docs/ACCES.md § 11.3) montees sur une petite application, avec de faux services qui
+ * Routes des titulaires (docs/ACCES.md § 12.3) montees sur une petite application, avec de faux services qui
  * enregistrent leurs appels et de faux gardes qui lisent le role et le compte dans des en-tetes de test.
  */
 

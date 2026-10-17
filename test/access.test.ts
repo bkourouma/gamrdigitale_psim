@@ -78,6 +78,10 @@ function passage(over: Json = {}, acc: Json = {}): Json {
 }
 
 const events = () => db.prepare('SELECT * FROM access_event ORDER BY id').all() as Json[];
+/** Actionneur minimal pour lier une porte (le lien est controle depuis le lot AC4 : il doit exister). Le detail du lien : test/accessremote.test.ts. */
+function plainActuator(id: string, type: 'lock' | 'gate', emergencyExit = false): void {
+  db.prepare("INSERT INTO actuator (id, name, type, transport, actions, key_sealed, created_at, created_by, emergency_exit) VALUES (?, ?, ?, 'mqtt', '{}', 'x', 0, 'essai', ?)").run(id, `Actionneur ${id}`, type, emergencyExit ? 1 : 0);
+}
 const dev = (id: string) => db.prepare('SELECT * FROM device WHERE id = ?').get(id) as Json;
 const doorRow = (id: string) => db.prepare('SELECT * FROM access_door WHERE detector_id = ?').get(id) as Json;
 const audits = (action: string) => engine.listAudit(500).filter((e) => e.action === action).reverse(); // du plus ancien au plus recent
@@ -994,8 +998,8 @@ describe('fiche de porte', () => {
     assert.equal(d.lastPassages.length, 10);
     assert.deepEqual(d.lastPassages.map((p) => p.credential), ['B11', 'B10', 'B9', 'B8', 'B7', 'B6', 'B5', 'B4', 'B3', 'B2']);
     assert.deepEqual(d.cameras, [{ id: 'C-04', name: 'Camera entrepot', status: 'normal' }]);
-    assert.equal(d.remote.available, false);
-    assert.match(d.remote.reason, /AC4/);
+    assert.equal(d.remote.available, false); // aucun actionneur lie (le detail du lien : test/accessremote.test.ts)
+    assert.match(d.remote.reason ?? '', /Aucun actionneur/);
     assert.equal(d.door.detectorId, 'A-01');
   });
 
@@ -1819,6 +1823,7 @@ describe('declaration des portes', () => {
     for (const e of ['true', 1, 0, null, 'oui']) bad({ ...base, emergencyExit: e });
     for (const h of [9, 86_401, 10.5, '300', null, NaN, -10]) bad({ ...base, heldAlarmAfterS: h });
     for (const a of ['a b', 5, ['x'], 'x'.repeat(33)]) bad({ ...base, actuatorId: a });
+    plainActuator('ACT-1', 'gate', true); // valeurs brutes : seul le stockage des champs est regarde ici
     const v = access.declareDoor('admin', { ...base, kind: 'barrier', emergencyExit: true, heldAlarmAfterS: 10, actuatorId: 'ACT-1' });
     assert.equal(v.kind, 'barrier');
     assert.equal(v.emergencyExit, true);
@@ -1837,6 +1842,7 @@ describe('declaration des portes', () => {
   });
 
   it('modification : champs absents inchanges, numero unique, controleur existant', () => {
+    plainActuator('ACT-9', 'gate', true);
     access.updateDoor('admin', 'A-01', { kind: 'gate', emergencyExit: true, actuatorId: 'ACT-9' });
     let v = door('A-01');
     assert.deepEqual([v.kind, v.emergencyExit, v.actuatorId, v.doorNo, v.heldAlarmAfterS], ['gate', true, 'ACT-9', 1, 300]);
@@ -1878,9 +1884,9 @@ describe('migration', () => {
     const second = openDb(file);
     assert.equal((second.prepare("SELECT value FROM access_setting WHERE key = 'x'").get() as Json).value, '1');
     const tables = (second.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'access_%' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
-    assert.deepEqual(tables, ['access_controller', 'access_door', 'access_event', 'access_setting']);
+    assert.deepEqual(tables, ['access_controller', 'access_door', 'access_door_mode', 'access_event', 'access_setting']);
     const indexes = (second.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'access_%' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
-    assert.deepEqual(indexes, ['access_door_by_controller', 'access_event_by_credential', 'access_event_by_device_event', 'access_event_by_door', 'access_event_by_time']);
+    assert.deepEqual(indexes, ['access_door_by_actuator', 'access_door_by_controller', 'access_event_by_credential', 'access_event_by_device_event', 'access_event_by_door', 'access_event_by_time']);
     second.close();
   });
 

@@ -4,7 +4,7 @@
  *  - `accessholders.ts`   : titulaires, badges, groupes, plages horaires, jours feries, visiteurs, calcul des droits ;
  *  - `accesssync.ts`      : synchronisation PSIM -> controleurs (docs/CONTROLE-ACCES.md § 7) ;
  *  - `accessimport.ts`    : import CSV ;
- *  - `accessholdersapi.ts`: routes `/api/access/*` des titulaires (docs/ACCES.md § 11).
+ *  - `accessholdersapi.ts`: routes `/api/access/*` des titulaires (docs/ACCES.md § 12).
  * Chaque module n'importe QUE ce fichier pour connaitre les autres. Le modifier = decision du superviseur.
  */
 import type { Window } from './arming.ts';

@@ -51,6 +51,7 @@ import { reauthenticate } from './reauth.ts';
 import type { ProofService } from './proofpack.ts';
 import type { AccessApi } from './accessapi.ts';
 import type { HoldersApi } from './accessholdersapi.ts';
+import { localDateTime } from './video.ts';
 import type { VideoService } from './video.ts';
 import type { MountContext, Role } from './types.ts';
 import type { Agents } from './agents.ts';
@@ -933,6 +934,19 @@ export function createApp(deps: ApiDeps) {
   // Flux video : accessible a tout utilisateur connecte, l'authentification passe par le cookie.
   app.get('/api/cameras/:id/stream', anyUser, (req, res) => {
     deps.video.attachViewer(String(req.params.id), res);
+  });
+  // Relecture de l'enregistreur (voies Dahua). `replayable` AVANT `:id`. Le navigateur ne fournit que l'heure (ms) :
+  // l'adresse du flux vient toujours de la source enregistree. Chaque relecture acceptee est journalisee.
+  app.get('/api/cameras/replayable', anyUser, (_req, res) => {
+    res.json({ ids: deps.video.listReplayable() });
+  });
+  app.get('/api/cameras/:id/playback', anyUser, (req, res) => {
+    const raw = req.query.at;
+    if (typeof raw !== 'string' || !/^\d{1,15}$/.test(raw)) throw new PsimError(400, 'Parametre at invalide (heure du passage en millisecondes)');
+    const cameraId = String(req.params.id);
+    const at = Number(raw);
+    deps.video.attachPlayback(cameraId, at, res);
+    engine.audit(actorOf(req), 'camera_playback', { deviceId: cameraId, details: `heure demandee ${localDateTime(at)}` });
   });
   app.get('/api/cameras/:id/source', adminOnly, (req, res) => {
     if (engine.getDevice(String(req.params.id))?.kind !== 'camera') throw new PsimError(404, 'Camera introuvable');

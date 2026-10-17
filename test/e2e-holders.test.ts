@@ -1,6 +1,6 @@
 /**
  * Titulaires de badges, groupes, plages, visiteurs, import CSV et synchronisation contre le VRAI serveur (processus
- * `server/index.ts`) : routes /api/access/* de docs/ACCES.md § 11.3. Roles, anti-CSRF, photo, rattachement des passages,
+ * `server/index.ts`) : routes /api/access/* de docs/ACCES.md § 12.3. Roles, anti-CSRF, photo, rattachement des passages,
  * re-authentification, secret de synchronisation (jamais relu), journal infalsifiable sans donnee personnelle, redemarrage.
  * Aucune passerelle MQTT n'est connectee : la synchronisation reste « en attente / transport non pret » (c'est verifie).
  */

@@ -96,7 +96,7 @@ motif que `id`. `credentials` : `{ "username": "…", "password": "…" }` (chac
   « La porte s'est ouverte sans autorisation. Regardez la caméra, puis traitez l'alarme. »).
 - `doorState` : `closed` | `open` | `unknown` (physique, sans la supervision). `deviceStatus` : statut du détecteur.
 - `kind` : `door` | `gate` | `barrier` | `turnstile` ; `doorNo` : 1 à 4, unique par contrôleur.
-- `actuatorId` : réservé au lot AC4 (accepté, stocké, sans effet ici).
+- `actuatorId` : actionneur `lock` (porte) ou `gate` (barrière, portail, tourniquet) qui ouvre cette porte à distance, `null` si aucun (§ 11.1). `doorMode`, `doorModeLabel`, `doorModeAt` : dernier mode annoncé par le contrôleur (F19, § 11.4), `null` tant qu'aucun message n'est arrivé.
 - Corps de création : `{ detectorId, controllerId, doorNo, kind?, emergencyExit?, heldAlarmAfterS?, actuatorId? }` ;
   `detectorId` doit être un détecteur existant de catégorie `access`, pas déjà déclaré (409) ; `controllerId` doit exister ;
   `heldAlarmAfterS` : 10 à 86 400 (défaut 300). Le nom, la zone, l'étage, la position et les caméras liées restent ceux du
@@ -122,7 +122,7 @@ motif que `id`. `credentials` : `{ "username": "…", "password": "…" }` (chac
 ```json
 { "door": { "…DoorView…": "" }, "lastPassages": [ "…10 PassageView, du plus récent au plus ancien…" ],
   "cameras": [ { "id": "CAM-1", "name": "Caméra entrée", "status": "normal" } ],
-  "remote": { "available": false, "reason": "Ouverture à distance : disponible avec le lot AC4" } }
+  "remote": { "available": true, "reason": null, "actuatorId": "GACHE-1", "actuatorName": "Gâche entrée", "actuatorType": "lock" } }
 ```
 
 La consultation de la fiche n'est pas journalisée (elle ne cherche personne). 404 si la porte n'est pas déclarée.
@@ -208,10 +208,37 @@ journal. Les portes se rafraîchissent à chaque événement temps réel d'un d�
 `GET /api/access/doors`, regroupée) et toutes les 15 s tant que l'écran est visible. Le plan colore et nomme l'état de
 chaque porte (forme, icône et mot, jamais la couleur seule).
 
-**Voir la vidéo** : `server/video.ts` ne sait que relayer le flux **en direct** d'une caméra (`/api/cameras/:id/stream`) ;
-il ne relit pas l'enregistreur. Le lien du journal ouvre donc la **caméra en direct** liée à la porte, avec l'heure du
-passage rappelée (« Passage de 14:32 — vous voyez l'image d'aujourd'hui, pas l'enregistrement »). La relecture de
-l'enregistrement à l'heure du passage est un chantier à part (lecture Dahua) : point ouvert.
+**Voir la vidéo** (exigence F6) : le lien du journal ouvre une fenêtre qui montre **l'enregistrement à l'heure du passage**
+quand c'est possible, sinon l'image en direct, et qui dit toujours laquelle des deux est à l'écran.
+
+- **Relecture (voies d'enregistreur Dahua)** : si la source de la caméra liée est de type `rtsp` et que son chemin est une
+  voie d'enregistreur Dahua (`/cam/realmonitor?channel=N`, avec éventuellement `&subtype=M` ; N de 1 à 256), le serveur
+  dérive l'adresse de relecture `rtsp://hôte:port/cam/playback?channel=N&subtype=0&starttime=AAAA_MM_JJ_HH_mm_ss&endtime=AAAA_MM_JJ_HH_mm_ss`
+  (flux principal ; heure **locale du PSIM**, supposée être celle de l'enregistreur ; début = passage − 10 s, fin = passage + 20 s)
+  avec les identifiants de la caméra. Le navigateur ne fournit **que l'heure** (`at`, entier en ms, celle du contrôleur :
+  `atDevice`) ; l'adresse, l'hôte et le chemin viennent toujours de la source enregistrée, et aucun autre chemin RTSP, ni
+  caméra ONVIF ou simulée, n'est relisible (fonction pure `playbackUrl`, `server/video.ts`).
+- **Fenêtre** : elle s'ouvre tout de suite, lit `GET /api/cameras/replayable` (une fois par ouverture), puis affiche
+  `<img src="/api/cameras/<id>/playback?at=<atDevice>">` avec le bandeau « Enregistrement du JJ/MM/AAAA à HH:MM:SS (10 s avant
+  à 20 s après). ». Plusieurs caméras liées : un choix de caméra (la première relisible est ouverte d'abord ; les autres
+  s'ouvrent en direct). Une caméra non relisible reste en **direct**, avec « Image en direct, pas l'enregistrement de HH:MM »
+  et une phrase qui dit pourquoi (« Cette caméra ne permet pas la relecture depuis le PSIM. », ou : liste illisible,
+  heure du passage inconnue). **Échec de la relecture** (image en erreur : pas d'enregistrement à cette heure, enregistreur
+  injoignable, identifiants refusés) : message clair et bouton « Voir l'image en direct ». Échap ou « Fermer » coupe le flux.
+- **Un ffmpeg par demande** (jamais partagé entre opérateurs, contrairement au direct) : même sortie multipart MJPEG ; arrêt à la
+  fin du clip, à la fermeture de la réponse, ou après 45 s au plus (30 s de clip + marge). **Au plus 2 relectures simultanées**
+  (la 3e reçoit 503 « Trop de relectures en cours »). Erreurs : « Aucun enregistrement a cette heure ou enregistreur injoignable »
+  (502/504), 409 si la caméra n'est pas relisible, 400 si l'heure est invalide (dans le futur de plus d'une minute, plus vieille
+  que 400 jours, non entière). Le mot de passe n'apparaît jamais dans une réponse, un en-tête ni un journal.
+
+| Méthode et route | Rôle | Rôle de la route |
+|---|---|---|
+| `GET /api/cameras/replayable` | tous | `{ "ids": ["C-01", …] }` : les caméras relisibles (déclarée **avant** `:id`) |
+| `GET /api/cameras/:id/playback?at=<ms>` | tous | Flux multipart MJPEG de l'enregistrement de `at − 10 s` à `at + 20 s` |
+
+Chaque relecture acceptée est inscrite au journal infalsifiable : action **`camera_playback`** (acteur, caméra, « heure demandee
+AAAA-MM-JJ HH:mm:ss » en heure du PSIM), une ligne par demande ; une demande refusée (heure invalide, caméra non relisible,
+plafond) n'en produit pas.
 
 ## 6. Guide de l'installateur
 
@@ -249,7 +276,17 @@ Base de 900 000 passages (10 000 par jour sur 90 jours, 20 portes, 500 badges) ;
 ## 9. Limites connues et points à qualifier
 
 - **Âge maximal d'un passage** : `PSIM_INGEST_MAX_AGE_S` (7 jours par défaut, 30 jours au plus) borne l'âge de tout message daté, passage différé compris. Un contrôleur resté déconnecté plus longtemps perd les passages les plus anciens à la reconnexion (refus 400 "ts trop ancien"). Pour un site à connexion très instable, monter cette valeur.
-- **Vidéo à l'heure du passage** : voir § 5. Relecture de l'enregistreur Dahua : point « à qualifier » sur matériel réel.
+- **Vidéo à l'heure du passage : relecture Dahua, À QUALIFIER sur matériel réel** (§ 5). Le mécanisme est testé contre un faux
+  flux local ; ce qui suit n'a pas été vérifié sur un enregistreur et se contrôle à la recette :
+  - **format de l'heure et fuseau** du `starttime`/`endtime` (`AAAA_MM_JJ_HH_mm_ss`, heure locale du PSIM supposée identique à
+    celle de l'enregistreur) : à confirmer sur le modèle installé ; un décalage de fuseau ou d'heure d'été montre un autre moment ;
+  - **sous-flux** : la relecture demande toujours `subtype=0` (flux principal enregistré) ; à confirmer que c'est bien celui
+    que l'enregistreur conserve (certains n'enregistrent que le principal, d'autres aussi le secondaire) ;
+  - **délai d'écriture sur disque** : un passage de moins de quelques secondes peut ne pas encore être relisible (l'enregistreur
+    écrit par segments) ; l'opérateur voit alors « Aucun enregistrement à cette heure » et peut ouvrir le direct ;
+  - **fin du clip** : l'enregistreur doit fermer la session RTSP à `endtime` ; sinon la relecture s'arrête d'elle-même après 45 s ;
+  - **écart d'horloge** : l'heure demandée est celle du **contrôleur** (`atDevice`) ; un contrôleur ou un enregistreur mal réglé
+    décale l'extrait (écart de plus de 2 minutes déjà signalé comme défaut, § 6).
 - **Sabotage** : l'alarme `tamper` passe par l'incident habituel ; l'état affiché de la porte ne le montre pas séparément.
 
 ## 10. Rapports et portail (F27, F28)
@@ -284,14 +321,81 @@ Le portail le valide champ par champ (bloc mal formé : résumé refusé en 400 
 
 **Preuve de confidentialité** : `test/portal-access-privacy.test.ts` fouille le corps de `buildSiteSummary`, le corps réellement envoyé par `createPortalSender`, les réponses du portail pour cinq rôles et toutes les tables du portail, à la recherche du nom, du badge, de la `holderRef`, de l'identifiant et de l'hôte du contrôleur ; `test/e2e-portal-access.test.ts` le refait avec un vrai PSIM et un vrai portail, octets échangés enregistrés.
 
-## 11. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
+## 11. Ouverture à distance (AC4 : F17 à F20)
+
+Principe : **le contrôleur décide, le PSIM commande**. L'ouverture à distance ne passe que par le **canal de commande signé** (`docs/COMMANDES.md`, `POST /api/actuators/:id/commands`) : raison obligatoire, mot de passe redemandé selon la configuration de l'actionneur, limite de fréquence, accusé, retour automatique à l'état sûr, journal infalsifiable. Il n'existe aucun autre chemin vers une serrure : l'écran Accès, la fiche d'incident et « Tout ouvrir » appellent tous le même service (`server/actuators.ts`).
+
+### 11.1 Lien porte et actionneur
+
+Une porte est liée à un actionneur déjà créé (écran Équipements, section Actionneurs) par `actuatorId` (fiche de la porte, bloc « Actionneur lié », administrateur ; ou `PUT /api/access/doors/:id`, ou `POST /api/access/doors` à la déclaration). Contrôles, sur l'état **résultant** (on revérifie aussi quand on change seulement le type ou l'issue de secours d'une porte déjà liée), refus avec un message clair :
+
+| Règle | Refus |
+|---|---|
+| L'actionneur existe | 400 |
+| Type cohérent : porte (`door`) avec un actionneur `lock` ; barrière, portail, tourniquet (`gate`, `barrier`, `turnstile`) avec un actionneur `gate` | 400 |
+| Un actionneur ne sert qu'**une seule** porte | 409 |
+| **F18 : issue de secours des deux côtés ou d'aucun** (porte `emergencyExit` et actionneur `emergencyExit`, ou ni l'un ni l'autre) | 400 |
+
+`actuatorId: null` délie la porte. Un actionneur désactivé est accepté au lien, mais la fiche dit que l'ouverture est impossible. Le refus de `lock` sur une issue de secours existe aussi à l'exécution (`server/actuators.ts`, 403 si la configuration a été falsifiée en base, 400 sinon puisque l'action n'existe pas) : le PSIM n'envoie jamais l'ordre `lock` à une issue de secours.
+
+La fiche d'une porte (`GET /api/access/doors/:id`) porte `remote` : `{ available, reason, actuatorId, actuatorName, actuatorType }`. `available` est vrai si le lien est valide, l'actionneur existe et est actif et que les types et l'issue de secours sont cohérents ; sinon `reason` dit pourquoi (aucun actionneur lié, actionneur supprimé, désactivé, type incohérent, issue de secours d'un seul côté). L'écran croise avec `GET /api/actuators` pour les droits de l'utilisateur.
+
+### 11.2 Guide de l'installateur
+
+1. Créer l'actionneur dans le PSIM (Équipements, Actionneurs) : type `lock` pour une porte, `gate` pour une barrière ou un portail, transport MQTT, **issue de secours cochée si la porte en est une** (une serrure d'issue de secours n'accepte jamais « verrouiller »). Copier la **clé de signature** (affichée une seule fois).
+2. Autoriser le compte MQTT de la passerelle pour cet actionneur (`PSIM_MQTT_GATEWAYS`, liste `actuators`), voir `docs/PASSERELLE.md` § 8.1.
+3. Déclarer l'actionneur dans la configuration de la passerelle **à deux endroits** : la section `actuators` du socle (identifiant, `keyFile`, `module: "acces-dahua"` ou `"acces-zkteco"`, actions et plafonds locaux `maxS`, `rest: "lock"`, `emergencyExit`) **et** la configuration du contrôleur dans le module (`actuators: { "GACHE-1": { "door": 1, "type": "lock" } }`, qui dit quelle porte du contrôleur il pilote). Le plafond local de la passerelle prime : un PSIM compromis ne peut pas tenir la porte ouverte plus longtemps.
+4. Fiche de la porte (Accès, Portes), bloc « Ouverture à distance », administrateur : choisir l'actionneur et cliquer « Lier ». La fiche de la porte doit afficher « Ouverture à distance » avec ses boutons ; sinon la raison est écrite.
+5. **Recette** : ouvrir (impulsion) ; vérifier l'accusé « Accusée par l'équipement » ; vérifier que la porte se referme seule ; couper la passerelle (le bouton doit se désactiver : « Liaison coupée ») ; sur une issue de secours, vérifier que « Verrouiller » est absent et que le déverrouillage matériel (centrale incendie) fonctionne **sans** le PSIM.
+
+### 11.3 Guide de l'opérateur (parcours P2, livreur à la barrière)
+
+1. Regarder la caméra de la porte (« Voir la caméra » dans le bloc, ou la caméra de l'incident).
+2. Cliquer **Ouvrir (impulsion)** (porte ou barrière), ou **Ouvrir N minutes** (porte, si l'équipement le permet). Une barrière propose Ouvrir, Fermer, Arrêter.
+3. Saisir la **raison** (« livraison gaz ») et **votre mot de passe**, cocher la confirmation, envoyer.
+4. Attendre l'état **« Accusée par l'équipement »** : « Envoyée » ne veut pas dire « ouverte ». « Échec : aucun accusé » veut dire que l'ordre a pu être exécuté : vérifier sur place.
+5. **Verrouiller** remet la porte en fonctionnement normal (badges actifs) ; c'est une action immédiate, sans raison ni mot de passe, et elle n'existe jamais sur une issue de secours. **Arrêter** stoppe une barrière tout de suite.
+
+Dans la fiche d'un **incident d'accès** (porte forcée, maintenue ouverte, refus répétés), le bloc « Ouverture à distance » apparaît pour la porte de l'incident, et le bouton « Commandes » met l'actionneur de cette porte en tête ; la commande est rattachée à l'incident. Chaque ouverture est journalisée avec sa raison, son auteur et l'incident.
+
+### 11.4 Mode de porte (F19)
+
+Un contrôleur peut être réglé pour garder une porte ouverte ou fermée selon des horaires (par exemple porte ouverte aux heures de bureau). Ce réglage reste **dans le contrôleur**, le PSIM l'affiche. Message de la passerelle : `{"event":"door_mode","doorMode":"normal"|"always_open"|"always_closed","ts":...,"msgId":...}` à la connexion et à chaque changement. Le PSIM garde le dernier mode connu et sa date (`doorMode`, `doorModeLabel`, `doorModeAt` dans la vue de la porte) ; un message plus ancien n'écrase pas un plus récent, une valeur inconnue est ignorée ; un changement de mode est inscrit au journal (`access_door_mode`). Le champ `doorMode` est lu **quel que soit** l'événement du message. Tant qu'aucun message n'est arrivé : « non communiqué par le contrôleur ».
+
+Dépendance de fusion : le moteur (`server/sources.ts`) répond aujourd'hui « event inconnu » à `{"event":"door_mode"}` ; la ligne `door_mode: 'alive'` est ajoutée par la branche de la passerelle. Tant qu'elle n'est pas fusionnée, un message `{"state":"normal","doorMode":...}` est pris en compte, pas l'événement `door_mode`.
+
+### 11.5 « Tout ouvrir » (F20, évacuation)
+
+Réservé à l'**administrateur**. **Cela ne remplace jamais le déverrouillage matériel par la centrale incendie** : les issues de secours doivent s'ouvrir par ce dispositif, le PSIM n'en est jamais l'unique moyen (PRD § 8.9).
+
+- `GET /api/access/evacuation` : aperçu des portes liées à un actionneur, avec l'action (`unlock` ou `open`), la durée maximale, et si la porte est prête ou pourquoi elle ne l'est pas. Rien n'est envoyé.
+- `POST /api/access/evacuation`, corps `{ reason, password, confirm: true, confirmPhrase: "TOUT OUVRIR", durationS? }` : **double confirmation** explicite (première boîte de dialogue avec l'avertissement, seconde avec raison, phrase `TOUT OUVRIR` et mot de passe). 428 si la confirmation, la phrase ou la raison manque, 403 si le mot de passe est faux (rien n'est envoyé), 409 si aucune porte n'est liée, 429 au-delà de 2 évacuations par minute et par administrateur.
+- Réponse : un résultat **par porte** (`sent`, `no_gateway` = aucune passerelle n'écoute l'actionneur, `refused` avec le message du service des commandes : mode maintenance, limite, actionneur inactif, lien incohérent ; `error`). L'échec d'une porte n'arrête pas les autres. Les accusés arrivent ensuite en temps réel, comme pour une commande ordinaire ; l'écran ne compte une porte « ouverte » qu'après son accusé, et dit quelles portes sont à ouvrir ou vérifier sur place.
+- Chaque ouverture est une vraie commande du canal signé (`commande_demandee`, raison `Tout ouvrir (lot xxxxxxxx) : ...`), donc soumise aux plafonds de la passerelle. La durée demandée (300 s par défaut) est ramenée au maximum configuré de chaque actionneur (10 s avec la configuration par défaut d'une serrure) et rapportée. Aucune file ni rejeu : si le PSIM redémarre, rien n'est renvoyé.
+- Journal infalsifiable : `access_evacuation` (qui, raison, nombre de portes) **avant** l'envoi (si l'écriture échoue, rien ne part), `access_evacuation_bilan` après ; échec du mot de passe : `access_evacuation_reauth_echec`.
+- Le bouton est dans Équipements, Actionneurs (administrateur).
+
+### 11.6 Essai de bout en bout et mesures (PRD § 12)
+
+`test/e2e-acces-chaine.test.ts` : faux contrôleur Dahua, module réel `acces-dahua`, socle réel de la passerelle (section `actuators`, clé de signature), broker MQTT du vrai PSIM, vrai PSIM (processus séparé, ports au hasard, base temporaire). Il couvre : passage accepté puis porte forcée (incident critique, passages dans `/api/access/events`) ; ouverture à distance avec raison et mot de passe (ordre signé, `openDoor` reçu par le faux contrôleur, accusé, retour à l'état sûr, journal) et ses refus ; issue de secours (`lock` refusé, liens refusés) ; coupure du contrôleur (porte « hors ligne », passages différés récupérés sans doublon) ; mode de porte.
+
+Mesures locales (boucle locale, 20 essais chacune, deux lancements) :
+
+| Objectif PRD § 12 | Mesure | Objectif |
+|---|---|---|
+| Porte forcée sur le contrôleur, alarme visible dans le PSIM, médiane | 4,0 et 6,3 ms (p95 6,3 et 11,8 ms) | moins de 3 s |
+| Ordre d'ouverture, accusé reçu, 95e centile | 185 et 180 ms (médiane 124 ms) | moins de 2 s |
+
+Ces valeurs sont obtenues en boucle locale avec un faux contrôleur : elles montrent que le PSIM et la passerelle n'ajoutent presque aucun délai, pas la latence du réseau du site ni celle du matériel réel (point à mesurer à la recette sur le contrôleur Dahua pilote).
+
+## 12. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
 
 Contrat commun : `docs/CONTROLE-ACCES.md` § 1 (le code PIN n'est **pas** géré par le PSIM) et § 7 (protocole de synchronisation).
 PRD : F21 à F26, parcours P3. Types partagés (figés) : `server/accessholderstypes.ts`. Fichiers : `server/accessholders.ts`
 (titulaires, droits), `server/accesssync.ts` (synchronisation), `server/accessimport.ts` (import CSV), `server/accessholdersapi.ts`
 (routes), `web/holders.js` et `web/holders.css` (écran « Titulaires »).
 
-### 11.1 Principe
+### 12.1 Principe
 
 Le PSIM est la **référence** des titulaires. Il calcule, pour chaque contrôleur, ce que celui-ci doit contenir (titulaires,
 plages horaires, jours fériés) d'après les droits des groupes, puis le **pousse**, une opération à la fois, par la passerelle.
@@ -302,7 +406,7 @@ Rien de biométrique ni de secret ne circule : ni code PIN, ni gabarit d'emprein
 au plus, JPEG, PNG ou WebP) reste dans la base du PSIM ; elle n'est jamais envoyée ni au portail ni aux contrôleurs, ni mise
 dans un journal ou un export.
 
-### 11.2 Modèle de données
+### 12.2 Modèle de données
 
 Tables (`CREATE TABLE IF NOT EXISTS`, créées par `createHolders`) :
 
@@ -348,7 +452,7 @@ contrôleur n'a pas donné de nom, `holder_name` et `holder_key` sont remplis av
 passe `returned`, le visiteur est retiré des contrôleurs (le contrôleur l'avait déjà expiré seul par `validTo`). La fiche du visiteur est
 supprimée après la durée de conservation du journal des passages.
 
-### 11.3 API `/api/access/*` des titulaires
+### 12.3 API `/api/access/*` des titulaires
 
 Session obligatoire, anti-CSRF commun pour toute écriture, erreurs `{"error":"…"}` en français (400, 401, 403, 404, 409, 413, 428, 429).
 **Opérateur** : consulter les titulaires, les visiteurs, la synchronisation ; créer un visiteur et mettre fin à sa visite. **Administrateur** :
@@ -396,7 +500,7 @@ nominative, une fois par minute et par recherche), `access_sync_key_issued` (jam
 `access_sync_ack_invalid` (système, accusé à signature fausse, une fois par heure et par contrôleur). Les détails portent des **identifiants**
 (`H12`, `B5`, `G3`), jamais un nom ni un numéro de badge : le journal ne s'efface pas.
 
-### 11.4 Synchronisation (précisions du § 7 du contrat)
+### 12.4 Synchronisation (précisions du § 7 du contrat)
 
 Le § 7 de `docs/CONTROLE-ACCES.md` fait foi. Précisions de réalisation, à respecter côté passerelle :
 
@@ -421,7 +525,7 @@ Le § 7 de `docs/CONTROLE-ACCES.md` fait foi. Précisions de réalisation, à re
 - Transport : interface `SyncTransport.publish(controllerId, payload)` et entrée `receiveAck(controllerId, payload)`. Le câblage MQTT
   (`server/mqtt.ts`, droits du compte de la passerelle) est fait après la fusion de la vague 1.
 
-### 11.5 Import CSV (F25)
+### 12.5 Import CSV (F25)
 
 Fichier de 1 Mo et 5 000 lignes au plus. Encodage UTF-8 (avec ou sans BOM) ; si le fichier n'est pas de l'UTF-8 valide, il est lu en
 Windows-1252 (Excel français) et le rapport le dit. Séparateur détecté (`;`, `,` ou tabulation). Guillemets selon la RFC 4180. Une ligne d'en-tête
@@ -444,7 +548,7 @@ Avec matricule : le titulaire existant est mis à jour, sinon créé. Sans matri
 (avertissement « homonyme » si le nom existe déjà). Une colonne vide laisse la valeur actuelle inchangée ; les groupes listés **remplacent** ceux du titulaire
 seulement si la colonne `groupe` est présente et non vide. Les visiteurs ne s'importent pas. Une seule entrée de journal (`access_import`) résume l'import.
 
-### 11.6 Écran « Titulaires » (`web/holders.js`)
+### 12.6 Écran « Titulaires » (`web/holders.js`)
 
 Entrée « Titulaires » dans le menu (opérateur et administrateur). Onglets : **Titulaires** (recherche, fiche), **Visiteurs** (création rapide au poste de
 garde, liste « en cours » avec temps restant et dernier passage), **Groupes et horaires** (administrateur : groupes, plages, jours fériés), **Import**
@@ -452,7 +556,7 @@ garde, liste « en cours » avec temps restant et dernier passage), **Groupes et
 badge » dit ce qui va se passer (« Le badge 0012345 de KONAN Yao sera retiré de 2 contrôleurs ; un passage sera refusé dans les secondes qui suivent. ») et demande
 confirmation. Un état « en attente » ou « échec » dit la raison et quoi faire. Aucune couleur seule : mot et icône.
 
-### 11.7 Câblage MQTT, mise en service, limites connues
+### 12.7 Câblage MQTT, mise en service, limites connues
 
 - **Droits MQTT** (`server/mqtt.ts`) : le compte d'une passerelle ne peut s'abonner qu'au topic `psim/access/<id>/sync` **exact** des contrôleurs dont
   `access_controller.gateway_id` est égal à **son nom de compte MQTT**, et ne publie que sur leur `sync-ack`. Le rattachement est relu en base à chaque

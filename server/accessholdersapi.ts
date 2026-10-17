@@ -17,7 +17,7 @@ import type {
 
 /**
  * Routes `/api/access/*` des titulaires, groupes, plages, jours feries, visiteurs, import CSV et synchronisation
- * (contrat : docs/ACCES.md § 11.3). Aucune regle metier ici : les services valident TOUT (corps, filtres) et levent des
+ * (contrat : docs/ACCES.md § 12.3). Aucune regle metier ici : les services valident TOUT (corps, filtres) et levent des
  * `PsimError` que le gestionnaire d'erreurs d'`api.ts` traduit en `{"error": ...}`. Ce module ne fait que : garde de role,
  * lecture du corps (JSON borne, image ou CSV bruts), identifiants d'URL, re-authentification, codes HTTP et en-tetes.
  *
