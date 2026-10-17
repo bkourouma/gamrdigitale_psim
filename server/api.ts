@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import express from 'express';
-import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import {
   checkCredentials,
   createSession,
@@ -46,6 +46,7 @@ import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import type { Actuators } from './actuators.ts';
+import { reauthenticate } from './reauth.ts';
 import type { ProofService } from './proofpack.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
@@ -521,6 +522,20 @@ export function createApp(deps: ApiDeps) {
   const anyUser = requireRole();
   const adminOnly = requireRole('admin');
   const actorOf = (req: Request) => (req as AuthedRequest).session.username;
+  /**
+   * Re-authentification (docs/COMMANDES.md, A6) : le corps JSON porte `reauth` = mot de passe du compte connecte. A placer APRES
+   * le lecteur JSON. Un cookie de session vole ne suffit plus a creer un compte ou a changer la configuration d'une serrure.
+   */
+  const reauth =
+    (what: string): RequestHandler =>
+    (req, _res, next) => {
+      try {
+        reauthenticate(db, actorOf(req), (req.body as { reauth?: unknown } | undefined)?.reauth, (a, b, c) => engine.audit(a, b, c), { what });
+        next();
+      } catch (err) {
+        next(err);
+      }
+    };
 
   app.get('/api/me', anyUser, (req, res) => {
     const { username, role, restricted } = (req as AuthedRequest).session;
@@ -586,19 +601,19 @@ export function createApp(deps: ApiDeps) {
   app.get('/api/users', adminOnly, (_req, res) => {
     res.json(users.list().map((u) => ({ ...u, recoveryLeft: u.totpEnabled ? users.recoveryLeft(u.username) : 0 })));
   });
-  app.post('/api/users', adminOnly, json, (req, res) => {
+  app.post('/api/users', adminOnly, json, reauth('creation de compte'), (req, res) => {
     res.status(201).json(users.create(actorOf(req), (req.body ?? {}) as Record<string, unknown>));
   });
-  app.patch('/api/users/:username', adminOnly, json, (req, res) => {
+  app.patch('/api/users/:username', adminOnly, json, reauth('modification de compte'), (req, res) => {
     res.json(users.update(actorOf(req), String(req.params.username), (req.body ?? {}) as Record<string, unknown>));
   });
-  app.post('/api/users/:username/reset-password', adminOnly, json, (req, res) => {
+  app.post('/api/users/:username/reset-password', adminOnly, json, reauth('reinitialisation de mot de passe'), (req, res) => {
     res.json(users.resetPassword(actorOf(req), String(req.params.username), (req.body as { password?: unknown } | undefined)?.password));
   });
-  app.post('/api/users/:username/reset-2fa', adminOnly, (req, res) => {
+  app.post('/api/users/:username/reset-2fa', adminOnly, json, reauth('reinitialisation de la double authentification'), (req, res) => {
     res.json(users.adminResetTotp(actorOf(req), String(req.params.username)));
   });
-  app.delete('/api/users/:username', adminOnly, (req, res) => {
+  app.delete('/api/users/:username', adminOnly, json, reauth('suppression de compte'), (req, res) => {
     users.remove(actorOf(req), String(req.params.username));
     res.status(204).end();
   });
@@ -1038,7 +1053,7 @@ export function createApp(deps: ApiDeps) {
     });
   }
   deps.deviceImages?.mount(app, { adminOnly, actorOf });
-  deps.actuators?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
+  deps.actuators?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role, reauth });
   deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------

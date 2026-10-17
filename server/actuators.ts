@@ -886,25 +886,28 @@ export function createActuators(deps: ActuatorsDeps) {
     return (db.prepare('SELECT * FROM actuator_command WHERE actuator_id = ? ORDER BY requested_at DESC, rowid DESC LIMIT ?').all(id, n) as Row[]).map(commandView);
   }
 
-  function mount(app: Express, guards: { anyUser: RequestHandler; adminOnly: RequestHandler; actorOf: (req: Request) => string; roleOf: (req: Request) => Role }): void {
-    const { anyUser, adminOnly, actorOf, roleOf } = guards;
+  function mount(
+    app: Express,
+    guards: { anyUser: RequestHandler; adminOnly: RequestHandler; actorOf: (req: Request) => string; roleOf: (req: Request) => Role; reauth: (what: string) => RequestHandler },
+  ): void {
+    const { anyUser, adminOnly, actorOf, roleOf, reauth } = guards;
     const json = express.json({ limit: '8kb' });
     const userOf = (req: Request) => ({ username: actorOf(req), role: roleOf(req) });
     app.get('/api/actuators', anyUser, (req, res) => res.json(list(roleOf(req))));
-    app.post('/api/actuators', adminOnly, json, (req, res) => {
+    app.post('/api/actuators', adminOnly, json, reauth('creation d un actionneur'), (req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.status(201).json(create(actorOf(req), (req.body ?? {}) as Record<string, unknown>));
     });
-    app.patch('/api/actuators/:id', adminOnly, json, (req, res) => res.json(update(actorOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>)));
-    app.delete('/api/actuators/:id', adminOnly, (req, res) => {
+    app.patch('/api/actuators/:id', adminOnly, json, reauth('modification d un actionneur'), (req, res) => res.json(update(actorOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>)));
+    app.delete('/api/actuators/:id', adminOnly, json, reauth('suppression d un actionneur'), (req, res) => {
       remove(actorOf(req), String(req.params.id));
       res.json({ ok: true });
     });
-    app.post('/api/actuators/:id/key', adminOnly, (req, res) => {
+    app.post('/api/actuators/:id/key', adminOnly, json, reauth('renouvellement de cle d actionneur'), (req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.json(rotateKey(actorOf(req), String(req.params.id)));
     });
-    app.put('/api/actuator-lock', adminOnly, json, (req, res) => {
+    app.put('/api/actuator-lock', adminOnly, json, reauth('mode maintenance des commandes'), (req, res) => {
       const body = (req.body ?? {}) as Record<string, unknown>;
       res.json(setLock(actorOf(req), body.locked, body.reason));
     });
