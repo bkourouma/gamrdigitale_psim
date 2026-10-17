@@ -4,7 +4,7 @@
     "url": "mqtt://127.0.0.1:1883",
     "username": "gw1",
     "passwordFile": "secrets/psim-password.txt",
-    "detectors": ["GW-01", "Z-*", "M-*"]
+    "detectors": ["GW-01", "Z-*", "M-*", "P-*"]
   },
   "dataDir": "data",
   "queue": { "maxMessages": 10000, "maxBytes": 20971520 },
@@ -12,6 +12,44 @@
   "moduleRetry": { "minMs": 5000, "maxMs": 300000 },
   "log": { "file": true, "level": "info" },
   "modules": [
-    { "name": "heartbeat", "config": { "deviceId": "GW-01", "everyS": 60 } }
+    { "name": "heartbeat", "config": { "deviceId": "GW-01", "everyS": 60 } },
+    {
+      "name": "acces-dahua",
+      "enabled": false,
+      "config": {
+        "stateDir": "data/acces-dahua",
+        "controllers": [
+          {
+            "id": "ASC-ENTREE",
+            "host": "192.168.10.20",
+            "username": "psim",
+            "password": { "$file": "secrets/acces-dahua-asc-entree.txt" },
+            "doors": { "1": "P-ENTREE", "2": "P-PARKING" },
+            "actuators": {
+              "SERRURE-ENTREE": { "door": 1, "type": "lock" },
+              "BARRIERE-PARKING": { "door": 2, "type": "gate" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "acces-zkteco",
+      "enabled": false,
+      "config": {
+        "stateDir": "data/acces-zkteco",
+        "listen": { "host": "192.168.10.10", "port": 8088 },
+        "allowFrom": ["192.168.10.0/24"],
+        "controllers": [
+          {
+            "id": "C3-ENTREE",
+            "serial": "CGXH123456789",
+            "kind": "controller",
+            "doors": { "1": "P-PRINCIPALE", "2": "P-STOCK" },
+            "actuators": { "serrure-principale": { "door": 1, "type": "lock", "pulseS": 5 } }
+          }
+        ]
+      }
+    }
   ]
 }

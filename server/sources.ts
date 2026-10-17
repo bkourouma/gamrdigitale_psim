@@ -97,6 +97,7 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   // defauts
   fault: 'fault',
   low_battery: 'fault',
+  clock_drift: 'fault',
   // signes de vie / activite normale
   heartbeat: 'alive',
   ping: 'alive',
@@ -149,6 +150,7 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   power_restored: 'Courant rétabli',
   fault: 'Défaut',
   low_battery: 'Batterie faible',
+  clock_drift: "Horloge de l'équipement déréglée",
   heartbeat: 'Signe de vie',
   ping: 'Signe de vie',
   badge_granted: 'Badge accepté',
