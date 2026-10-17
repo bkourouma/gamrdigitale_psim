@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>GAMR-DIGITALE PSIM</title>
+  <rect width="64" height="64" rx="14" fill="#244C87"/>
+  <path fill="#5DA444" d="M11.17 50.02A24.05 24.05 0 0 1 15.64 20.37L21.76 27.66A14.55 14.55 0 0 0 19.4 45.27Z"/>
+  <path fill="#FADF38" d="M17.48 18.83A24.05 24.05 0 0 1 46.52 18.83L40.4 26.12A14.55 14.55 0 0 0 23.6 26.12Z"/>
+  <path fill="#E35235" d="M48.36 20.37A24.05 24.05 0 0 1 52.83 50.02L44.6 45.27A14.55 14.55 0 0 0 42.24 27.66Z"/>
+  <path fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" d="M32 38L28.58 25.25"/>
+  <circle fill="#FFFFFF" cx="32" cy="38" r="8.6"/>
+  <circle fill="#244C87" cx="28.4" cy="35.7" r="2.4"/>
+</svg>
