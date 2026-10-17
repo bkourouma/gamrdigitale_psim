@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import type { AccessHook } from './access.ts';
 import { appendSealed } from './auditchain.ts';
 import { DAHUA_SUPERVISION_S } from './dahua.ts';
 import { PsimError } from './errors.ts';
@@ -114,6 +115,12 @@ export interface EngineOptions {
    * `Infinity` = sa passerelle est deconnectee, ne pas le juger seul ; `null` = rien a dire.
    */
   silenceReference?: (deviceId: string) => number | null;
+  /**
+   * Journal des acces (voir access.ts) : appele pour tout detecteur de categorie `access` et tout message portant un champ
+   * `access`, APRES `interpret` et AVANT `applyReading`. Il peut refuser le message (rien n'est alors applique), le declarer
+   * deja connu (`duplicate`) ou echouer (erreur 500, le `msgId` n'est pas retenu : la passerelle renverra).
+   */
+  access?: AccessHook;
 }
 
 function describeDuration(ms: number): string {
@@ -313,7 +320,7 @@ export function createEngine(
    * `ts` est l'heure reelle de l'evenement (incident, etat, journal). Un message SANS `ts` est toujours « maintenant » :
    * comportement d'avant, meme si l'horloge du PSIM recule.
    */
-  function ingest(deviceId: string, payload: unknown): { ok: true; duplicate?: true } | { ok: false; status: number; error: string } {
+  function ingest(deviceId: string, payload: unknown): IngestResult {
     const found = getDevice(deviceId);
     if (!found || found.kind !== 'detector') return { ok: false, status: 404, error: 'Detecteur introuvable' };
     const t = now();
@@ -329,11 +336,68 @@ export function createEngine(
     if (!reading.ok) return { ok: false, status: 400, error: reading.error };
     if (meta.aheadMs > FUTURE_TOLERANCE_MS) warnOnce(deviceId, `horodatage ${describeDuration(meta.aheadMs)} dans le futur, ramene a l'heure de reception (horloge de l'equipement ou de sa passerelle a regler)`);
 
+    // Journal des acces : valide et enregistre le passage, suit l'etat de la porte (voir ingestWithAccess).
+    if (options.access && (found.category === 'access' || carriesAccess(payload))) return ingestWithAccess(options.access, found, payload, reading, meta, t);
+    return deliver(found, reading, meta, t);
+  }
+
+  type IngestResult = { ok: true; duplicate?: true } | { ok: false; status: number; error: string };
+
+  /** Applique un message valide a l'equipement, puis retient son `msgId`. */
+  function deliver(found: Device, reading: Extract<Reading, { ok: true }>, meta: MessageMeta, t: number): IngestResult {
     // Le capteur parle : si sa passerelle avait ete declaree injoignable, il reprend d'abord son etat d'avant la coupure.
-    const device = releaseLinkLoss(db, deviceId, t) ? (getDevice(deviceId) as Device) : found;
+    const device = releaseLinkLoss(db, found.id, t) ? (getDevice(found.id) as Device) : found;
     applyReading(device, reading, meta);
-    if (meta.msgId !== null) remember(db, deviceId, meta.msgId, t);
+    if (meta.msgId !== null) remember(db, found.id, meta.msgId, t);
     return { ok: true };
+  }
+
+  /**
+   * Message d'une porte ou portant un champ `access` : le journal des acces (access.ts) le valide et l'enregistre AVANT
+   * l'application. Un refus n'applique rien ; un passage deja connu (index unique du journal, plus durable que la memoire des
+   * `msgId`) est un succes sans effet ; une exception du module est une erreur 500 (le `msgId` n'est pas retenu : la passerelle
+   * renverra). Tout est dans UNE SEULE transaction (un seul commit, donc un seul fsync par message) : si l'application du message
+   * echoue, le passage n'est pas garde non plus et le renvoi le retrouvera.
+   */
+  function ingestWithAccess(access: AccessHook, found: Device, payload: unknown, reading: Extract<Reading, { ok: true }>, meta: MessageMeta, t: number): IngestResult {
+    db.exec('SAVEPOINT ingest_access');
+    let result: IngestResult;
+    try {
+      let verdict: ReturnType<AccessHook['onMessage']>;
+      try {
+        verdict = access.onMessage({ device: found, payload, event: reading.event, state: reading.state, meta });
+      } catch (err) {
+        console.error('[engine] journal des acces :', err);
+        verdict = { ok: false, status: 500, error: 'Erreur interne du journal des acces' };
+      }
+      if (!verdict.ok) result = verdict;
+      else if (verdict.duplicate) {
+        if (meta.msgId !== null) remember(db, found.id, meta.msgId, t);
+        result = { ok: true, duplicate: true };
+      } else result = deliver(found, reading, meta, t);
+    } catch (err) {
+      db.exec('ROLLBACK TO ingest_access');
+      db.exec('RELEASE ingest_access');
+      throw err;
+    }
+    if (!result.ok) db.exec('ROLLBACK TO ingest_access');
+    db.exec('RELEASE ingest_access');
+    return result;
+  }
+
+  const carriesAccess = (payload: unknown): boolean => typeof payload === 'object' && payload !== null && !Array.isArray(payload) && Object.hasOwn(payload, 'access');
+
+  /**
+   * Etat decide par le PSIM lui-meme (ex. escalade d'une porte maintenue ouverte en alarme) : meme chemin que l'etat d'un message
+   * (incident, journal, historique, publication), mais SANS toucher `last_seen` : un equipement muet doit pouvoir passer hors ligne.
+   * Heure = maintenant. Faux si le detecteur n'existe pas.
+   */
+  function setStateBySupervisor(deviceId: string, state: DetectorState, event: string | null): boolean {
+    const device = getDevice(deviceId);
+    if (!device || device.kind !== 'detector') return false;
+    const t = now();
+    applyState(device, state, { eventAt: t, receivedAt: t, dated: false, lateMs: 0, aheadMs: 0, msgId: null }, event);
+    return true;
   }
 
   /** Heure de l'etat deja applique : celle du dernier message qui l'a fixe, ou a defaut celle du dernier changement. */
@@ -856,6 +920,7 @@ export function createEngine(
 
   return {
     ingest,
+    setStateBySupervisor,
     handleDetectorMessage,
     incidentView,
     checkSilentDetectors,

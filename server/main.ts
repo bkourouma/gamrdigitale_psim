@@ -18,6 +18,8 @@ import { beginHistory, purgeHistory } from './history.ts';
 import { buildSiteSummary, createPortalSender } from './portal.ts';
 import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
+import { createAccess } from './access.ts';
+import { createAccessApi } from './accessapi.ts';
 import { createGatewayLink } from './gatewaylink.ts';
 import type { GatewayLink } from './gatewaylink.ts';
 import { acquireLock } from './lock.ts';
@@ -179,7 +181,16 @@ const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
 let arming: Arming | undefined;
 let gatewayLink: GatewayLink | undefined;
+// Journal des acces (portes, passages) : cree AVANT le moteur qui l'appelle ; ses fermetures atteignent le moteur a l'usage, jamais a la creation.
+const access = createAccess({
+  db,
+  key: secretKey,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  setDeviceState: (id, state, event) => engine.setStateBySupervisor(id, state, event),
+  retentionDays: config.accessRetentionDays,
+});
 const engine = createEngine(db, publish, Date.now, {
+  access,
   isArmed: (zone) => arming?.isArmed(zone) ?? true,
   armingState: () => arming?.snapshot() ?? {},
   silentTimeoutMs: config.detectorTimeoutS * 1000,
@@ -557,6 +568,7 @@ const app = createApp({
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
   deviceImages,
   proofs,
+  access: createAccessApi(access),
 });
 
 const server: Server = createWebServer(app, tlsFiles);
@@ -632,6 +644,7 @@ const tickTimer = setInterval(() => {
     arming?.tick(); // armements et desarmements dus au planning
     rules.tick(); // regles de presence : durees, plages horaires, repos
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
+    access.tick(); // portes maintenues ouvertes -> alarme ; purge du journal des passages
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
       sweepSockets();

@@ -206,6 +206,8 @@ export const config = {
   // Messages dates (`ts`) et rejouables (`msgId`, voir ingestmeta.ts) : age maximal d'un message date (au-dela : refuse),
   // qui est aussi la duree de memoire des `msgId` deja traites. 7 jours par defaut.
   ingestMaxAgeS: num('PSIM_INGEST_MAX_AGE_S', 7 * 86_400, 60, 30 * 86_400),
+  // Controle d'acces : duree de conservation du journal des passages (donnees personnelles), en jours, de 7 a 3650. Reglable ensuite dans l'interface.
+  accessRetentionDays: num('PSIM_ACCESS_RETENTION_DAYS', 90, 7, 3650),
   mqttUser: env.PSIM_MQTT_USER ?? 'psim',
   mqttPassword: env.PSIM_MQTT_PASSWORD ?? 'psim-dev-only',
   dataDir: env.PSIM_DATA_DIR ?? 'data',

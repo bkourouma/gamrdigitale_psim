@@ -46,6 +46,7 @@ import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import type { ProofService } from './proofpack.ts';
+import type { AccessApi } from './accessapi.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
 
@@ -96,6 +97,8 @@ export interface ApiDeps {
   deviceImages?: DeviceImages;
   /** Dossier de preuve exportable par incident (GET /api/incidents/:id/proof). */
   proofs?: ProofService;
+  /** Controle d'acces : portes, journal des passages, export (routes /api/access/*, voir accessapi.ts). */
+  access?: AccessApi;
 }
 
 type AuthedRequest = Request & { session: Session };
@@ -948,6 +951,7 @@ export function createApp(deps: ApiDeps) {
   }
   deps.deviceImages?.mount(app, { adminOnly, actorOf });
   deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
+  deps.access?.mount(app, { anyUser, adminOnly, actorOf });
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------
 
