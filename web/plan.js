@@ -10,6 +10,7 @@ import { createDialogs } from './account.js';
 import { CATEGORY_LABEL, formatValue } from './sources.js';
 import { $, h, icon, api, toast, S, SVG_NS, STATUS_LABEL, time, clamp, activeIncidents, currentFloor, isFiring, savePlanPrefs, render, emit, DOOR_STATE } from './core.js';
 import { wallCameraIds, toggleCamera } from './wall.js';
+import { placeDoorBadges } from './doorbadges.js';
 
 export const floorsUi = createFloorsUi({ h, api, toast, icon, dialogs: createDialogs({ h }) });
 
@@ -224,6 +225,81 @@ export function renderPlan() {
       svg.append(line);
     }
   }
+  layoutDoorBadges(); // en dernier : les traits de rappel des pastilles écartées vont dans le même calque que les liens
+}
+
+/** Urgence d'une pastille de porte : celle qui sonne garde sa place, les autres s'écartent d'elle. */
+function doorBadgeRank(pin) {
+  const has = (c) => pin.classList.contains(c);
+  if (has('unacked')) return 0;
+  if (has('alarm')) return 1;
+  if (has('door-forced')) return 2;
+  if (has('door-held_open') || has('prealarm')) return 3;
+  if (has('selected')) return 4;
+  return 5;
+}
+
+/**
+ * Écarte les pastilles d'état de porte qui se recouvriraient (plusieurs portes proches, plan étroit) : on mesure leur
+ * place à l'écran, doorbadges.js calcule le décalage, il est posé sur chacune (propriété `translate`, jamais d'attribut
+ * style écrit dans le HTML). Le plan masqué (autre écran) ne se mesure pas : l'observateur de taille relance le calcul à
+ * son retour.
+ */
+function layoutDoorBadges() {
+  const box = $('plan-pins');
+  if (!box || S.dragging || box.offsetParent === null) return;
+  for (const old of $('plan-links').querySelectorAll('.door-leader')) old.remove();
+  const pins = [...box.querySelectorAll('.pin.has-door')].filter((pin) => pin.querySelector('.pin-door'));
+  if (!pins.length) return;
+  for (const pin of pins) pin.querySelector('.pin-door').style.translate = '';
+  const origin = box.getBoundingClientRect();
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height };
+  };
+  // Ce qu'une pastille de porte ne doit pas recouvrir : les formes et les étiquettes visibles de toutes les pastilles.
+  const obstacles = [];
+  for (const pin of box.querySelectorAll('.pin, .agent-pin')) {
+    for (const part of pin.querySelectorAll('.pin-glyph, .pin-label, .agent-glyph, .agent-label')) {
+      if (part.getClientRects().length === 0) continue;
+      obstacles.push({ ...rect(part), owner: pin.dataset.id ?? '' });
+    }
+  }
+  const ordered = pins.map((pin, i) => ({ pin, i })).sort((a, b) => doorBadgeRank(a.pin) - doorBadgeRank(b.pin) || a.i - b.i);
+  const badges = ordered.map(({ pin }) => ({ id: pin.dataset.id, ...rect(pin.querySelector('.pin-door')) }));
+  const placement = placeDoorBadges(badges, obstacles, { x: 0, y: 0, w: origin.width, h: origin.height });
+  for (const { pin } of ordered) {
+    const { dx, dy } = placement.get(pin.dataset.id) ?? { dx: 0, dy: 0 };
+    if (!dx && !dy) continue;
+    const badge = pin.querySelector('.pin-door');
+    badge.style.translate = `${dx}px ${dy}px`;
+    // Une pastille écartée de sa porte y reste reliée par un trait fin (sinon « Forcée » flotterait sans dire de quelle porte).
+    const glyph = rect(pin.querySelector('.pin-glyph'));
+    const moved = rect(badge);
+    const leader = document.createElementNS(SVG_NS, 'line');
+    leader.setAttribute('x1', ((glyph.x + glyph.w / 2) / origin.width) * 100);
+    leader.setAttribute('y1', ((glyph.y + glyph.h / 2) / origin.height) * 100);
+    leader.setAttribute('x2', ((moved.x + moved.w / 2) / origin.width) * 100);
+    leader.setAttribute('y2', ((moved.y + moved.h / 2) / origin.height) * 100);
+    leader.setAttribute('class', 'door-leader');
+    $('plan-links').append(leader);
+  }
+}
+
+// Le plan change de taille (fenêtre, panneau replié, retour sur Surveillance) : les pastilles de porte se placent de nouveau.
+let doorLayoutFrame = 0;
+try {
+  if (typeof ResizeObserver === 'function' && $('plan-pins')) {
+    new ResizeObserver(() => {
+      if (doorLayoutFrame) return;
+      doorLayoutFrame = requestAnimationFrame(() => {
+        doorLayoutFrame = 0;
+        layoutDoorBadges();
+      });
+    }).observe($('plan-pins'));
+  }
+} catch {
+  /* sans observateur, le placement se fait à chaque dessin du plan */
 }
 
 /** Petit badge d'état de porte sous la pastille : forme (icône) + mot court, en plus de la couleur. */
@@ -250,7 +326,7 @@ function renderDoorAction() {
   const info = DOOR_STATE[door.state] ?? DOOR_STATE.unknown;
   box.replaceChildren(
     h('span', { class: `door-action-state tone-${info.tone}` }, icon(info.icon), h('span', { text: `${door.name || d.name} : ${info.label}` })),
-    h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Fiche de la porte ${door.name || d.name}`, onclick: () => emit('open-door', d.id) }, icon('door'), 'Fiche de la porte'),
+    h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Détails de la porte ${door.name || d.name}`, onclick: () => emit('open-door', d.id) }, icon('door'), 'Détails de la porte'),
   );
   box.hidden = false;
 }
