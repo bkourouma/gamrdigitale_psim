@@ -231,6 +231,7 @@ export function createPatrolReport(deps: { db: DatabaseSync; now?: () => number 
   }
 
   /** Section « Rondes » du rapport imprimable et du rapport e-mail (classes du rapport existant, aucun style ni script). */
+  /** Section du rapport e-mail : totaux par jour et par circuit SEULEMENT (la performance individuelle reste a l'ecran et au CSV). */
   function sectionHtml(report: PatrolReport): string {
     const t = report.totals;
     const stat = (label: string, value: string, note = '') => `<div class="stat"><div class="v">${esc(value)}</div><div class="l">${esc(label)}</div>${note ? `<div class="n">${esc(note)}</div>` : ''}</div>`;
@@ -250,7 +251,7 @@ ${
   t.planned === 0
     ? '<p class="empty">Aucune ronde prévue sur cette période.</p>'
     : `<div class="cols"><div><h2>Rondes par circuit</h2>${table(['Circuit', ...head], report.byRoute.map((r) => [esc(r.name), ...cells(r)]))}</div>
-<div><h2>Rondes par agent</h2>${report.byAgent.length === 0 ? '<p class="empty">Aucune ronde commencée par un agent.</p>' : table(['Agent', ...head], report.byAgent.map((a) => [esc(a.name), ...cells(a)]))}</div></div>`
+<div><h2>Rondes par jour</h2>${table(['Jour', ...head], report.byDay.map((d) => [esc(d.day), ...cells(d)]))}</div></div>`
 }`;
   }
 

@@ -447,7 +447,7 @@ describe('CSV du rapport de rondes', () => {
 // ------------------------------------------------------------------ section HTML
 
 describe('section « Rondes » du rapport', () => {
-  it('chiffres cles, tableaux par circuit et par agent, tout texte echappe, sans script ni style en ligne', () => {
+  it('chiffres cles, tableaux par circuit et par jour (jamais par agent), tout texte echappe, sans script ni style en ligne', () => {
     const e = setup();
     profile(e, 'ali', '<b>x</b>');
     profile(e, 'bob', '"><img src=x onerror=alert(1)>');
@@ -458,13 +458,16 @@ describe('section « Rondes » du rapport', () => {
     run(e, c, at(11, 22), at(11, 22, 30), 'incomplete', 'bob');
     const html = e.report.sectionHtml(e.report.build(range('2026-06-10', '2026-06-11')));
     assert.match(html, /^<h2>Rondes<\/h2>/);
-    assert.ok(!html.includes('<b>x</b>') && html.includes('&lt;b&gt;x&lt;/b&gt;'));
+    // Aucun agent dans l'e-mail : ni son nom ni son identifiant, seulement des totaux par jour et par circuit.
+    assert.ok(!/<b>x<\/b>|&lt;b&gt;x|onerror|bob|ali/.test(html), 'aucun agent dans la section');
+    assert.ok(!html.includes('Rondes par agent'));
     assert.ok(!html.includes('<script') && html.includes('&lt;script&gt;'));
-    assert.ok(!html.includes('<img') && html.includes('&lt;img'));
     assert.ok(!/<style|style=|<script|onerror=\w*\(|javascript:/i.test(html.replace(/&lt;[^]*?&gt;/g, '')), 'ni script ni style en ligne');
     assert.equal((html.match(/<div class="stat">/g) ?? []).length, 5);
     assert.match(html, /class="stats"/);
-    assert.equal((html.match(/<table>/g) ?? []).length, 2, 'un tableau par circuit, un par agent');
+    assert.equal((html.match(/<table>/g) ?? []).length, 2, 'un tableau par circuit, un par jour');
+    assert.match(html, /Rondes par jour/);
+    assert.match(html, /2026-06-10/);
     assert.match(html, /Rondes prévues/);
     assert.match(html, /<div class="l">Faites<\/div>/);
     assert.match(html, /Points contrôlés à l’heure/);
