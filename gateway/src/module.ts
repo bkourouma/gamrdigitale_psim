@@ -38,7 +38,12 @@ export interface DeviceMessage {
   msgId?: string;
   /** Passage a une porte (controle d'acces) : voir AccessPassage. Exige `ts` et `msgId` `acc:<controllerId>:<eventId>`. */
   access?: AccessPassage;
+  /** Mode de la porte (F19), avec `event: 'door_mode'` : `normal` (les badges fonctionnent), `always_open` ou `always_closed`. */
+  doorMode?: DoorMode;
 }
+
+/** Mode de fonctionnement d'une porte dans son controleur (docs/CONTROLE-ACCES.md, § 2). */
+export type DoorMode = 'normal' | 'always_open' | 'always_closed';
 
 export interface MqttLink {
   subscribe(topic: string, onMessage: (topic: string, payload: Buffer) => void): Promise<void>;
