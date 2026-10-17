@@ -40,6 +40,7 @@ function makeCtx(clock?: { t: number }) {
       throw new Error('non utilise');
     },
     log: (level, text) => void logs.push({ level, text }),
+    onActuator: () => undefined,
     config: {},
     now: () => (clock ? clock.t : Date.now()),
   };

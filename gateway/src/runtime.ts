@@ -6,17 +6,22 @@
  *    les autres modules continuent.
  *  - `emit` ne leve jamais : message invalide = rejete et journalise ; message valide = sur le disque avant de rendre la main.
  *  - Un verrou (gateway.lock) empeche deux passerelles d'utiliser la meme file.
+ *  - Actionneurs (section `actuators`) : le pilote de commandes (actuators.ts) recoit les ordres signes du PSIM par la liaison
+ *    PSIM et les remet au gestionnaire que le module a enregistre par `ctx.onActuator`. A l'arret, le pilote ramene au repos,
+ *    une fois et au mieux, les actionneurs dont un retour automatique est programme, AVANT d'arreter les modules.
  *  - Un fichier d'etat (status.json) est reecrit toutes les 10 s : le superviseur s'en sert pour detecter un blocage.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createActuatorPilot } from './actuators.ts';
+import type { ActuatorPilot, ActuatorStats, Scheduler } from './actuators.ts';
 import { MODULES_DIR, moduleEntry, redactUrl } from './config.ts';
 import type { GatewayConfig, ModuleSpec } from './config.ts';
 import { clean } from './log.ts';
 import type { Level, Logger } from './log.ts';
-import type { DeviceMessage, GatewayModule, ModuleContext, ModuleFactory, MqttLink } from './module.ts';
+import type { ActuatorHandler, DeviceMessage, GatewayModule, ModuleContext, ModuleFactory, MqttLink } from './module.ts';
 import { openMqtt } from './mqttlink.ts';
 import { createPsimLink } from './psimlink.ts';
 import type { PsimLink } from './psimlink.ts';
@@ -37,6 +42,8 @@ export interface RuntimeOptions {
   /** Essais : delais de la liaison PSIM. */
   publishTimeoutMs?: number;
   rejectAfter?: number;
+  /** Essais : delais et planificateur du pilote de commandes. */
+  actuators?: { handlerTimeoutMs?: number; restRetryMs?: number; restRetries?: number; schedule?: Scheduler };
 }
 
 export type ModuleState = 'starting' | 'running' | 'retrying' | 'stopping' | 'stopped';
@@ -57,6 +64,8 @@ export interface GatewayStatus {
   psim: { url: string; connected: boolean };
   queue: QueueStats;
   modules: ModuleStatus[];
+  /** Pilote de commandes : absent si aucun actionneur n'est configure. */
+  actuators?: ActuatorStats & { pendingRests: number };
 }
 
 export interface GatewayRuntime {
@@ -65,11 +74,15 @@ export interface GatewayRuntime {
   emit(deviceId: string, msg: DeviceMessage): boolean;
   status(): GatewayStatus;
   queue: DiskQueue;
+  /** Pilote de commandes d'actionneurs ; null si la section `actuators` est vide. */
+  actuators: ActuatorPilot | null;
   stop(): Promise<void>;
 }
 
 export const STATUS_FILE = 'status.json';
 export const LOCK_FILE = 'gateway.lock';
+/** Memoire anti-rejeu des ordres d'actionneurs (dans le dossier de donnees). */
+export const ACTUATORS_STATE_FILE = 'actuators-state.json';
 
 function alive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -131,8 +144,22 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
   const releaseLock = acquireLock(config.dataDir);
   const queue = new DiskQueue(config.dataDir, { ...config.queue, log: logger });
   let link: PsimLink;
+  let pilot: ActuatorPilot | null = null;
   try {
     queue.open();
+    if (config.actuators.length > 0) {
+      pilot = createActuatorPilot({
+        actuators: config.actuators,
+        log: logger,
+        now,
+        stateFile: join(config.dataDir, ACTUATORS_STATE_FILE),
+        // `link` est affecte juste apres : aucun ordre n'arrive avant que la liaison soit demarree.
+        // Un accuse plus tardif que le delai d'accuse du PSIM (5 s) n'a plus de valeur : 5 s au plus, jamais mis en file.
+        publishAck: (actuatorId, payload) => link.publishNow(`psim/actuators/${actuatorId}/ack`, payload, 5000),
+        ...opts.actuators,
+      });
+    }
+    const pilotRef = pilot;
     link = createPsimLink({
       url: config.psim.url,
       username: config.psim.username,
@@ -144,8 +171,10 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       log: logger,
       publishTimeoutMs: opts.publishTimeoutMs,
       rejectAfter: opts.rejectAfter,
+      ...(pilotRef ? { actuators: { ids: pilotRef.ids(), onCommand: (id: string, payload: Buffer) => void pilotRef.handleMessage(id, payload) } } : {}),
     });
   } catch (err) {
+    void pilot?.stop();
     queue.close();
     releaseLock();
     throw err;
@@ -200,6 +229,8 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     status: ModuleStatus;
     instance: GatewayModule | null;
     links: Set<MqttLink>;
+    /** Retraits des gestionnaires d'actionneurs enregistres par l'instance vivante. */
+    actuatorOffs: Map<string, () => void>;
     ctxAlive: { value: boolean };
     timer: NodeJS.Timeout | null;
     delay: number;
@@ -211,11 +242,15 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     status: { label: spec.label, name: spec.name, state: 'starting', failures: 0, lastError: null },
     instance: null,
     links: new Set(),
+    actuatorOffs: new Map(),
     ctxAlive: { value: false },
     timer: null,
     delay: config.moduleRetry.minMs,
     attempt: null,
   }));
+
+  /** Actionneur -> instance de module qui le pilote (une seule instance vivante a la fois). */
+  const actuatorOwner = new Map<string, Slot>();
 
   async function loadFactory(name: string): Promise<ModuleFactory> {
     const file = moduleEntry(name, modulesDir);
@@ -252,6 +287,19 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
         };
       },
       log: (level, text) => logger.log((['info', 'warn', 'error'].includes(level) ? level : 'info') as Level, `[${label}] ${clean(text)}`),
+      onActuator: (actuatorId: string, handler: ActuatorHandler) => {
+        // Toute erreur ici fait echouer le demarrage du module (comportement du socle : journal, arret, nouvel essai).
+        if (!alive.value) throw new Error('module arrete');
+        const shown = clean(actuatorId, 40);
+        const spec = typeof actuatorId === 'string' ? config.actuators.find((a) => a.id === actuatorId) : undefined;
+        if (!spec || !pilot) throw new Error(`actionneur « ${shown} » non declare dans la section « actuators » de la configuration de la passerelle`);
+        if (spec.module !== label) throw new Error(`actionneur « ${shown} » declare pour le module « ${spec.module} » et non pour « ${label} » (section « actuators » de la configuration)`);
+        if (typeof handler !== 'function') throw new Error(`onActuator(« ${shown} ») : un gestionnaire (fonction) est attendu`);
+        const owner = actuatorOwner.get(spec.id);
+        if (owner) throw new Error(`actionneur « ${shown} » deja enregistre par ${owner === slot ? 'ce module' : `le module « ${owner.spec.label} »`}`);
+        slot.actuatorOffs.set(spec.id, pilot.register(spec.id, handler));
+        actuatorOwner.set(spec.id, slot);
+      },
       config: structuredClone(slot.spec.config),
       now,
     };
@@ -269,6 +317,12 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     }
     // Le contexte reste valable pendant stop() (un module peut emettre un dernier etat), plus apres.
     slot.ctxAlive.value = false;
+    // Les gestionnaires de cette instance sont retires : un ordre recu pendant un redemarrage est refuse « unavailable ».
+    for (const [id, off] of slot.actuatorOffs) {
+      off();
+      actuatorOwner.delete(id);
+    }
+    slot.actuatorOffs.clear();
     const links = [...slot.links];
     slot.links.clear();
     await Promise.all(links.map((l) => l.close().catch(() => undefined)));
@@ -314,6 +368,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       psim: { url: redactUrl(config.psim.url), connected: link.connected() },
       queue: queue.stats(),
       modules: slots.map((s) => ({ ...s.status })),
+      ...(pilot ? { actuators: { ...pilot.stats(), pendingRests: pilot.pendingRests().length } } : {}),
     };
   }
 
@@ -340,6 +395,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     emit: (deviceId, msg) => emitFrom('passerelle', deviceId, msg),
     status,
     queue,
+    actuators: pilot,
     stop() {
       stopping ??= (async () => {
         logger.log('info', 'arret de la passerelle...');
@@ -348,6 +404,14 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
         for (const slot of slots) if (slot.timer) clearTimeout(slot.timer);
         // Laisse finir un demarrage en cours (borne par startTimeoutMs), puis arrete chaque module.
         await Promise.all(slots.map((s) => s.attempt?.catch(() => undefined)));
+        // Les actionneurs d'abord : leur gestionnaire (dans le module) doit etre encore la pour ramener au repos.
+        if (pilot) {
+          try {
+            await pilot.stop();
+          } catch (err) {
+            logger.log('error', `arret du pilote de commandes : ${errText(err)}`);
+          }
+        }
         await Promise.all(
           slots.map(async (slot) => {
             slot.status.state = 'stopping';

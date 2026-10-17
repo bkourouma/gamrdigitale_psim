@@ -6,6 +6,11 @@
  * Message refuse par le PSIM (detecteur hors du perimetre du compte de passerelle : le broker coupe la connexion au lieu
  * d'accuser reception) : apres REJECT_AFTER coupures de suite sur CE message, juste apres son envoi, il est mis de cote
  * (rejected.jsonl) pour ne pas bloquer toute la file derriere lui. Une simple panne reseau ne produit pas ce schema.
+ *
+ * Commandes d'actionneurs (docs/COMMANDES.md) : a CHAQUE connexion (la liaison est « clean: true »), un abonnement par actionneur
+ * configure a `psim/actuators/<id>/command` (topic exact, QoS 0, jamais de joker) ; chaque ordre recu est remis au pilote avec
+ * l'identifiant du TOPIC. Les accuses partent par `publishNow` : QoS 1, immediats, JAMAIS dans la file disque (un ordre ou un
+ * accuse en retard n'a aucune valeur, et rejouer un accuse apres une coupure serait trompeur).
  */
 import mqtt from 'mqtt';
 import type { MqttClient } from 'mqtt';
@@ -28,6 +33,8 @@ export interface PsimLinkOptions {
   connectTimeoutMs?: number;
   /** Coupures de suite, juste apres l'envoi du meme message, avant de le mettre de cote (5). */
   rejectAfter?: number;
+  /** Ordres d'actionneurs : identifiants dont on s'abonne aux ordres (a chaque connexion) et fonction qui les recoit. */
+  actuators?: { ids: readonly string[]; onCommand: (actuatorId: string, payload: Buffer) => void };
 }
 
 export interface PsimLink {
@@ -35,12 +42,18 @@ export interface PsimLink {
   /** Nouveau message en file : l'envoyer des que possible. */
   kick(): void;
   connected(): boolean;
+  /**
+   * Publication IMMEDIATE (accuse de commande) : QoS 1, retain false, sans file disque. Vrai si le PSIM a accuse reception ;
+   * faux si la liaison est coupee ou si l'accuse de reception n'est pas venu : le message est alors perdu, volontairement.
+   */
+  publishNow(topic: string, payload: string, timeoutMs?: number): Promise<boolean>;
   /** Arret : laisse au plus `flushMs` pour vider la file si le PSIM est joignable. */
   stop(flushMs?: number): Promise<void>;
 }
 
 /** Une coupure qui survient moins de QUICK_CLOSE_MS apres l'envoi est attribuee au message (refus du broker). */
 const QUICK_CLOSE_MS = 3000;
+const COMMAND_TOPIC = /^psim\/actuators\/([A-Za-z0-9_-]{1,32})\/command$/;
 
 export function createPsimLink(opts: PsimLinkOptions): PsimLink {
   const log = opts.log;
@@ -48,6 +61,7 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
   const connectTimeoutMs = opts.connectTimeoutMs ?? 10_000;
   const rejectAfter = opts.rejectAfter ?? 5;
   const where = redactUrl(opts.url);
+  const commandIds = new Set(opts.actuators?.ids ?? []);
 
   let client: MqttClient | null = null;
   let isConnected = false;
@@ -104,7 +118,19 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
       wasConnected = true;
       failuresInRow = 0;
       log.log('info', `connecte au PSIM (${where}) ; ${opts.queue.stats().pending} message(s) a envoyer`);
+      subscribeActuators(c);
       void pump();
+    });
+    c.on('message', (topic, payload, packet) => {
+      if (client !== c || !opts.actuators) return;
+      const m = COMMAND_TOPIC.exec(topic);
+      // Seul un topic EXACT de la configuration est ecoute ; un ordre « conserve » est perime par nature (M7).
+      if (!m || !commandIds.has(m[1]) || packet?.retain) return;
+      try {
+        opts.actuators.onCommand(m[1], payload);
+      } catch (err) {
+        log.log('error', `ordre d'actionneur : erreur interne (${(err as Error).message})`);
+      }
     });
     c.on('error', (err) => {
       const code = (err as { code?: number }).code;
@@ -123,6 +149,20 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
       failuresInRow++;
       schedule();
     });
+  }
+
+  /** Un abonnement par actionneur (jamais de joker) ; SUBACK 128 = compte non autorise pour cet actionneur. */
+  function subscribeActuators(c: MqttClient): void {
+    for (const id of commandIds) {
+      const refused = () => log.log('error', `actionneur ${id} non autorise pour ce compte : voir PSIM_MQTT_GATEWAYS, liste actuators (les ordres de ${id} ne seront pas recus)`);
+      c.subscribe(`psim/actuators/${id}/command`, { qos: 0 }, (err, granted) => {
+        // Sur un refus (SUBACK 128), la bibliotheque leve une erreur qui PORTE le SUBACK, tandis que `granted` repete le QoS
+        // demande (0) : c'est donc l'erreur qui fait foi.
+        const code = (err as { packet?: { granted?: number[] } } | null)?.packet?.granted?.[0] ?? granted?.[0]?.qos;
+        if (code === 128) return refused();
+        if (err && client === c && isConnected) log.log('warn', `abonnement aux ordres de l'actionneur ${id} impossible (${err.message})`);
+      });
+    }
   }
 
   function publishOne(c: MqttClient, entry: QueueEntry): Promise<void> {
@@ -193,6 +233,26 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
       if (isConnected && !pumping) void pump();
     },
     connected: () => isConnected,
+    publishNow(topic, payload, timeoutMs) {
+      const c = client;
+      if (!c || !isConnected) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const done = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          resolve(ok);
+        };
+        const guard = setTimeout(() => done(false), timeoutMs ?? publishTimeoutMs);
+        guard.unref?.();
+        try {
+          c.publish(topic, payload, { qos: 1, retain: false }, (err) => done(!err));
+        } catch {
+          done(false);
+        }
+      });
+    },
     async stop(flushMs = 3000) {
       if (isConnected && opts.queue.peek() && flushMs > 0) {
         await new Promise<void>((resolve) => {
