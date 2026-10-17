@@ -177,12 +177,14 @@ describe('ecran « Titulaires » : securite de l\'interface (CSP stricte, aucune
     assert.match(src, /Le détail n’a pas pu être lu\./);
   });
 
-  it('l\'operateur ne voit aucun bouton d\'ecriture hors visiteurs : les gestes d\'administration sont gardes par isAdmin', () => {
+  it('l\'operateur peut neutraliser un badge ; les autres gestes d\'administration restent gardes par isAdmin', () => {
     const src = read('holders.js');
     for (const label of ['Désactiver le badge', 'Réactiver le badge', 'Ajouter le badge', 'Modifier', 'Supprimer le titulaire', 'Nouveau titulaire', 'Activer la synchronisation', 'Renouveler la clé', 'Confirmer les suppressions', 'Nouveau groupe', 'Nouvelle plage horaire', 'Enregistrer les jours fériés']) {
       assert.ok(src.includes(label), `bouton « ${label} »`);
     }
-    assert.match(src, /if \(admin && b\.state === 'active'\) \{\n\s*actions\.push\(button\('Désactiver le badge'/);
+    assert.match(src, /if \(b\.state === 'active'\) \{\n\s*actions\.push\(button\('Désactiver le badge'/);
+    assert.match(src, /if \(admin\) actions\.push\(button\('Rendre le badge'/);
+    assert.match(src, /else if \(admin && \(b\.state === 'disabled' \|\| b\.state === 'lost'\)\)/);
     assert.match(src, /const addForm = admin\n/);
     assert.match(src, /let adminBar = null;\n\s*if \(admin\) \{/);
     assert.match(src, /newBtn\.hidden = !isAdmin\(\)/);

@@ -19,7 +19,7 @@
  *   4. passerelle arretee puis relancee, trois modifications en attente : une seule fois, dans l'ordre ; coupure de la liaison MQTT
  *      (proxy TCP entre la passerelle et le courtier du PSIM : coupe puis retabli)
  *   5. redemarrage du PSIM (processus tue) en cours de synchronisation : reprise, aucune perte, `seq` jamais en arriere ;
- *      5b (todo) : PSIM restaure depuis une ancienne sauvegarde, `seq` en retard sur la passerelle
+ *      5b : PSIM restaure depuis une ancienne sauvegarde : ancien `seq` refuse, puis renouvellement coordonne de la cle
  *   6. droits MQTT constates avec le vrai client de la passerelle (SUBACK, publication de l'accuse, refus de l'ordre)
  *   7. plage « fermee les jours feries » (refus not_supported + phrase exacte), plage « Tout le temps », jours feries
  *   8. cle : mauvaise cle (rien d'applique, en attente puis echec), bonne cle retablie, cle renouvelee (horloge du PSIM acceleree)
@@ -1258,7 +1258,7 @@ describe('synchronisation des titulaires : API du PSIM -> courtier -> passerelle
     await until('liste des titulaires coherente', async () => ok(await p.api('GET', '/api/access/holders?limit=100'), 200).total === 1 + N);
   });
 
-  it('5b. [a corriger] PSIM restaure depuis une ancienne sauvegarde (seq en retard sur la passerelle) : la synchronisation devrait reprendre seule', { timeout: 120_000, todo: 'procedure « remettre les deux cotes a zero » en cours chez un autre agent : le seq du PSIM restaure est <= au dernier seq de la passerelle, tout est ignore (aucun accuse), l\'operation reste en vol' }, async (t) => {
+  it('5b. restauration ancienne : ancien seq refuse, puis renouvellement coordonne de la cle et reprise', { timeout: 120_000 }, async (t) => {
     const root = tempRoot('psim-e2e-sync-sauvegarde-');
     let p = await bootPsim({ root });
     cleanups.push(() => killPsim(p));
@@ -1300,7 +1300,16 @@ describe('synchronisation des titulaires : API du PSIM -> courtier -> passerelle
     console.log(`[note] sc.5b : seq du PSIM apres restauration = ${psimSeq}, seq de la passerelle = ${gatewaySeq(site)}`);
     t.diagnostic(`apres restauration : applique=${applied} (${ms(t0)} ms), etat PSIM=${status.state}, seq passerelle=${gatewaySeq(site)}, ordres rejoues ignores : ${gw.rt.status().accessSync.replayed}`);
     console.log(`[note] sc.5b : apres restauration d'une ancienne sauvegarde du PSIM, applique=${applied}, etat PSIM=${status.state}, ordres ignores par la passerelle (seq ancien)=${gw.rt.status().accessSync.replayed}`);
-    assert.equal(applied, true, 'la synchronisation reprend seule apres une restauration');
+    assert.equal(applied, false, 'un ordre ancien ne doit jamais contourner la protection anti-rejeu');
+    assert.ok(gw.rt.status().accessSync.replayed >= 1, 'la passerelle a refuse le seq en retard');
+    // L'administrateur a compare les droits restores avec l'etat attendu avant cette reprise volontaire.
+    site.psim = p;
+    const renewed = await issueKey(site, true);
+    await gw.stop();
+    const gw2 = await startGateway(site, { key: renewed });
+    await until('titulaire applique apres renouvellement coordonne', () => fake.cards.some((c) => c.CardNo === card), 20_000, 50);
+    await waitSettled(p, site.ctl, 20_000);
+    assert.ok(gw2.log.has(/numero de sequence remis a zero/), gw2.log.text());
   });
 
   // ------------------------------------------------------------------------------------------------------------------------

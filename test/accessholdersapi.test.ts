@@ -107,6 +107,7 @@ async function start(opts: { reauth?: boolean; db?: ReturnType<typeof openDb> } 
     anyUser,
     adminOnly,
     actorOf: (req) => req.header('x-user') ?? '',
+    roleOf: (req) => req.header('x-role') ?? '',
     reauth: opts.reauth
       ? (what) => (req, _res, next) => {
           const pw = (req.body as { reauth?: unknown } | undefined)?.reauth;
@@ -142,6 +143,7 @@ async function start(opts: { reauth?: boolean; db?: ReturnType<typeof openDb> } 
 
 const ADMIN = { 'x-user': 'alice', 'x-role': 'admin' };
 const OPER = { 'x-user': 'bob', 'x-role': 'operator' };
+const AGENT = { 'x-user': 'carole', 'x-role': 'agent' };
 
 async function call(rig: Rig, method: string, path: string, headers: Record<string, string>, body?: unknown, contentType?: string) {
   const h: Record<string, string> = { ...headers };
@@ -177,7 +179,7 @@ const ROUTES: [string, string, 'any' | 'admin', unknown?, string?][] = [
   ['PUT', '/api/access/holders/7/photo', 'admin', Buffer.from([1, 2, 3]), 'image/png'],
   ['DELETE', '/api/access/holders/7/photo', 'admin'],
   ['POST', '/api/access/holders/7/badges', 'admin', { number: '12' }],
-  ['PATCH', '/api/access/badges/5', 'admin', { state: 'lost' }],
+  ['PATCH', '/api/access/badges/5', 'any', { state: 'lost' }],
   ['DELETE', '/api/access/badges/5', 'admin'],
   ['GET', '/api/access/groups', 'any'],
   ['GET', '/api/access/groups/3', 'any'],
@@ -233,6 +235,25 @@ describe('routes des titulaires : roles', () => {
       const r = await call(rig, m, p, OPER, body, ct);
       assert.ok(r.status >= 200 && r.status < 300, `${m} ${p} -> ${r.status}`);
     }
+  });
+
+  it('l operateur peut neutraliser un badge, mais ne peut ni le reactiver ni le rendre', async () => {
+    for (const state of ['disabled', 'lost']) {
+      rig.calls.length = 0;
+      const r = await call(rig, 'PATCH', '/api/access/badges/5', OPER, { state });
+      assert.equal(r.status, 200, state);
+      assert.equal(rig.calls.at(-1)?.name, 'setBadgeState');
+    }
+    for (const state of ['active', 'returned']) {
+      rig.calls.length = 0;
+      const r = await call(rig, 'PATCH', '/api/access/badges/5', OPER, { state });
+      assert.equal(r.status, 403, state);
+      assert.equal(rig.calls.length, 0, state);
+    }
+    rig.calls.length = 0;
+    const agent = await call(rig, 'PATCH', '/api/access/badges/5', AGENT, { state: 'lost' });
+    assert.equal(agent.status, 403);
+    assert.equal(rig.calls.length, 0);
   });
 
   it('l administrateur passe partout avec les bons codes', async () => {

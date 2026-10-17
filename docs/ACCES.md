@@ -552,7 +552,7 @@ seulement si la colonne `groupe` est présente et non vide. Les visiteurs ne s'i
 
 Entrée « Titulaires » dans le menu (opérateur et administrateur). Onglets : **Titulaires** (recherche, fiche), **Visiteurs** (création rapide au poste de
 garde, liste « en cours » avec temps restant et dernier passage), **Groupes et horaires** (administrateur : groupes, plages, jours fériés), **Import**
-(administrateur), **Synchronisation** (état par contrôleur). L'opérateur ne voit ni les boutons d'écriture (hors visiteurs) ni l'import. Le bouton « Désactiver le
+(administrateur), **Synchronisation** (état par contrôleur). L'opérateur peut créer et terminer une visite, ainsi que désactiver ou déclarer perdu un badge. Réactiver, rendre ou supprimer un badge reste réservé à l'administrateur. L'opérateur ne voit pas les autres boutons d'écriture ni l'import. Le bouton « Désactiver le
 badge » dit ce qui va se passer (« Le badge 0012345 de KONAN Yao sera retiré de 2 contrôleurs ; un passage sera refusé dans les secondes qui suivent. ») et demande
 confirmation. Un état « en attente » ou « échec » dit la raison et quoi faire. Aucune couleur seule : mot et icône.
 
@@ -570,7 +570,8 @@ confirmation. Un état « en attente » ou « échec » dit la raison et quoi fa
 - **À la charge du module de passerelle** : accepter `set_holidays` avec `dates: []` (liste vidée après un envoi), traiter `seq` comme au § 7 du contrat, et se souvenir que
   `seq` repart de 1 si le PSIM perd son état de synchronisation (suppression puis recréation d'un contrôleur, restauration d'une ancienne sauvegarde) : dans ce cas,
   remettre à zéro le dernier `seq` appliqué de la passerelle en même temps qu'on renouvelle la clé.
+- **Après restauration d'une ancienne sauvegarde du PSIM** : comparer les titulaires et badges de la sauvegarde avec l'état actuel avant toute reprise (un badge révoqué peut y être encore actif). Le `seq` restauré est plus ancien que celui de la passerelle et doit être refusé par son anti-rejeu. Sur le PSIM restauré, renouveler la clé de synchronisation avec le compte administrateur ; recopier la nouvelle clé dans la configuration du module, puis redémarrer la passerelle. Son compteur de synchronisation repart à zéro pour cette nouvelle clé. Vérifier que les changements voulus sont appliqués et que l'écran affiche « synchronisé » ; ne jamais effacer seulement le compteur du PSIM ou le fichier d'état de la passerelle avec l'ancienne clé.
 - **Ce que le PSIM ne fait pas** : il ne lit pas le contenu du contrôleur (un titulaire créé directement sur le contrôleur n'est ni vu ni supprimé) ; il ne gère ni code PIN
   ni empreinte ni visage ; si une plage est refusée par le contrôleur, les titulaires qui l'utilisent sont quand même envoyés (le contrôleur les refusera, l'écran montre l'échec).
-- **Hypothèses prudentes** : un opérateur ne peut pas désactiver un badge (administrateur seulement) ; une suppression automatique de visiteurs échus compte dans la limite
+- **Droits d'urgence** : un opérateur peut désactiver ou déclarer perdu un badge ; la réactivation reste réservée à l'administrateur. Une suppression automatique de visiteurs échus compte dans la limite
   de 20 suppressions (au-delà, confirmation) ; les journaux ne contiennent que des identifiants (`H12`, `B5`), pas de noms.
