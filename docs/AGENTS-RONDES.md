@@ -255,6 +255,17 @@ Nouvelle entrée `ROUTES` « Rondes » (admin ; lecture pour operator du journal
    `Session terminée` ; l'application distingue les deux par le message ou par `GET /api/agent/phone`.
 4. `deferred` est renvoyé en booléen JSON.
 
+## Avenant 2 (17 octobre 2026)
+
+1. **Décision de l'utilisateur** : le chef de poste (rôle `operator`) peut **déverrouiller** le code d'un agent et
+   **terminer** son service. Routes ouvertes à `admin` + `operator` : `GET /api/agents` (lecture),
+   `POST /api/agents/:username/unlock` (nouvelle, équivalent de `PATCH {unlock:true}`),
+   `POST /api/agents/:username/end-shift`. Création, modification, retrait d'agents et téléphones restent `admin`.
+   Chaque action est journalisée avec l'acteur.
+2. `GET /api/patrols/runs` renvoie pour chaque ronde les points attendus (`checkpoints` avec `done`, `doneAt`) et
+   `missing` (noms des points manqués), pour que l'opérateur, qui ne lit pas les circuits, voie les manques.
+3. `GET /api/patrols/checkpoints/:id/qr.svg` ignore tout paramètre de requête (l'écran ajoute `?v=<code>`).
+
 ## Lot S4 (AG5, après fusion de S1)
 
 Pastilles des agents en service sur le plan du poste de garde (`/api/patrols/positions`, « il y a 4 min »),
