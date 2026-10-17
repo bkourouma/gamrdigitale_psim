@@ -324,6 +324,8 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
   const loadError = (title, err, retry) =>
     h('div', { class: 'notice is-alarm' }, icon('state-alarm'), h('span', {}, h('strong', { text: `${title} ` }), `${err.message}. `, h('button', { class: 'btn btn-sm', type: 'button', text: 'Réessayer', onclick: retry })));
   const isShown = (el) => el.isConnected && !el.closest('[hidden]');
+  /** Seul l'administrateur crée, modifie et retire un agent ; le chef de poste déverrouille et termine un service. */
+  const isAdmin = () => getMe()?.role === 'admin';
 
   /** Nœud <time> (date complète en infobulle) ; « — » si l'heure est absente. */
   function timeNode(ts, label = whenText(ts, nowFn())) {
@@ -513,6 +515,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
 
   async function loadAgents({ background = false } = {}) {
     resetIfOtherAccount();
+    if (createPanel) createPanel.hidden = !isAdmin();
     armAgentsTimer();
     const req = ++agentsReq;
     const ep = epoch;
@@ -545,6 +548,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
     if (background && typingInEditor()) return; // l'état affiché est un peu ancien ; la saisie en cours passe avant
     agentsUpdated.textContent = `Mis à jour à ${clock(now)}`;
     agentsLoaded = true;
+    if (createPanel) createPanel.hidden = !isAdmin(); // la création est réservée à l'administrateur
     const key = agentsFocus.take();
     // En service d'abord (c'est ce qu'on cherche), puis par nom.
     const sorted = [...list].sort((a, b) => Number(Boolean(b.shift)) - Number(Boolean(a.shift)) || frSort(a.displayName, b.displayName));
@@ -559,7 +563,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
           icon('users'),
           h('strong', { text: 'Aucun agent pour l’instant.' }),
           h('span', { text: 'Un agent est un gardien ou un rondier. Il se connecte sur un téléphone appairé avec son code personnel.' }),
-          h('button', { class: 'btn btn-primary', type: 'button', 'data-key': 'ag:empty-add', onclick: () => createForm.focus() }, icon('plus'), 'Ajouter un agent'),
+          isAdmin() ? h('button', { class: 'btn btn-primary', type: 'button', 'data-key': 'ag:empty-add', onclick: () => createForm.focus() }, icon('plus'), 'Ajouter un agent') : null,
         ),
       );
     } else {
@@ -575,7 +579,9 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
             h('tbody', {}, ...sorted.flatMap((a) => agentRows(a, now))),
           ),
         ),
-        h('p', { class: 'panel-note' }, 'Un agent se connecte sur un téléphone déjà appairé : voir l’', h('a', { href: '#/rondes/phones', text: 'onglet Téléphones' }), '.'),
+        isAdmin()
+          ? h('p', { class: 'panel-note' }, 'Un agent se connecte sur un téléphone déjà appairé : voir l’', h('a', { href: '#/rondes/phones', text: 'onglet Téléphones' }), '.')
+          : h('p', { class: 'panel-note', text: 'Chef de poste : vous pouvez déverrouiller le code d’un agent et terminer son service. Le reste se règle avec un compte administrateur.' }),
       );
     }
     agentsFocus.restore(key);
@@ -608,7 +614,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
         agentsFocus.mark(k('unlock'));
         setBusy(unlock, true);
         try {
-          await api(path, { method: 'PATCH', body: { unlock: true } });
+          await api(`${path}/unlock`, { method: 'POST' });
           if (ep !== epoch) return;
           toast(`Code de ${name} déverrouillé`, 'ok');
         } catch (err) {
@@ -622,8 +628,10 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
     }
 
     // Actions
-    const editBtn = h('button', { class: 'btn btn-sm', type: 'button', 'aria-expanded': 'false', 'aria-label': `Modifier ${name}`, 'data-key': k('edit') }, icon('pencil'), 'Modifier');
-    const actions = [editBtn];
+    // Le chef de poste (operator) lit la liste, déverrouille un code et termine un service : ni modification ni retrait.
+    const admin = isAdmin();
+    const editBtn = admin ? h('button', { class: 'btn btn-sm', type: 'button', 'aria-expanded': 'false', 'aria-label': `Modifier ${name}`, 'data-key': k('edit') }, icon('pencil'), 'Modifier') : null;
+    const actions = editBtn ? [editBtn] : [];
     if (a.shift) {
       const end = h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': `Terminer son service : ${name}`, 'data-key': k('end') }, icon('logout'), 'Terminer son service');
       end.addEventListener('click', async () => {
@@ -655,7 +663,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
       editors.delete(a.username);
       loadAgents();
     });
-    actions.push(retire);
+    if (admin) actions.push(retire);
 
     const row = h(
       'tr',
@@ -668,6 +676,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
       h('td', { 'data-label': 'Durée maximale', text: hoursText(a.maxShiftMinutes) }),
       h('td', { class: 'adm-actions-cell' }, h('div', { class: 'actions' }, ...actions)),
     );
+    if (!editBtn) return [row];
 
     editBtn.addEventListener('click', () => {
       const existing = editors.get(a.username);
@@ -889,6 +898,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
   }
 
   const createForm = buildCreateForm();
+  let createPanel = null;
   agentsPanel.replaceChildren(
     h(
       'div',
@@ -899,12 +909,12 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
         h('div', { class: 'panel-head' }, h('h2', { id: 'ag-list-title', tabindex: '-1' }, icon('users'), 'Agents'), h('div', { class: 'actions ag-refresh' }, agentsUpdated, agentsRefresh)),
         h('div', { class: 'panel-body' }, agentsBox),
       ),
-      h(
+      (createPanel = h(
         'section',
         { class: 'panel', 'aria-labelledby': 'ag-create-title' },
         h('div', { class: 'panel-head' }, h('h2', { id: 'ag-create-title' }, icon('plus'), 'Ajouter un agent')),
         h('div', { class: 'panel-body' }, createForm.el),
-      ),
+      )),
     ),
   );
 

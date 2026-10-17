@@ -41,7 +41,7 @@ export const MAX_ROUTE_POINTS = 200;
 export const TABS = [
   { key: 'points', label: 'Points de contrôle', admin: true },
   { key: 'routes', label: 'Circuits', admin: true },
-  { key: 'agents', label: 'Agents', admin: true },
+  { key: 'agents', label: 'Agents', admin: false }, // l'opérateur : liste, déverrouillage et fin de service (avenant 2)
   { key: 'phones', label: 'Téléphones', admin: true },
   { key: 'journal', label: 'Journal', admin: false },
 ];

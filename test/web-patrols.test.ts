@@ -103,12 +103,14 @@ describe('ecran « Rondes » : page et navigation', () => {
     const line = /^\s*rondes: \{[^\n]*\},$/m.exec(app)?.[0] ?? '';
     assert.ok(line, 'entree ROUTES rondes');
     assert.doesNotMatch(line, /admin: true/, 'un operateur lit le journal des rondes');
-    assert.deepEqual(patrols.tabsFor('operator').map((t) => t.key), ['journal']);
+    assert.deepEqual(patrols.tabsFor('operator').map((t) => t.key), ['agents', 'journal'], 'avenant 2 : le chef de poste a Agents (déverrouiller, terminer un service) et le journal');
     assert.deepEqual(patrols.tabsFor('admin').map((t) => t.key), ['points', 'routes', 'agents', 'phones', 'journal']);
     assert.equal(patrols.defaultTab('operator'), 'journal');
     assert.equal(patrols.defaultTab('admin'), 'points');
     assert.equal(patrols.tabFromHash('#/rondes/agents', 'admin'), 'agents');
-    assert.equal(patrols.tabFromHash('#/rondes/agents', 'operator'), null, 'un operateur ne peut pas ouvrir Agents par l’adresse');
+    assert.equal(patrols.tabFromHash('#/rondes/agents', 'operator'), 'agents');
+    assert.equal(patrols.tabFromHash('#/rondes/phones', 'operator'), null, 'un operateur ne peut pas ouvrir Telephones par l’adresse');
+    assert.equal(patrols.tabFromHash('#/rondes/points', 'operator'), null);
     assert.equal(patrols.tabFromHash('#/rondes/journal', 'operator'), 'journal');
     assert.equal(patrols.tabFromHash('#/rondes/inconnu', 'admin'), null);
   });
@@ -120,6 +122,16 @@ describe('ecran « Rondes » : page et navigation', () => {
     assert.match(app, /view === 'rondes'\) \{\s*patrolsView\.hide\(\);\s*agentsAdmin\.hide\(\);/);
     assert.match(app, /view === 'rondes'\) \{\s*patrolsView\.show\(\)/);
     assert.match(app, /patrolsView\.reset\(\);\s*agentsAdmin\.reset\(\);/, 'rien du compte precedent ne reste apres une deconnexion');
+  });
+
+  it('avenant 2 : le chef de poste deverrouille par la route dediee et ne voit ni creation, ni modification, ni retrait', () => {
+    const src = read('agents-admin.js');
+    assert.match(src, /api\(`\$\{path\}\/unlock`, \{ method: 'POST' \}\)/);
+    assert.match(src, /api\(`\$\{path\}\/end-shift`, \{ method: 'POST' \}\)/);
+    assert.match(src, /const isAdmin = \(\) => getMe\(\)\?\.role === 'admin'/);
+    assert.match(src, /if \(admin\) actions\.push\(retire\)/, 'retrait reserve a l’administrateur');
+    assert.match(src, /const editBtn = admin \?/, 'modification reservee a l’administrateur');
+    assert.match(src, /createPanel\.hidden = !isAdmin\(\)/, 'creation reservee a l’administrateur');
   });
 
   it('l’ecran des comptes ne liste pas les agents de terrain', () => {
