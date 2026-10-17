@@ -5,6 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -13,13 +14,15 @@ import { pathToFileURL } from 'node:url';
 import type { DeviceMessage, ModuleContext } from '../src/module.ts';
 import { ActuatorFailure, makeActuatorHandler } from '../src/modules/acces-commun/actuator.ts';
 import type { ActuatorHandler } from '../src/modules/acces-commun/actuator.ts';
-import { passageMessage } from '../src/modules/acces-commun/commun.ts';
-import { DEFAULT_THRESHOLDS, parseConfig } from '../src/modules/acces-dahua/config.ts';
+import { SlotMap, epochEventId, makeSyncHandler, passageMessage } from '../src/modules/acces-commun/commun.ts';
+import type { AccessSyncHandler, AccessSyncOp } from '../src/modules/acces-commun/commun.ts';
+import { DEFAULT_SCHEDULES, DEFAULT_THRESHOLDS, parseConfig } from '../src/modules/acces-dahua/config.ts';
 import type { Timers } from '../src/modules/acces-dahua/controller.ts';
 import { DahuaDoorDriver } from '../src/modules/acces-dahua/driver.ts';
 import { AuthGate, AUTH_BLOCK_MS, DahuaAuthError, DahuaHttp, DahuaHttpError } from '../src/modules/acces-dahua/http.ts';
 import { createModule } from '../src/modules/acces-dahua/index.ts';
 import type { AccesDahuaModule } from '../src/modules/acces-dahua/index.ts';
+import { DahuaSyncDriver, dayBounds, enc, formatLocal, scheduleSegments } from '../src/modules/acces-dahua/sync.ts';
 import {
   ERROR_REASONS,
   METHODS,
@@ -294,8 +297,8 @@ describe('acces-dahua : protocole', () => {
     const c = d('ChassisIntruded', 'Start');
     assert.deepEqual([c.kind, (c as { ctlKind?: string }).ctlKind], ['controller', 'tamper']);
     assert.equal((d('ChassisIntruded', 'Stop') as { ctlKind?: string }).ctlKind, 'tamper_end');
-    assert.equal(d('Duress', 'Start').kind, 'none');
-    assert.match((d('Duress', 'Start') as { reason: string }).reason, /^alarme de contrainte/);
+    assert.equal(door(d('Duress', 'Start')).doorKind, 'duress', 'la contrainte est une alarme (panic), plus ignoree');
+    assert.equal(d('Duress', 'Stop').kind, 'none', 'une contrainte est sans fin');
     assert.equal(d('RepeatEnter', 'Pulse').kind, 'none');
     assert.equal(d('VideoMotion', 'Start').kind, 'none');
     assert.equal(d('DoorNotClosed', 'Start', undefined, 7).kind, 'none', 'porte hors plage');
@@ -421,7 +424,10 @@ describe('acces-dahua : configuration', () => {
     assert.deepEqual(cfg.thresholds, DEFAULT_THRESHOLDS);
     assert.deepEqual(cfg.reconnect, { minMs: 1000, maxMs: 60_000 });
     const c = cfg.controllers[0]!;
-    assert.deepEqual([c.id, c.host, c.port, c.username, c.utcOffsetMin, c.doorBase, c.remoteUserId], ['CTL-1', '192.168.10.20', 80, 'psim', 0, 0, null]);
+    assert.deepEqual([c.id, c.host, c.port, c.username, c.utcOffsetMin, c.doorBase, c.remoteUserId, c.epoch], ['CTL-1', '192.168.10.20', 80, 'psim', 0, 0, null, 0]);
+    assert.deepEqual(cfg.schedules, DEFAULT_SCHEDULES);
+    assert.deepEqual(DEFAULT_SCHEDULES, { min: 1, max: 127 });
+    assert.equal(cfg.thresholds.modeCheckS, 60);
     assert.deepEqual([...c.doors], [[1, 'P-ENTREE'], [2, 'P-SALLE-SERVEUR']]);
     assert.deepEqual([...c.actuators], [['ACT-ENTREE', { door: 1, type: 'lock' }], ['ACT-BARRIERE', { door: 2, type: 'gate' }]]);
   });
@@ -430,11 +436,13 @@ describe('acces-dahua : configuration', () => {
     const cfg = parseConfig({
       stateDir: 'data/acces',
       controllers: [{ ...baseController(), port: 8080, utcOffsetMin: 60, doorBase: 1, remoteUserId: 9, host: 'controleur-1.local' }],
-      thresholds: { deniedCount: 5, deniedWindowS: 120, heartbeatS: 30, clockDriftMs: 60_000, silenceMs: 20_000, offlineGraceMs: 10_000, longUnlockS: 90 },
+      thresholds: { deniedCount: 5, deniedWindowS: 120, heartbeatS: 30, clockDriftMs: 60_000, silenceMs: 20_000, offlineGraceMs: 10_000, longUnlockS: 90, modeCheckS: 30 },
+      schedules: { min: 2, max: 40 },
       reconnect: { minMs: 500, maxMs: 30_000 },
     });
     assert.equal(cfg.stateDir, 'data/acces');
-    assert.deepEqual(cfg.thresholds, { deniedCount: 5, deniedWindowS: 120, heartbeatS: 30, clockDriftMs: 60_000, silenceMs: 20_000, offlineGraceMs: 10_000, longUnlockS: 90 });
+    assert.deepEqual(cfg.thresholds, { deniedCount: 5, deniedWindowS: 120, heartbeatS: 30, clockDriftMs: 60_000, silenceMs: 20_000, offlineGraceMs: 10_000, longUnlockS: 90, modeCheckS: 30 });
+    assert.deepEqual(cfg.schedules, { min: 2, max: 40 });
     assert.equal(cfg.controllers[0]!.doorBase, 1);
   });
 
@@ -844,6 +852,8 @@ interface BootOptions {
   fakeOpts?: FakeDahuaOptions;
   config?: Record<string, unknown>;
   controller?: Record<string, unknown>;
+  /** Gestionnaires de synchronisation declares par le module (par controleur) ; `'throw'` : le socle leve a la declaration. */
+  accessSync?: Map<string, AccessSyncHandler> | 'throw';
   thresholds?: Record<string, unknown>;
   reconnect?: { minMs: number; maxMs: number };
   internals?: Parameters<typeof createModule>[1];
@@ -897,6 +907,14 @@ async function boot(o: BootOptions = {}): Promise<Harness> {
     config: {},
     now: () => clock.t,
     onActuator: (id: string, h: ActuatorHandler) => void actuators.set(id, h),
+    ...(o.accessSync === undefined
+      ? {}
+      : {
+          onAccessSync: (id: string, handler: AccessSyncHandler) => {
+            if (o.accessSync === 'throw') throw new Error('controleur inconnu du socle');
+            o.accessSync!.set(id, handler);
+          },
+        }),
   } as unknown as ModuleContext;
   const mod = createModule(configFor(fake, stateDir, o), { tickMs: null, ...o.internals });
   const h: Harness = {
@@ -1035,14 +1053,16 @@ describe('acces-dahua : module contre un faux controleur', () => {
     await online(h);
     await settled(h);
     const before = h.sent.length;
-    h.fake.emitDoor('Duress', { action: 'Start', index: 0, data: {} });
+    h.fake.emitDoor('Duress', { action: 'Stop', index: 0, data: {} }); // fin de contrainte : sans objet
+    h.fake.emitDoor('Duress', { action: 'Start', index: 9, data: {} }); // porte hors plage : non transmise, dite dans le journal
     h.fake.emitDoor('VideoMotion', { action: 'Start', index: 0, data: {} });
     h.fake.emitRaw('Code=AccessControl;action=Pulse;index=0;data={pas du json');
     h.fake.emitRaw('n\'importe quoi');
     h.fake.emitDoor('BreakIn', { action: 'Start', index: 0 });
     await waitFor(() => h.of('door_forced').length === 1, 5000, 'le flux continue');
     assert.equal(h.sent.length, before + 1);
-    assert.ok(h.logs.some((l) => /contrainte/.test(l)), 'la contrainte non transmise est signalee');
+    assert.ok(h.logs.some((l) => /contrainte non transmise/.test(l)), 'la contrainte qui ne peut pas etre transmise est signalee');
+    assert.equal(h.of('panic').length, 0);
   });
 
   it('numero de badge, nom et code saisi : jamais dans les journaux ; le PIN ne ressort nulle part', async () => {
@@ -1571,6 +1591,1060 @@ describe('acces-dahua : arret propre', () => {
     });
     assert.equal(code, 0, `le processus ne s'est pas termine (${out.slice(0, 300)})`);
     assert.match(out, /FINI/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Contrainte (panic), epoque, configuration associee : traduction pure
+// ---------------------------------------------------------------------------------------------------------------------------
+
+describe('acces-dahua : contrainte et epoque (traduction pure)', () => {
+  const door = (t: Translation) => {
+    assert.equal(t.kind, 'door', JSON.stringify(t));
+    return t as Extract<Translation, { kind: 'door' }>;
+  };
+
+  it('Duress : alarme de contrainte sur la porte du champ Door, sinon celle de l\'index du flux ; heure du controleur', () => {
+    const a = door(tr(part('Duress', 'Start', 1, { Door: 0, UTC: 1760000000 })));
+    assert.deepEqual([a.doorNo, a.doorKind, a.ts, a.idPart], [1, 'duress', 1760000000000, 'start']);
+    const b = door(tr(part('Duress', 'Pulse', 1, undefined)));
+    assert.deepEqual([b.doorNo, b.doorKind, b.ts], [2, 'duress', T0], 'sans donnees : index du flux et heure de reception');
+    assert.equal(door(tr(part('Duress', 'Start', 0, { RecNo: 7, UTC: 1760000000 }))).idPart, 'r7', 'le n° d\'enregistrement distingue deux contraintes de la meme seconde');
+    assert.equal(door(tr(part('Duress', 'Start', 0, { Door: 1, UTC: 1760000000 }), { ...CTX, doorBase: 1 })).doorNo, 1);
+  });
+
+  it('Duress : la fin est ignoree, une porte hors plage ou illisible n\'est pas transmise (et le dit), donnees hostiles sans exception', () => {
+    assert.equal(tr(part('Duress', 'Stop', 0, { Door: 0 })).kind, 'none');
+    const far = tr(part('Duress', 'Start', 0, { Door: 9 }));
+    assert.equal(far.kind, 'none');
+    assert.match((far as { reason: string }).reason, /contrainte non transmise/);
+    assert.equal(tr(part('Duress', 'Start', 9, undefined)).kind, 'none');
+    assert.equal(tr(part('Duress', 'Start', 0, { Door: 'x' })).kind, 'none', 'jamais attribuee a une autre porte');
+    for (const data of ['pas du json', '[1]', 'null', `{"Door":"${'9'.repeat(5000)}"}`, '{"__proto__":{"x":1},"Door":0}']) {
+      assert.doesNotThrow(() => tr(part('Duress', 'Start', 0, data)), data.slice(0, 30));
+    }
+    assert.equal(({} as Record<string, unknown>).x, undefined);
+  });
+
+  it('carte de contrainte (CardType = 5) : le passage est signale « duress » ; jamais pour un autre type ni pour un enregistrement', () => {
+    const duress = (CardType: unknown) => {
+      const t = tr(part('AccessControl', 'Pulse', 0, { CardNo: '1', RecNo: 3, UTC: 1760000000, CardType }));
+      assert.equal(t.kind, 'passage');
+      return (t as Extract<Translation, { kind: 'passage' }>).duress;
+    };
+    assert.equal(duress(5), true);
+    assert.equal(duress('5'), true);
+    for (const v of [0, 1, 2, 3, 4, 6, 255, 5.5, null, true, {}, [], 'cinq', undefined]) assert.equal(duress(v), false, JSON.stringify(v));
+    // La memoire du controleur ne conserve pas CardType : un enregistrement ne declenche jamais de contrainte.
+    const page = parseRecordPage('totalCount=1\r\nfound=1\r\nrecords[0].RecNo=3\r\nrecords[0].CardNo=1\r\nrecords[0].CardType=5\r\nrecords[0].CreateTime=1760000000\r\n');
+    assert.equal(page.records[0]!.CardType, undefined);
+    assert.equal((translateRecord(page.records[0]!, { ...CTX, doorNos: [1] }) as Extract<Translation, { kind: 'passage' }>).duress, false);
+  });
+
+  it('epoque > 0 : eventId "<epoque>.<n°>", curseur = n° seul ; epoque 0 inchangee ; identifiant synthetique prefixe et borne', () => {
+    const e = (epoch: number | undefined, body: string) => passageOf(tr(body, { ...CTX, epoch }));
+    const withRec = part('AccessControl', 'Pulse', 0, { CardNo: '1', RecNo: 55, UTC: 1760000000 });
+    for (const epoch of [undefined, 0]) {
+      const p = e(epoch, withRec);
+      assert.deepEqual([p.eventId, p.cursor], ['55', '55']);
+    }
+    const p3 = e(3, withRec);
+    assert.deepEqual([p3.eventId, p3.cursor], ['3.55', '55']);
+    assert.equal(epochEventId(3, '55'), p3.eventId);
+    const msg = passageMessage('CTL-1', p3);
+    assert.equal(msg.msgId, 'acc:CTL-1:3.55');
+    assert.equal(prepare('P-ENTREE', msg, T0).ok, true);
+    // Deux epoques, meme n° d'enregistrement : jamais le meme message.
+    assert.notEqual(passageMessage('CTL-1', e(1, withRec)).msgId, passageMessage('CTL-1', e(2, withRec)).msgId);
+    assert.notEqual(passageMessage('CTL-1', e(1, withRec)).msgId, passageMessage('CTL-1', e(0, withRec)).msgId);
+    // Sans n° d'enregistrement : identifiant synthetique, lui aussi prefixe.
+    const synth = e(3, ASI_SAMPLE);
+    assert.match(synth.eventId, /^3\.x1629721071\.1\.[0-9a-f]{8}$/);
+    assert.ok(synth.eventId.length <= 40);
+    assert.equal(synth.cursor, undefined);
+    assert.equal(e(0, ASI_SAMPLE).eventId.startsWith('x'), true);
+    // Plus grande epoque : toujours un identifiant valide.
+    const big = e(999_999_999_999, withRec);
+    assert.ok(/^[A-Za-z0-9._:-]{1,40}$/.test(big.eventId), big.eventId);
+    // Un enregistrement de la memoire suit la meme regle.
+    const rec = passageOf(translateRecord({ RecNo: '77', CreateTime: '1760000000', CardNo: '1', Status: '1', Door: '0' }, { ...CTX, epoch: 2, doorNos: [1] }));
+    assert.deepEqual([rec.eventId, rec.cursor], ['2.77', '77']);
+  });
+});
+
+describe('acces-dahua : configuration (epoque, mode de porte, plages horaires)', () => {
+  const withController = (extra: Record<string, unknown>) => ({ controllers: [{ ...baseController(), ...extra }] });
+
+  it('epoque : 0 par defaut ; entiers de 0 a 999999999999 acceptes', () => {
+    assert.equal(parseConfig(withController({})).controllers[0]!.epoch, 0);
+    for (const epoch of [0, 1, 7, 999_999_999_999]) assert.equal(parseConfig(withController({ epoch })).controllers[0]!.epoch, epoch);
+  });
+
+  for (const bad of [-1, 1.5, '1', null, true, {}, [], 1_000_000_000_000, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60]) {
+    it(`epoque refusee : ${typeof bad === 'object' ? JSON.stringify(bad) : String(bad)}`, () => {
+      const errs = errorsOf(withController({ epoch: bad }));
+      assert.ok(errs.some((e) => /« epoch »/.test(e)), errs.join(' | '));
+    });
+  }
+
+  it('epoque propre a chaque controleur', () => {
+    const cfg = parseConfig({ controllers: [{ ...baseController(), epoch: 2 }, { ...baseController(), id: 'CTL-2', doors: { '1': 'Z1' }, actuators: {}, epoch: 5 }, { ...baseController(), id: 'CTL-3', doors: { '1': 'Z3' }, actuators: {} }] });
+    assert.deepEqual(cfg.controllers.map((c) => c.epoch), [2, 5, 0]);
+  });
+
+  it('thresholds.modeCheckS : 60 par defaut, 0 = inactif, bornes 0 a 86400', () => {
+    assert.equal(parseConfig({ controllers: [baseController()] }).thresholds.modeCheckS, 60);
+    for (const v of [0, 1, 60, 86_400]) assert.equal(parseConfig({ controllers: [baseController()], thresholds: { modeCheckS: v } }).thresholds.modeCheckS, v);
+    for (const v of [-1, 86_401, 1.5, '60', null]) {
+      const errs = errorsOf({ controllers: [baseController()], thresholds: { modeCheckS: v } });
+      assert.ok(errs.some((e) => /thresholds\.modeCheckS/.test(e)), `${JSON.stringify(v)} : ${errs.join(' | ')}`);
+    }
+  });
+
+  it('schedules : defaut 1 a 127 ; bornes personnalisees ; 255 reserve, min > max, cle inconnue, type invalide refuses', () => {
+    assert.deepEqual(parseConfig({ controllers: [baseController()] }).schedules, { min: 1, max: 127 });
+    assert.deepEqual(parseConfig({ controllers: [baseController()], schedules: { max: 31 } }).schedules, { min: 1, max: 31 });
+    assert.deepEqual(parseConfig({ controllers: [baseController()], schedules: { min: 0, max: 254 } }).schedules, { min: 0, max: 254 });
+    assert.deepEqual(parseConfig({ controllers: [baseController()], schedules: { min: 5, max: 5 } }).schedules, { min: 5, max: 5 });
+    const cases: Array<[unknown, RegExp]> = [
+      [{ max: 255 }, /schedules\.max/],
+      [{ min: -1 }, /schedules\.min/],
+      [{ max: 1.5 }, /schedules\.max/],
+      [{ max: '127' }, /schedules\.max/],
+      [{ min: 10, max: 5 }, /max \(5\) doit etre superieur ou egal a min \(10\)/],
+      [{ taille: 3 }, /cle inconnue « taille »/],
+      [5, /schedules : un objet est attendu/],
+      [[1, 2], /schedules : un objet est attendu/],
+    ];
+    for (const [value, re] of cases) {
+      const errs = errorsOf({ controllers: [baseController()], schedules: value });
+      assert.ok(errs.some((e) => re.test(e)), `${JSON.stringify(value)} : ${errs.join(' | ')}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Synchronisation des titulaires : fonctions pures puis gestionnaire commun + pilote Dahua contre le faux controleur
+// ---------------------------------------------------------------------------------------------------------------------------
+
+describe('acces-dahua : synchronisation, fonctions pures', () => {
+  const OFF = '0 00:00:00-00:00:00';
+
+  it('plage simple : 7 jours x 4 segments, jour 0 = dimanche, segments inutilises desactives', () => {
+    const seg = scheduleSegments([{ days: [1, 2, 3, 4, 5], from: '08:00', to: '17:00' }]);
+    assert.equal(seg.length, 7);
+    for (const day of seg) assert.equal(day.length, 4);
+    assert.deepEqual(seg[0], [OFF, OFF, OFF, OFF], 'dimanche : rien');
+    for (const d of [1, 2, 3, 4, 5]) assert.deepEqual(seg[d], ['1 08:00:00-17:00:00', OFF, OFF, OFF], `jour ${d}`);
+    assert.deepEqual(seg[6], [OFF, OFF, OFF, OFF]);
+  });
+
+  it('plage qui passe minuit : coupee en deux, fin du jour J puis debut du jour J+1 ; samedi -> dimanche', () => {
+    const seg = scheduleSegments([{ days: [5, 6], from: '22:00', to: '06:00' }]);
+    assert.deepEqual(seg[5], ['1 22:00:00-23:59:59', OFF, OFF, OFF]);
+    assert.deepEqual(seg[6], ['1 00:00:00-06:00:00', '1 22:00:00-23:59:59', OFF, OFF]);
+    assert.deepEqual(seg[0], ['1 00:00:00-06:00:00', OFF, OFF, OFF], 'le samedi deborde sur le dimanche');
+    // Fin a minuit pile : rien le lendemain.
+    const midnight = scheduleSegments([{ days: [2], from: '20:00', to: '00:00' }]);
+    assert.deepEqual(midnight[2], ['1 20:00:00-23:59:59', OFF, OFF, OFF]);
+    assert.deepEqual(midnight[3], [OFF, OFF, OFF, OFF]);
+  });
+
+  it('segments d\'un meme jour qui se touchent ou se chevauchent : fusionnes ; ordre chronologique', () => {
+    const seg = scheduleSegments([
+      { days: [1], from: '14:00', to: '16:00' },
+      { days: [1], from: '08:00', to: '12:00' },
+      { days: [1], from: '11:00', to: '13:00' },
+      { days: [1], from: '13:00', to: '14:00' },
+      { days: [1], from: '18:00', to: '19:00' },
+    ]);
+    assert.deepEqual(seg[1], ['1 08:00:00-16:00:00', '1 18:00:00-19:00:00', OFF, OFF]);
+    // Deux jours consecutifs : la fin de nuit du lundi ne fusionne pas avec le debut du mardi.
+    const two = scheduleSegments([{ days: [1], from: '20:00', to: '04:00' }, { days: [2], from: '04:00', to: '08:00' }]);
+    assert.deepEqual(two[1], ['1 20:00:00-23:59:59', OFF, OFF, OFF]);
+    assert.deepEqual(two[2], ['1 00:00:00-08:00:00', OFF, OFF, OFF], 'le debut du mardi (reste de la nuit) touche la plage du mardi : fusionnes');
+  });
+
+  it('journee entiere : 00:00 a 23:59 -> 00:00:00 a 23:59:59', () => {
+    assert.deepEqual(scheduleSegments([{ days: [0, 1, 2, 3, 4, 5, 6], from: '00:00', to: '23:59' }]).map((d) => d[0]), Array(7).fill('1 00:00:00-23:59:59'));
+  });
+
+  it('plus de 4 segments distincts un meme jour : not_supported (limite du materiel), jamais tronque', () => {
+    const five = [['08:00', '09:00'], ['10:00', '11:00'], ['12:00', '13:00'], ['14:00', '15:00'], ['16:00', '17:00']].map(([from, to]) => ({ days: [3], from: from!, to: to! }));
+    assert.throws(() => scheduleSegments(five), (err: unknown) => err instanceof ActuatorFailure && err.code === 'not_supported');
+    assert.doesNotThrow(() => scheduleSegments(five.slice(0, 4)));
+    // Cinq plages mais fusionnees en quatre : accepte.
+    assert.doesNotThrow(() => scheduleSegments([...five.slice(0, 3), { days: [3], from: '14:00', to: '17:00' }, { days: [3], from: '15:00', to: '16:00' }]));
+  });
+
+  it('formatLocal / dayBounds / enc : dates du controleur en heure locale, encodage sans injection', () => {
+    assert.equal(formatLocal(T0, 0), '20261017 100000');
+    assert.equal(formatLocal(T0, 60), '20261017 110000');
+    assert.equal(formatLocal(T0, -90), '20261017 083000');
+    assert.equal(formatLocal(Date.UTC(2026, 11, 31, 23, 30, 5), 60), '20270101 003005', 'passage d\'annee');
+    assert.deepEqual(dayBounds('2026-12-25'), { start: '20261225 000000', end: '20261225 235959' });
+    assert.equal(enc('A&Doors[5]=9 é'), 'A%26Doors%5B5%5D%3D9%20%C3%A9');
+    assert.equal(enc('1 00:00:00-23:59:59'), '1%2000:00:00-23:59:59');
+  });
+});
+
+interface Bench {
+  fake: FakeDahua;
+  slots: SlotMap;
+  logs: string[];
+  clock: { t: number };
+  dir: string;
+  run: (body: Record<string, unknown>) => ReturnType<AccessSyncHandler>;
+  handler: AccessSyncHandler;
+}
+
+interface BenchOptions {
+  min?: number;
+  max?: number;
+  utcOffsetMin?: number;
+  timeoutMs?: number;
+  password?: string;
+  doors?: [number, string][];
+  dir?: string;
+}
+
+function syncBench(fake: FakeDahua, o: BenchOptions = {}): Bench {
+  const dir = o.dir ?? tempDir(cleanup);
+  const http = new DahuaHttp({ host: fake.host, port: fake.port, username: fake.username, password: o.password ?? fake.password }, { gate: new AuthGate(() => T0), timeoutMs: o.timeoutMs });
+  cleanup.push(() => http.stop());
+  const logs: string[] = [];
+  const log = (_level: string, text: string) => {
+    logs.push(text);
+    allLogs.push(text);
+  };
+  const clock = { t: T0 };
+  const slots = new SlotMap({ dir, now: () => clock.t, log, min: o.min ?? 1, max: o.max ?? 127 });
+  const driver = new DahuaSyncDriver({ http, doors: new Map(o.doors ?? [[1, 'P-ENTREE'], [2, 'P-SALLE']]), utcOffsetMin: o.utcOffsetMin ?? 0, now: () => clock.t, log });
+  const handler = makeSyncHandler('CTL-1', driver, { slots, now: () => clock.t, log });
+  let seq = 0;
+  return { fake, slots, logs, clock, dir, handler, run: (body) => handler({ opId: 'a'.repeat(32), seq: ++seq, ...body } as unknown as AccessSyncOp) };
+}
+
+const holder = (over: Record<string, unknown> = {}) => ({
+  type: 'upsert_holder',
+  holderRef: 'H101',
+  name: 'KONAN Yao',
+  active: true,
+  validFrom: null,
+  validTo: null,
+  credentials: ['0012345'],
+  doors: [{ doorNo: 1, scheduleRef: null }],
+  ...over,
+});
+const schedule = (over: Record<string, unknown> = {}) => ({ type: 'upsert_schedule', scheduleRef: 'S1', windows: [{ days: [1, 2, 3, 4, 5], from: '08:00', to: '17:00' }], holidays: false, ...over });
+const DONE = { result: 'done' };
+const writes = (fake: FakeDahua) => fake.requests.filter((r) => /recordUpdater|setConfig/.test(r.path));
+
+describe('acces-dahua : synchronisation des titulaires (gestionnaire commun + pilote Dahua, faux controleur)', () => {
+  it('horaire « ferme les jours feries » : refuse (not_supported), rien d\'ecrit ; sans cette option, accepte', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(schedule({ holidays: true })), { result: 'refused', code: 'not_supported' });
+    assert.equal(fake.schedules.size, 0);
+    assert.equal(b.slots.get('CTL-1', 'S1'), null, 'aucune plage attribuee');
+    assert.deepEqual(await b.run(schedule({ holidays: false })), DONE);
+  });
+
+  it('plage puis titulaire : fiche carte exacte (UserID, CardNo, nom, portes en base 0, plage), aucune donnee interdite', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(schedule()), DONE);
+    assert.deepEqual(await b.run(holder({ doors: [{ doorNo: 1, scheduleRef: 'S1' }, { doorNo: 2, scheduleRef: null }], credentials: ['0012345', 'AB12CD34'] })), DONE);
+    assert.equal(b.slots.get('CTL-1', 'S1'), 1, 'plus petit numero libre de [1, 127]');
+    const cards = fake.cardsOf('H101');
+    assert.equal(cards.length, 2);
+    assert.deepEqual(cards.map((c) => c.CardNo).sort(), ['0012345', 'AB12CD34']);
+    for (const c of cards) {
+      assert.equal(c.CardName, 'KONAN Yao');
+      assert.equal(c.CardStatus, 0);
+      assert.equal(c.CardType, 0);
+      assert.deepEqual(c.Doors, [0, 1], 'porte 1 -> Doors[0]=0, porte 2 -> Doors[1]=1');
+      assert.deepEqual(c.TimeSections, [1, 255], 'horaire S1 -> plage 1 ; sans horaire -> 255 (toutes les heures)');
+      assert.equal(c.ValidDateStart, '20000101 000000');
+      assert.equal(c.ValidDateEnd, '20371231 235959');
+      assert.equal(c.Password, undefined, 'aucun code PIN');
+    }
+    const s = fake.schedules.get(1)!;
+    assert.equal(s.Name, 'PSIM S1');
+    assert.deepEqual(s.TimeSchedule[1], ['1 08:00:00-17:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00']);
+    assert.deepEqual(s.TimeSchedule[0], Array(4).fill('0 00:00:00-00:00:00'));
+    assert.deepEqual(fake.forbidden, []);
+    assert.deepEqual(fake.forbiddenPaths, []);
+    const everything = fake.requests.map((r) => r.path).join('\n');
+    assert.equal(/Password|PIN|Face|template|photo/i.test(everything), false);
+    assert.equal(fake.requests.every((r) => r.authenticated), true);
+  });
+
+  it('idempotence : le meme upsert rejoue 3 fois = meme etat final, meme n° d\'enregistrement, aucune carte en double, meme plage', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    const ops = [schedule(), holder({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] })];
+    for (const op of ops) assert.deepEqual(await b.run(op), DONE);
+    for (const op of ops) assert.deepEqual(await b.run(op), DONE); // premier rejeu : la carte passe de l'insertion a la mise a jour (IsValid=true explicite)
+    const snapshot = JSON.stringify([fake.cards, [...fake.schedules]]);
+    for (let i = 0; i < 3; i++) for (const op of ops) assert.deepEqual(await b.run(op), DONE);
+    assert.equal(JSON.stringify([fake.cards, [...fake.schedules]]), snapshot);
+    assert.equal(fake.cards.length, 1);
+    assert.equal(b.slots.list('CTL-1').length, 1);
+    // Une insertion dont la reponse s'est perdue (carte presente, titulaire inchange) : le rejeu la retrouve et ne cree rien de plus.
+    fake.cards.length = 0;
+    fake.addCard({ CardNo: '0012345', UserID: 'H101', CardName: 'KONAN Yao', Doors: [0], TimeSections: [255] });
+    assert.deepEqual(await b.run(holder()), DONE);
+    assert.equal(fake.cards.length, 1);
+  });
+
+  it('badges du titulaire : un badge retire disparait, un badge ajoute apparait, jusqu\'a 4 cartes ; l\'ecriture precede le retrait', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder({ credentials: ['A1', 'B2', 'C3', 'D4'] })), DONE);
+    assert.equal(fake.cardsOf('H101').length, 4);
+    fake.requests.length = 0;
+    assert.deepEqual(await b.run(holder({ credentials: ['B2', 'E5'] })), DONE);
+    assert.deepEqual(fake.cardsOf('H101').map((c) => c.CardNo).sort(), ['B2', 'E5']);
+    const order = writes(fake).map((r) => /action=(\w+)/.exec(r.path)![1]);
+    const firstRemove = order.indexOf('remove');
+    assert.ok(firstRemove > order.lastIndexOf('insert') && firstRemove > order.lastIndexOf('update'), `retrait avant ecriture : ${order.join(',')}`);
+    // Casse du numero : la meme carte, pas une nouvelle.
+    assert.deepEqual(await b.run(holder({ credentials: ['b2', 'E5'] })), DONE);
+    assert.equal(fake.cardsOf('H101').length, 2);
+    // Plus aucun badge : les cartes du titulaire sont retirees.
+    assert.deepEqual(await b.run(holder({ credentials: [] })), DONE);
+    assert.equal(fake.cardsOf('H101').length, 0);
+  });
+
+  it('titulaire inactif ou expire : carte GELEE (statut 4), jamais supprimee ; reactive : statut 0 et IsValid=true ; sans porte : gelee', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder()), DONE);
+    const recNo = fake.cardsOf('H101')[0]!.RecNo;
+    assert.equal(fake.cardsOf('H101')[0]!.CardStatus, 0);
+    assert.equal(fake.cardsOf('H101')[0]!.IsValid, null, 'IsValid n\'est envoye qu\'a la mise a jour');
+    // Inactif.
+    assert.deepEqual(await b.run(holder({ active: false })), DONE);
+    assert.deepEqual(fake.cardsOf('H101').map((c) => [c.RecNo, c.CardStatus]), [[recNo, 4]]);
+    assert.equal(fake.requests.some((r) => /action=remove/.test(r.path)), false, 'une suspension ne supprime rien');
+    // Reactive.
+    assert.deepEqual(await b.run(holder({ active: true })), DONE);
+    assert.deepEqual(fake.cardsOf('H101').map((c) => [c.RecNo, c.CardStatus, c.IsValid]), [[recNo, 0, true]]);
+    // Validite depassee : gelee, avec sa date de fin.
+    assert.deepEqual(await b.run(holder({ validTo: T0 - 1000 })), DONE);
+    assert.equal(fake.cardsOf('H101')[0]!.CardStatus, 4);
+    assert.equal(fake.cardsOf('H101')[0]!.ValidDateEnd, '20261017 095959');
+    // Fin == maintenant : encore valable. Debut dans le futur : normale (le controleur applique ValidDateStart).
+    assert.deepEqual(await b.run(holder({ validTo: T0 })), DONE);
+    assert.equal(fake.cardsOf('H101')[0]!.CardStatus, 0);
+    assert.deepEqual(await b.run(holder({ validFrom: T0 + 86_400_000, validTo: T0 + 5 * 86_400_000 })), DONE);
+    assert.deepEqual([fake.cardsOf('H101')[0]!.CardStatus, fake.cardsOf('H101')[0]!.ValidDateStart, fake.cardsOf('H101')[0]!.ValidDateEnd], [0, '20261018 100000', '20261022 100000']);
+    // Une ancienne limite est effacee quand le PSIM n'en met plus.
+    assert.deepEqual(await b.run(holder()), DONE);
+    assert.deepEqual([fake.cardsOf('H101')[0]!.ValidDateStart, fake.cardsOf('H101')[0]!.ValidDateEnd], ['20000101 000000', '20371231 235959']);
+    // Aucune porte : rien a ouvrir, carte gelee.
+    assert.deepEqual(await b.run(holder({ doors: [] })), DONE);
+    assert.equal(fake.cardsOf('H101')[0]!.CardStatus, 4);
+    assert.equal(fake.cards.length, 1);
+  });
+
+  it('dates de validite en heure LOCALE du controleur (utcOffsetMin)', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake, { utcOffsetMin: 60 });
+    assert.deepEqual(await b.run(holder({ validFrom: Date.UTC(2026, 9, 20, 8, 30, 0), validTo: Date.UTC(2026, 11, 31, 23, 30, 0) })), DONE);
+    assert.deepEqual([fake.cards[0]!.ValidDateStart, fake.cards[0]!.ValidDateEnd], ['20261020 093000', '20270101 003000']);
+  });
+
+  it('horaire inconnu ou porte non declaree : refus « invalid » sans aucune requete ; ordre piege (PIN) : refuse, jamais envoye', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder({ doors: [{ doorNo: 1, scheduleRef: 'S9' }] })), { result: 'refused', code: 'invalid' });
+    assert.deepEqual(await b.run(holder({ doors: [{ doorNo: 3, scheduleRef: null }] })), { result: 'refused', code: 'invalid' });
+    for (const bad of [{ pin: '1234' }, { Password: '1234' }, { photo: 'abc' }, { face: 'x' }, { template: 'x' }, { fingerprint: 'x' }]) {
+      assert.deepEqual(await b.run(holder(bad)), { result: 'refused', code: 'invalid' }, JSON.stringify(bad));
+    }
+    assert.deepEqual(await b.run({ type: 'format_disque' }), { result: 'refused', code: 'invalid' });
+    assert.deepEqual(await b.run(holder({ holderRef: 'H1&Doors[0]=9' })), { result: 'refused', code: 'invalid' });
+    assert.equal(fake.requests.length, 0, 'aucune requete vers le controleur');
+    assert.equal(fake.cards.length, 0);
+  });
+
+  it('nom long, accentue ou piege : tronque a 32 caracteres, encode, aucune injection de parametre', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    const name = `KONAN Yao Ndri é&Doors[5]=9&CardStatus=4 ${'x'.repeat(40)}`.slice(0, 64);
+    assert.deepEqual(await b.run(holder({ name })), DONE);
+    const c = fake.cards[0]!;
+    assert.ok(c.CardName.length <= 32 && c.CardName.length > 10, c.CardName);
+    assert.ok(name.startsWith(c.CardName));
+    assert.deepEqual(c.Doors, [0], 'le nom n\'a pas ajoute de porte');
+    assert.equal(c.CardStatus, 0, 'le nom n\'a pas change le statut');
+    assert.deepEqual(await b.run(holder({ name: 'Zoë Kouamé-Ñ' })), DONE);
+    assert.equal(fake.cards[0]!.CardName, 'Zoë Kouamé-Ñ');
+  });
+
+  it('suppression : retire toutes les cartes du titulaire, jamais celles des autres ; titulaire absent = succes sans ecriture', async () => {
+    const fake = await startFake();
+    fake.addCard({ CardNo: 'AUTRE1', UserID: 'H200' });
+    fake.addCard({ CardNo: 'AUTRE2', UserID: 'H1010' });
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder({ credentials: ['A1', 'B2'] })), DONE);
+    assert.equal(fake.cards.length, 4);
+    assert.deepEqual(await b.run({ type: 'delete_holder', holderRef: 'H101' }), DONE);
+    assert.deepEqual(fake.cards.map((c) => c.UserID).sort(), ['H1010', 'H200']);
+    fake.requests.length = 0;
+    assert.deepEqual(await b.run({ type: 'delete_holder', holderRef: 'H101' }), DONE);
+    assert.equal(writes(fake).length, 0, 'deja absent : aucune ecriture');
+    assert.equal(fake.cards.length, 2);
+  });
+
+  it('firmware qui ignore condition.UserID et rend TOUTES les fiches : le filtre est refait, aucune carte etrangere n\'est touchee', async () => {
+    const fake = await startFake();
+    fake.ignoreFindConditions = true;
+    fake.addCard({ CardNo: 'AUTRE1', UserID: 'H200', CardName: 'Autre', CardStatus: 0 });
+    fake.addCard({ CardNo: 'AUTRE2', UserID: 'H300', CardName: 'Autre 2', CardStatus: 0 });
+    const before = JSON.stringify(fake.cards);
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder({ credentials: ['A1', 'B2'] })), DONE);
+    assert.deepEqual(await b.run(holder({ credentials: ['A1'] })), DONE);
+    assert.deepEqual(fake.cardsOf('H101').map((c) => c.CardNo), ['A1']);
+    assert.deepEqual(await b.run({ type: 'delete_holder', holderRef: 'H101' }), DONE);
+    assert.equal(JSON.stringify(fake.cards), before, 'les cartes des autres titulaires sont intactes');
+  });
+
+  it('code PIN, type de carte et champs non envoyes : une mise a jour les laisse intacts, le PIN ne ressort nulle part', async () => {
+    const fake = await startFake();
+    const pre = fake.addCard({ CardNo: '0012345', UserID: 'H101', CardName: 'Ancien nom', CardType: 5, Password: 'PIN-4242', Doors: [0, 1], TimeSections: [255, 255] });
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder()), DONE);
+    assert.equal(pre.Password, 'PIN-4242', 'PIN du controleur inchange');
+    assert.equal(pre.CardType, 5, 'carte de contrainte posee par l\'installateur : type conserve');
+    assert.equal(pre.CardName, 'KONAN Yao');
+    assert.deepEqual(pre.Doors, [0]);
+    const everything = fake.requests.map((r) => r.path).join('\n') + b.logs.join('\n');
+    assert.equal(/4242|Password|CardType/.test(everything), false);
+    assert.deepEqual(fake.forbidden, []);
+  });
+
+  it('badge deja present chez un AUTRE titulaire : repris (pas de doublon), puis le premier titulaire ne le perd pas par erreur', async () => {
+    const fake = await startFake();
+    fake.addCard({ CardNo: '0012345', UserID: 'H200', CardName: 'Ancien proprietaire' });
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder()), DONE);
+    assert.equal(fake.cards.length, 1);
+    assert.equal(fake.cards[0]!.UserID, 'H101');
+    assert.equal(fake.cards[0]!.CardName, 'KONAN Yao');
+    assert.equal(b.logs.some((l) => /autre titulaire/.test(l)), true);
+    assert.equal(b.logs.join('\n').includes('0012345'), false);
+    // L'ancien proprietaire est synchronise ensuite (sans ce badge) : sa suppression ne touche pas la carte reprise.
+    assert.deepEqual(await b.run({ type: 'delete_holder', holderRef: 'H200' }), DONE);
+    assert.equal(fake.cards.length, 1);
+  });
+
+  it('controleur plein : refus « full » (jamais « done »), rejeu possible une fois de la place faite', async () => {
+    const fake = await startFake();
+    fake.cardCapacity = 1;
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(holder({ credentials: ['A1', 'B2'] })), { result: 'refused', code: 'full' });
+    assert.equal(fake.cards.length, 1, 'la premiere carte est la ; la seconde a ete refusee');
+    fake.cardCapacity = null;
+    assert.deepEqual(await b.run(holder({ credentials: ['A1', 'B2'] })), DONE);
+    assert.deepEqual(fake.cards.map((c) => c.CardNo).sort(), ['A1', 'B2']);
+    // Meme refus quand tout est « plein » des la premiere carte.
+    const full = await startFake();
+    full.syncBehavior.cards = 'full';
+    assert.deepEqual(await syncBench(full).run(holder()), { result: 'refused', code: 'full' });
+  });
+
+  it('plus de plage libre : refus « full » SANS appeler le controleur ; un echec du controleur ne garde aucune plage fantome', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake, { min: 3, max: 4 });
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S1' })), DONE);
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S2' })), DONE);
+    assert.deepEqual([b.slots.get('CTL-1', 'S1'), b.slots.get('CTL-1', 'S2')], [3, 4]);
+    fake.requests.length = 0;
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S3' })), { result: 'refused', code: 'full' });
+    assert.equal(fake.requests.length, 0);
+    assert.equal(fake.schedules.size, 2);
+    // Echec du controleur sur une premiere ecriture : aucune attribution conservee.
+    assert.deepEqual(await b.run({ type: 'delete_schedule', scheduleRef: 'S2' }), DONE);
+    fake.syncBehavior.schedules = 'refuse';
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S3' })), { result: 'error', code: 'refused_by_device' });
+    assert.equal(b.slots.get('CTL-1', 'S3'), null);
+    fake.syncBehavior.schedules = 'ok';
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S3' })), DONE);
+    assert.equal(b.slots.get('CTL-1', 'S3'), 4, 'le numero libere est reutilise');
+  });
+
+  it('refus du materiel (HTTP 400, HTTP 200 avec « Error », corps inconnu, HTTP 500) : erreur « refused_by_device », jamais « done »', async () => {
+    for (const behavior of ['refuse', 'error200', 'garbage', 'http500'] as const) {
+      const fake = await startFake();
+      fake.syncBehavior = { cards: behavior, schedules: behavior, holidays: behavior };
+      const b = syncBench(fake);
+      const expectation = { result: 'error', code: 'refused_by_device' };
+      assert.deepEqual(await b.run(holder()), expectation, `titulaire / ${behavior}`);
+      assert.deepEqual(await b.run(schedule()), expectation, `plage / ${behavior}`);
+      assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-12-25'], replace: true }), expectation, `jours feries / ${behavior}`);
+      assert.equal(fake.cards.length + fake.schedules.size + fake.holidays.length, 0, behavior);
+    }
+  });
+
+  it('fonction absente du materiel (HTTP 404) : refus « not_supported » pour les cartes, les plages et les jours feries', async () => {
+    const fake = await startFake();
+    fake.syncBehavior = { cards: 'unsupported', schedules: 'unsupported', holidays: 'unsupported' };
+    const b = syncBench(fake);
+    const expectation = { result: 'refused', code: 'not_supported' };
+    assert.deepEqual(await b.run(holder()), expectation);
+    assert.deepEqual(await b.run({ type: 'delete_holder', holderRef: 'H101' }), expectation);
+    assert.deepEqual(await b.run(schedule()), expectation);
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-12-25'], replace: false }), expectation);
+    assert.equal(b.slots.get('CTL-1', 'S1'), null, 'pas de plage fantome');
+    // Plage a plus de 4 segments un meme jour : le materiel ne sait pas.
+    const fake2 = await startFake();
+    const five = [['08:00', '09:00'], ['10:00', '11:00'], ['12:00', '13:00'], ['14:00', '15:00'], ['16:00', '17:00']].map(([from, to]) => ({ days: [3], from: from!, to: to! }));
+    assert.deepEqual(await syncBench(fake2).run(schedule({ windows: five })), expectation);
+    assert.equal(fake2.requests.length, 0);
+  });
+
+  it('coupure du reseau : controleur injoignable, delai depasse, connexion coupee en cours d\'operation, identifiants refuses : erreur, jamais « done »', async () => {
+    // Delai depasse (le controleur ne repond jamais).
+    const hang = await startFake();
+    hang.syncBehavior.cards = 'hang';
+    assert.deepEqual(await syncBench(hang, { timeoutMs: 150 }).run(holder()), { result: 'error', code: 'timeout' });
+    // Connexion coupee au milieu de l'operation.
+    const cut = await startFake();
+    const bc = syncBench(cut);
+    cut.cutNextSync(1);
+    assert.deepEqual(await bc.run(holder()), { result: 'error', code: 'unreachable' });
+    assert.deepEqual(await bc.run(holder()), DONE, 'rejeu apres la coupure');
+    assert.equal(cut.cards.length, 1);
+    // Coupure pendant l'ecriture d'une plage deja attribuee : l'attribution reste, le rejeu ne cree pas de plage de plus.
+    const cut2 = await startFake();
+    const b2 = syncBench(cut2);
+    assert.deepEqual(await b2.run(schedule()), DONE);
+    cut2.syncBehavior.schedules = 'cut';
+    assert.deepEqual(await b2.run(schedule()), { result: 'error', code: 'unreachable' });
+    cut2.syncBehavior.schedules = 'ok';
+    assert.deepEqual(await b2.run(schedule()), DONE);
+    assert.equal(b2.slots.list('CTL-1').length, 1);
+    // Controleur arrete.
+    const gone = await startFake();
+    const bg = syncBench(gone);
+    await gone.close();
+    assert.deepEqual(await bg.run(holder()), { result: 'error', code: 'unreachable' });
+    assert.deepEqual(await bg.run(schedule()), { result: 'error', code: 'unreachable' });
+    assert.deepEqual(await bg.run({ type: 'set_holidays', dates: ['2026-12-25'], replace: true }), { result: 'error', code: 'unreachable' });
+    assert.equal(bg.slots.get('CTL-1', 'S1'), null);
+    // Identifiants refuses.
+    const auth = await startFake();
+    const ba = syncBench(auth, { password: 'faux-mot-de-passe' });
+    assert.deepEqual(await ba.run(holder()), { result: 'error', code: 'refused_by_device' });
+    assert.equal(auth.cards.length, 0);
+    assert.equal(ba.logs.join('\n').includes('faux-mot-de-passe'), false);
+  });
+
+  it('operations simultanees : serialisees dans l\'ordre d\'arrivee, etat final coherent', async () => {
+    const fake = await startFake();
+    fake.latencyMs = 15;
+    const b = syncBench(fake);
+    const results = await Promise.all([
+      b.run(schedule()),
+      b.run(holder({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] })),
+      b.run(holder({ name: 'Nouveau nom', doors: [{ doorNo: 1, scheduleRef: 'S1' }] })),
+      b.run({ type: 'delete_holder', holderRef: 'H101' }),
+      b.run(holder({ credentials: ['Z9'], doors: [{ doorNo: 2, scheduleRef: 'S1' }] })),
+    ]);
+    assert.deepEqual(results, Array(5).fill(DONE));
+    assert.deepEqual(fake.cards.map((c) => [c.CardNo, c.Doors, c.TimeSections]), [['Z9', [1], [1]]]);
+    const kinds = writes(fake).map((r) => (/setConfig/.test(r.path) ? 'plage' : /action=(\w+)/.exec(r.path)![1]));
+    assert.deepEqual(kinds, ['plage', 'insert', 'update', 'remove', 'insert'], 'ordre des ecritures = ordre des ordres');
+  });
+
+  it('suppression d\'une plage : segments desactives et nom vide, numero libere puis reutilise ; plage inconnue : succes sans requete', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(schedule()), DONE);
+    assert.deepEqual(await b.run({ type: 'delete_schedule', scheduleRef: 'S1' }), DONE);
+    const s = fake.schedules.get(1)!;
+    assert.equal(s.Name, '');
+    for (const day of s.TimeSchedule) assert.deepEqual(day, Array(4).fill('0 00:00:00-00:00:00'));
+    assert.equal(b.slots.get('CTL-1', 'S1'), null);
+    assert.deepEqual(await b.run(schedule({ scheduleRef: 'S7' })), DONE);
+    assert.equal(b.slots.get('CTL-1', 'S7'), 1);
+    fake.requests.length = 0;
+    assert.deepEqual(await b.run({ type: 'delete_schedule', scheduleRef: 'S404' }), DONE);
+    assert.equal(fake.requests.length, 0);
+  });
+
+  it('plage horaire : ancienne definition REMPLACEE (jamais completee), plage qui passe minuit coupee en deux dans le controleur', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run(schedule({ windows: [{ days: [1, 2, 3, 4, 5], from: '08:00', to: '17:00' }, { days: [5], from: '22:00', to: '06:00' }] })), DONE);
+    const s = fake.schedules.get(1)!;
+    assert.deepEqual(s.TimeSchedule[5], ['1 08:00:00-17:00:00', '1 22:00:00-23:59:59', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00']);
+    assert.deepEqual(s.TimeSchedule[6], ['1 00:00:00-06:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00']);
+    assert.deepEqual(await b.run(schedule({ windows: [{ days: [0], from: '10:00', to: '12:00' }] })), DONE);
+    const t = fake.schedules.get(1)!;
+    assert.deepEqual(t.TimeSchedule[0], ['1 10:00:00-12:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00', '0 00:00:00-00:00:00']);
+    for (const d of [1, 2, 3, 4, 5, 6]) assert.deepEqual(t.TimeSchedule[d], Array(4).fill('0 00:00:00-00:00:00'), `jour ${d}`);
+    assert.equal(fake.schedules.size, 1);
+  });
+
+  it('jours feries : un enregistrement par date (toutes les portes), rejeu idempotent, replace ne retire que ceux du module', async () => {
+    const fake = await startFake();
+    fake.holidays.push({ RecNo: 900, HolidayNo: 'FETE-LOCALE', StartTime: '20260101 000000', EndTime: '20260101 235959', Enable: true, Doors: [0] });
+    const b = syncBench(fake);
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-12-25', '2026-01-01'], replace: true }), DONE);
+    const mine = () => fake.holidays.filter((h) => h.HolidayNo.startsWith('PSIM-'));
+    assert.deepEqual(mine().map((h) => h.HolidayNo).sort(), ['PSIM-2026-01-01', 'PSIM-2026-12-25']);
+    const noel = mine().find((h) => h.HolidayNo === 'PSIM-2026-12-25')!;
+    assert.deepEqual([noel.StartTime, noel.EndTime, noel.Enable, noel.Doors], ['20261225 000000', '20261225 235959', true, [0, 1]]);
+    const snapshot = JSON.stringify(fake.holidays);
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-12-25', '2026-01-01'], replace: true }), DONE);
+    assert.equal(JSON.stringify(fake.holidays), snapshot, 'rejeu : meme etat');
+    // Ajout sans remplacement.
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-05-01'], replace: false }), DONE);
+    assert.equal(mine().length, 3);
+    // Remplacement : les dates absentes disparaissent, celle de l'installateur reste.
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: ['2026-12-25'], replace: true }), DONE);
+    assert.deepEqual(mine().map((h) => h.HolidayNo), ['PSIM-2026-12-25']);
+    assert.equal(fake.holidays.some((h) => h.HolidayNo === 'FETE-LOCALE'), true);
+    // Liste vide + remplacement : toutes celles du module partent.
+    assert.deepEqual(await b.run({ type: 'set_holidays', dates: [], replace: true }), DONE);
+    assert.equal(mine().length, 0);
+    assert.equal(fake.holidays.length, 1);
+  });
+
+  it('jamais d\'appel vers FaceInfoManager ni AccessUser, jamais de PIN : sur l\'ensemble des operations', async () => {
+    const fake = await startFake();
+    const b = syncBench(fake);
+    await b.run(schedule());
+    await b.run(holder({ doors: [{ doorNo: 1, scheduleRef: 'S1' }] }));
+    await b.run(holder({ active: false }));
+    await b.run({ type: 'set_holidays', dates: ['2026-12-25'], replace: true });
+    await b.run({ type: 'delete_holder', holderRef: 'H101' });
+    await b.run({ type: 'delete_schedule', scheduleRef: 'S1' });
+    assert.deepEqual(fake.forbiddenPaths, []);
+    assert.deepEqual(fake.forbidden, []);
+    assert.equal(fake.requests.some((r) => /Password|Face|AccessUser/i.test(r.path)), false);
+  });
+
+  it('journaux : ni nom, ni numero de badge, ni reference de titulaire, ni adresse, ni mot de passe', async () => {
+    const fake = await startFake();
+    fake.addCard({ CardNo: 'ZZ99', UserID: 'H55' });
+    const b = syncBench(fake);
+    await b.run(schedule());
+    await b.run(holder({ name: 'DUPONT Marie', credentials: ['ZZ99', '5550001'] }));
+    fake.syncBehavior.cards = 'refuse';
+    await b.run(holder({ holderRef: 'H777', name: 'MARTIN Paul', credentials: ['5550002'] }));
+    const text = b.logs.join('\n');
+    assert.ok(b.logs.length > 0);
+    assert.equal(/DUPONT|MARTIN|ZZ99|5550001|5550002|H101|H777|H55|127\.0\.0\.1|Mot-de-passe/.test(text), false, text);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Module : synchronisation declaree au socle, contrainte, epoque, mode de porte
+// ---------------------------------------------------------------------------------------------------------------------------
+
+describe('acces-dahua : module et synchronisation des titulaires', () => {
+  it('le module declare un gestionnaire par controleur ; les plages attribuees survivent a un redemarrage', async () => {
+    const fake1 = await startFake({ now: () => T0 });
+    const fake2 = await startFake({ now: () => T0 });
+    const second = { id: 'CTL-2', host: fake2.host, port: fake2.port, username: fake2.username, password: fake2.password, doors: { '1': 'P-AUTRE' } };
+    const base = configFor(fake1, '');
+    const controllers = [...(base.controllers as Record<string, unknown>[]), second];
+    const stateDir = tempDir(cleanup);
+    const handlers = new Map<string, AccessSyncHandler>();
+    const h1 = await boot({ fake: fake1, stateDir, accessSync: handlers, config: { controllers } });
+    assert.deepEqual([...handlers.keys()].sort(), ['CTL-1', 'CTL-2']);
+    const op = (seq: number, body: Record<string, unknown>) => ({ opId: 'b'.repeat(32), seq, ...body }) as unknown as AccessSyncOp;
+    assert.deepEqual(await handlers.get('CTL-1')!(op(1, schedule({ scheduleRef: 'S1' }))), DONE);
+    assert.deepEqual(await handlers.get('CTL-1')!(op(2, schedule({ scheduleRef: 'S2' }))), DONE);
+    assert.deepEqual(await handlers.get('CTL-2')!(op(1, schedule({ scheduleRef: 'S2' }))), DONE);
+    assert.deepEqual([...fake1.schedules.keys()].sort(), [1, 2]);
+    assert.deepEqual([...fake2.schedules.keys()], [1], 'plages independantes par controleur');
+    assert.deepEqual(await handlers.get('CTL-1')!(op(3, holder({ doors: [{ doorNo: 2, scheduleRef: 'S2' }] }))), DONE);
+    assert.deepEqual(fake1.cards.map((c) => [c.UserID, c.Doors, c.TimeSections]), [['H101', [1], [2]]]);
+    assert.equal(fake2.cards.length, 0);
+    await h1.stop();
+    const saved = JSON.parse(readFileSync(join(stateDir, 'acces-plages.json'), 'utf8')) as { controllers: Record<string, Record<string, number>> };
+    assert.deepEqual(saved.controllers, { 'CTL-1': { S1: 1, S2: 2 }, 'CTL-2': { S2: 1 } });
+    // Redemarrage : les memes references gardent leur numero ; une nouvelle prend le suivant.
+    const handlers2 = new Map<string, AccessSyncHandler>();
+    await boot({ fake: fake1, stateDir, accessSync: handlers2, config: { controllers } });
+    assert.deepEqual(await handlers2.get('CTL-1')!(op(10, schedule({ scheduleRef: 'S2' }))), DONE);
+    assert.deepEqual(await handlers2.get('CTL-1')!(op(11, schedule({ scheduleRef: 'S3' }))), DONE);
+    assert.equal(fake1.schedules.get(2)!.Name, 'PSIM S2');
+    assert.equal(fake1.schedules.get(3)!.Name, 'PSIM S3');
+  });
+
+  it('plages configurables : schedules.min / schedules.max bornent les numeros attribues', async () => {
+    const fake = await startFake({ now: () => T0 });
+    const handlers = new Map<string, AccessSyncHandler>();
+    await boot({ fake, accessSync: handlers, config: { schedules: { min: 10, max: 11 } } });
+    const run = (seq: number, ref: string) => handlers.get('CTL-1')!({ opId: 'c'.repeat(32), seq, ...schedule({ scheduleRef: ref }) } as unknown as AccessSyncOp);
+    assert.deepEqual(await run(1, 'S1'), DONE);
+    assert.deepEqual(await run(2, 'S2'), DONE);
+    assert.deepEqual(await run(3, 'S3'), { result: 'refused', code: 'full' });
+    assert.deepEqual([...fake.schedules.keys()].sort((a, b) => a - b), [10, 11]);
+  });
+
+  it('socle sans synchronisation (onAccessSync absent) : le module le dit une fois et surveille normalement', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    h.fake.emitAccess({ recNo: 1 });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    const lines = h.logs.filter((l) => /synchronisation des titulaires indisponible/.test(l));
+    assert.equal(lines.length, 1, h.logs.join('\n'));
+    assert.match(lines[0]!, /CTL-1/);
+    assert.match(lines[0]!, /^info /);
+  });
+
+  it('declaration de la synchronisation qui leve dans le socle : avertissement, le module continue, les passages remontent', async () => {
+    const h = await boot({ accessSync: 'throw' });
+    await online(h);
+    await settled(h);
+    h.fake.emitAccess({ recNo: 1 });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    const line = h.logs.find((l) => /synchronisation des titulaires non enregistree/.test(l));
+    assert.ok(line, h.logs.join('\n'));
+    assert.match(line, /^warn /);
+    assert.match(line, /controleur inconnu du socle/);
+  });
+});
+
+describe('acces-dahua : contrainte (panic)', () => {
+  it('Duress => alarme panic sur la bonne porte, a l\'heure du controleur, conforme au contrat ; la fin est ignoree ; aucun etat de porte modifie', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    const utc = Math.floor(T0 / 1000);
+    h.fake.emitDoor('Duress', { action: 'Start', index: 1, data: { Door: 1, UTC: utc, RecNo: 9 } });
+    await waitFor(() => h.of('panic').length === 1, 5000, 'alarme de contrainte');
+    const s = h.of('panic')[0]!;
+    assert.equal(s.deviceId, 'P-SALLE');
+    assert.equal(s.msg.ts, utc * 1000);
+    assert.match(s.msg.msgId ?? '', /^acc:CTL-1:duress-2-\d+-r9$/);
+    assert.equal(prepare(s.deviceId, s.msg, h.clock.t).ok, true);
+    assert.ok(KNOWN_EVENTS.has('panic'));
+    // Fin de contrainte : rien. Evenement sans donnees : la porte de l'index, heure de reception.
+    h.fake.emitDoor('Duress', { action: 'Stop', index: 1, data: {} });
+    h.fake.emitDoor('Duress', { action: 'Pulse', index: 0, data: null });
+    await waitFor(() => h.of('panic').length === 2, 5000, 'seconde contrainte');
+    assert.equal(h.of('panic')[1]!.deviceId, 'P-ENTREE');
+    assert.equal(h.of('panic')[1]!.msg.ts, T0);
+    await sleep(200);
+    assert.equal(h.of('panic').length, 2);
+    assert.equal(h.of('door_closed').filter((x) => x.msg.ts! >= T0).length, 0, 'la contrainte ne rapporte aucune porte fermee / ouverte');
+    assert.ok(h.logs.some((l) => /alarme de contrainte sur la porte 2/.test(l)));
+  });
+
+  it('carte de contrainte (CardType = 5) : le passage ET l\'alarme panic, une seule fois chacun', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    h.fake.emitRaw(part('AccessControl', 'Pulse', 0, { CardNo: '0099001', CardName: 'Sous menace', Method: 1, RecNo: 41, Status: 1, Type: 'Entry', UTC: Math.floor(T0 / 1000), UserID: '77', CardType: 5, Door: 0 }));
+    await waitFor(() => accessMsgs(h).length === 1 && h.of('panic').length === 1, 5000, 'passage et contrainte');
+    assert.equal(accessMsgs(h)[0]!.msg.event, 'badge_granted');
+    assert.equal(h.of('panic')[0]!.deviceId, 'P-ENTREE');
+    assert.match(h.of('panic')[0]!.msg.msgId ?? '', /^acc:CTL-1:duress-1-\d+-c41$/);
+    // Meme evenement redonne (rejeu du flux) : le meme msgId, le PSIM dedoublonne ; le passage n'est pas double.
+    h.fake.emitRaw(part('AccessControl', 'Pulse', 0, { CardNo: '0099001', Method: 1, RecNo: 41, Status: 1, UTC: Math.floor(T0 / 1000), CardType: 5, Door: 0 }));
+    await sleep(300);
+    assert.equal(accessMsgs(h).length, 1);
+    const panics = h.of('panic').map((p) => p.msg.msgId);
+    assert.equal(new Set(panics).size, 1, 'toujours le meme msgId');
+    // Une carte ordinaire : pas de contrainte.
+    h.fake.emitAccess({ recNo: 42 });
+    await waitFor(() => accessMsgs(h).length === 2, 5000, 'passage ordinaire');
+    await sleep(100);
+    assert.equal(new Set(h.of('panic').map((p) => p.msg.msgId)).size, 1);
+  });
+
+  it('socle qui refuse le message : la contrainte est retentee jusqu\'a ce qu\'elle parte', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    h.refuse.on = true;
+    h.fake.emitDoor('Duress', { action: 'Start', index: 0, data: { Door: 0, UTC: Math.floor(T0 / 1000) } });
+    await sleep(300);
+    assert.equal(h.of('panic').length, 0);
+    h.refuse.on = false;
+    await h.advance(2_000);
+    await waitFor(() => h.of('panic').length === 1, 5000, 'contrainte retentee');
+  });
+});
+
+describe('acces-dahua : epoque (controleur remplace)', () => {
+  const nowSec = Math.floor(T0 / 1000);
+
+  it('epoque 0 : identifiants et cle de curseur inchanges', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    assert.equal(h.mod.all[0]!.supervisor.cursorKey, 'CTL-1');
+    h.fake.emitAccess({ recNo: 123 });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    assert.equal(accessMsgs(h)[0]!.msg.msgId, 'acc:CTL-1:123');
+    await h.stop();
+    const saved = JSON.parse(readFileSync(join(h.stateDir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, { cursor: string }> };
+    assert.deepEqual(Object.keys(saved.controllers), ['CTL-1']);
+    assert.equal(saved.controllers['CTL-1']!.cursor, '123');
+  });
+
+  it('epoque 2 : passage direct "2.<n°>", msgId acc:CTL-1:2.<n°>, curseur range sous CTL-1~e2 avec le n° SEUL', async () => {
+    const h = await boot({ controller: { epoch: 2 } });
+    await online(h);
+    await settled(h);
+    assert.equal(h.mod.all[0]!.supervisor.cursorKey, 'CTL-1~e2');
+    h.fake.emitAccess({ recNo: 123 });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    const { msg } = accessMsgs(h)[0]!;
+    assert.deepEqual([msg.msgId, msg.access!.eventId], ['acc:CTL-1:2.123', '2.123']);
+    assert.equal(prepare('P-ENTREE', msg, h.clock.t).ok, true);
+    await h.stop();
+    const saved = JSON.parse(readFileSync(join(h.stateDir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, { cursor: string }> };
+    assert.deepEqual(Object.keys(saved.controllers), ['CTL-1~e2'], 'aucun curseur de l\'epoque 0');
+    assert.equal(saved.controllers['CTL-1~e2']!.cursor, '123');
+  });
+
+  it('changement d\'epoque : anciens curseurs ignores, la memoire est relue depuis zero (24 h), nouveaux eventId, aucune collision de msgId', async () => {
+    const clock = { t: T0 };
+    const fake = await startFake({ now: () => clock.t });
+    const stateDir = tempDir(cleanup);
+    const h0 = await boot({ fake, clock, stateDir });
+    await online(h0);
+    await settled(h0);
+    fake.emitAccess({ recNo: 1, utc: nowSec });
+    fake.emitAccess({ recNo: 2, utc: nowSec + 1 });
+    await waitFor(() => accessMsgs(h0).length === 2, 5000, 'epoque 0');
+    await h0.stop();
+    // Le controleur remplace garde (ici) les memes n° : le nouveau a numerote 1 et 2 a son tour, plus un tres vieux enregistrement.
+    fake.emitAccess({ recNo: 3, send: false, utc: nowSec - 3 * 86400 });
+    clock.t += 1000;
+    const h1 = await boot({ fake, clock, stateDir, controller: { epoch: 1 } });
+    await waitFor(() => accessMsgs(h1).length === 2, 8000, 'relecture depuis zero a la nouvelle epoque');
+    await sleep(300);
+    assert.deepEqual(accessMsgs(h1).map((s) => s.msg.access!.eventId), ['1.1', '1.2']);
+    assert.ok(accessMsgs(h1).every((s) => s.msg.access!.deferred));
+    const old = new Set(accessMsgs(h0).map((s) => s.msg.msgId));
+    for (const s of accessMsgs(h1)) assert.equal(old.has(s.msg.msgId), false, `collision de msgId : ${s.msg.msgId}`);
+    await h1.stop();
+    const saved = JSON.parse(readFileSync(join(stateDir, 'acces-curseurs.json'), 'utf8')) as { controllers: Record<string, { cursor: string }> };
+    assert.deepEqual(Object.keys(saved.controllers).sort(), ['CTL-1', 'CTL-1~e1'], 'chaque epoque a son curseur');
+    assert.equal(saved.controllers['CTL-1']!.cursor, '2', 'le curseur de l\'epoque 0 n\'est pas modifie');
+    assert.equal(saved.controllers['CTL-1~e1']!.cursor, '2');
+    // Meme epoque au redemarrage : seuls les NOUVEAUX passages sont rejoues.
+    fake.emitAccess({ recNo: 4, utc: nowSec + 5 });
+    clock.t += 1000;
+    const h2 = await boot({ fake, clock, stateDir, controller: { epoch: 1 } });
+    await waitFor(() => accessMsgs(h2).length === 1, 8000, 'nouveau passage');
+    await sleep(300);
+    assert.deepEqual(accessMsgs(h2).map((s) => s.msg.access!.eventId), ['1.4']);
+    await h2.stop();
+    // Epoque suivante : de nouveau tout depuis zero, avec ses propres identifiants.
+    clock.t += 1000;
+    const h3 = await boot({ fake, clock, stateDir, controller: { epoch: 2 } });
+    await waitFor(() => accessMsgs(h3).length === 3, 8000, 'epoque 2');
+    await sleep(300);
+    assert.deepEqual(accessMsgs(h3).map((s) => s.msg.access!.eventId), ['2.1', '2.2', '2.4']);
+  });
+
+  it('recuperation apres coupure avec epoque : ordre numerique des n° (pas de tri de texte), passage direct pendant la recuperation conserve', async () => {
+    const h = await boot({ controller: { epoch: 2 }, fakeOpts: {} });
+    await online(h);
+    await settled(h);
+    await h.fake.pause();
+    await waitFor(() => h.mod.all[0]!.state().phase === 'waiting', 5000, 'coupure');
+    for (let n = 1; n <= 30; n++) h.fake.emitAccess({ recNo: n, send: false, cardNo: `C${n}`, utc: Math.floor(T0 / 1000) + n });
+    h.fake.latencyMs = 25;
+    await h.fake.resume();
+    await waitFor(() => h.fake.attaches >= 2 && h.mod.all[0]!.state().phase === 'connected', 8000, 'reconnecte');
+    h.fake.emitAccess({ recNo: 31, cardNo: 'C31', utc: Math.floor(T0 / 1000) + 31 });
+    await waitFor(() => accessMsgs(h).length === 31, 12_000, 'tous les passages');
+    await sleep(300);
+    assert.deepEqual(accessMsgs(h).map((s) => s.msg.access!.eventId), Array.from({ length: 31 }, (_, i) => `2.${i + 1}`));
+  });
+
+  it('evenement sans RecNo avec epoque : identifiant synthetique prefixe par l\'epoque', async () => {
+    const h = await boot({ controller: { epoch: 4 }, fakeOpts: { recordFinder: false } });
+    await online(h);
+    await waitFor(() => h.logs.some((l) => /ne pourront pas etre rejoues/.test(l)), 8000, 'memoire illisible constatee');
+    h.fake.emitAccess({ recNo: 1, streamRecNo: false, store: false, cardNo: '0002222' });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    assert.match(accessMsgs(h)[0]!.msg.access!.eventId, /^4\.x\d+\.1\.[0-9a-f]{8}$/);
+    assert.equal(accessMsgs(h)[0]!.msg.msgId, `acc:CTL-1:${accessMsgs(h)[0]!.msg.access!.eventId}`);
+  });
+
+  it('epoque invalide dans la configuration du module : refus au chargement', () => {
+    assert.throws(() => createModule(configFor({ host: '127.0.0.1', port: 1, username: 'u', password: 'p' } as unknown as FakeDahua, '/tmp/x', { controller: { epoch: -1 } })), /epoch/);
+  });
+});
+
+describe('acces-dahua : mode de porte (F19)', () => {
+  const modes = (h: Harness, id: string) => h.of('door_mode', id).map((s) => s.msg.doorMode);
+
+  it('a la connexion : Normal / OpenAlways / CloseAlways lus pour chaque porte declaree, messages conformes au contrat', async () => {
+    const clock = { t: T0 };
+    const fake = await startFake({ now: () => clock.t });
+    fake.modes[0] = 'Normal';
+    fake.modes[1] = 'OpenAlways';
+    fake.modes[2] = 'CloseAlways'; // porte 3 non declaree : ignoree
+    const h = await boot({ fake, clock });
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1 && modes(h, 'P-SALLE').length === 1, 8000, 'modes lus');
+    assert.deepEqual(modes(h, 'P-ENTREE'), ['normal']);
+    assert.deepEqual(modes(h, 'P-SALLE'), ['always_open']);
+    assert.equal(h.of('door_mode').length, 2);
+    for (const s of h.of('door_mode')) {
+      assert.equal(prepare(s.deviceId, s.msg, h.clock.t).ok, true, JSON.stringify(s.msg));
+      assert.match(s.msg.msgId ?? '', /^acc:CTL-1:mode-[12]-\d+-(normal|always_open)$/);
+    }
+    assert.ok(KNOWN_EVENTS.has('door_mode'));
+    const reads = fake.requests.filter((r) => /getConfig&name=AccessControl/.test(r.path)).length;
+    assert.equal(reads, 1, 'une seule requete pour toutes les portes');
+  });
+
+  it('chaque changement vu par la relecture periodique (60 s) est signale, un mode inchange ne l\'est pas', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    await h.advance(61_000);
+    await sleep(200);
+    assert.equal(h.of('door_mode').length, 2, 'rien de nouveau : rien n\'est dit');
+    h.fake.modes[0] = 'CloseAlways';
+    await h.advance(61_000);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 2, 5000, 'changement signale');
+    assert.deepEqual(modes(h, 'P-ENTREE'), ['normal', 'always_closed']);
+    h.fake.modes[0] = 'Normal';
+    h.fake.modes[1] = 'OpenAlways';
+    await h.advance(61_000);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 3 && modes(h, 'P-SALLE').length === 2, 5000, 'deux changements');
+    assert.deepEqual(modes(h, 'P-ENTREE'), ['normal', 'always_closed', 'normal']);
+    assert.deepEqual(modes(h, 'P-SALLE'), ['normal', 'always_open']);
+    // Pas de relecture avant la fin de la periode.
+    const reads = h.fake.requests.filter((r) => /getConfig&name=AccessControl/.test(r.path)).length;
+    await h.advance(30_000);
+    assert.equal(h.fake.requests.filter((r) => /getConfig&name=AccessControl/.test(r.path)).length, reads);
+  });
+
+  it('thresholds.modeCheckS = 0 : lecture a la connexion seulement, jamais de relecture periodique', async () => {
+    const h = await boot({ thresholds: { modeCheckS: 0 } });
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    h.fake.modes[0] = 'CloseAlways';
+    await h.advance(600_000);
+    await h.advance(600_000);
+    await sleep(200);
+    assert.deepEqual(modes(h, 'P-ENTREE'), ['normal']);
+    assert.equal(h.fake.requests.filter((r) => /getConfig&name=AccessControl/.test(r.path)).length, 1);
+  });
+
+  it('periode reglable (modeCheckS = 10)', async () => {
+    const h = await boot({ thresholds: { modeCheckS: 10 } });
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    h.fake.modes[0] = 'OpenAlways';
+    await h.advance(11_000);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 2, 5000, 'relecture a 10 s');
+    assert.equal(modes(h, 'P-ENTREE')[1], 'always_open');
+  });
+
+  it('apres un ordre reussi du module (holdOpen / restoreNormal) : mode mis a jour tout de suite, sans attendre la relecture', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    assert.deepEqual(await h.actuators.get('ACT-ENTREE')!(req('unlock', 600)), { result: 'done' });
+    await waitFor(() => modes(h, 'P-ENTREE').length === 2, 5000, 'toujours ouverte');
+    assert.equal(modes(h, 'P-ENTREE')[1], 'always_open');
+    assert.equal(h.fake.modes[0], 'OpenAlways');
+    // Redemande : deja dans ce mode, rien de nouveau.
+    assert.deepEqual(await h.actuators.get('ACT-ENTREE')!(req('unlock', 600)), { result: 'done' });
+    await sleep(100);
+    assert.equal(modes(h, 'P-ENTREE').length, 2);
+    assert.deepEqual(await h.actuators.get('ACT-ENTREE')!(req('lock')), { result: 'done' });
+    await waitFor(() => modes(h, 'P-ENTREE').length === 3, 5000, 'retour au mode normal');
+    assert.equal(modes(h, 'P-ENTREE')[2], 'normal');
+    // Une impulsion ne change pas le mode.
+    assert.deepEqual(await h.actuators.get('ACT-ENTREE')!(req('unlock', 5)), { result: 'done' });
+    await sleep(100);
+    assert.equal(modes(h, 'P-ENTREE').length, 3);
+    assert.equal(modes(h, 'P-SALLE').length, 1, 'l\'autre porte n\'est pas touchee');
+  });
+
+  it('ordre refuse par le controleur : aucun changement de mode annonce', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    h.fake.behavior.setConfig = 'error';
+    assert.deepEqual(await h.actuators.get('ACT-ENTREE')!(req('unlock', 600)), { result: 'error', code: 'refused_by_device' });
+    await sleep(150);
+    assert.equal(modes(h, 'P-ENTREE').length, 1);
+    assert.equal(h.fake.modes[0], 'Normal');
+  });
+
+  it('valeur illisible, inconnue ou absente : RIEN n\'est emis (ni pour cette porte, ni de faux « normal »)', async () => {
+    const clock = { t: T0 };
+    const fake = await startFake({ now: () => clock.t, doors: 1 }); // pas de porte 2 dans le controleur
+    fake.modes[0] = 'NoPersonNC'; // mode que le contrat ne connait pas
+    const h = await boot({ fake, clock });
+    await online(h);
+    await settled(h);
+    await h.advance(61_000);
+    await sleep(300);
+    assert.equal(h.of('door_mode').length, 0);
+    assert.ok(h.logs.some((l) => /mode de la porte 1 absent ou inconnu/.test(l)));
+    assert.ok(h.logs.some((l) => /mode de la porte 2 absent ou inconnu/.test(l)));
+    // Valeur a moitie lisible : pas devinee.
+    fake.modes[0] = 'Norm!al';
+    await h.advance(61_000);
+    await sleep(300);
+    assert.equal(h.of('door_mode').length, 0);
+    // Elle devient lisible : signalee.
+    fake.modes[0] = 'Normal';
+    await h.advance(61_000);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode enfin lisible');
+  });
+
+  it('lecture refusee (HTTP 404 / 500) : rien d\'emis, avertissement, nouvel essai a la periode suivante', async () => {
+    const clock = { t: T0 };
+    const fake = await startFake({ now: () => clock.t });
+    fake.configReadStatus = 500;
+    const h = await boot({ fake, clock });
+    await online(h);
+    await settled(h);
+    await sleep(200);
+    assert.equal(h.of('door_mode').length, 0);
+    assert.ok(h.logs.some((l) => /mode des portes illisible \(HTTP 500\)/.test(l)));
+    h.fake.configReadStatus = null;
+    await h.advance(61_000);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1 && modes(h, 'P-SALLE').length === 1, 5000, 'lecture reussie plus tard');
+  });
+
+  it('controleur injoignable : aucun mode emis hors ligne ; au retour, le mode COURANT (pas un ancien) est signale', async () => {
+    const h = await boot();
+    await online(h);
+    await settled(h);
+    await waitFor(() => modes(h, 'P-ENTREE').length === 1, 5000, 'mode initial');
+    await h.fake.pause();
+    await waitFor(() => h.mod.all[0]!.state().phase === 'waiting', 5000, 'coupure');
+    h.fake.modes[0] = 'OpenAlways';
+    await h.advance(20_000, { settle: false });
+    await h.advance(60_000, { settle: false });
+    assert.equal(h.of('state:offline').length, 2);
+    const during = h.of('door_mode').length;
+    await h.fake.resume();
+    await online(h);
+    await waitFor(() => modes(h, 'P-ENTREE').at(-1) === 'always_open', 10_000, 'mode courant au retour');
+    assert.ok(h.of('door_mode').length > during);
+    assert.equal(modes(h, 'P-SALLE').at(-1), 'normal');
   });
 });
 

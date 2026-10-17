@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { openDb } from '../../server/db.ts';
 import { createEngine } from '../../server/engine.ts';
+import { signCommand, verifyAck } from '../../server/actuatorproto.ts';
 import { startBroker } from '../../server/mqtt.ts';
 import type { Broker } from '../../server/mqtt.ts';
 import { loadConfig } from '../src/config.ts';
@@ -38,7 +39,20 @@ interface Received {
   payload: { event?: string; state?: string; ts?: number; msgId?: string; access?: { eventId: string; deferred: boolean; result: string; reason: string | null; credential: string | null } };
 }
 
-async function setup() {
+/** Cle HMAC de l'actionneur d'essai (32 octets en hexadecimal). */
+const ACT_KEY = '0'.repeat(63) + '1';
+
+interface SetupOptions {
+  /** Cles ajoutees au controleur du module (epoque, actionneurs...). */
+  controller?: Record<string, unknown>;
+  /** Section `actuators` de la passerelle (le vrai socle LEVE a la declaration d'un actionneur absent d'ici). */
+  actuators?: unknown[];
+  /** Actionneurs que le compte MQTT de la passerelle a le droit de recevoir. */
+  allowedActuators?: string[];
+  modeCheckS?: number;
+}
+
+async function setup(o: SetupOptions = {}) {
   const dir = tempDir(cleanup);
   const db = openDb(join(dir, 'psim.db'));
   cleanup.push(() => db.close());
@@ -59,13 +73,15 @@ async function setup() {
       return Reflect.get(target, prop, receiver) as unknown;
     },
   });
+  const acks: { id: string; raw: Buffer }[] = [];
   const port = await freePort();
   const brokerOpts = {
     host: '127.0.0.1',
     port,
     user: 'psim',
     password: BROKER_PASSWORD,
-    gateways: [{ user: GW_USER, password: GW_PASSWORD, detectors: ['P-*'] }],
+    gateways: [{ user: GW_USER, password: GW_PASSWORD, detectors: ['P-*'], ...(o.allowedActuators ? { actuators: o.allowedActuators } : {}) }],
+    onActuatorAck: (id: string, raw: Buffer) => void acks.push({ id, raw }),
   };
   let broker: Broker | null = await startBroker(watched, brokerOpts);
   cleanup.push(() => broker?.close());
@@ -79,6 +95,7 @@ async function setup() {
     retry: { minMs: 100, maxMs: 400 },
     moduleRetry: { minMs: 100, maxMs: 400 },
     log: { file: false },
+    ...(o.actuators ? { actuators: o.actuators } : {}),
     modules: [
       {
         name: 'acces-dahua',
@@ -92,9 +109,10 @@ async function setup() {
               username: fake.username,
               password: fake.password,
               doors: { '1': 'P-ENTREE', '2': 'P-SALLE' },
+              ...o.controller,
             },
           ],
-          thresholds: { offlineGraceMs: 500, silenceMs: 10_000 },
+          thresholds: { offlineGraceMs: 500, silenceMs: 10_000, ...(o.modeCheckS === undefined ? {} : { modeCheckS: o.modeCheckS }) },
           reconnect: { minMs: 100, maxMs: 400 },
         },
       },
@@ -113,6 +131,8 @@ async function setup() {
     engine,
     fake,
     rt,
+    getBroker: () => broker,
+    acks,
     logger,
     device,
     open,
@@ -240,5 +260,96 @@ describe('bout en bout : controleur Dahua -> module -> socle -> broker du PSIM -
     await c.fake.resume();
     await waitFor(() => c.device('P-ENTREE').status === 'normal' && c.device('P-SALLE').status === 'normal', 30_000, 'portes de nouveau normales');
     assert.equal(c.logger.has(/message rejete/), false);
+  });
+  it('ouverture a distance : actionneur DECLARE dans « actuators » -> ordre signe, vrai socle, module, controleur, accuse valide, repos local', { timeout: 60_000 }, async () => {
+    const c = await setup({
+      controller: { actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' } } },
+      actuators: [{ id: 'ACT-ENTREE', key: ACT_KEY, module: 'acces-dahua', actions: { unlock: { maxS: 10 }, lock: {} }, rest: 'lock' }],
+      allowedActuators: ['ACT-ENTREE'],
+    });
+    await ready(c);
+    await waitFor(() => c.getBroker()?.actuatorListeners('ACT-ENTREE') === 1, 10_000, 'abonnement aux ordres');
+    const cmdId = 'a'.repeat(32);
+    const order = signCommand(ACT_KEY, 'ACT-ENTREE', { cmdId, action: 'unlock', params: { durationS: 1 }, ts: Date.now(), ttlS: 10 });
+    await c.getBroker()!.publishCommand('ACT-ENTREE', Buffer.from(JSON.stringify(order)));
+    await waitFor(() => c.acks.some((a) => verifyAck(ACT_KEY, 'ACT-ENTREE', a.raw)?.cmdId === cmdId), 15_000, 'accuse signe');
+    const ack = c.acks.map((a) => verifyAck(ACT_KEY, 'ACT-ENTREE', a.raw)).find((a) => a?.cmdId === cmdId)!;
+    assert.equal(ack.result, 'done');
+    assert.deepEqual(c.fake.commands.map((x) => [x.action, x.channel]).slice(0, 1), [['openDoor', 1]], 'la porte 1 a recu l\'impulsion');
+    // Retour LOCAL au repos au bout de 1 s : mode normal puis fermeture, sans autre message du PSIM.
+    await waitFor(() => c.fake.commands.some((x) => x.action === 'closeDoor' && x.channel === 1), 15_000, 'repos local');
+    assert.equal(c.fake.modes.includes('CloseAlways'), false);
+    assert.equal(c.logger.has(/ouverture a distance indisponible/), false, 'actionneur declare : aucun avertissement');
+    assert.equal(c.rt.status().modules[0]?.state, 'running');
+  });
+
+  it('actionneur du module NON declare dans la section `actuators` de la passerelle : le module demarre quand meme, les passages remontent, le journal le dit clairement', { timeout: 60_000 }, async () => {
+    // Le vrai socle LEVE a la declaration : `registerActuator` attrape l'erreur, journalise la cause et le module continue.
+    const c = await setup({ controller: { actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' } } } });
+    await ready(c);
+    assert.equal(c.rt.status().modules[0]?.state, 'running', 'le module n\'est pas tombe');
+    c.fake.emitAccess({ recNo: 5001, cardNo: '0012345', door: 0 });
+    c.fake.emitAccess({ recNo: 5002, cardNo: '0099999', status: 0, errorCode: 0x10, door: 1 });
+    c.fake.emitDoor('BreakIn', { action: 'Start', index: 1 });
+    await waitFor(() => c.passages().length === 2, 15_000, 'passages recus malgre l\'actionneur non declare');
+    await waitFor(() => c.open('P-SALLE').length === 1, 15_000, 'porte forcee remontee');
+    assert.deepEqual(c.passages().map((p) => p.payload.event), ['badge_granted', 'badge_denied']);
+    assert.equal(c.rt.status().modules[0]?.state, 'running');
+    const line = c.logger.lines.find((l) => /ouverture a distance indisponible/.test(l.text));
+    assert.ok(line, c.logger.lines.map((l) => l.text).join('\n'));
+    assert.equal(line.level, 'warn');
+    assert.match(line.text, /ACT-ENTREE/);
+    assert.match(line.text, /surveillance seule/);
+    assert.match(line.text, /non declare dans la section/);
+    assert.equal(c.logger.lines.filter((l) => /ACT-ENTREE/.test(l.text) && /non enregistre/.test(l.text)).length, 1, 'une seule ligne : pas de journal redondant');
+    assert.equal(c.logger.has(/canal de commande n'est pas installe/), false);
+    assert.equal(c.getBroker()?.actuatorListeners('ACT-ENTREE'), 0);
+  });
+
+  it('passerelle sans synchronisation des titulaires (socle actuel) : le module demarre, le dit une fois, et les passages remontent', { timeout: 60_000 }, async () => {
+    const c = await setup();
+    await ready(c);
+    c.fake.emitAccess({ recNo: 6001, door: 0 });
+    await waitFor(() => c.passages().length === 1, 15_000, 'passage recu');
+    assert.equal(c.rt.status().modules[0]?.state, 'running');
+    const lines = c.logger.lines.filter((l) => /synchronisation des titulaires indisponible/.test(l.text));
+    assert.equal(lines.length, 1, c.logger.lines.map((l) => l.text).join('\n'));
+    assert.match(lines[0]!.text, /CTL-1/);
+  });
+
+  it('mode de porte (F19) : lu a la connexion puis a chaque changement, accepte par le vrai moteur (signe de vie, aucun rejet)', { timeout: 60_000 }, async () => {
+    const c = await setup({ modeCheckS: 1 });
+    await ready(c);
+    const modes = (id: string) => c.received.filter((r) => r.id === id && r.payload.event === 'door_mode').map((r) => (r.payload as { doorMode?: string }).doorMode);
+    await waitFor(() => modes('P-ENTREE').length >= 1 && modes('P-SALLE').length >= 1, 15_000, 'modes initiaux');
+    assert.equal(modes('P-ENTREE')[0], 'normal');
+    c.fake.modes[1] = 'OpenAlways';
+    await waitFor(() => modes('P-SALLE').includes('always_open'), 20_000, 'changement vu par la relecture');
+    assert.equal(c.device('P-SALLE').status, 'normal', 'un mode n\'est pas une alarme');
+    assert.equal(c.open('P-SALLE').length, 0);
+    assert.equal(c.logger.has(/message rejete/), false, c.logger.lines.map((l) => l.text).join('\n'));
+  });
+
+  it('contrainte : Duress -> alarme « panic » reconnue par le vrai moteur (incident critique) sur la bonne porte seulement', { timeout: 60_000 }, async () => {
+    const c = await setup();
+    await ready(c);
+    c.fake.emitDoor('Duress', { action: 'Start', index: 1, data: { Door: 1, UTC: Math.floor(Date.now() / 1000), RecNo: 77 } });
+    await waitFor(() => c.open('P-SALLE').length === 1, 15_000, 'incident de contrainte');
+    assert.equal(c.open('P-SALLE')[0]!.event, 'panic');
+    assert.equal(c.open('P-SALLE')[0]!.severity, 'critical');
+    assert.equal(c.device('P-SALLE').status, 'alarm');
+    assert.equal(c.device('P-ENTREE').status, 'normal');
+    assert.equal(c.logger.has(/message rejete/), false);
+  });
+
+  it('epoque : eventId "<epoque>.<n°>" jusqu\'au moteur (msgId memorise, aucune collision avec l\'epoque 0)', { timeout: 60_000 }, async () => {
+    const c = await setup({ controller: { epoch: 3 } });
+    await ready(c);
+    c.fake.emitAccess({ recNo: 7001, door: 0 });
+    await waitFor(() => c.passages().length === 1, 15_000, 'passage');
+    assert.equal(c.passages()[0]!.payload.msgId, 'acc:CTL-1:3.7001');
+    assert.equal(c.passages()[0]!.payload.access!.eventId, '3.7001');
+    await waitFor(() => c.dedup('P-ENTREE').includes('acc:CTL-1:3.7001'), 5000, 'msgId memorise');
+    assert.equal(c.dedup('P-ENTREE').includes('acc:CTL-1:7001'), false);
   });
 });

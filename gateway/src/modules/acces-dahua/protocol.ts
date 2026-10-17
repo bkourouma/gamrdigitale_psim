@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { parseEventPart } from '../../../../server/dahua.ts';
 import type { ControllerEventKind, DoorEventKind, PassageInput } from '../acces-commun/commun.ts';
-import { cleanCredential, cleanRef, cleanText } from '../acces-commun/commun.ts';
+import { cleanCredential, cleanRef, cleanText, epochEventId } from '../acces-commun/commun.ts';
 
 /** Evenement du flux, tel que `parseEventPart` (server/dahua.ts) le rend : `channel` = `index` + 1. */
 export interface RawEvent {
@@ -39,6 +39,12 @@ export interface TranslateContext {
   doorBase: 0 | 1;
   /** Portes declarees (1 a 4) : sert a rattacher un enregistrement sans numero de porte quand il n'y en a qu'une. */
   doorNos?: readonly number[];
+  /**
+   * Epoque du controleur (entier >= 0, 0 par defaut) : si > 0, l'identifiant d'evenement d'un passage devient
+   * `<epoque>.<n° d'enregistrement>` (`epochEventId`), y compris pour un identifiant synthetique. Le curseur de recuperation
+   * reste le n° d'enregistrement SEUL (il est range sous une cle propre a l'epoque).
+   */
+  epoch?: number;
 }
 
 export type Translation =
@@ -49,6 +55,11 @@ export type Translation =
       recNo: string | null;
       /** Heure de creation en secondes (UTC) si connue. */
       createSec: number | null;
+      /**
+       * Vrai quand l'evenement signale une CARTE DE CONTRAINTE (`CardType` = 5, table [A]) : le module emet en plus une
+       * alarme de contrainte (`panic`). Jamais vrai pour un enregistrement de la memoire (pas de `CardType` conserve).
+       */
+      duress: boolean;
     }
   | { kind: 'door'; doorNo: number; doorKind: DoorEventKind; ts: number; idPart: string }
   | { kind: 'controller'; ctlKind: ControllerEventKind; ts: number; idPart: string }
@@ -226,7 +237,11 @@ function passageFrom(o: Obj, ctx: TranslateContext, fallbackDoor: number | null)
   const recNo = recNoValue !== null && recNoValue >= 0 ? String(recNoValue) : null;
   const createSec = known ? Math.floor(ts / 1000) : null;
   // Sans RecNo : identifiant synthetique deterministe (heure, porte, empreinte courte des champs d'identite). A QUALIFIER.
-  const eventId = recNo ?? `x${Math.floor(ts / 1000)}.${doorNo}.${shortHash(`${ts}|${doorNo}|${card ?? ''}|${methodCode ?? ''}|${status ?? ''}|${field(o, 'UserID') ?? ''}`)}`;
+  const baseId = recNo ?? `x${Math.floor(ts / 1000)}.${doorNo}.${shortHash(`${ts}|${doorNo}|${card ?? ''}|${methodCode ?? ''}|${status ?? ''}|${field(o, 'UserID') ?? ''}`)}`;
+  // Epoque > 0 (controleur remplace) : `<epoque>.<identifiant>`, y compris pour l'identifiant synthetique ; le curseur reste le RecNo seul.
+  const eventId = epochEventId(ctx.epoch ?? 0, baseId);
+  // Carte de CONTRAINTE : `CardType` = 5 (table [A]). A QUALIFIER : le champ n'est vu que dans l'exemple d'un terminal ASI (valeur 0).
+  const duress = toInt(field(o, 'CardType')) === 5;
 
   const passage: PassageInput = {
     eventId,
@@ -242,7 +257,7 @@ function passageFrom(o: Obj, ctx: TranslateContext, fallbackDoor: number | null)
     ts,
     ...(recNo !== null ? { cursor: recNo } : {}),
   };
-  return { kind: 'passage', passage, recNo, createSec };
+  return { kind: 'passage', passage, recNo, createSec, duress };
 }
 
 /** Index du flux (`index=N`) -> numero de porte du contrat. */
@@ -259,8 +274,8 @@ function indexDoor(channel: number, ctx: TranslateContext): number | null {
  *  - `BreakIn` : porte forcee (effraction). A QUALIFIER ;
  *  - `ChassisIntruded` : ouverture du boitier = sabotage du controleur (Start) et fin (Stop). Nom vu dans la liste d'une
  *    integration Home Assistant ; A QUALIFIER.
- * `Duress` (contrainte) et `RepeatEnter` (anti-retour) ne sont PAS traduits (le contrat n'a pas d'evenement pour eux) : le
- * module les compte et le signale (voir `reason` de la reponse « none »).
+ * `Duress` (contrainte) devient une alarme `panic` (`doorKind: 'duress'`, fin ignoree). `RepeatEnter` (anti-retour) n'est PAS
+ * traduit : le refus est deja signale par le passage (voir `reason` de la reponse « none »).
  */
 export function translateEvent(ev: RawEvent, ctx: TranslateContext): Translation {
   if (!isObj(ev) || typeof ev.code !== 'string' || typeof ev.action !== 'string') return { kind: 'none', reason: 'evenement illisible' };
@@ -300,8 +315,19 @@ export function translateEvent(ev: RawEvent, ctx: TranslateContext): Translation
       const { ts } = eventTime(data, ctx);
       return { kind: 'controller', ctlKind: action === 'stop' ? 'tamper_end' : 'tamper', ts, idPart: action };
     }
-    case 'Duress':
-      return { kind: 'none', reason: 'alarme de contrainte recue (non prevue au contrat)' };
+    case 'Duress': {
+      // Contrainte (code ou doigt « sous menace ») : alarme `panic` toujours active, sans fin. Le nom du code est celui d'une liste
+      // d'evenements d'integrateur ; ses champs ne sont pas publies dans [A][B] : A QUALIFIER (porte : `Door`, sinon l'index du flux).
+      if (action === 'stop') return { kind: 'none', reason: 'fin de contrainte (sans objet : une contrainte est sans fin)' };
+      const data = parseJson(ev.data) ?? {};
+      const doorField = field(data, 'Door');
+      const doorNo = doorField === undefined || doorField === null ? door : doorNumber(toInt(doorField), ctx);
+      if (doorNo === null) return { kind: 'none', reason: 'porte hors plage ou inconnue (alarme de contrainte non transmise)' };
+      const { ts } = eventTime(data, ctx);
+      // idPart : distingue deux contraintes de la meme seconde sur la meme porte quand le controleur donne un n° d'enregistrement.
+      const rec = toInt(field(data, 'RecNo'));
+      return { kind: 'door', doorNo, doorKind: 'duress', ts, idPart: rec !== null && rec >= 0 ? `r${rec}` : action };
+    }
     case 'RepeatEnter':
       return { kind: 'none', reason: 'anti-retour (le refus est deja signale par le passage)' };
     default:
@@ -335,7 +361,7 @@ export interface RecordPage {
  * Reponse de `recordFinder.cgi?action=find` : `totalCount=`, `found=`, `records[i].Cle=valeur` [A]. Tolere tout : lignes
  * inconnues, indices enormes, valeurs tres longues, fins de ligne CRLF.
  */
-export function parseRecordPage(body: string): RecordPage {
+export function parseRecordPage(body: string, allowed: ReadonlySet<string> = RECORD_KEYS): RecordPage {
   const page: RecordPage = { totalCount: null, found: null, records: [] };
   const byIndex = new Map<number, Record<string, string>>();
   let lines = 0;
@@ -354,7 +380,7 @@ export function parseRecordPage(body: string): RecordPage {
       if (!m) continue;
       const index = Number(m[1]);
       const name = m[2]!;
-      if (index >= MAX_RECORDS || !RECORD_KEYS.has(name)) continue;
+      if (index >= MAX_RECORDS || !allowed.has(name)) continue;
       let rec = byIndex.get(index);
       if (!rec) {
         rec = {};

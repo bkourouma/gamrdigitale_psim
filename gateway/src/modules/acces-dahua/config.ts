@@ -2,15 +2,26 @@
  * Configuration du module `acces-dahua` : types et validation STRICTE (cle inconnue = erreur, toutes les erreurs d'un coup,
  * messages en francais pour l'installateur). Le mot de passe ne figure JAMAIS dans un message d'erreur.
  *
- *   { "stateDir": "optionnel",
+ *   { "stateDir": "optionnel",                       // curseurs F8 (acces-curseurs.json) ET plages horaires (acces-plages.json)
  *     "controllers": [ { "id": "CTL-1", "host": "192.168.10.20", "port": 80, "username": "psim",
  *                        "password": {"$file":"secrets/ctl1.txt"}, "utcOffsetMin": 0,
+ *                        "epoch": 0,                 // optionnel (entier >= 0, 0) : voir ci-dessous
  *                        "doors": { "1": "P-ENTREE", "2": "P-SALLE-SERVEUR" },
  *                        "actuators": { "ACT-ENTREE": { "door": 1, "type": "lock" } } } ],
  *     "thresholds": { "deniedCount": 3, "deniedWindowS": 60, "heartbeatS": 60, "clockDriftMs": 120000,
- *                     "silenceMs": 30000, "offlineGraceMs": 15000, "longUnlockS": 60 },
+ *                     "silenceMs": 30000, "offlineGraceMs": 15000, "longUnlockS": 60,
+ *                     "modeCheckS": 60 },             // relecture du mode des portes (F19), 0 = inactive
+ *     "schedules": { "min": 1, "max": 127 },         // numeros de plage horaire (AccessTimeSchedule) confies au PSIM (synchronisation)
  *     "reconnect": { "minMs": 1000, "maxMs": 60000 } }
+ *
+ * `epoch` (par controleur) : a AUGMENTER quand le controleur est remplace (sa memoire est vide : les n° d'enregistrement repartent
+ * de zero). Si epoch > 0, `eventId` = "<epoque>.<n° d'enregistrement>" et le curseur de recuperation (F8) est celui de l'epoque :
+ * il repart de zero (premier demarrage : au plus les dernieres 24 h de la memoire sont rejouees).
+ * `schedules.min` / `schedules.max` : plage de numeros de `AccessTimeSchedule` que le module peut attribuer aux horaires du PSIM.
+ * Defaut 1 a 127 : le controleur en offre 128 (indices 0 a 127, SDK Dahua) et le numero 0 reste celui d'usine ; 255 est reserve
+ * (« toutes les heures »). A QUALIFIER sur materiel. Valeurs : entiers, 0 <= min <= max <= 254.
  */
+import { MAX_EPOCH, validEpoch } from '../acces-commun/commun.ts';
 import { DIGEST_USERNAME } from '../../../../server/dahua.ts';
 
 export interface ActuatorConfig {
@@ -39,6 +50,8 @@ export interface ControllerConfig {
   doorBase: 0 | 1;
   /** Identifiant d'utilisateur transmis avec l'ordre d'ouverture a distance (facultatif ; absent par defaut). */
   remoteUserId: number | null;
+  /** Epoque du controleur (entier >= 0, 0 par defaut) : a augmenter quand le controleur est remplace. */
+  epoch: number;
 }
 
 export interface Thresholds {
@@ -49,13 +62,26 @@ export interface Thresholds {
   silenceMs: number;
   offlineGraceMs: number;
   longUnlockS: number;
+  /** Periode (secondes) de la relecture du mode des portes (F19) ; 0 = pas de relecture periodique. */
+  modeCheckS: number;
 }
+
+/** Numeros de plage horaire (`AccessTimeSchedule`) que le module peut attribuer ; `NO_RESTRICTION_SLOT` (255) n'en fait jamais partie. */
+export interface SchedulesConfig {
+  min: number;
+  max: number;
+}
+
+export const DEFAULT_SCHEDULES: SchedulesConfig = { min: 1, max: 127 };
+/** Numero de plage « toutes les heures » dans une fiche carte (`TimeSections`). A QUALIFIER. */
+export const NO_RESTRICTION_SLOT = 255;
 
 export interface DahuaAccessConfig {
   /** Dossier d'etat (curseurs F8) ; `null` = dossier par defaut choisi par le module. */
   stateDir: string | null;
   controllers: ControllerConfig[];
   thresholds: Thresholds;
+  schedules: SchedulesConfig;
   reconnect: { minMs: number; maxMs: number };
 }
 
@@ -67,6 +93,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   silenceMs: 30_000,
   offlineGraceMs: 15_000,
   longUnlockS: 60,
+  modeCheckS: 60,
 };
 
 export const MAX_CONTROLLERS = 16;
@@ -78,8 +105,8 @@ const HOST_RE = /^[A-Za-z0-9._:-]{1,253}$/;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const TOP_KEYS = new Set(['stateDir', 'controllers', 'thresholds', 'reconnect']);
-const CONTROLLER_KEYS = new Set(['id', 'host', 'port', 'username', 'password', 'utcOffsetMin', 'doors', 'actuators', 'doorBase', 'remoteUserId']);
+const TOP_KEYS = new Set(['stateDir', 'controllers', 'thresholds', 'schedules', 'reconnect']);
+const CONTROLLER_KEYS = new Set(['id', 'host', 'port', 'username', 'password', 'utcOffsetMin', 'doors', 'actuators', 'doorBase', 'remoteUserId', 'epoch']);
 const THRESHOLD_BOUNDS: Record<keyof Thresholds, [number, number]> = {
   deniedCount: [1, 100],
   deniedWindowS: [1, 86_400],
@@ -88,6 +115,7 @@ const THRESHOLD_BOUNDS: Record<keyof Thresholds, [number, number]> = {
   silenceMs: [500, 600_000],
   offlineGraceMs: [0, 600_000],
   longUnlockS: [1, 86_400],
+  modeCheckS: [0, 86_400],
 };
 
 /** Texte court et sans danger pour un message d'erreur (jamais une valeur de mot de passe). */
@@ -127,6 +155,22 @@ export function parseConfig(config: Record<string, unknown>): DahuaAccessConfig 
         if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) err(`thresholds.${k}`, `un entier entre ${min} et ${max} est attendu`);
         else thresholds[k as keyof Thresholds] = v;
       }
+    }
+  }
+
+  // --- Plages horaires (synchronisation des titulaires) ---
+  const schedules: SchedulesConfig = { ...DEFAULT_SCHEDULES };
+  if (config.schedules !== undefined) {
+    if (!isObject(config.schedules)) err('schedules', 'un objet est attendu ({"min": 1, "max": 127})');
+    else {
+      for (const k of Object.keys(config.schedules)) if (k !== 'min' && k !== 'max') err('schedules', `cle inconnue « ${shown(k)} » (attendu : min, max)`);
+      for (const k of ['min', 'max'] as const) {
+        const v = config.schedules[k];
+        if (v === undefined) continue;
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 254) err(`schedules.${k}`, 'un entier entre 0 et 254 est attendu (255 est reserve : « toutes les heures »)');
+        else schedules[k] = v;
+      }
+      if (schedules.max < schedules.min) err('schedules', `max (${schedules.max}) doit etre superieur ou egal a min (${schedules.min})`);
     }
   }
 
@@ -198,6 +242,12 @@ export function parseConfig(config: Record<string, unknown>): DahuaAccessConfig 
         else doorBase = raw.doorBase;
       }
 
+      let epoch = 0;
+      if (raw.epoch !== undefined) {
+        if (!validEpoch(raw.epoch)) err(where, `« epoch » doit etre un entier entre 0 et ${MAX_EPOCH} (0 par defaut ; a augmenter quand le controleur est remplace)`);
+        else epoch = raw.epoch;
+      }
+
       let remoteUserId: number | null = null;
       if (raw.remoteUserId !== undefined) {
         if (typeof raw.remoteUserId !== 'number' || !Number.isInteger(raw.remoteUserId) || raw.remoteUserId < 0 || raw.remoteUserId > 99_999_999) err(where, '« remoteUserId » doit etre un entier positif ou nul');
@@ -261,11 +311,11 @@ export function parseConfig(config: Record<string, unknown>): DahuaAccessConfig 
       }
 
       if (errors.length === before && typeof id === 'string' && typeof host === 'string' && typeof username === 'string' && typeof password === 'string') {
-        controllers.push({ id, host, port, username, password, utcOffsetMin, doors, actuators, doorBase, remoteUserId });
+        controllers.push({ id, host, port, username, password, utcOffsetMin, doors, actuators, doorBase, remoteUserId, epoch });
       }
     });
   }
 
   if (errors.length > 0) throw new Error(`Module acces-dahua : configuration invalide :\n${errors.map((e) => `  - ${e}`).join('\n')}`);
-  return { stateDir, controllers, thresholds, reconnect };
+  return { stateDir, controllers, thresholds, schedules, reconnect };
 }

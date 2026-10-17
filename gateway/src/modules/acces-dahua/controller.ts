@@ -13,15 +13,21 @@
  *    passages en direct partent SANS curseur, et la recuperation repart du dernier curseur sur ;
  *  - un evenement du flux sans n° d'enregistrement (certains terminaux) est complete par la memoire du controleur ; a defaut, au
  *    bout de quelques secondes, il part avec un identifiant synthetique (deterministe) ;
- *  - aucun badge, nom ni mot de passe dans les journaux ; aucune exception ne sort.
+ *  - aucun badge, nom ni mot de passe dans les journaux ; aucune exception ne sort ;
+ *  - epoque (`cfg.epoch`) : si > 0, les identifiants d'evenement sont "<epoque>.<n°>" et le curseur F8 est range sous
+ *    `supervisor.cursorKey` (un controleur remplace repart de zero) ;
+ *  - mode de porte (F19) : lu a la connexion (`AccessControl[i].State`), relu toutes les `modeCheckS` secondes, et mis a jour
+ *    des qu'un ordre `holdOpen` / `restoreNormal` du module reussit ; une valeur illisible n'emet rien.
  */
 import { openEventStream } from '../../../../server/dahua.ts';
 import { ControllerSupervisor, createLimitedLog } from '../acces-commun/commun.ts';
+import type { DoorMode } from '../../module.ts';
 import type { CursorStore, Emitter, LogFn, PassageInput } from '../acces-commun/commun.ts';
 import type { ControllerConfig, Thresholds } from './config.ts';
 import { DahuaDoorDriver } from './driver.ts';
 import { AuthGate, DahuaAuthError, DahuaHttp, DahuaHttpError } from './http.ts';
-import { parseCurrentTime, parseDoorStatus, parsePart, translateEvent } from './protocol.ts';
+import { parseCurrentTime, parseDoorMode, parseDoorStatus, parsePart, translateEvent } from './protocol.ts';
+import type { DoorMode as DahuaDoorMode } from './protocol.ts';
 import type { TranslateContext, Translation } from './protocol.ts';
 import { runRecovery } from './recovery.ts';
 import type { RecoveryResult } from './recovery.ts';
@@ -87,6 +93,20 @@ interface RetryState {
 
 type Phase = 'idle' | 'connecting' | 'connected' | 'waiting' | 'stopped';
 
+/** Mode de la table `AccessControl` du controleur -> mode de porte du contrat ; `null` si inconnu. */
+export function modeOf(raw: string): DoorMode | null {
+  switch (raw) {
+    case 'Normal':
+      return 'normal';
+    case 'OpenAlways':
+      return 'always_open';
+    case 'CloseAlways':
+      return 'always_closed';
+    default:
+      return null;
+  }
+}
+
 export class AccessController {
   readonly id: string;
   readonly supervisor: ControllerSupervisor;
@@ -118,6 +138,9 @@ export class AccessController {
   private timeRetryAt = 0;
   private wantDoors = false;
   private doorStatusSupported = true;
+  /** Mode des portes (F19) a lire ; prochaine relecture periodique (ms, horloge du module). */
+  private wantModes = false;
+  private nextModeCheckAt = 0;
   private wantRecovery = false;
   private recoveryReason: 'reconnect' | 'quick' = 'reconnect';
   private recoveryNotBefore = 0;
@@ -147,7 +170,7 @@ export class AccessController {
     this.logLimited = createLimitedLog(deps.log, deps.now);
     this.gate = new AuthGate(deps.now);
     this.http = new DahuaHttp({ host: deps.cfg.host, port: deps.cfg.port, username: deps.cfg.username, password: deps.cfg.password }, { gate: this.gate, timeoutMs: deps.httpTimeoutMs });
-    this.driver = new DahuaDoorDriver(this.http, { remoteUserId: deps.cfg.remoteUserId, log: deps.log });
+    this.driver = new DahuaDoorDriver(this.http, { remoteUserId: deps.cfg.remoteUserId, log: deps.log, onMode: (doorNo, mode) => this.noteMode(doorNo, mode) });
     const t = deps.thresholds;
     this.supervisor = new ControllerSupervisor({
       controllerId: deps.cfg.id,
@@ -156,6 +179,7 @@ export class AccessController {
       now: deps.now,
       log: deps.log,
       cursors: deps.cursors,
+      epoch: deps.cfg.epoch,
       thresholds: {
         denied: { count: t.deniedCount, windowS: t.deniedWindowS },
         heartbeatS: t.heartbeatS,
@@ -204,6 +228,7 @@ export class AccessController {
       if (this.phase === 'connected' && t - this.lastPartAt > this.deps.thresholds.silenceMs) this.streamEnded('flux muet : aucun signe de vie', false, this.generation);
       if (this.phase === 'connected') {
         if (this.supervisor.driftDue() && !this.wantTime && t >= this.timeRetryAt) this.wantTime = true;
+        this.scheduleModeCheck(t);
         if (this.holding && this.connectedAt !== null && t - this.connectedAt > HOLD_MAX_MS) this.drainBuffer();
         this.retryDoorEvents();
         this.ageOrphans();
@@ -268,6 +293,8 @@ export class AccessController {
         this.recoveryReason = 'reconnect';
         this.recoveryNotBefore = 0;
         this.wantDoors = this.doorStatusSupported;
+        this.wantModes = true; // mode de chaque porte a chaque (re)connexion
+        this.nextModeCheckAt = t + this.modeCheckMs();
         this.holding = this.recoverySupported;
       }
       this.supervisor.alive();
@@ -327,7 +354,7 @@ export class AccessController {
   // --- Traduction des evenements ------------------------------------------------------------------------------------------
 
   private translateContext(): TranslateContext {
-    return { utcOffsetMin: this.cfg.utcOffsetMin, receivedAt: this.now(), doorBase: this.cfg.doorBase, doorNos: [...this.cfg.doors.keys()] };
+    return { utcOffsetMin: this.cfg.utcOffsetMin, receivedAt: this.now(), doorBase: this.cfg.doorBase, doorNos: [...this.cfg.doors.keys()], epoch: this.cfg.epoch };
   }
 
   private handle(t: Translation): void {
@@ -335,6 +362,8 @@ export class AccessController {
       case 'passage':
         if (t.recNo === null) this.onOrphan(t.passage);
         else this.onLivePassage(t.passage);
+        // Carte de contrainte : en plus du passage, alarme `panic` (msgId deterministe : un rejeu ne double pas l'alarme).
+        if (t.duress) this.raiseDuress(t.passage.doorNo, t.passage.ts, `c${t.passage.cursor ?? t.passage.eventId}`);
         break;
       case 'door':
         if (!this.cfg.doors.has(t.doorNo)) {
@@ -343,14 +372,23 @@ export class AccessController {
         }
         this.doorSeq.set(t.doorNo, (this.doorSeq.get(t.doorNo) ?? 0) + 1);
         if (!this.supervisor.doorEvent(t.doorNo, t.doorKind, t.ts, t.idPart)) this.retryLater({ doorNo: t.doorNo, kind: t.doorKind, ts: t.ts, idPart: t.idPart, at: this.now(), tries: 0 });
+        else if (t.doorKind === 'duress') this.logLimited(`duress:${t.doorNo}`, 'warn', `controleur ${this.id} : alarme de contrainte sur la porte ${t.doorNo}`);
         break;
       case 'controller':
         if (!this.supervisor.controllerEvent(t.ctlKind, t.ts, t.idPart)) this.retryLater({ doorNo: null, kind: t.ctlKind, ts: t.ts, idPart: t.idPart, at: this.now(), tries: 0 });
         break;
       default:
-        if (t.reason.startsWith('alarme de contrainte')) this.logLimited('duress', 'warn', `controleur ${this.id} : ${t.reason} : ignoree`);
+        // Contrainte non attribuable a une porte : elle ne peut pas etre transmise, on le dit (jamais en silence).
+        if (t.reason.includes('contrainte non transmise')) this.logLimited('duressdoor', 'warn', `controleur ${this.id} : ${t.reason}`);
         break;
     }
+  }
+
+  /** Alarme de contrainte (`panic`) d'une carte de contrainte ; si le socle refuse, elle est retentee comme un evenement de porte. */
+  private raiseDuress(doorNo: number, ts: number, idPart: string): void {
+    if (!this.cfg.doors.has(doorNo)) return;
+    if (!this.supervisor.doorEvent(doorNo, 'duress', ts, idPart)) this.retryLater({ doorNo, kind: 'duress', ts, idPart, at: this.now(), tries: 0 });
+    else this.logLimited(`duress:${doorNo}`, 'warn', `controleur ${this.id} : alarme de contrainte sur la porte ${doorNo} (carte de contrainte)`);
   }
 
   private retryLater(r: RetryState): void {
@@ -415,7 +453,8 @@ export class AccessController {
   /** Emet les passages gardes pendant la recuperation, dans l'ordre des n° d'enregistrement. */
   private drainBuffer(): void {
     this.holding = false;
-    const buffered = this.buffer.splice(0).sort((a, b) => Number(a.eventId) - Number(b.eventId));
+    // Tri par n° d'enregistrement (le curseur) : l'identifiant d'evenement porte l'epoque ("2.55") et ne se compare pas.
+    const buffered = this.buffer.splice(0).sort((a, b) => Number(a.cursor ?? a.eventId) - Number(b.cursor ?? b.eventId));
     for (const p of buffered) this.submitLive(p);
   }
 
@@ -494,7 +533,7 @@ export class AccessController {
   }
 
   private workPending(): boolean {
-    return this.wantTime || this.wantDoors || (this.wantRecovery && this.now() >= this.recoveryNotBefore);
+    return this.wantTime || this.wantDoors || this.wantModes || (this.wantRecovery && this.now() >= this.recoveryNotBefore);
   }
 
   private async work(generation: number): Promise<void> {
@@ -507,6 +546,11 @@ export class AccessController {
       }
       if (this.wantRecovery && this.now() >= this.recoveryNotBefore) {
         await this.recover(generation);
+        continue;
+      }
+      if (this.wantModes) {
+        this.wantModes = false;
+        await this.readModes(generation);
         continue;
       }
       if (this.wantDoors) {
@@ -566,6 +610,56 @@ export class AccessController {
     }
   }
 
+  // --- Mode de porte (F19) ------------------------------------------------------------------------------------------------
+
+  private modeCheckMs(): number {
+    return this.deps.thresholds.modeCheckS * 1000;
+  }
+
+  /** Relecture periodique du mode (`thresholds.modeCheckS`, 0 = inactive). */
+  private scheduleModeCheck(t: number): void {
+    const every = this.modeCheckMs();
+    if (every <= 0 || this.wantModes) return;
+    // Horloge revenue en arriere : on relit tout de suite plutot que d'attendre un retard qui ne vient jamais.
+    if (t >= this.nextModeCheckAt || this.nextModeCheckAt - t > every) {
+      this.wantModes = true;
+      this.nextModeCheckAt = t + every;
+    }
+  }
+
+  /** Mode que le controleur vient de confirmer apres un ordre du module (voir `DahuaDoorDriver`). */
+  private noteMode(doorNo: number, mode: DahuaDoorMode): void {
+    const m = modeOf(mode);
+    if (m !== null && this.phase !== 'stopped' && this.cfg.doors.has(doorNo)) this.supervisor.doorMode(doorNo, m);
+  }
+
+  /**
+   * Mode de chaque porte declaree : `AccessControl[porte-1].State` (Normal, OpenAlways, CloseAlways). Une valeur illisible,
+   * absente ou inconnue (NoPersonNC...) n'emet RIEN. Une seule requete pour toutes les portes. A QUALIFIER sur materiel :
+   * indice de table, presence de la cle.
+   */
+  private async readModes(generation: number): Promise<void> {
+    try {
+      const res = await this.http.get('/cgi-bin/configManager.cgi?action=getConfig&name=AccessControl');
+      if (!this.canWork(generation)) return;
+      if (res.status !== 200) {
+        this.logLimited('modehttp', 'warn', `controleur ${this.id} : mode des portes illisible (HTTP ${res.status})`);
+        return;
+      }
+      for (const doorNo of this.cfg.doors.keys()) {
+        const raw = parseDoorMode(res.body, doorNo - 1);
+        const mode = raw === null ? null : modeOf(raw);
+        if (mode === null) {
+          this.logLimited(`modeunknown:${doorNo}`, 'info', `controleur ${this.id} : mode de la porte ${doorNo} absent ou inconnu, rien n'est signale`);
+          continue;
+        }
+        this.supervisor.doorMode(doorNo, mode);
+      }
+    } catch (err) {
+      this.noteHttpError('modes', err);
+    }
+  }
+
   private async recover(generation: number): Promise<void> {
     const reason = this.recoveryReason;
     this.wantRecovery = false;
@@ -573,7 +667,7 @@ export class AccessController {
     this.lastQuickAt = this.now();
     let result: RecoveryResult;
     try {
-      const entry = this.deps.cursors.get(this.id);
+      const entry = this.deps.cursors.get(this.supervisor.cursorKey); // curseur de l'EPOQUE courante
       const orphanStart = this.orphans.length > 0 ? Math.floor(Math.min(...this.orphans.map((o) => o.passage.ts)) / 1000) - 30 : undefined;
       result = await runRecovery({
         http: this.http,

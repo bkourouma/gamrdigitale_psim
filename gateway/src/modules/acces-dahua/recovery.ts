@@ -7,7 +7,8 @@
  * chevaucher d'une page a l'autre). Ici le dedoublonnage se fait par n° d'enregistrement (`RecNo`) : seuls les enregistrements
  * dont le numero depasse le plancher (curseur persiste, puis dernier numero traite) sont rejoues, dans l'ordre CROISSANT.
  *
- *  - premier demarrage (aucun curseur) : on ne rejoue PAS tout l'historique, seulement les dernieres 24 h (A QUALIFIER) ;
+ *  - premier demarrage (aucun curseur) : on ne rejoue PAS tout l'historique, seulement les dernieres 24 h (A QUALIFIER). Le curseur
+ *    est celui de l'EPOQUE courante (cle `sup.cursorKey`) : apres un remplacement de controleur, la recuperation repart de zero ;
  *  - le plancher `RecNo` est conserve en memoire entre deux passes : un enregistrement ignore (porte inconnue...) n'est pas relu
  *    a chaque tour ;
  *  - borne de securite : `maxRecords` enregistrements examines par passe (5 000), puis la passe rend « partial » et le module
@@ -15,6 +16,7 @@
  *  - le socle (via le superviseur) refuse un message : la passe s'arrete (« refused ») sans avancer le plancher ; elle sera
  *    relancee ; rien n'est perdu puisque le curseur n'a pas depasse ce passage.
  */
+import { epochEventId } from '../acces-commun/commun.ts';
 import type { PassageInput, PassageOutcome } from '../acces-commun/commun.ts';
 import { DahuaAuthError, DahuaHttpError } from './http.ts';
 import type { HttpGetter } from './driver.ts';
@@ -134,7 +136,7 @@ export async function runRecovery(req: RecoveryRequest): Promise<RecoveryResult>
         continue;
       }
       const t = translateRecord(rec, ctx);
-      items.push({ recNo, passage: t.kind === 'passage' ? { ...t.passage, deferred: req.deferred, cursor: String(recNo), eventId: String(recNo) } : null, createSec: t.kind === 'passage' ? t.createSec : null });
+      items.push({ recNo, passage: t.kind === 'passage' ? { ...t.passage, deferred: req.deferred, cursor: String(recNo), eventId: epochEventId(ctx.epoch ?? 0, String(recNo)) } : null, createSec: t.kind === 'passage' ? t.createSec : null });
     }
     items.sort((a, b) => a.recNo - b.recNo);
     for (const item of items) {
