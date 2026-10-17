@@ -55,6 +55,13 @@ synchronisation.
 | Contrôleur injoignable | `{"state":"offline"}` pour chacune de ses portes (jamais « fermée » à tort) |
 | Horloge du contrôleur à plus de 2 min | `{"event":"clock_drift"}` (défaut, libellé « Horloge de l'équipement déréglée ») |
 | Signe de vie, contrôleur joignable | `{"event":"heartbeat"}` par porte, toutes les 60 s par défaut |
+| Contrainte (code ou doigt « sous menace ») | `{"event":"panic"}` (alarme toujours active), Dahua `Duress` comme ZKTeco |
+| Mode de porte (F19, ajout vague 2) | `{"event":"door_mode","doorMode":"normal"\|"always_open"\|"always_closed"}` à la connexion et à chaque changement ; `door_mode` = signe de vie (`alive`) |
+
+**Changement de contrôleur** (remplacement, mémoire effacée : les n° d'enregistrement repartent de zéro) : la
+configuration du module porte une `epoch` (entier, 0 par défaut) que l'installateur augmente ; si `epoch > 0`,
+`eventId` = `<epoch>.<n° d'enregistrement>` et le curseur de récupération repart de zéro. Au premier démarrage, la
+récupération F8 rejoue au plus les dernières 24 h de la mémoire du contrôleur.
 
 **Passage** (badge, code, empreinte, visage, bouton de sortie, ouverture à distance) : un message par passage,
 `event` = `badge_granted` si accepté, `badge_denied` sinon, quelle que soit la méthode :
