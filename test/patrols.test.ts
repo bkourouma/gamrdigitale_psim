@@ -1725,6 +1725,14 @@ describe('routes HTTP : points et circuits', () => {
     assert.equal((await call('GET', '/api/patrols/checkpoints/999/qr.svg', { role: 'admin' })).status, 404);
   });
 
+  it("label-origin : l'origine des etiquettes (celle du QR), reservee a l'administrateur", async () => {
+    const res = await call('GET', '/api/patrols/label-origin', { role: 'admin' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json, { origin: 'https://psim.test' });
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal((await call('GET', '/api/patrols/label-origin', { role: 'operator' })).status, 403);
+  });
+
   it('le QR encode https://<hote>/agent/#cp=<code>', async () => {
     const [id] = makePoints(1);
     const code = env.patrols.getCheckpoint(id)?.code;

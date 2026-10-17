@@ -15,7 +15,7 @@ Documents liés : `docs/AGENTS-RONDES.md` (contrat de conception), `docs/PRD-APP
 4. Installer le certificat sur le téléphone
 5. Créer les points, le circuit, les agents et le téléphone
 6. Fabriquer et poser les étiquettes
-7. Appairer le téléphone et le régler
+7. Appairer le téléphone et le régler (dont la cohabitation avec la passerelle d'appel)
 8. Check-liste d'essai
 9. Cadre légal et note d'information aux agents
 10. Que faire si...
@@ -32,7 +32,9 @@ certificat, la lecture des étiquettes NFC et des QR codes, le son et la vibrati
 **Durée prévue**
 
 - Une soirée de préparation (environ 3 à 4 heures) : réglages du PSIM, certificat, points, circuit, étiquettes, appairage.
-- Une nuit d'essai (de 20 h à 6 h, avec un ou deux agents volontaires) : le déroulé de la check-liste du chapitre 8.
+- **Une semaine d'essai de nuit**, avec **un agent volontaire** en service de nuit (de 20 h à 8 h, soit 12 heures) et
+  quatre rondes par nuit : 22 h, minuit, 2 h et 4 h. La **première nuit** sert à dérouler toute la check-liste du
+  chapitre 8 (vous êtes présent) ; les nuits suivantes servent à voir si tout tient dans la durée (suivi au 8.16).
 
 **Ce que l'on mesure**
 
@@ -46,8 +48,8 @@ certificat, la lecture des étiquettes NFC et des QR codes, le son et la vibrati
 
 > **Avertissement : de vraies alarmes partiront.** Un SOS, une alarme de détecteur ou une ronde non faite ouvrent de
 > vrais incidents et préviennent les vraies personnes (e-mail, Telegram, appels). Avant la nuit d'essai, prévenez toutes
-> les personnes prévues pour recevoir les alertes. Le lendemain, clôturez les incidents d'essai en « fausse alarme »
-> avec le commentaire « essai ».
+> les personnes prévues pour recevoir les alertes, pour toute la semaine. Après chaque nuit d'essai, clôturez les
+> incidents d'essai en « fausse alarme » avec le commentaire « essai ».
 
 ---
 
@@ -55,9 +57,9 @@ certificat, la lecture des étiquettes NFC et des QR codes, le son et la vibrati
 
 | Matériel | Précision |
 |---|---|
-| Téléphone Android | Android 10 ou plus, avec NFC, **Chrome à jour**, batterie d'au moins 4 000 mAh, étui de protection. Un code ou un schéma de verrouillage d'écran doit être réglé (Android l'exige pour installer le certificat). |
-| Étiquettes NFC | Modèle NTAG213 ou NTAG215, autocollantes. Pour un point posé sur du métal (portail, armoire, local technique), prendre des étiquettes « anti-métal ». Si vous n'en avez pas : QR codes seuls, l'essai reste valable. |
-| QR codes imprimés | Imprimante, papier A4, pochettes de plastification (de préférence mates), plastifieuse |
+| Téléphone Android | **Le téléphone Android du site**, celui qui sert déjà de passerelle d'appel (`docs/TELEPHONE-ANDROID.md` : Redmi Note 14 Pro, HyperOS, application MacroDroid). Il faut Android 10 ou plus, le NFC (utile à partir de la 2e étape des étiquettes), **Chrome à jour**, une batterie d'au moins 4 000 mAh et un étui de protection. Un code ou un schéma de verrouillage d'écran doit être réglé (Android l'exige pour installer le certificat). Lisez la section 7.5 avant de commencer : ce téléphone a déjà un travail à faire. |
+| QR codes imprimés (1re étape) | Imprimante, papier A4, pochettes de plastification (de préférence mates), plastifieuse. C'est par là que l'on commence. |
+| Étiquettes NFC (2e étape, dès leur achat) | Modèle **NTAG213** autocollantes. Pour un point posé sur du métal (le portail en particulier, armoire, local technique), prendre des étiquettes **« anti-métal »**. Tant qu'elles ne sont pas arrivées, l'essai se fait avec les QR codes seuls : il reste valable. |
 | Fixation | Ruban adhésif double face |
 | Un second téléphone ou le PC du poste de garde | Pour voir l'essai « côté poste » (ce que voit le chef de poste) |
 | Un chronomètre | Celui d'un téléphone convient |
@@ -166,12 +168,11 @@ Notez d'abord l'adresse IP du PC (par exemple `192.168.1.50`) et son nom. Dans l
    Certains points (agent, téléphone, circuit, points) ne seront verts qu'après le chapitre 5 : c'est normal, revenez
    alors relancer le contrôle.
 
-7. **Ouvrir le PSIM par son adresse réseau.** Pour la suite de l'essai, ouvrez toujours l'interface du PSIM dans le
-   navigateur du PC avec **`https://<ADRESSE-IP-FIXE-DU-PC>:3033`**, **jamais avec `localhost`**. Raison : l'adresse
-   affichée à l'écran dans l'éditeur d'un point (« Adresse que contient l'étiquette ») est calculée avec l'adresse tapée
-   dans le navigateur. Si vous êtes sur `localhost`, l'adresse copiée pour une étiquette NFC pointerait vers `localhost`
-   et ne marcherait sur aucun téléphone. (Les QR imprimés, eux, utilisent `PSIM_PUBLIC_URL`, mais pour écrire les
-   étiquettes NFC il faut bien être sur l'adresse réseau.)
+7. **Une seule adresse pour les QR et les étiquettes NFC.** L'adresse affichée dans l'éditeur d'un point (« Adresse que
+   contient l'étiquette », à copier pour une étiquette NFC) est lue auprès du PSIM : c'est celle de `PSIM_PUBLIC_URL`, donc
+   **exactement celle des QR imprimés**, quelle que soit l'adresse tapée dans le navigateur. Si `PSIM_PUBLIC_URL` n'est pas
+   renseigné, le PSIM retombe sur l'adresse tapée dans le navigateur : renseignez-le (le contrôle `check-agents` vous le
+   dit). Pour la suite, ouvrez de préférence l'interface avec **`https://<ADRESSE-IP-FIXE-DU-PC>:3033`**.
 
 ---
 
@@ -260,7 +261,7 @@ attribuées (voir 5.3).
 
 ### 5.2 Le circuit d'essai
 
-Onglet **Circuits**, bouton **Créer un circuit**. Proposition : une ronde de nuit toutes les 2 heures, de 20 h à 6 h.
+Onglet **Circuits**, bouton **Créer un circuit**. Proposition : une ronde de nuit toutes les 2 heures, de 22 h à 4 h (quatre rondes par nuit, pendant une semaine).
 
 | Champ à l'écran | Valeur proposée |
 |---|---|
@@ -280,19 +281,21 @@ tous les jours cochés. Pour la nuit :
 
 | Plage | De | À |
 |---|---|---|
-| 1 | 20:00 | 20:20 |
-| 2 | 22:00 | 22:20 |
-| 3 | 00:00 | 00:20 |
-| 4 | 02:00 | 02:20 |
-| 5 | 04:00 | 04:20 |
+| 1 | 22:00 | 22:20 |
+| 2 | 00:00 | 00:20 |
+| 3 | 02:00 | 02:20 |
+| 4 | 04:00 | 04:20 |
 
 L'heure « À » ne déclenche rien par elle-même : c'est la **Durée maximale** qui fixe la fin de la ronde. Cliquez sur
 **Enregistrer le circuit**, puis relisez la phrase « Ce que dira le circuit » : elle doit dire ce que vous voulez.
 
 Pour le premier contrôle, vous pouvez ajouter une plage dans les minutes qui viennent (par exemple dans 15 minutes) afin
-de ne pas attendre 20 h.
+de ne pas attendre 22 h (pensez à la retirer ensuite).
 
-### 5.3 Les agents (un ou deux volontaires)
+Le service de l'agent dure 12 heures au plus (réglage par défaut) : l'agent prend son service vers 20 h et le termine vers
+8 h, les quatre rondes tombent donc bien pendant son service.
+
+### 5.3 L'agent (un volontaire)
 
 Onglet **Agents**, formulaire « Ajouter l'agent » :
 
@@ -367,10 +370,14 @@ https://192.168.1.50:3033/agent/#cp=k4m7qx2b3d
 4. **Sur du métal**, une étiquette NFC ordinaire ne fonctionne pas : prenez une étiquette « anti-métal ». Le QR code,
    lui, n'est pas gêné par le métal.
 
-### 6.3 Écrire les étiquettes NFC (facultatif)
+### 6.3 2e étape : écrire les étiquettes NFC (dès que les NTAG213 sont arrivées)
 
-Sur un téléphone Android, avec l'application gratuite **NFC Tools** (depuis le Play Store).
-**Rappel : ouvrez le PSIM depuis `https://<ADRESSE-IP-FIXE-DU-PC>:3033`, jamais depuis `localhost`** (voir 3.2 point 7).
+On commence l'essai avec les QR codes plastifiés (6.1 et 6.2). Les étiquettes NFC NTAG213 (anti-métal pour le portail) se
+posent **à côté ou à la place** des QR dès leur achat, sans rien changer d'autre : c'est la même adresse.
+
+Sur un téléphone Android avec NFC (le vôtre, pas forcément celui du site), avec l'application gratuite **NFC Tools**
+(depuis le Play Store). L'adresse à écrire est celle affichée par le PSIM, qui est exactement celle des QR (voir 3.2
+point 7).
 
 1. Dans le PSIM, onglet **Points de contrôle**, sélectionnez le point : dans « Point sélectionné », cliquez sur **Copier
    l'adresse** (champ « Adresse que contient l'étiquette »). Vérifiez qu'elle commence par
@@ -428,6 +435,35 @@ au premier plan** (écran allumé, application affichée) et **toutes les 30 sec
 reçue en moins de 10 secondes » ne vaut donc que pour l'application ouverte devant l'agent. Garder l'écran allumé n'est
 pas obligatoire, mais en arrière-plan le délai peut atteindre 30 secondes. La réception application fermée (notification
 système) n'existe pas encore : elle est prévue plus tard.
+
+### 7.5 Cohabitation avec la passerelle d'appel
+
+L'essai se fait sur le **téléphone Android du site**, celui qui fait déjà sonner les numéros d'alerte pour le PSIM par
+l'application MacroDroid (voir `docs/TELEPHONE-ANDROID.md`). Ce téléphone a donc deux métiers pendant l'essai : passerelle
+d'appel et téléphone de l'agent. Pour que l'un ne gêne pas l'autre :
+
+1. **La passerelle doit continuer de tourner.** MacroDroid reste installé, lancé et actif (sa notification reste
+   affichée). Ne le fermez pas, ne le retirez pas des applications récentes, et ne balayez pas sa carte. Pour que
+   l'application des agents ne repousse pas MacroDroid, **ouvrez l'application des agents à côté, sans fermer MacroDroid**.
+2. **Aucun réglage de la passerelle ne doit être modifié** : ni dans MacroDroid (macro, port 8080, secret), ni dans
+   les réglages Xiaomi qui lui sont propres (démarrage automatique, batterie « Aucune restriction », fenêtres pop-up,
+   verrouillage dans les récentes), ni le secret et l'adresse `PSIM_PHONE_GATEWAY_*` côté PSIM. Les réglages de ce guide
+   (7.3 et 7.4) ne concernent que **Chrome** et l'application des agents : si vous hésitez, ne touchez à rien d'autre.
+3. **Le Wi-Fi doit rester connecté pendant toute la ronde.** La passerelle reçoit ses ordres du PSIM par le Wi-Fi de la
+   résidence, et l'application des agents parle au PSIM par ce même Wi-Fi. **Avant l'essai, parcourez les six points avec
+   le téléphone** et regardez sur l'écran si le Wi-Fi reste affiché à chaque point (surtout les plus éloignés : arrière-cour,
+   parking, local technique). Un point sans Wi-Fi n'est pas perdu (le scan est gardé puis envoyé au retour du réseau),
+   mais **pendant ce temps la passerelle ne reçoit plus d'ordre d'appel** : notez les points sans couverture dans la
+   check-liste (ligne 56) pour décider d'un répéteur Wi-Fi.
+4. **Le téléphone part en ronde avec l'agent.** Il quitte donc son emplacement habituel (et son chargeur). Pendant la
+   ronde, une alarme qui exige un **appel** part toujours vers les numéros prévus tant que le téléphone a du Wi-Fi ; les
+   messages écrits (e-mail, Telegram) ne dépendent pas de lui. Entre les rondes, l'agent peut remettre le téléphone
+   sur son chargeur, **à une seule condition** : que l'application reste ouverte et le téléphone à portée du Wi-Fi.
+5. **Batterie : la passerelle consomme aussi.** MacroDroid tourne en permanence et écoute le réseau. La mesure de la
+   check-liste (8.14) inclut donc les deux usages : notez le niveau **au début et à la fin de la nuit**, et notez si le
+   téléphone est resté sur chargeur. Résultat attendu : tenir la nuit de 12 heures **sans recharge** ; si ce n'est pas
+   le cas, ne changez rien vous-même, notez les niveaux et renvoyez-les (chapitre 11).
+6. **Après chaque nuit**, vérifiez que la passerelle fonctionne toujours (ligne 57 de la check-liste).
 
 ---
 
@@ -591,7 +627,8 @@ L'agent est verrouillé après **5 codes faux**.
 ### 8.14 Batterie : une nuit de 12 heures
 
 Notez le niveau au début et à la fin de la nuit, et à chaque heure indiquée. Le téléphone ne doit pas être rechargé.
-Écran éteint entre les rondes, application ouverte en service.
+Écran éteint entre les rondes, application ouverte en service. **Le téléphone est aussi la passerelle d'appel** : la
+mesure inclut donc MacroDroid (voir 7.5). Notez si le téléphone est resté sur chargeur à un moment de la nuit.
 
 | Heure | Niveau (%) | Remarque (rondes faites, écran allumé, Wi-Fi...) |
 |---|---|---|
@@ -600,10 +637,10 @@ Notez le niveau au début et à la fin de la nuit, et à chaque heure indiquée.
 | 00:00 | | |
 | 02:00 | | |
 | 04:00 | | |
-| 06:00 (fin) | | |
-| 08:00 (après 12 h de service) | | |
+| 06:00 | | |
+| 08:00 (fin, après 12 h de service) | | |
 
-Objectif : le téléphone tient les 12 heures sans recharge. Résultat : ☐ OK ☐ KO
+Objectif : le téléphone tient les 12 heures sans recharge, passerelle comprise. Résultat : ☐ OK ☐ KO
 
 ### 8.15 Formation d'un agent
 
@@ -611,6 +648,31 @@ Objectif : le téléphone tient les 12 heures sans recharge. Résultat : ☐ OK 
 |---|---|---|---|---|---|
 | 54 | Former un agent qui ne connaît pas l'application : prise de service, une ronde, un SOS, une main courante. **Chronométrer.** | En moins de 15 minutes. Durée mesurée : ____ min | ☐ | ☐ | |
 | 55 | Noter ce qu'il n'a pas compris (écrire ses mots exacts) | | ☐ | ☐ | |
+
+### 8.16 Cohabitation avec la passerelle d'appel (voir 7.5)
+
+| N° | Action à faire | Résultat attendu | OK | KO | Remarque |
+|---|---|---|---|---|---|
+| 56 | Avant la nuit, parcourir les six points avec le téléphone et regarder si le Wi-Fi reste affiché | Wi-Fi présent aux six points. Points sans Wi-Fi : ____ | ☐ | ☐ | |
+| 57 | Après chaque nuit, vérifier la passerelle : MacroDroid toujours lancé (notification affichée) ; si vous êtes d'accord pour faire sonner les numéros d'alerte, **Personnes prévenues, Envoyer un message de test** | MacroDroid actif ; si test : l'appel est parti (pas de message « Téléphone-passerelle injoignable » dans « Derniers envois ») | ☐ | ☐ | |
+| 58 | Aucun réglage de MacroDroid ni de ses autorisations Xiaomi n'a été modifié pendant l'essai | Confirmé | ☐ | ☐ | |
+
+### 8.17 Suivi de la semaine
+
+Une ligne par nuit, remplie le matin avec l'agent. Les rondes se lisent dans **Rondes, Journal**.
+
+| Nuit du | Rondes faites sur 4 | Ronde incomplète ou non faite (heure, cause) | Alarme ou SOS reçu | Batterie début / fin (%) | Wi-Fi coupé ? | Remarque de l'agent |
+|---|---|---|---|---|---|---|
+| Nuit 1 (check-liste complète) | | | | | | |
+| Nuit 2 | | | | | | |
+| Nuit 3 | | | | | | |
+| Nuit 4 | | | | | | |
+| Nuit 5 | | | | | | |
+| Nuit 6 | | | | | | |
+| Nuit 7 | | | | | | |
+
+Objectif de la semaine : un bon taux de rondes effectuées (le rapport de rondes en CSV se télécharge en ouvrant
+`https://<ADRESSE-IP-FIXE-DU-PC>:3033/api/patrols/report.csv`, connecté en administrateur) et aucune alarme perdue.
 
 ---
 

@@ -530,7 +530,7 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
 
   function createPoints(rootEl) {
     const sh = shell(rootEl);
-    const st = { items: [], loaded: false, floorId: null, selectedId: null, picks: new Set(), base: null, addFloorTouched: false };
+    const st = { items: [], loaded: false, floorId: null, selectedId: null, picks: new Set(), base: null, addFloorTouched: false, origin: '' };
     const drag = { active: false };
     const nudge = { id: null, x: 0, y: 0, from: null, timer: 0 };
     const r = {};
@@ -550,7 +550,8 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
       return [...st.items].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'fr') || a.id - b.id);
     };
     const say = (message) => sayIn(r.announce, message);
-    const address = (cp) => labelUrl(location.origin, cp.code);
+    // Origine ecrite dans le QR (PSIM_PUBLIC_URL) renvoyee par le serveur ; l'adresse du navigateur seulement en secours.
+    const address = (cp) => labelUrl(st.origin || location.origin, cp.code);
 
     // -------------------------------------------------------------- construction (une seule fois)
 
@@ -1288,8 +1289,9 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
       const my = ++req;
       if (!st.loaded) sh.loading();
       try {
-        const data = await api('/api/patrols/checkpoints');
+        const [data, where] = await Promise.all([api('/api/patrols/checkpoints'), api('/api/patrols/label-origin').catch(() => null)]);
         if (my !== req) return; // réponse tardive d'un onglet quitté : on ne touche à rien
+        if (typeof where?.origin === 'string' && where.origin) st.origin = where.origin;
         const first = !st.loaded;
         const list = listOf(data, 'checkpoints').map(normCheckpoint).filter((c) => Number.isFinite(c.id) && !c.archived);
         for (const c of list) if (nudge.id === c.id) Object.assign(c, { x: nudge.x, y: nudge.y }); // un déplacement aux flèches en attente reste

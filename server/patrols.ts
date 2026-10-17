@@ -1484,6 +1484,11 @@ export function createPatrols(deps: PatrolsDeps) {
     app.get('/api/patrols/checkpoints', staff, (req, res) => {
       res.json(listCheckpoints({ includeArchived: req.query.archived === '1', withCode: ctx.roleOf(req) === 'admin' }));
     });
+    // Origine ecrite dans les etiquettes (PSIM_PUBLIC_URL, a defaut l'adresse de la requete) : la meme que celle du QR.
+    // L'ecran la lit pour afficher l'adresse a ecrire dans une etiquette NFC, au lieu de l'adresse tapee dans le navigateur.
+    app.get('/api/patrols/label-origin', adminOnly, (req, res) => {
+      res.set('Cache-Control', 'no-store').json({ origin: ctx.originOf(req) });
+    });
     app.post('/api/patrols/checkpoints', adminOnly, small, (req, res) => {
       res.status(201).json(createCheckpoint(ctx.actorOf(req), req.body));
     });
