@@ -201,6 +201,49 @@ export interface HolderList {
   total: number;
 }
 
+// ---- Lecture des droits (pour les autres modules serveur : regles d'acces, armement des portes) ---------------------------------
+
+/** Pourquoi un titulaire peut ou ne peut pas passer une porte a un instant donne. */
+export type PassDecisionReason =
+  | 'ok'
+  | 'unknown_holder' // titulaire inconnu
+  | 'suspended' // statut suspendu
+  | 'not_started' // validFrom pas encore atteint
+  | 'expired' // validTo depasse, ou visite terminee
+  | 'no_badge' // aucun badge actif
+  | 'no_right' // aucun groupe ne donne cette porte
+  | 'out_of_schedule' // hors des plages du droit
+  | 'holiday'; // jour ferie et la plage est fermee les jours feries
+
+export interface PassDecision {
+  allowed: boolean;
+  reason: PassDecisionReason;
+  /** Groupe dont le droit s'applique (le premier qui autorise, ou celui qui refuse en dernier) ; `null` si aucun. */
+  groupId: number | null;
+  scheduleId: number | null;
+}
+
+/** Interface de LECTURE stable des titulaires et de leurs droits (aucune ecriture, aucun effet de bord, aucune entree de journal). */
+export interface HoldersReader {
+  /** Groupes d'un titulaire (vide si inconnu). */
+  groupsOf(holderId: number): { id: number; name: string }[];
+  /** Titulaire qui porte ce numero de badge (hors badges rendus), ou `null`. */
+  holderOfBadge(number: string): HolderView | null;
+  /**
+   * Ce titulaire a-t-il le droit de passer cette porte (identifiant du detecteur) a l'instant `at` (ms, defaut maintenant) ?
+   * Tient compte du statut, des dates de validite, de la visite, des badges actifs, des groupes, de la plage horaire du droit
+   * (format `Window`, heure locale du serveur) et des jours feries. C'est le droit THEORIQUE du PSIM : le controleur reste seul a decider.
+   */
+  canPass(holderId: number, doorId: string, at?: number): PassDecision;
+  /**
+   * Groupes dont un droit est en vigueur a l'instant `at` (donc « autorises a cette heure »), pour une porte ou pour toutes
+   * si `doorId` est absent. Un module de regles compare par exemple `at` a une heure de nuit.
+   */
+  groupsAllowedAt(at: number, doorId?: string): { id: number; name: string; doorIds: string[] }[];
+  /** Vrai si l'instant `at` tombe un jour ferie du calendrier du PSIM. */
+  isHoliday(at: number): boolean;
+}
+
 // ---- Droits : ce que chaque controleur doit contenir ---------------------------------------------------------------------------
 
 export interface DesiredHolder {
@@ -253,7 +296,7 @@ export interface MutationOptions {
   quiet?: boolean;
 }
 
-export interface HoldersService extends RightsSource {
+export interface HoldersService extends RightsSource, HoldersReader {
   list(filters: HolderFilters, actor: string): HolderList;
   get(id: number): HolderDetail;
   /** Identifiant d'URL -> entier, ou 404 (« Titulaire introuvable »). */

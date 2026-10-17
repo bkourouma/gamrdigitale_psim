@@ -14,14 +14,14 @@
  */
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { holderKey, migrateAccess, resultLabel } from './access.ts';
-import { parseSchedule } from './arming.ts';
+import { inSchedule, parseSchedule } from './arming.ts';
 import type { Window } from './arming.ts';
 import { PsimError } from './errors.ts';
 import { hasForbiddenChar, normalizeName } from './text.ts';
 import { BADGE_STATES, HOLDER_STATUSES } from './accessholderstypes.ts';
 import type {
   BadgeState, BadgeView, DesiredHolder, DesiredSchedule, DesiredState, GroupDoorView, GroupInput, GroupView, HolderDetail, HolderFilters,
-  HolderInput, HolderKind, HolderList, HolderPhase, HolderStatus, HolderView, HoldersService, HolidayView, MutationOptions, PassageBrief,
+  HolderInput, HolderKind, HolderList, HolderPhase, HolderStatus, HolderView, HoldersService, HolidayView, MutationOptions, PassageBrief, PassDecision,
   RightsListener, ScheduleInput, ScheduleView, VisitorInput, VisitorView,
 } from './accessholderstypes.ts';
 
@@ -1557,6 +1557,119 @@ export function createHolders(opts: HoldersOptions): HoldersService {
     return { holders, schedules: schedulesOut, holidays: days };
   }
 
+  // ---- Lecture des droits (HoldersReader) : lectures pures, aucune ecriture, aucun journal, jamais d'exception -----------------
+
+  type Right = { groupId: number; scheduleId: number; windows: Window[]; closed: boolean };
+
+  const isoDay = (ts: number): string => {
+    const d = new Date(ts);
+    return `${String(d.getFullYear()).padStart(4, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  /** Instant demande ; absent ou non fini : maintenant. */
+  const instantOf = (at: unknown): number => (typeof at === 'number' && Number.isFinite(at) && Math.abs(at) <= 8.64e15 ? at : now());
+
+  function isHoliday(at: number): boolean {
+    try {
+      return one('SELECT 1 AS x FROM access_holiday WHERE date = ?', isoDay(instantOf(at))) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  function safeWindows(json: string): Window[] {
+    try {
+      return parseWindows(json);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Verdict d'un droit a l'instant `t` : `ok`, ou la raison du refus. */
+  function rightVerdict(r: Right, t: number, holiday: boolean): 'ok' | 'holiday' | 'out_of_schedule' {
+    if (holiday && r.closed) return 'holiday';
+    return inSchedule(r.windows, t) ? 'ok' : 'out_of_schedule';
+  }
+
+  function groupsOf(holderId: number): { id: number; name: string }[] {
+    if (!Number.isSafeInteger(holderId) || holderId <= 0) return [];
+    try {
+      return all('SELECT g.id, g.name FROM access_holder_group hg JOIN access_group g ON g.id = hg.group_id WHERE hg.holder_id = ? ORDER BY g.name_key, g.id', holderId).map((r) => ({ id: r.id as number, name: r.name as string }));
+    } catch {
+      return [];
+    }
+  }
+
+  const holderOfBadge = (number: string): HolderView | null => findByBadge(number);
+
+  function canPass(holderId: number, doorId: string, at?: number): PassDecision {
+    const refuse = (reason: PassDecision['reason'], groupId: number | null = null, scheduleId: number | null = null): PassDecision => ({ allowed: false, reason, groupId, scheduleId });
+    try {
+      if (!Number.isSafeInteger(holderId) || holderId <= 0) return refuse('unknown_holder');
+      const h = one('SELECT status, valid_from, valid_to, ended_at FROM access_holder WHERE id = ?', holderId);
+      if (!h) return refuse('unknown_holder');
+      const t = instantOf(at);
+      if (h.status === 'suspended') return refuse('suspended');
+      if (h.valid_from !== null && (h.valid_from as number) > t) return refuse('not_started');
+      if (h.ended_at !== null || (h.valid_to !== null && (h.valid_to as number) <= t)) return refuse('expired');
+      if (!one("SELECT 1 AS x FROM access_badge WHERE holder_id = ? AND state = 'active' LIMIT 1", holderId)) return refuse('no_badge');
+      if (typeof doorId !== 'string' || !DOOR_ID_PATTERN.test(doorId)) return refuse('no_right');
+      const rights = all(
+        `SELECT gd.group_id, gd.schedule_id, s.windows, s.closed_on_holidays
+           FROM access_holder_group hg
+           JOIN access_group_door gd ON gd.group_id = hg.group_id
+           JOIN access_door ad ON ad.detector_id = gd.door_id
+           JOIN access_schedule s ON s.id = gd.schedule_id
+          WHERE hg.holder_id = ? AND gd.door_id = ?
+          ORDER BY gd.group_id`,
+        holderId, doorId,
+      );
+      if (rights.length === 0) return refuse('no_right');
+      const holiday = isHoliday(t);
+      let last: PassDecision | null = null;
+      let lastHoliday: PassDecision | null = null;
+      for (const row of rights) {
+        const r: Right = { groupId: row.group_id as number, scheduleId: row.schedule_id as number, windows: safeWindows(row.windows as string), closed: row.closed_on_holidays === 1 };
+        const v = rightVerdict(r, t, holiday);
+        if (v === 'ok') return { allowed: true, reason: 'ok', groupId: r.groupId, scheduleId: r.scheduleId };
+        last = refuse(v, r.groupId, r.scheduleId);
+        if (v === 'holiday') lastHoliday = last;
+      }
+      return lastHoliday ?? last ?? refuse('no_right');
+    } catch {
+      return refuse('no_right');
+    }
+  }
+
+  function groupsAllowedAt(at: number, doorId?: string): { id: number; name: string; doorIds: string[] }[] {
+    try {
+      if (doorId !== undefined && (typeof doorId !== 'string' || !DOOR_ID_PATTERN.test(doorId))) return [];
+      const t = instantOf(at);
+      const holiday = isHoliday(t);
+      const rows = all(
+        `SELECT g.id, g.name, gd.door_id, gd.schedule_id, s.windows, s.closed_on_holidays
+           FROM access_group_door gd
+           JOIN access_group g ON g.id = gd.group_id
+           JOIN access_door ad ON ad.detector_id = gd.door_id
+           JOIN access_schedule s ON s.id = gd.schedule_id
+          ${doorId === undefined ? '' : 'WHERE gd.door_id = ?'}
+          ORDER BY g.id, gd.door_id`,
+        ...(doorId === undefined ? [] : [doorId]),
+      );
+      const out = new Map<number, { id: number; name: string; doorIds: string[] }>();
+      for (const row of rows) {
+        const r: Right = { groupId: row.id as number, scheduleId: row.schedule_id as number, windows: safeWindows(row.windows as string), closed: row.closed_on_holidays === 1 };
+        if (rightVerdict(r, t, holiday) !== 'ok') continue;
+        const g = out.get(r.groupId) ?? { id: r.groupId, name: row.name as string, doorIds: [] };
+        g.doorIds.push(row.door_id as string);
+        out.set(r.groupId, g);
+      }
+      return [...out.values()];
+    } catch {
+      return [];
+    }
+  }
+
   const controllerIds = (): string[] => allControllerIds();
 
   function subscribe(listener: RightsListener): void {
@@ -1573,5 +1686,6 @@ export function createHolders(opts: HoldersOptions): HoldersService {
     holidays, setHolidays,
     visitors, createVisitor, endVisitor,
     resolve, tick, batch, simulate,
+    groupsOf, holderOfBadge, canPass, groupsAllowedAt, isHoliday,
   };
 }

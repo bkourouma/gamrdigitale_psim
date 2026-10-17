@@ -34,6 +34,8 @@
 }
 .hd-tab:hover { color: var(--ink); background: var(--surface-2); }
 .hd-tab[aria-selected='true'] { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-ink); }
+/* Écran moyen : onglets plus serrés pour que les cinq tiennent sans défilement. */
+@container (max-width: 860px) { .hd-tablist { gap: 2px; } .hd-tab { padding: 0 var(--s3); gap: var(--s1); } }
 .hd-tabpanel { display: grid; gap: var(--s4); min-width: 0; outline-offset: 4px; }
 
 /* ------------------------------------------------------------------------------------------------ titulaires */
@@ -43,7 +45,7 @@
 .hd-split { display: grid; gap: var(--s4); align-items: start; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 @container (min-width: 880px) { .hd-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); } }
 /* Étroit : la fiche remplace la liste ; « Fermer la fiche » la ramène. */
-@container (max-width: 879px) { .hd-holders.has-detail .hd-listcol { display: none; } }
+@container (max-width: 879px) { .hd-holders.has-detail .hd-listcol, .hd-holders.has-detail .hd-toolbar { display: none; } }
 @container (min-width: 880px) { .hd-holders:not(.has-detail) .hd-split { grid-template-columns: minmax(0, 1fr); } }
 .hd-holders:not(.has-detail) .hd-detail { display: none; }
 .hd-listcol { display: grid; gap: var(--s3); min-width: 0; align-content: start; }
@@ -77,7 +79,7 @@
 .hd-photo.is-empty { display: grid; place-items: center; color: var(--ink-3); }
 .hd-photo.is-empty .icon { width: 40px; height: 40px; }
 .hd-section { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); min-width: 0; }
-.hd-facts { display: grid; grid-template-columns: minmax(7em, auto) minmax(0, 1fr); gap: var(--s1) var(--s3); margin: 0; }
+.hd-facts { display: grid; grid-template-columns: minmax(7em, auto) minmax(0, 1fr); gap: var(--s1) var(--s3); align-items: baseline; margin: 0; }
 .hd-facts dt { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
 .hd-facts dd { margin: 0; overflow-wrap: anywhere; }
 @container (max-width: 480px) { .hd-facts { grid-template-columns: minmax(0, 1fr); } .hd-facts dd { margin-bottom: var(--s2); } }
@@ -128,6 +130,7 @@
 .hd-card { min-width: 0; }
 .hd-card .panel-head h3 { margin: 0; }
 .hd-visit-form { display: grid; gap: var(--s4); min-width: 0; }
+.view-titulaires .form-grid, .hd-form .form-grid { align-items: start; } /* une aide sous un champ ne décale pas son voisin */
 /* L'heure de fin est écrite en toutes lettres avant la validation. */
 .hd-endline { padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--info-soft); color: var(--ink); font-size: var(--fs-md); font-weight: 700; }
 .hd-endline.is-problem { background: var(--warning-soft); }
@@ -154,6 +157,8 @@
 .hd-slot fieldset { gap: var(--s3); min-width: 0; background: var(--surface); }
 .hd-days { display: grid; grid-template-columns: repeat(7, minmax(34px, 1fr)); gap: 4px; max-width: 440px; }
 .hd-day { min-width: 0; padding: 0 2px; }
+/* Jour choisi : trait sous le nom en plus de la teinte (jamais la couleur seule). */
+.hd-day[aria-pressed='true'] { font-weight: 800; box-shadow: inset 0 -4px 0 var(--brand); }
 .hd-hours { display: grid; gap: var(--s3); align-items: end; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
 @media (max-width: 480px) { .hd-hours { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hd-hours .btn { grid-column: 1 / -1; justify-self: start; } }
 

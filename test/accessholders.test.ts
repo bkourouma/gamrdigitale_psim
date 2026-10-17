@@ -1771,3 +1771,191 @@ function send(id: string, payload: unknown) {
   const res = engine.ingest(id, payload);
   return res;
 }
+
+describe('lecture des droits (HoldersReader)', () => {
+  beforeEach(setup);
+
+  /** Instant en heure LOCALE du serveur (mois 1-12). */
+  const L = (y: number, mo: number, d: number, h = 0, mi = 0): number => new Date(y, mo - 1, d, h, mi).getTime();
+  const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+  const NOON = L(2026, 10, 19, 12, 0); // un lundi
+  const night = (closed = false): number =>
+    holders.createSchedule('admin', { name: `Nuit${closed ? ' ferie' : ''}`, windows: [{ days: ALL_DAYS, from: '22:00', to: '06:00' }], closedOnHolidays: closed }).id;
+  const day = (closed = false): number =>
+    holders.createSchedule('admin', { name: `Jour${closed ? ' ferie' : ''}`, windows: [{ days: ALL_DAYS, from: '08:00', to: '18:00' }], closedOnHolidays: closed }).id;
+  /** Titulaire actif avec un badge, dans un groupe qui donne une porte avec l'horaire. */
+  function worker(name: string, scheduleId: number, door = 'A-01', extra: HolderInput = {}): { id: number; groupId: number } {
+    const groupId = mkGroup(`G ${name}`, [[door, scheduleId]]);
+    const id = mkStaff(name, '', { badges: [`B${name}`], groupIds: [groupId], ...extra });
+    return { id, groupId };
+  }
+
+  it('chaque raison de canPass, dans l\'ordre', () => {
+    clock = NOON;
+    const w = worker('OK', always());
+    assert.deepEqual(holders.canPass(w.id, 'A-01'), { allowed: true, reason: 'ok', groupId: w.groupId, scheduleId: always() });
+    assert.equal(holders.canPass(99999, 'A-01').reason, 'unknown_holder');
+    const sus = worker('Sus', always(), 'A-01', { status: 'suspended' });
+    assert.equal(holders.canPass(sus.id, 'A-01').reason, 'suspended');
+    const fut = worker('Fut', always(), 'A-01', { validFrom: NOON + HOUR });
+    assert.equal(holders.canPass(fut.id, 'A-01').reason, 'not_started');
+    assert.equal(holders.canPass(fut.id, 'A-01', NOON + 2 * HOUR).reason, 'ok');
+    const old = worker('Old', always(), 'A-01', { validFrom: NOON - 2 * HOUR, validTo: NOON - HOUR });
+    assert.equal(holders.canPass(old.id, 'A-01').reason, 'expired');
+    const nob = mkStaff('Nobadge', '', { groupIds: [w.groupId] });
+    assert.equal(holders.canPass(nob, 'A-01').reason, 'no_badge');
+    const lost = mkStaff('Lost', '', { badges: ['LOST1'], groupIds: [w.groupId] });
+    holders.setBadgeState('admin', holders.get(lost).badges[0].id, 'lost');
+    assert.equal(holders.canPass(lost, 'A-01').reason, 'no_badge');
+    assert.equal(holders.canPass(w.id, 'A-03').reason, 'no_right');
+    assert.equal(holders.canPass(w.id, 'INCONNUE').reason, 'no_right');
+    const nogroup = mkStaff('Nogroup', '', { badges: ['NG1'] });
+    assert.equal(holders.canPass(nogroup, 'A-01').reason, 'no_right');
+  });
+
+  it('une visite terminee est expiree', () => {
+    clock = NOON;
+    const vg = mkGroup('Visiteurs', [['A-01']], { forVisitors: true });
+    const v = holders.createVisitor('garde', { lastName: 'Martin', host: 'Konan', badge: 'V001', groupId: vg, durationMinutes: 60 });
+    assert.equal(holders.canPass(v.holder.id, 'A-01').reason, 'ok');
+    holders.endVisitor('garde', v.holder.id);
+    assert.equal(holders.canPass(v.holder.id, 'A-01').reason, 'expired');
+    const v2 = holders.createVisitor('garde', { lastName: 'Durand', host: 'Konan', badge: 'V002', groupId: vg, durationMinutes: 30 });
+    assert.equal(holders.canPass(v2.holder.id, 'A-01', NOON + HOUR).reason, 'expired');
+  });
+
+  it('plage de nuit a cheval sur minuit : 23:30 et 05:00 passent, 12:00 non', () => {
+    const w = worker('Nuit', night());
+    assert.equal(holders.canPass(w.id, 'A-01', L(2026, 10, 19, 23, 30)).allowed, true);
+    assert.equal(holders.canPass(w.id, 'A-01', L(2026, 10, 20, 5, 0)).allowed, true);
+    const refused = holders.canPass(w.id, 'A-01', L(2026, 10, 19, 12, 0));
+    assert.equal(refused.allowed, false);
+    assert.equal(refused.reason, 'out_of_schedule');
+    assert.equal(refused.groupId, w.groupId);
+  });
+
+  it('jour ferie : plage fermee -> holiday, plage non fermee -> ok', () => {
+    holders.setHolidays('admin', [{ date: '2026-10-19', label: 'Test' }]);
+    const closed = worker('Ferme', day(true));
+    const open = worker('Ouvert', day(false), 'A-02');
+    assert.equal(holders.isHoliday(NOON), true);
+    assert.equal(holders.canPass(closed.id, 'A-01', NOON).reason, 'holiday');
+    assert.equal(holders.canPass(open.id, 'A-02', NOON).reason, 'ok');
+    assert.equal(holders.canPass(closed.id, 'A-01', L(2026, 10, 20, 12, 0)).reason, 'ok');
+    // Hors plage ET ferie : « holiday » est prefere.
+    assert.equal(holders.canPass(closed.id, 'A-01', L(2026, 10, 19, 23, 0)).reason, 'holiday');
+  });
+
+  it('isHoliday suit le calendrier en heure locale', () => {
+    holders.setHolidays('admin', [{ date: '2026-12-25' }]);
+    assert.equal(holders.isHoliday(L(2026, 12, 25, 0, 0)), true);
+    assert.equal(holders.isHoliday(L(2026, 12, 25, 23, 59)), true);
+    assert.equal(holders.isHoliday(L(2026, 12, 24, 23, 59)), false);
+    assert.equal(holders.isHoliday(L(2026, 12, 26, 0, 0)), false);
+  });
+
+  it('deux groupes en conflit (base alteree) : un droit qui autorise suffit', () => {
+    const dayS = day();
+    const nightS = night();
+    const g1 = mkGroup('Jour seul', [['A-01', dayS]]);
+    const g2 = mkGroup('Nuit seule', [['A-02', nightS]]);
+    const id = mkStaff('Deux', '', { badges: ['D1'], groupIds: [g1] });
+    // Conflit impossible via le service : on force le second groupe et la meme porte directement.
+    db.prepare('INSERT INTO access_holder_group (holder_id, group_id) VALUES (?, ?)').run(id, g2);
+    db.prepare('INSERT INTO access_group_door (group_id, door_id, schedule_id) VALUES (?, ?, ?)').run(g2, 'A-01', nightS);
+    const d = holders.canPass(id, 'A-01', L(2026, 10, 19, 12, 0));
+    assert.deepEqual([d.allowed, d.groupId, d.scheduleId], [true, g1, dayS]);
+    const n = holders.canPass(id, 'A-01', L(2026, 10, 19, 23, 30));
+    assert.deepEqual([n.allowed, n.groupId, n.scheduleId], [true, g2, nightS]);
+    assert.equal(holders.canPass(id, 'A-01', L(2026, 10, 19, 20, 0)).allowed, false);
+  });
+
+  it('groupsAllowedAt : de nuit, de jour, par porte, portes retirees ignorees', () => {
+    const dayS = day();
+    const nightS = night();
+    const gDay = mkGroup('Jour', [['A-01', dayS], ['A-02', dayS]]);
+    const gNight = mkGroup('Nuit', [['A-01', nightS], ['A-03', nightS]]);
+    const gAlways = mkGroup('Toujours', [['A-04']]);
+    const at12 = L(2026, 10, 19, 12, 0);
+    const at23 = L(2026, 10, 19, 23, 30);
+    assert.deepEqual(holders.groupsAllowedAt(at12), [
+      { id: gDay, name: 'Jour', doorIds: ['A-01', 'A-02'] },
+      { id: gAlways, name: 'Toujours', doorIds: ['A-04'] },
+    ]);
+    assert.deepEqual(holders.groupsAllowedAt(at23), [
+      { id: gNight, name: 'Nuit', doorIds: ['A-01', 'A-03'] },
+      { id: gAlways, name: 'Toujours', doorIds: ['A-04'] },
+    ]);
+    assert.deepEqual(holders.groupsAllowedAt(at23, 'A-01'), [{ id: gNight, name: 'Nuit', doorIds: ['A-01'] }]);
+    assert.deepEqual(holders.groupsAllowedAt(at12, 'A-03'), []);
+    // Porte retiree de access_door : ignoree.
+    db.prepare('DELETE FROM access_door WHERE detector_id = ?').run('A-04');
+    assert.deepEqual(holders.groupsAllowedAt(at12).map((g) => g.id), [gDay]);
+    assert.equal(holders.canPass(mkStaff('X', '', { badges: ['X1'], groupIds: [gAlways] }), 'A-04', at12).reason, 'no_right');
+  });
+
+  it('groupsAllowedAt tient compte des jours feries fermes', () => {
+    holders.setHolidays('admin', [{ date: '2026-10-19' }]);
+    const gClosed = mkGroup('Ferme', [['A-01', day(true)]]);
+    const gOpen = mkGroup('Ouvert', [['A-02', day(false)]]);
+    assert.deepEqual(holders.groupsAllowedAt(NOON).map((g) => g.id), [gOpen]);
+    assert.deepEqual(holders.groupsAllowedAt(L(2026, 10, 20, 12, 0)).map((g) => g.id), [gClosed, gOpen]);
+  });
+
+  it('groupsOf et holderOfBadge', () => {
+    const w = worker('Lecture', always());
+    assert.deepEqual(holders.groupsOf(w.id), [{ id: w.groupId, name: 'G Lecture' }]);
+    assert.deepEqual(holders.groupsOf(99999), []);
+    assert.equal(holders.holderOfBadge('BLecture')?.id, w.id);
+    assert.deepEqual(holders.holderOfBadge('BLecture'), holders.findByBadge('BLecture'));
+    assert.equal(holders.holderOfBadge('INCONNU'), null);
+  });
+
+  it('entrees hostiles : jamais d\'exception, reponse « refuse » ou liste vide', () => {
+    clock = NOON;
+    const w = worker('Hostile', always());
+    for (const id of [-1, 0, 1.5, NaN, Infinity, 2 ** 60]) {
+      assert.equal(holders.canPass(id, 'A-01').reason, 'unknown_holder');
+      assert.deepEqual(holders.groupsOf(id), []);
+    }
+    for (const door of ['../x', '', 'A 01', "A-01'; DROP TABLE access_holder;--", 'x'.repeat(100), 42 as unknown as string, null as unknown as string]) {
+      const d = holders.canPass(w.id, door);
+      assert.deepEqual([d.allowed, d.reason], [false, 'no_right']);
+    }
+    assert.deepEqual(holders.groupsAllowedAt(NOON, '../x'), []);
+    assert.deepEqual(holders.groupsAllowedAt(NOON, 42 as unknown as string), []);
+    // `at` invalide : traite comme maintenant (l'horloge injectee).
+    for (const at of [NaN, Infinity, 'x' as unknown as number, 1e300]) {
+      assert.equal(holders.canPass(w.id, 'A-01', at).reason, 'ok');
+      assert.deepEqual(holders.groupsAllowedAt(at, 'A-01').map((g) => g.id), [w.groupId]);
+      assert.equal(typeof holders.isHoliday(at), 'boolean');
+    }
+    assert.equal(holders.holderOfBadge(42 as unknown as string), null);
+    assert.equal(holders.holderOfBadge('../x'), null);
+  });
+
+  it('rien n\'est ecrit : journal, titulaires, droits et passages inchanges', () => {
+    const w = worker('Pur', night());
+    holders.setHolidays('admin', [{ date: '2026-10-19' }]);
+    const snapshot = (): string => JSON.stringify({
+      audit: auditCount(),
+      holders: db.prepare('SELECT * FROM access_holder ORDER BY id').all(),
+      badges: db.prepare('SELECT * FROM access_badge ORDER BY id').all(),
+      rights: db.prepare('SELECT * FROM access_group_door ORDER BY group_id, door_id').all(),
+      links: db.prepare('SELECT * FROM access_holder_group ORDER BY 1, 2').all(),
+      events: rowCount('access_event'),
+      holidays: rowCount('access_holiday'),
+    });
+    const before = snapshot();
+    const notified = calls.length;
+    holders.canPass(w.id, 'A-01', L(2026, 10, 19, 23, 30));
+    holders.canPass(99999, '../x', NaN);
+    holders.groupsAllowedAt(NOON);
+    holders.groupsAllowedAt(NOON, 'A-01');
+    holders.groupsOf(w.id);
+    holders.holderOfBadge('BPur');
+    holders.isHoliday(NOON);
+    assert.equal(snapshot(), before);
+    assert.equal(calls.length, notified);
+  });
+});

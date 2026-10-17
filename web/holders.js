@@ -36,7 +36,7 @@ const TABS = [
 ];
 
 const VISIT_STATE = {
-  present: { label: 'Présent', icon: 'state-ok', tone: 'is-ok' },
+  present: { label: 'En cours', icon: 'state-ok', tone: 'is-ok' },
   upcoming: { label: 'À venir', icon: 'clock', tone: 'is-info' },
   ended: { label: 'Terminée', icon: 'check', tone: 'is-offline' },
 };
@@ -140,6 +140,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
           dialogs.close();
         } catch (err) {
           error.textContent = err.message;
+          error.scrollIntoView?.({ block: 'nearest' }); // l'erreur du serveur reste visible dans une fenêtre longue
         } finally {
           busy = false;
           setBusy(submit, false);
@@ -187,7 +188,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
     const photoUrl = (id) => `/api/access/holders/${id}/photo?v=${photoVersion.get(id) ?? 0}`;
     let searchTimer = 0;
 
-    const search = h('input', { type: 'search', placeholder: 'Rechercher un nom, un matricule ou un badge…', autocomplete: 'off', spellcheck: 'false', maxlength: '64' });
+    const search = h('input', { type: 'search', placeholder: 'Nom, matricule ou badge', autocomplete: 'off', spellcheck: 'false', maxlength: '64' });
     const statusSel = h('select', {}, h('option', { value: '', text: 'Tous les statuts' }), h('option', { value: 'active', text: 'Actifs' }), h('option', { value: 'suspended', text: 'Suspendus' }));
     const newBtn = button('Nouveau titulaire', { ic: 'plus', cls: 'btn btn-primary hd-new', onClick: () => openHolderForm(null), hidden: true });
     const count = h('p', { class: 'hd-count', role: 'status', 'aria-live': 'polite' });
@@ -513,7 +514,8 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
         );
       }
 
-      detailBody.replaceChildren(head, identity, badges, sync, passages, adminBar);
+      // replaceChildren écrirait « null » pour un élément absent (l'opérateur n'a pas la barre d'administration).
+      detailBody.replaceChildren(...[head, identity, badges, sync, passages, adminBar].filter(Boolean));
     }
 
     // -- actions sur les badges
@@ -850,6 +852,10 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
       const none = groups.length === 0;
       noGroup.hidden = !none;
       form.hidden = none;
+      if (none) {
+        const hint = noGroup.querySelector('span');
+        if (hint) hint.textContent = isAdmin() ? 'Créez-en un dans l’onglet Groupes et horaires, en cochant « Pour les visiteurs ».' : 'Demandez à un administrateur d’en créer un dans Groupes et horaires.';
+      }
     }
 
     form.addEventListener('submit', async (e) => {
@@ -1423,6 +1429,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
         return;
       }
       reportBox.replaceChildren(
+        ...[
         head,
         h('ul', { class: 'hd-stats' }, stat(report.created, 'créés', F.outcomeInfo('created')), stat(report.updated, 'modifiés', F.outcomeInfo('updated')), stat(report.unchanged, 'inchangés', F.outcomeInfo('unchanged')), stat(report.errors, 'en erreur', F.outcomeInfo('error'))),
         h('p', { class: 'muted', text: `${F.plural(report.lines, 'ligne lue', 'lignes lues')}. ${F.encodingText(report.encoding)} Séparateur : ${F.delimiterText(report.delimiter)}.` }),
@@ -1448,6 +1455,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
             )
           : h('p', { class: 'muted', text: 'Aucune ligne en erreur ni avec remarque.' }),
         report.truncated ? h('p', { class: 'muted', text: 'Le rapport est tronqué : seules les premières lignes sont détaillées.' }) : null,
+        ].filter(Boolean), // replaceChildren écrirait « null » pour un élément absent
       );
     }
 
@@ -1588,7 +1596,9 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
             'div',
             { class: 'hd-sync-detail' },
             h('h4', { text: 'Éléments non synchronisés' }),
-            !entry.detail
+            !entry.detail && entry.detailError
+              ? noticeBox('is-alarm', 'state-alarm', h('strong', { text: 'Le détail n’a pas pu être lu. ' }), F.sentence(entry.detailError), ' ', button('Réessayer', { cls: 'btn btn-sm', ic: 'refresh', fk: 'detail-retry', onClick: (b) => run(b, () => loadDetail(entry)) }))
+              : !entry.detail
               ? h('p', { class: 'muted', role: 'status', text: 'Lecture du détail…' })
               : items.length === 0
                 ? h('p', { class: 'muted', text: 'Tout est synchronisé : aucun élément en attente ni en échec.' })
@@ -1606,7 +1616,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
     }
 
     function paint(c, entry) {
-      const sig = JSON.stringify([c, entry.expanded, entry.detail?.items, isAdmin()]);
+      const sig = JSON.stringify([c, entry.expanded, entry.detail?.items, entry.detailError, isAdmin()]);
       if (sig === entry.sig) return;
       entry.sig = sig;
       keepFocus(entry.el, () => entry.el.replaceChildren(...cardContent(c, entry)));
@@ -1618,6 +1628,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
       entry.expanded = !entry.expanded;
       if (entry.expanded) {
         entry.detail = null;
+        entry.detailError = '';
         paint(entry.status, entry);
         await loadDetail(entry);
       } else paint(entry.status, entry);
@@ -1626,10 +1637,14 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
     async function loadDetail(entry) {
       try {
         entry.detail = await api(ctlPath(entry.status));
+        entry.detailError = '';
         entry.sig = '';
         paint(entry.status, entry);
       } catch (err) {
-        toast(err.message);
+        // sans cela, « Lecture du détail… » resterait affiché indéfiniment
+        entry.detailError = err.message || 'Erreur inconnue';
+        entry.sig = '';
+        paint(entry.status, entry);
       }
     }
 
@@ -1642,7 +1657,10 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
         const details = await Promise.allSettled(expanded.map((e) => api(ctlPath(e.status))));
         if (n !== seq) return;
         details.forEach((r, i) => {
-          if (r.status === 'fulfilled') expanded[i].detail = r.value;
+          if (r.status === 'fulfilled') {
+            expanded[i].detail = r.value;
+            expanded[i].detailError = '';
+          } else if (!expanded[i].detail) expanded[i].detailError = r.reason?.message || 'Erreur inconnue';
         });
         loaded = true;
         msg.replaceChildren();
@@ -1651,7 +1669,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
           seen.add(c.controllerId);
           let entry = cards.get(c.controllerId);
           if (!entry) {
-            entry = { el: h('li', { class: 'hd-sync-card panel' }), sig: '', expanded: false, detail: null, status: c };
+            entry = { el: h('li', { class: 'hd-sync-card panel' }), sig: '', expanded: false, detail: null, detailError: '', status: c };
             cards.set(c.controllerId, entry);
           }
           entry.status = c;
@@ -1693,12 +1711,14 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
           result = await api(`${ctlPath(c)}/key`, { method: 'POST', body: { reauth } });
         },
       });
-      if (typed && result) showKey(c, result);
+      if (typed && result) await new Promise((resolve) => showKey(c, result, resolve));
       await refresh();
+      // la carte a été redessinée : le focus revient au bouton de clé, pas à la page
+      if (typed) focusSoon(cards.get(c.controllerId)?.el.querySelector('[data-fk="key"]'));
     }
 
     /** La clé n'existe que dans cette fenêtre (éléments <code>, jamais un champ de formulaire) ; elle ne se ferme que par son bouton. */
-    function showKey(c, result) {
+    function showKey(c, result, done) {
       const keyEl = h('code', { class: 'hd-key', text: result.key });
       const close = h('button', { class: 'btn btn-primary', type: 'button' }, icon('check'), h('span', { text: 'J’ai recopié la clé, fermer' }));
       close.addEventListener('click', () => dialogs.close());
@@ -1713,7 +1733,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
           h('ul', { class: 'hd-plain hd-keywarn' }, ...F.KEY_WARNINGS.map((t) => h('li', { text: t }))),
           h('div', { class: 'actions dialog-actions' }, close),
         ),
-        { dismissible: false },
+        { dismissible: false, onClose: done },
       );
     }
 
@@ -1732,6 +1752,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
       });
       if (typed) toast(`${F.plural(confirmed?.confirmed ?? n, 'suppression confirmée', 'suppressions confirmées')}`, 'ok');
       await refresh();
+      if (typed) focusSoon(cards.get(c.controllerId)?.el.querySelector('[data-fk="detail"]'));
     }
 
     async function retry(c, btn) {
@@ -1794,6 +1815,7 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
       tabButtons[t.id].tabIndex = selected ? 0 : -1;
       tabs[t.id].panel.closest('[role="tabpanel"]').hidden = !selected;
     }
+    tabButtons[id].scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); // sur téléphone, l'onglet choisi reste visible dans la rangée
     if (focus) tabButtons[id].focus();
     if (previous !== id) tabs[previous]?.leave();
     if (shown) tabs[id].enter();

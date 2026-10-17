@@ -157,12 +157,24 @@ describe('ecran « Titulaires » : securite de l\'interface (CSP stricte, aucune
 
   it('la cle de synchronisation n\'est jamais dans un champ de formulaire, ni stockee, et sa fenetre ne se ferme que par son bouton', () => {
     const src = read('holders.js');
-    const block = /function showKey\(c, result\) \{[\s\S]*?\n    \}\n/.exec(src)?.[0] ?? '';
+    const block = /function showKey\(c, result, done\) \{[\s\S]*?\n    \}\n/.exec(src)?.[0] ?? '';
     assert.ok(block.length > 100);
     assert.match(block, /h\('code', \{ class: 'hd-key', text: result\.key \}\)/);
     assert.ok(!/h\('(?:input|textarea)'/.test(block), 'pas de champ');
-    assert.match(block, /\{ dismissible: false \}/);
+    assert.match(block, /\{ dismissible: false(?:, onClose: done)? \}/);
     assert.match(block, /copyButton\(h, \{ label: 'Copier la cl/);
+  });
+
+  it('aucun replaceChildren n\'ecrit « null » : les elements absents sont filtres (fiche de l\'operateur, rapport d\'import)', () => {
+    const src = read('holders.js');
+    assert.match(src, /detailBody\.replaceChildren\(\.\.\.\[head, identity, badges, sync, passages, adminBar\]\.filter\(Boolean\)\)/);
+    assert.match(src, /\]\.filter\(Boolean\), \/\/ replaceChildren/);
+  });
+
+  it('detail d\'un controleur : une lecture echouee affiche l\'erreur et « Reessayer » au lieu de « Lecture du detail… » indefiniment', () => {
+    const src = read('holders.js');
+    assert.match(src, /entry\.detailError = err\.message/);
+    assert.match(src, /Le détail n’a pas pu être lu\./);
   });
 
   it('l\'operateur ne voit aucun bouton d\'ecriture hors visiteurs : les gestes d\'administration sont gardes par isAdmin', () => {
