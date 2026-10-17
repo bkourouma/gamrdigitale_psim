@@ -36,7 +36,7 @@ export const MAX_CACHE = 500;
 /** Un nom plus long n'est pas celui d'un titulaire (63 caractères au plus côté serveur) : on ne l'affiche pas. */
 const MAX_NAME = 120;
 // Caractères de commande et de mise en forme invisible : jamais dans un nom affiché.
-const INVISIBLE = /[\u0000-\u001f\u007f-\u009f  \p{Cf}]/u;
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/u;
 
 /** Le nom à afficher d'une fiche lue, ou null si la fiche ne ressemble pas à celle demandée. */
 export function nameOfHolder(data, ref) {
