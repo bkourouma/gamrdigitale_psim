@@ -20,10 +20,13 @@ import {
   cleanRef,
   cleanText,
   createLimitedLog,
+  cursorKey,
   defaultCursorCompare,
   doorEventMessage,
   emitted,
+  epochEventId,
   passageMessage,
+  validEpoch,
   validTs,
 } from '../src/modules/acces-commun/commun.ts';
 import type { CursorIo, DoorEventKind, PartialThresholds, PassageInput } from '../src/modules/acces-commun/commun.ts';
@@ -918,7 +921,7 @@ interface Rig {
   advance(ms: number, step?: number, keepAlive?: boolean): void;
 }
 
-function rig(opts: { thresholds?: PartialThresholds; doors?: Map<number, string>; onOffline?: never; dir?: string; controllerId?: string } = {}): Rig {
+function rig(opts: { thresholds?: PartialThresholds; doors?: Map<number, string>; onOffline?: never; dir?: string; controllerId?: string; epoch?: number } = {}): Rig {
   const clock = { t: T0 };
   const sent: Sent[] = [];
   const logs: Array<{ level: string; text: string }> = [];
@@ -938,6 +941,7 @@ function rig(opts: { thresholds?: PartialThresholds; doors?: Map<number, string>
     now: () => clock.t,
     log,
     cursors,
+    epoch: opts.epoch,
     thresholds: opts.thresholds,
   });
   const names = (id?: string): string[] => sent.filter((s) => id === undefined || s.id === id).map((s) => s.msg.event ?? s.msg.state ?? '?');
@@ -991,7 +995,7 @@ describe('acces-commun : superviseur - construction', () => {
     assert.equal(st.online, false);
     assert.equal(st.lastAliveAt, null);
     assert.equal(st.doors.length, 2);
-    assert.deepEqual(st.doors[0], { doorNo: 1, detectorId: 'PORTE-1', open: null, forced: false, held: false, tamper: false, drift: false });
+    assert.deepEqual(st.doors[0], { doorNo: 1, detectorId: 'PORTE-1', open: null, forced: false, held: false, tamper: false, drift: false, mode: null });
     assert.equal(r.sent.length, 0, 'rien n\'est emis avant la premiere preuve de vie');
   });
 });
@@ -1560,7 +1564,7 @@ describe('acces-commun : superviseur - evenements de porte et de sabotage', () =
     r.sup.doorEvent(1, 'tamper', T0 + 4);
     assert.equal(st().tamper, true);
     r.sup.doorEvent(1, 'closed', T0 + 5);
-    assert.deepEqual(st(), { doorNo: 1, detectorId: 'PORTE-1', open: false, forced: false, held: false, tamper: true, drift: false });
+    assert.deepEqual(st(), { doorNo: 1, detectorId: 'PORTE-1', open: false, forced: false, held: false, tamper: true, drift: false, mode: null });
     r.sup.doorEvent(1, 'held_open', T0 + 6);
     r.sup.doorEvent(1, 'held_open_end', T0 + 7);
     assert.equal(st().held, false);
@@ -1909,15 +1913,470 @@ describe('acces-commun : superviseur - etat, contrat et garde-fous', () => {
 
   it('aucun temporisateur ni dependance hors node: dans le code commun', () => {
     const dir = join(MODULES_DIR, 'acces-commun');
-    const mine = ['commun.ts', 'types.ts', 'messages.ts', 'denials.ts', 'cursor.ts', 'limitedlog.ts', 'supervisor.ts'];
+    const mine = readdirSync(dir).filter((f) => f.endsWith('.ts'));
+    for (const need of ['commun.ts', 'types.ts', 'messages.ts', 'denials.ts', 'cursor.ts', 'limitedlog.ts', 'supervisor.ts', 'epoch.ts', 'slots.ts', 'sync.ts', 'actuator.ts']) {
+      assert.ok(mine.includes(need), `${need} present`);
+    }
     for (const f of mine) {
       const src = readFileSync(resolve(dir, f), 'utf8');
       assert.ok(!/\bset(Timeout|Interval|Immediate)\b/.test(src), `${f} : pas de temporisateur`);
       assert.ok(!/\bDate\.now\b|\bnew Date\b/.test(src), `${f} : pas d'horloge globale`);
-      for (const m of src.matchAll(/^import\s[^'"]*['"]([^'"]+)['"]/gm)) {
+      for (const m of src.matchAll(/^(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]/gm)) {
         const from = m[1]!;
+        assert.ok(!from.includes('server/'), `${f} : aucun import du serveur PSIM (${from})`);
         assert.ok(from.startsWith('node:') || from.startsWith('./') || from === '../../module.ts' || from === '../../msgid.ts', `${f} : import ${from}`);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('acces-commun : mode de porte (F19)', () => {
+  const modes = (r: Rig, id = 'PORTE-1'): DeviceMessage[] => r.sent.filter((s) => s.id === id && s.msg.event === 'door_mode').map((s) => s.msg);
+  const count = (r: Rig, event: string): number => r.sent.filter((s) => s.msg.event === event).length;
+
+  it('premiere information : un door_mode conforme, accepte par prepare(), sans champ en trop', () => {
+    const r = rig();
+    r.sup.alive();
+    assert.equal(r.sup.doorMode(1, 'always_open'), true);
+    const m = modes(r);
+    assert.equal(m.length, 1);
+    assert.deepEqual(m[0], { event: 'door_mode', ts: T0, msgId: `acc:CTL-1:mode-1-${T0}-always_open`, doorMode: 'always_open' });
+    const res = prepare('PORTE-1', m[0]!, T0);
+    assert.equal(res.ok, true);
+    if (res.ok) assert.deepEqual(res.warnings, []);
+    assert.deepEqual(r.names('PORTE-2'), ['heartbeat'], "l'autre porte n'est pas touchee");
+  });
+
+  it("un mode identique n'est pas re-emis ; un changement l'est ; retour au mode precedent aussi", () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'normal');
+    r.clock.t += 5 * SEC;
+    assert.equal(r.sup.doorMode(1, 'normal'), true, 'doublon : vrai (rien a dire)');
+    assert.equal(r.sup.doorMode(1, 'normal', T0 + 99), true);
+    assert.equal(modes(r).length, 1);
+    r.sup.doorMode(1, 'always_closed');
+    r.sup.doorMode(1, 'normal');
+    assert.deepEqual(modes(r).map((m) => m.doorMode), ['normal', 'always_closed', 'normal']);
+    assert.equal(new Set(modes(r).map((m) => m.msgId)).size, 3);
+    assert.equal(r.sup.state().doors[0]!.mode, 'normal');
+    assert.equal(r.sup.state().doors[1]!.mode, null, 'porte 2 : aucun mode connu');
+  });
+
+  it('deux changements dans la meme milliseconde : deux msgId distincts', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'always_open');
+    r.sup.doorMode(1, 'normal');
+    const ids = modes(r).map((m) => m.msgId);
+    assert.equal(new Set(ids).size, 2);
+  });
+
+  it("ts du controleur utilise s'il est valide ; sinon l'heure de la passerelle (journal limite)", () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'always_open', T0 - 5000);
+    assert.equal(modes(r)[0]!.ts, T0 - 5000);
+    for (const bad of [5, -1, Number.NaN, 1.5, 'x' as never, Infinity]) {
+      r.sup.doorMode(2, 'always_open', bad);
+      r.sup.doorMode(2, 'normal', bad);
+    }
+    assert.ok(modes(r, 'PORTE-2').every((m) => m.ts === T0));
+    assert.equal(r.logs.filter((l) => l.text.includes("heure d'evenement invalide")).length, 1);
+  });
+
+  it("avant la premiere preuve de vie : garde, puis emis juste apres les signes de vie ; jamais avant", () => {
+    const r = rig();
+    assert.equal(r.sup.doorMode(1, 'always_closed'), true);
+    assert.equal(r.sent.length, 0, "door_mode est un signe de vie : rien tant que le controleur n'est pas en ligne");
+    r.clock.t += 2 * SEC;
+    r.sup.alive();
+    assert.deepEqual(r.names('PORTE-1'), ['heartbeat', 'door_mode']);
+    assert.equal(modes(r)[0]!.ts, T0 + 2 * SEC, "envoye a l'heure du retour en ligne");
+    assert.equal(modes(r)[0]!.doorMode, 'always_closed');
+    assert.deepEqual(r.names('PORTE-2'), ['heartbeat'], 'porte 2 sans mode : seulement le signe de vie');
+  });
+
+  it('hors ligne : aucun door_mode (il ferait repasser la porte en ligne) ; envoye au retour', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'normal');
+    r.sup.linkLost('coupure', { immediate: true });
+    assert.equal(r.sup.state().link, 'offline');
+    assert.equal(r.sup.doorMode(1, 'always_open'), true, 'differe');
+    r.advance(60 * SEC);
+    assert.deepEqual(r.names('PORTE-1'), ['heartbeat', 'door_mode', 'offline'], "toujours rien d'autre que offline");
+    r.sup.alive();
+    assert.deepEqual(r.names('PORTE-1'), ['heartbeat', 'door_mode', 'offline', 'heartbeat', 'door_mode']);
+    assert.deepEqual(modes(r).map((m) => m.doorMode), ['normal', 'always_open'], 'le dernier mode connu part au retour');
+  });
+
+  it('coupure breve (avant la fin du delai de grace) : le dernier mode est re-emis une fois au retour, sans heartbeat en plus', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'always_open');
+    r.sup.doorMode(2, 'normal');
+    const hb = count(r, 'heartbeat');
+    r.clock.t += 3 * SEC;
+    r.sup.linkLost('flux ferme');
+    r.sup.tick();
+    r.clock.t += 3 * SEC;
+    r.sup.alive();
+    assert.equal(count(r, 'heartbeat'), hb, 'retour avant le delai de grace : pas de nouveau heartbeat');
+    assert.equal(modes(r).length, 2);
+    assert.equal(modes(r, 'PORTE-2').length, 2);
+    assert.deepEqual(modes(r).map((m) => m.doorMode), ['always_open', 'always_open']);
+    assert.equal(modes(r)[1]!.ts, T0 + 6 * SEC);
+    // la marque relit ensuite le meme mode : rien de plus
+    r.sup.doorMode(1, 'always_open');
+    r.sup.doorMode(2, 'normal');
+    assert.equal(modes(r).length, 2);
+    assert.equal(modes(r, 'PORTE-2').length, 2);
+    // et plus rien tant que la liaison tient
+    r.advance(10 * 60 * SEC, SEC, true);
+    assert.equal(modes(r).length, 2);
+    assert.equal(modes(r, 'PORTE-2').length, 2);
+  });
+
+  it('apres offline puis retour : re-emis une fois par porte ; si la marque relit un mode qui a change, le changement part aussi', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'normal');
+    r.sup.linkLost('x', { immediate: true });
+    r.clock.t += 10 * SEC;
+    r.sup.alive();
+    assert.equal(modes(r).length, 2);
+    r.sup.doorMode(1, 'always_closed');
+    assert.deepEqual(modes(r).map((m) => m.doorMode), ['normal', 'normal', 'always_closed']);
+    // second cycle
+    r.sup.linkLost('y', { immediate: true });
+    r.clock.t += SEC;
+    r.sup.alive();
+    assert.deepEqual(modes(r).map((m) => m.doorMode), ['normal', 'normal', 'always_closed', 'always_closed']);
+  });
+
+  it('controleur muet puis de retour : meme re-emission', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'always_open');
+    r.advance(120 * SEC); // silence > 30 s puis grace : hors ligne
+    assert.equal(r.sup.state().link, 'offline');
+    r.sup.alive();
+    assert.equal(modes(r).length, 2);
+  });
+
+  it("jamais de heartbeat en plus : doorMode n'en declenche aucun", () => {
+    const r = rig();
+    r.sup.alive();
+    const hb = count(r, 'heartbeat');
+    for (const m of ['normal', 'always_open', 'always_closed', 'normal'] as const) r.sup.doorMode(1, m);
+    assert.equal(count(r, 'heartbeat'), hb);
+  });
+
+  it('porte inconnue ou mode inconnu : ignore, faux, journal limite, aucune exception', () => {
+    const r = rig();
+    r.sup.alive();
+    const before = r.sent.length;
+    for (let i = 0; i < 20; i++) assert.equal(r.sup.doorMode(99, 'normal'), false);
+    for (const bad of ['banana', '', 'NORMAL', 7, null, undefined, {}, ['normal'], 'normal ', 'always-open']) {
+      assert.equal(r.sup.doorMode(1, bad as never), false, String(bad));
+    }
+    assert.equal(r.sent.length, before);
+    assert.equal(r.logs.filter((l) => l.text.includes('mode pour une porte inconnue')).length, 1);
+    assert.equal(r.logs.filter((l) => l.text.includes('mode de porte inconnu')).length, 1);
+    assert.equal(r.sup.state().ignored, 30);
+    assert.equal(r.sup.state().doors[0]!.mode, null);
+    assert.equal(r.sup.doorMode(Number.NaN, 'normal'), false);
+    assert.equal(r.sup.doorMode('x' as never, 'normal'), false);
+  });
+
+  it('refus du socle : faux, puis retente par tick() avec le meme msgId, une seule fois', () => {
+    const r = rig();
+    r.sup.alive();
+    r.accept.value = false;
+    assert.equal(r.sup.doorMode(1, 'always_open'), false);
+    r.advance(3 * SEC, SEC, true);
+    assert.equal(modes(r).length, 0);
+    r.accept.value = true;
+    r.advance(2 * SEC, SEC, true);
+    assert.equal(modes(r).length, 1);
+    assert.equal(modes(r)[0]!.msgId, `acc:CTL-1:mode-1-${T0}-always_open`, "meme heure et meme msgId que l'envoi refuse");
+    r.advance(30 * SEC, SEC, true);
+    assert.equal(modes(r).length, 1);
+    // un nouvel appel identique apres succes : rien
+    assert.equal(r.sup.doorMode(1, 'always_open'), true);
+    assert.equal(modes(r).length, 1);
+  });
+
+  it('refus du socle, puis la marque retente elle-meme avec le meme mode : un seul envoi', () => {
+    const r = rig();
+    r.sup.alive();
+    r.accept.value = false;
+    r.sup.doorMode(1, 'always_closed');
+    r.accept.value = true;
+    assert.equal(r.sup.doorMode(1, 'always_closed'), true);
+    assert.equal(modes(r).length, 1);
+    r.advance(5 * SEC, SEC, true);
+    assert.equal(modes(r).length, 1);
+  });
+
+  it('refus du socle au retour en ligne : retente au tick', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorMode(1, 'always_open');
+    r.sup.linkLost('x', { immediate: true });
+    r.accept.only = (_id, msg) => msg.event !== 'door_mode';
+    r.sup.alive();
+    assert.equal(modes(r).length, 1);
+    r.accept.only = undefined;
+    r.advance(2 * SEC, SEC, true);
+    assert.equal(modes(r).length, 2);
+    r.advance(10 * SEC, SEC, true);
+    assert.equal(modes(r).length, 2);
+  });
+
+  it("chaque porte a son mode ; le mode ne touche pas les etats d'alarme memorises", () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorEvent(1, 'forced', T0 + 1);
+    r.sup.doorMode(1, 'always_open');
+    r.sup.doorMode(2, 'always_closed');
+    const st = r.sup.state().doors;
+    assert.deepEqual(st.map((d) => d.mode), ['always_open', 'always_closed']);
+    assert.equal(st[0]!.forced, true);
+    assert.equal(st[0]!.open, true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('acces-commun : contrainte (duress) -> panic', () => {
+  const panics = (r: Rig): DeviceMessage[] => r.sent.filter((s) => s.msg.event === 'panic').map((s) => s.msg);
+
+  it('doorEvent(duress) : { event: panic } avec heure et msgId deterministes, accepte par prepare()', () => {
+    const r = rig();
+    r.sup.alive();
+    assert.equal(r.sup.doorEvent(1, 'duress', T0 + 10, 'rec77'), true);
+    const p = panics(r);
+    assert.equal(p.length, 1);
+    assert.deepEqual(p[0], { event: 'panic', ts: T0 + 10, msgId: `acc:CTL-1:duress-1-${T0 + 10}-rec77` });
+    assert.equal(r.sent.at(-1)!.id, 'PORTE-1');
+    assert.equal(prepare('PORTE-1', p[0]!, T0 + 10).ok, true);
+  });
+
+  it('idPart distingue deux contraintes a la meme seconde ; la meme contrainte rejouee garde le meme msgId', () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorEvent(1, 'duress', T0 + 1, 'a');
+    r.sup.doorEvent(1, 'duress', T0 + 1, 'b');
+    r.sup.doorEvent(1, 'duress', T0 + 1, 'a');
+    r.sup.doorEvent(2, 'duress', T0 + 1, 'a');
+    const ids = panics(r).map((m) => m.msgId);
+    assert.equal(new Set(ids).size, 3);
+    assert.equal(ids[0], ids[2]);
+  });
+
+  it("aucun effet sur les etats memorises ni sur l'ordre des evenements", () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorEvent(1, 'opened', T0 + 10);
+    const before = r.sup.state().doors[0]!;
+    r.sup.doorEvent(1, 'duress', T0 + 100, 'x');
+    assert.deepEqual(r.sup.state().doors[0], before);
+    // une fermeture entre l'ouverture et la contrainte (plus ancienne que celle-ci) reste prise en compte
+    r.sup.doorEvent(1, 'closed', T0 + 50);
+    assert.equal(r.sup.state().doors[0]!.open, false);
+    // alarmes en cours : toujours en cours apres une contrainte
+    r.sup.doorEvent(1, 'forced', T0 + 200);
+    r.sup.doorEvent(1, 'tamper', T0 + 201);
+    r.sup.doorEvent(1, 'duress', T0 + 202, 'y');
+    const d = r.sup.state().doors[0]!;
+    assert.equal(d.forced, true);
+    assert.equal(d.tamper, true);
+  });
+
+  it("pas de fin de contrainte : la fin d'une derive d'horloge n'en cree pas", () => {
+    const r = rig();
+    r.sup.alive();
+    r.sup.doorEvent(1, 'duress', T0 + 1);
+    const n = panics(r).length;
+    r.sup.deviceTime(T0 + 10 * 60 * SEC);
+    r.sup.deviceTime(T0);
+    assert.equal(panics(r).length, n);
+    assert.equal(r.sent.filter((s) => s.msg.event === 'restored').length, 2, 'restored des deux portes (derive), pas de fin de contrainte');
+  });
+
+  it("heure invalide : l'heure de la passerelle ; porte inconnue ou refus du socle : faux", () => {
+    const r = rig();
+    r.sup.alive();
+    assert.equal(r.sup.doorEvent(1, 'duress', 5), true);
+    assert.equal(panics(r)[0]!.ts, T0);
+    assert.equal(r.sup.doorEvent(9, 'duress', T0), false);
+    r.accept.value = false;
+    assert.equal(r.sup.doorEvent(1, 'duress', T0 + 1, 'z'), false);
+    assert.equal(r.sup.state().refused >= 1, true);
+  });
+
+  it("controllerEvent(duress) n'existe pas : refuse sans rien envoyer", () => {
+    const r = rig();
+    r.sup.alive();
+    const n = r.sent.length;
+    assert.equal(r.sup.controllerEvent('duress' as never, T0), false);
+    assert.equal(r.sent.length, n);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('acces-commun : epoque du controleur', () => {
+  it('epochEventId : epoque 0 = numero inchange ; sinon <epoque>.<numero>', () => {
+    assert.equal(epochEventId(0, '123456'), '123456');
+    assert.equal(epochEventId(0, 'a b/c'), 'a b/c', 'inchange meme non conforme (le superviseur nettoie ensuite)');
+    assert.equal(epochEventId(1, '123456'), '1.123456');
+    assert.equal(epochEventId(27, '9'), '27.9');
+    assert.notEqual(epochEventId(1, '5'), epochEventId(2, '5'));
+    assert.notEqual(epochEventId(1, '5'), epochEventId(0, '5'));
+    assert.notEqual(epochEventId(1, '25'), epochEventId(12, '5'), 'jamais de collision par concatenation');
+  });
+
+  it('epochEventId : toujours conforme a ^[A-Za-z0-9._:-]{1,40}$, deterministe, sans collision au-dela de 40 caracteres', () => {
+    const ok = /^[A-Za-z0-9._:-]{1,40}$/;
+    const long1 = 'R'.repeat(60) + 'a';
+    const long2 = 'R'.repeat(60) + 'b';
+    const a = epochEventId(3, long1);
+    const b = epochEventId(3, long2);
+    assert.ok(ok.test(a) && ok.test(b));
+    assert.notEqual(a, b);
+    assert.equal(a, epochEventId(3, long1));
+    const weird = epochEventId(3, `n${cp(0xb0)} 12/3`);
+    assert.ok(ok.test(weird), weird);
+    assert.notEqual(epochEventId(3, 'x y'), epochEventId(3, 'x/y'));
+    assert.ok(ok.test(epochEventId(999_999_999_999, 'Z'.repeat(40))));
+    assert.equal(epochEventId(1, '9'.repeat(38)), `1.${'9'.repeat(38)}`, 'exactement 40 caracteres : inchange');
+    assert.equal(epochEventId(1, '9'.repeat(39)).length, 40);
+    assert.ok(ok.test(epochEventId(1, '9'.repeat(39))));
+    // le superviseur accepte tel quel l'identifiant (aucune seconde transformation)
+    assert.equal(cleanEventId(a), a);
+  });
+
+  it('epochEventId et cursorKey : epoque invalide = RangeError (erreur de configuration)', () => {
+    for (const bad of [-1, 1.5, Number.NaN, Infinity, -Infinity, '1' as never, null as never, undefined as never, 1_000_000_000_000, 2 ** 53]) {
+      assert.throws(() => epochEventId(bad, '1'), RangeError, String(bad));
+      assert.throws(() => cursorKey('CTL-1', bad), RangeError, String(bad));
+      assert.equal(validEpoch(bad), false, String(bad));
+    }
+    for (const good of [0, 1, 2, 999_999_999_999]) assert.equal(validEpoch(good), true);
+    assert.throws(() => cursorKey('', 1), RangeError);
+    assert.throws(() => cursorKey('a b', 0), RangeError);
+    assert.throws(() => cursorKey('C'.repeat(33), 1), RangeError);
+    assert.throws(() => cursorKey('CTL~e1', 1), RangeError);
+  });
+
+  it('cursorKey : controleur seul pour l\'epoque 0, sinon <controleur>~e<epoque>', () => {
+    assert.equal(cursorKey('CTL-1', 0), 'CTL-1');
+    assert.equal(cursorKey('CTL-1', 1), 'CTL-1~e1');
+    assert.equal(cursorKey('CTL-1', 12), 'CTL-1~e12');
+    assert.equal(cursorKey('C'.repeat(32), 999_999_999_999).length, 32 + 2 + 12);
+  });
+
+  it('CursorStore accepte ces cles, rejette les mal formees, et les relit apres redemarrage', () => {
+    const dir = tmp();
+    const mk = () => new CursorStore({ dir, now: () => T0, log: () => undefined });
+    const s = mk();
+    assert.equal(s.set('CTL-1~e1', '3', T0), true);
+    assert.equal(s.set('CTL-1~e12', '7', T0), true);
+    assert.equal(s.set('C'.repeat(32) + '~e999999999999', '1', T0), true);
+    for (const bad of ['CTL-1~e0', 'CTL-1~e01', 'CTL-1~x1', 'CTL-1~e1~e2', '~e1', 'CTL-1~e', 'CTL-1~e1234567890123', 'CTL 1~e1', 'C'.repeat(33) + '~e1', 'CTL-1~E1']) {
+      assert.equal(s.set(bad, '1', T0), false, bad);
+    }
+    s.flush();
+    const again = mk();
+    assert.deepEqual(again.get('CTL-1~e1'), { cursor: '3', ts: T0 });
+    assert.deepEqual(again.get('CTL-1~e12'), { cursor: '7', ts: T0 });
+    assert.equal(again.get('CTL-1'), null);
+  });
+
+  it("un fichier de curseurs contenant des cles d'epoque hostiles : seules les valides sont lues", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, CURSOR_FILE), JSON.stringify({ v: 1, controllers: { 'CTL-1~e2': { cursor: '4', ts: 1 }, 'CTL-1~e0': { cursor: '4', ts: 1 }, 'a~b': { cursor: '1', ts: 1 }, CTL: { cursor: '1', ts: 2 } } }));
+    const s = new CursorStore({ dir, now: () => T0, log: () => undefined });
+    assert.deepEqual(s.get('CTL-1~e2'), { cursor: '4', ts: 1 });
+    assert.equal(s.get('CTL-1~e0'), null);
+    assert.equal(s.get('a~b'), null);
+    assert.deepEqual(s.get('CTL'), { cursor: '1', ts: 2 });
+  });
+
+  it("chaque epoque a son curseur : un numero qui recule apres remplacement du controleur est accepte, l'ancien curseur intact", () => {
+    const dir = tmp();
+    const s = new CursorStore({ dir, now: () => T0, log: () => undefined });
+    assert.equal(s.set(cursorKey('CTL-1', 0), '5000', T0), true);
+    // sans epoque, le numero 3 serait refuse (recul) : c'est le piege
+    assert.equal(s.set(cursorKey('CTL-1', 0), '3', T0 + 1), false);
+    assert.equal(s.get(cursorKey('CTL-1', 1)), null, 'nouvelle epoque : on repart de zero');
+    assert.equal(s.set(cursorKey('CTL-1', 1), '3', T0 + 1), true);
+    assert.equal(s.set(cursorKey('CTL-1', 1), '2', T0 + 2), false, "mais pas de recul a l'interieur d'une epoque");
+    assert.equal(s.get('CTL-1')!.cursor, '5000');
+    assert.equal(s.get('CTL-1~e1')!.cursor, '3');
+    assert.equal(defaultCursorCompare('3', '5000') < 0, true);
+  });
+
+  it("superviseur avec epoque : curseur range sous cursorKey, jamais sous l'identifiant nu", () => {
+    const r = rig({ epoch: 2 });
+    assert.equal(r.sup.epoch, 2);
+    assert.equal(r.sup.cursorKey, 'CTL-1~e2');
+    r.sup.alive();
+    assert.equal(r.sup.submit(passage({ eventId: epochEventId(2, '17'), cursor: '17' })), 'sent');
+    assert.equal(r.cursors.get('CTL-1'), null);
+    assert.deepEqual(r.cursors.get('CTL-1~e2'), { cursor: '17', ts: T0 });
+    assert.equal((r.sent.at(-1)!.msg.access as { eventId: string }).eventId, '2.17');
+    assert.equal(r.sent.at(-1)!.msg.msgId, 'acc:CTL-1:2.17');
+    // meme enregistrement rejoue : doublon
+    assert.equal(r.sup.submit(passage({ eventId: epochEventId(2, '17'), cursor: '17' })), 'duplicate');
+  });
+
+  it('epoque 0 (defaut) : comportement inchange', () => {
+    const r = rig();
+    assert.equal(r.sup.epoch, 0);
+    assert.equal(r.sup.cursorKey, 'CTL-1');
+    r.sup.alive();
+    r.sup.submit(passage({ eventId: '17', cursor: '17' }));
+    assert.deepEqual(r.cursors.get('CTL-1'), { cursor: '17', ts: T0 });
+  });
+
+  it('epoque invalide au constructeur : RangeError', () => {
+    const dir = tmp();
+    for (const epoch of [-1, 1.5, Number.NaN, '2' as never, 1e15]) {
+      assert.throws(
+        () => new ControllerSupervisor({ controllerId: 'CTL-1', doors: new Map([[1, 'P']]), emit: () => true, now: () => T0, log: () => undefined, cursors: new CursorStore({ dir, now: () => T0, log: () => undefined }), epoch }),
+        RangeError,
+        String(epoch),
+      );
+    }
+  });
+
+  it("remplacement du controleur : la recuperation repart de zero a la nouvelle epoque, sans toucher l'ancienne", () => {
+    const dir = tmp();
+    const first = rig({ dir });
+    first.sup.alive();
+    for (let n = 100; n < 106; n++) first.sup.submit(passage({ eventId: epochEventId(0, String(n)), cursor: String(n), ts: T0 + n }));
+    first.sup.flush();
+    assert.equal(first.cursors.get(first.sup.cursorKey)!.cursor, '105');
+
+    // le controleur est remplace : l'installateur passe epoch a 1, les numeros repartent de 1
+    const second = rig({ dir, epoch: 1 });
+    assert.equal(second.cursors.get(second.sup.cursorKey), null, 'rien a reprendre : repart de zero');
+    assert.equal(second.cursors.get('CTL-1')!.cursor, '105', 'ancienne epoque conservee');
+    second.sup.alive();
+    for (let n = 1; n <= 3; n++) {
+      assert.equal(second.sup.submit(passage({ eventId: epochEventId(1, String(n)), cursor: String(n), ts: T0 + 1000 + n, deferred: true })), 'sent');
+    }
+    assert.deepEqual(second.cursors.get('CTL-1~e1'), { cursor: '3', ts: T0 + 1003 });
+    assert.equal(second.cursors.get('CTL-1')!.cursor, '105');
+    second.sup.flush();
+    const reread = new CursorStore({ dir, now: () => T0, log: () => undefined });
+    assert.equal(reread.get('CTL-1')!.cursor, '105');
+    assert.equal(reread.get('CTL-1~e1')!.cursor, '3');
+    const ids = [...first.sent, ...second.sent].map((s) => s.msg.msgId).filter((m): m is string => m !== undefined);
+    assert.equal(ids.length, 9);
+    assert.equal(new Set(ids).size, 9, 'aucun msgId commun entre les deux epoques');
   });
 });

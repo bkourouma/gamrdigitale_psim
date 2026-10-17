@@ -12,11 +12,13 @@
  *    modules (dahua et zkteco) peuvent donc partager le meme dossier sans s'ecraser ;
  *  - lecture tolerante : fichier absent, vide, tronque, trop gros ou hostile = etat vide + un avertissement, jamais d'exception.
  * Le curseur ne recule jamais (voir `compare`).
+ * La cle est un identifiant de controleur, eventuellement suivi de `~e<epoque>` (voir `cursorKey` dans epoch.ts) : chaque
+ * epoque d'un controleur remplace a son propre curseur, jamais compare a celui d'une autre.
  */
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLimitedLog } from './limitedlog.ts';
-import { CONTROLLER_ID } from './messages.ts';
+import { CURSOR_KEY } from './epoch.ts';
 import type { LogFn } from './types.ts';
 
 export const CURSOR_FILE = 'acces-curseurs.json';
@@ -58,7 +60,7 @@ export interface CursorIo {
   rename(from: string, to: string): void;
 }
 
-const realIo: CursorIo = {
+export const realCursorIo: CursorIo = {
   write(file, data) {
     const fd = openSync(file, 'w');
     try {
@@ -107,7 +109,7 @@ export class CursorStore {
     this.file = join(opts.dir, CURSOR_FILE);
     this.now = opts.now;
     this.compare = opts.compare ?? defaultCursorCompare;
-    this.io = { ...realIo, ...opts.io };
+    this.io = { ...realCursorIo, ...opts.io };
     const limited = createLimitedLog(opts.log, opts.now);
     this.warn = (key, text) => limited(key, 'warn', text);
     try {
@@ -130,7 +132,7 @@ export class CursorStore {
    * disque (voir `tick` et `flush`).
    */
   set(controllerId: string, cursor: string, ts: number): boolean {
-    if (!CONTROLLER_ID.test(controllerId)) {
+    if (typeof controllerId !== 'string' || !CURSOR_KEY.test(controllerId)) {
       this.warn('badid', 'curseur d\'acces refuse : identifiant de controleur invalide');
       return false;
     }
@@ -218,7 +220,7 @@ export class CursorStore {
     let dropped = 0;
     for (const [id, raw] of Object.entries(controllers)) {
       const e = typeof raw === 'object' && raw !== null ? (raw as { cursor?: unknown; ts?: unknown }) : null;
-      if (out.size < MAX_CONTROLLERS && CONTROLLER_ID.test(id) && e && validCursor(e.cursor) && validTime(e.ts)) out.set(id, { cursor: e.cursor, ts: e.ts });
+      if (out.size < MAX_CONTROLLERS && CURSOR_KEY.test(id) && e && validCursor(e.cursor) && validTime(e.ts)) out.set(id, { cursor: e.cursor, ts: e.ts });
       else dropped++;
     }
     if (dropped > 0 && report) this.warn('dropped', `${dropped} entree(s) invalide(s) ignoree(s) dans le fichier des curseurs d'acces`);

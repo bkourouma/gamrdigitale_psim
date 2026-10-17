@@ -12,25 +12,10 @@
  *  - une erreur du controleur ou du reseau est `error` : l'accuse n'est donne que si le controleur a confirme.
  * Le socle (AC0) a deja verifie signature, fraicheur, anti-rejeu et plafonds : le module n'execute que.
  */
-import type { ModuleContext } from '../../module.ts';
+import type { ActuatorHandler, ActuatorOutcome, ActuatorRequest, ModuleContext } from '../../module.ts';
 
-// Types du contrat (docs/CONTROLE-ACCES.md, § 3). Ils appartiennent a gateway/src/module.ts (lot AC0, canal de commande) ;
-// copies ici, identiques, tant que AC0 n'est pas fusionne : a la fusion, remplacer par un import de '../../module.ts'.
-/** Ordre deja verifie par le socle (signature, fraicheur, anti-rejeu, plafonds locaux). */
-export interface ActuatorRequest {
-  actuatorId: string;
-  cmdId: string;
-  /** Ex. 'unlock', 'lock', 'open', 'close', 'stop'. */
-  action: string;
-  /** Present pour une action temporisee. */
-  durationS?: number;
-  clip?: string;
-}
-export interface ActuatorOutcome {
-  result: 'done' | 'refused' | 'error';
-  code?: string;
-}
-export type ActuatorHandler = (req: ActuatorRequest) => Promise<ActuatorOutcome>;
+// Les types du contrat (§ 3) appartiennent a gateway/src/module.ts ; reexportes ici pour les modules de marque.
+export type { ActuatorHandler, ActuatorOutcome, ActuatorRequest };
 
 /** Type d'actionneur declare dans la configuration d'un controleur. */
 export type ActuatorKind = 'lock' | 'gate';
@@ -105,15 +90,23 @@ export function makeActuatorHandler(spec: ActuatorSpec, driver: DoorDriver, opts
   };
 }
 
-type WithActuators = ModuleContext & { onActuator?: (actuatorId: string, handler: ActuatorHandler) => void };
-
 /**
- * Declare le gestionnaire aupres du socle. Tant que le lot AC0 (canal de commande) n'est pas fusionne, `ctx.onActuator`
- * n'existe pas : renvoie faux (le module continue de surveiller ses portes, sans ouverture a distance).
+ * Declare le gestionnaire aupres du socle. Le socle LEVE une erreur quand l'actionneur n'est pas declare dans la section
+ * `actuators` de la passerelle pour ce module (ou deja pris) : une erreur de configuration des COMMANDES ne doit JAMAIS
+ * couper la remontee des passages. L'erreur est donc attrapee et journalisee clairement, et le module continue sans ce
+ * gestionnaire (surveillance seule, ouverture a distance indisponible). Renvoie vrai si le gestionnaire est enregistre.
  */
 export function registerActuator(ctx: ModuleContext, actuatorId: string, handler: ActuatorHandler): boolean {
-  const c = ctx as WithActuators;
-  if (typeof c.onActuator !== 'function') return false;
-  c.onActuator(actuatorId, handler);
-  return true;
+  try {
+    ctx.onActuator(actuatorId, handler);
+    return true;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : 'erreur inconnue';
+    try {
+      ctx.log('warn', `actionneur « ${String(actuatorId).slice(0, 40)} » non enregistre : ouverture a distance indisponible, surveillance seule (${why.slice(0, 200)})`);
+    } catch {
+      // un journal defaillant ne doit pas faire echouer le module
+    }
+    return false;
+  }
 }

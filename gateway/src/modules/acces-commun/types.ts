@@ -35,8 +35,11 @@ export type PassageInput = Omit<AccessPassage, 'v' | 'controllerId'> & {
   cursor?: string;
 };
 
-/** Evenements d'etat d'une porte que la marque signale (traduits en evenements PSIM, voir supervisor.ts). */
-export type DoorEventKind = 'opened' | 'closed' | 'forced' | 'held_open' | 'held_open_end' | 'tamper' | 'tamper_end';
+/**
+ * Evenements d'etat d'une porte que la marque signale (traduits en evenements PSIM, voir supervisor.ts).
+ * `duress` = contrainte (code ou doigt " sous menace ") : alarme `panic`, sans fin ni effet sur l'etat memorise de la porte.
+ */
+export type DoorEventKind = 'opened' | 'closed' | 'forced' | 'held_open' | 'held_open_end' | 'tamper' | 'tamper_end' | 'duress';
 /** Evenements qui concernent tout le controleur (sabotage du boitier) : appliques a toutes ses portes. */
 export type ControllerEventKind = 'tamper' | 'tamper_end';
 

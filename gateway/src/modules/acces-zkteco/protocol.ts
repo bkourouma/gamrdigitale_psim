@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { cleanCredential, cleanRef, validTs } from '../acces-commun/commun.ts';
-import type { AccessPassage } from '../../module.ts';
+import type { AccessPassage, DoorMode } from '../../module.ts';
 
 /** Longueur maximale d'une ligne de donnees : au-dela, la ligne est illisible (donnee hostile ou tronquee). */
 export const MAX_LINE = 2048;
@@ -205,6 +205,8 @@ export type RtEffect =
   | { kind: 'tamper' }
   /** Contrainte (code ou doigt « sous la menace ») : passage accepte ET alarme silencieuse. */
   | { kind: 'duress'; method: Method }
+  /** Changement du mode de la porte (F19) : ouverture continue ou retour au mode normal. Jamais un passage. */
+  | { kind: 'mode'; mode: DoorMode }
   /** Evenement connu sans consequence pour le PSIM (journalise une fois). */
   | { kind: 'ignore' };
 
@@ -216,6 +218,7 @@ export interface RtEvent {
 const granted = (label: string, method?: Method): RtEvent => ({ label, effect: method ? { kind: 'granted', method } : { kind: 'granted' } });
 const denied = (label: string, reason: Reason): RtEvent => ({ label, effect: { kind: 'denied', reason } });
 const ignore = (label: string): RtEvent => ({ label, effect: { kind: 'ignore' } });
+const mode = (label: string, m: DoorMode): RtEvent => ({ label, effect: { kind: 'mode', mode: m } });
 
 /**
  * Table des numeros d'evenement `event` du rtlog. A QUALIFIER EN ENTIER : reconstituee d'apres l'annexe « Real-time Event
@@ -233,8 +236,17 @@ export const RTLOG_EVENTS: Readonly<Record<number, RtEvent>> = {
   6: ignore('liaison declenchee'),
   7: ignore('alarme annulee'),
   8: granted('ouverture a distance', 'remote'),
-  9: ignore('fermeture a distance'),
-  10: ignore('plage d ouverture permanente desactivee'),
+  // Mode de porte (F19). Les NOMS « Remote Closing », « Disable / Enable Intraday Normal Open Time Zone », « Normal Open Time
+  // Zone Over » et « Remote Normal Opening » (9, 10, 11, 204, 205) sont CONFIRMES par la liste d'evenements de pyzkaccess
+  // (enveloppe du SDK C3) ; le SENS qu'on en tire pour le mode de la porte est une deduction :
+  //  - 9 fermeture a distance, 10 plage d ouverture permanente desactivee pour la journee, 204 fin de la plage : la porte n'est
+  //    plus en ouverture continue => `normal` (A QUALIFIER sur un appareil reel : 9 annule-t-il bien une ouverture continue ?) ;
+  //  - 11 plage reactivee : la porte n'est en ouverture continue que si l'heure est dans la plage, ce que le message ne dit pas =>
+  //    aucun mode emis (rien de faux) ;
+  //  - 205 ouverture permanente a distance => `always_open`.
+  // « Toujours fermee » n'a aucun evenement connu : jamais emis.
+  9: mode('fermeture a distance', 'normal'),
+  10: mode('plage d ouverture permanente desactivee', 'normal'),
   11: ignore('plage d ouverture permanente activee'),
   12: ignore('sortie auxiliaire ouverte'),
   13: ignore('sortie auxiliaire fermee'),
@@ -272,8 +284,8 @@ export const RTLOG_EVENTS: Readonly<Record<number, RtEvent>> = {
   201: { label: 'porte fermee', effect: { kind: 'door', what: 'closed' } },
   202: granted('bouton de sortie', 'exit_button'),
   203: granted('ouverture multi-cartes carte et empreinte', 'badge'),
-  204: ignore('fin de la plage d ouverture permanente'),
-  205: granted('ouverture permanente a distance', 'remote'),
+  204: mode('fin de la plage d ouverture permanente', 'normal'),
+  205: mode('ouverture permanente a distance', 'always_open'),
   206: ignore('demarrage de l appareil'),
   208: granted('super utilisateur'),
   220: ignore('entree auxiliaire ouverte'),
@@ -398,6 +410,12 @@ export interface RtstateRecord {
 /**
  * Ligne `time=...<TAB>sensor=...<TAB>relay=...<TAB>alarm=...`. A QUALIFIER : on suppose, pour `sensor`, un chiffre par porte
  * (dans l'ordre des portes) valant 1 (fermee) ou 2 (ouverte) ; toute autre valeur est inconnue (jamais devinee).
+ *
+ * MODE DE PORTE (F19) : `rtstate` n'est PAS une source du mode. Aucune documentation consultee ne decrit de champ « mode de la
+ * porte » dans cette ligne, et `relay` (etat du relais de la serrure) est active aussi par une simple impulsion d'ouverture : il
+ * ne distingue pas une ouverture continue. A QUALIFIER sur un appareil reel : si un champ de mode existe (ou si le parametre
+ * `Door<N>Drivertime` = 255, « normalement ouvert », peut etre interroge), l'ajouter ici ; en attendant, le mode vient des seuls
+ * evenements du rtlog (voir `RTLOG_EVENTS`) et reste INCONNU (rien n'est emis) tant qu'aucun changement n'a ete vu.
  */
 export function parseRtstateLine(line: string, utcOffsetMin: number): RtstateRecord | null {
   const kv = parseKv(line);

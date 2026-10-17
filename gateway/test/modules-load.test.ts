@@ -28,7 +28,10 @@ const COMMUNITY = 'communaute-secrete-Xq7';
 const Z2M_PASSWORD = 'mot-de-passe-z2m-Kp4';
 const CHIRP_PASSWORD = 'mot-de-passe-chirpstack-Wm2';
 const DAHUA_PASSWORD = 'mot-de-passe-dahua-Rt5';
-const SECRETS = [SIA_KEY_ENV, SIA_KEY_FILE, COMMUNITY, Z2M_PASSWORD, CHIRP_PASSWORD, DAHUA_PASSWORD];
+/** Cles de synchronisation des titulaires (64 hexadecimaux minuscules) des exemples acces-dahua et acces-zkteco. */
+const DAHUA_SYNC_KEY = '0123456789abcdef'.repeat(4);
+const ZKTECO_SYNC_KEY = 'fedcba9876543210'.repeat(4);
+const SECRETS = [SIA_KEY_ENV, SIA_KEY_FILE, COMMUNITY, Z2M_PASSWORD, CHIRP_PASSWORD, DAHUA_PASSWORD, DAHUA_SYNC_KEY, ZKTECO_SYNC_KEY];
 
 function docBlocks(name: string): Record<string, unknown>[] {
   const text = readFileSync(join(ROOT, 'gateway', 'docs', `${name}.md`), 'utf8');
@@ -53,6 +56,23 @@ function dahuaExample(block: Record<string, unknown>): Record<string, unknown> {
     const pw = c.password as { $file?: unknown } | undefined;
     assert.equal(typeof pw?.$file, 'string', "le mot de passe de l'exemple gateway/docs/acces-dahua.md est donne par {\"$file\": ...}");
     c.password = DAHUA_PASSWORD;
+    // Cle de synchronisation des titulaires (facultative) : meme forme, meme remplacement.
+    if (c.syncKey !== undefined) {
+      const key = c.syncKey as { $file?: unknown } | undefined;
+      assert.equal(typeof key?.$file, 'string', "la cle de synchronisation de l'exemple gateway/docs/acces-dahua.md est donnee par {\"$file\": ...}");
+      c.syncKey = DAHUA_SYNC_KEY;
+    }
+  }
+  return block;
+}
+
+/** Meme chose pour l'exemple de la page acces-zkteco : `syncKey` par `{"$file": ...}`, remplacee par une cle d'essai pour `create()`. */
+function zktecoExample(block: Record<string, unknown>): Record<string, unknown> {
+  for (const c of block.controllers as Record<string, unknown>[]) {
+    if (c.syncKey === undefined) continue;
+    const key = c.syncKey as { $file?: unknown } | undefined;
+    assert.equal(typeof key?.$file, 'string', "la cle de synchronisation de l'exemple gateway/docs/acces-zkteco.md est donnee par {\"$file\": ...}");
+    c.syncKey = ZKTECO_SYNC_KEY;
   }
   return block;
 }
@@ -75,7 +95,7 @@ function examples(): Record<Name, Record<string, unknown>> {
     sia: pick('sia', (b) => 'listen' in b && 'accounts' in b),
     lorawan: pick('lorawan', (b) => 'broker' in b && 'devices' in b),
     'acces-dahua': dahuaExample(pick('acces-dahua', (b) => Array.isArray(b.controllers) && !('listen' in b))),
-    'acces-zkteco': pick('acces-zkteco', (b) => Array.isArray(b.controllers) && 'listen' in b),
+    'acces-zkteco': zktecoExample(pick('acces-zkteco', (b) => Array.isArray(b.controllers) && 'listen' in b)),
   };
 }
 
@@ -131,6 +151,8 @@ describe('modules livres : chargement par le socle', () => {
     writeFileSync(join(dir, 'secrets', 'z2m.txt'), Z2M_PASSWORD);
     writeFileSync(join(dir, 'secrets', 'dahua.txt'), `${DAHUA_PASSWORD}
 `);
+    writeFileSync(join(dir, 'secrets', 'dahua-sync.key'), `${DAHUA_SYNC_KEY}\r\n`);
+    writeFileSync(join(dir, 'secrets', 'zkteco-sync.key'), `${ZKTECO_SYNC_KEY}\n`);
 
     const ex = examples();
     (ex.zigbee.broker as Record<string, unknown>).password = { $file: 'secrets/z2m.txt' };
@@ -140,7 +162,13 @@ describe('modules livres : chargement par le socle', () => {
     const snmp = (ex.ups.ups as Record<string, unknown>[]).find((u) => u.transport === 'snmp');
     assert.ok(snmp, "l'exemple de gateway/docs/ups.md contient un onduleur SNMP");
     snmp.community = { $env: 'UPS_COMMUNITY' };
-    for (const c of ex['acces-dahua'].controllers as Record<string, unknown>[]) c.password = { $file: 'secrets/dahua.txt' };
+    for (const c of ex['acces-dahua'].controllers as Record<string, unknown>[]) {
+      c.password = { $file: 'secrets/dahua.txt' };
+      if (c.syncKey !== undefined) c.syncKey = { $file: 'secrets/dahua-sync.key' };
+    }
+    for (const c of ex['acces-zkteco'].controllers as Record<string, unknown>[]) {
+      if (c.syncKey !== undefined) c.syncKey = { $file: 'secrets/zkteco-sync.key' };
+    }
 
     const file = writeConfig(dir, {
       name: 'essai-huit-modules',

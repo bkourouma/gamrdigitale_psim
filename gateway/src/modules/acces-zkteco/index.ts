@@ -32,20 +32,29 @@
  *   - donnees (`POST /iclock/cdata?table=...`) : `OK` SEULEMENT quand toutes les lignes exploitables sont en file de la
  *     passerelle (F8) ; sinon 503, l'appareil conserve ses enregistrements et les renvoie ; lignes illisibles ignorees ;
  *   - ordres (`GET /iclock/getrequest`, `POST /iclock/devicecmd`) : voir commands.ts ;
- *   - supervision, doublons, refus repetes, derive d'horloge, hors ligne : superviseur commun (acces-commun).
- * Etat de recuperation (curseurs F8) : `stateDir` (defaut `<gateway>/data/acces`, relatif resolu depuis `gateway/`).
+ *   - supervision, doublons, refus repetes, derive d'horloge, hors ligne : superviseur commun (acces-commun) ;
+ *   - contrainte (evenements 101 / 103) : nature commune `duress` du superviseur (alarme `panic`) ;
+ *   - epoque (`epoch` du controleur) : identifiants d'evenement `<epoque>.<n°>` et curseur propre a l'epoque (controleur remplace) ;
+ *   - mode de porte (F19) : deduit des seuls evenements du rtlog (ouverture continue, retour au mode normal), jamais d'un mode
+ *     ancien ; `rtstate` ne le donne pas (A QUALIFIER, voir protocol.ts) ;
+ *   - synchronisation des titulaires (par. 7) : sync.ts, par la file de commandes (centrales seulement ; un terminal repond
+ *     « non pris en charge »).
+ * Etat de recuperation (curseurs F8, fuseaux attribues, jours feries ecrits) : `stateDir` (defaut `<gateway>/data/acces`, relatif resolu depuis `gateway/`).
  * Voir protocol.ts pour ce qui est confirme par la documentation et ce qui reste `A QUALIFIER` sur un appareil reel.
  */
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { DeviceMessage, GatewayModule, ModuleContext, ModuleFactory } from '../../module.ts';
+import type { GatewayModule, ModuleContext, ModuleFactory } from '../../module.ts';
 import { makeActuatorHandler, registerActuator } from '../acces-commun/actuator.ts';
 import {
   ControllerSupervisor,
   CursorStore,
+  SlotMap,
   createLimitedLog,
-  doorEventMessage,
-  emitted,
+  epochEventId,
+  makeSyncHandler,
+  registerAccessSync,
+  type AccessSyncHandler,
   type Emitter,
   type PassageInput,
   type SupervisorState,
@@ -78,6 +87,7 @@ import {
 import type { RtlogRecord } from './protocol.ts';
 import { NEUTRAL, createFront } from './server.ts';
 import type { Front, FrontReply, FrontRequest } from './server.ts';
+import { HolidayStore, createZktecoSyncDriver } from './sync.ts';
 
 export { parseConfig } from './config.ts';
 
@@ -127,6 +137,9 @@ export function create(config: Record<string, unknown>): ZktecoModule {
   let front: Front | null = null;
   let timer: NodeJS.Timeout | null = null;
   let cursors: CursorStore | null = null;
+  /** Fuseaux horaires attribues aux horaires du PSIM, et jours feries ecrits (synchronisation des titulaires). */
+  let slots: SlotMap | null = null;
+  let holidays: HolidayStore | null = null;
   let started = false;
   let commandSeq = 0;
   const devices = new Map<string, Device>();
@@ -177,7 +190,8 @@ export function create(config: Record<string, unknown>): ZktecoModule {
   /** Vrai si l'enregistrement est en file (ou n'avait rien a envoyer). */
   function applyRtlog(dev: Device, rec: RtlogRecord): boolean {
     const ev = classifyEvent(rec.event);
-    const eventId = rtlogEventId(rec);
+    // Epoque > 0 (controleur remplace) : "<epoque>.<n° d'enregistrement>" ; epoque 0 : identifiant inchange.
+    const eventId = epochEventId(dev.cfg.epoch, rtlogEventId(rec));
     const door = doorOf(dev, rec);
     const effect = ev.effect;
     if (!ev.known) note(dev, rec.event, `evenement ${rec.event} inconnu du module (traite comme ${effect.kind === 'denied' ? 'un refus de motif other' : 'sans effet'}, a qualifier)`);
@@ -247,16 +261,15 @@ export function create(config: Record<string, unknown>): ZktecoModule {
         if (!passage) return false;
         const key = `duress:${eventId}`;
         if (dev.sent.has(key)) return true;
-        const detector = dev.cfg.doors.get(door);
-        if (detector === undefined) return true;
-        let msg: DeviceMessage;
-        try {
-          msg = doorEventMessage({ controllerId: dev.cfg.id, doorNo: door, kind: 'duress', psimEvent: 'panic', ts: rec.ts, idPart: eventId });
-        } catch {
-          return true; // heure inutilisable : rien d'envoyable
-        }
-        if (!emitted(emit(detector, msg))) return false;
+        // Nature commune « contrainte » du superviseur : alarme `panic`, sans fin, sans effet sur l'etat memorise de la porte.
+        if (!dev.sup.doorEvent(door, 'duress', rec.ts, eventId)) return false;
         remember(dev, key);
+        return true;
+      }
+      case 'mode': {
+        // Un enregistrement ancien (recupere apres une coupure) est de l'HISTOIRE : le mode COURANT de la porte n'en decoule pas.
+        // Le superviseur ne doit recevoir que le mode actuel ; il retente seul si le socle refuse, donc l'appareil n'a rien a renvoyer.
+        if (door !== null && !deferredOf(rec.ts)) dev.sup.doorMode(door, effect.mode);
         return true;
       }
     }
@@ -321,7 +334,7 @@ export function create(config: Record<string, unknown>): ZktecoModule {
       const ok = submitPassage(dev, {
         doorNo: 1,
         ts: rec.ts,
-        eventId: syntheticEventId(rec.ts, rec.pin, rec.status, rec.verify),
+        eventId: epochEventId(dev.cfg.epoch, syntheticEventId(rec.ts, rec.pin, rec.status, rec.verify)),
         direction: attlogDirection(rec.status),
         credential: null,
         holderName: null,
@@ -365,6 +378,43 @@ export function create(config: Record<string, unknown>): ZktecoModule {
     return r;
   }
 
+  // --- Synchronisation des titulaires (docs/CONTROLE-ACCES.md, par. 7) -------------------------------------------------
+
+  /** Reponse d'un appareil qui ne sait pas recevoir de titulaires (terminal de pointage). */
+  const NOT_SUPPORTED: AccessSyncHandler = () => Promise.resolve({ result: 'refused', code: 'not_supported' });
+
+  /**
+   * Declare le gestionnaire de synchronisation de l'appareil aupres du socle. Une centrale (`controller`) recoit les titulaires par
+   * `DATA UPDATE` (sync.ts) ; un terminal repond toujours « non pris en charge ». Sans `syncKey`, rien n'est enregistre (une ligne
+   * d'information) ; un socle qui refuse l'enregistrement ne coupe jamais la remontee des passages : le module journalise et continue.
+   */
+  function registerSync(c: ModuleContext, cc: ControllerConfig, cmds: DeviceCommands): void {
+    if (cc.syncKey === null) {
+      log('info', `synchronisation des titulaires inactive pour ${cc.id} (pas de syncKey)`);
+      return;
+    }
+    let handler: AccessSyncHandler = NOT_SUPPORTED;
+    if (cc.kind === 'controller' && slots && holidays) {
+      const driver = createZktecoSyncDriver({
+        controllerId: cc.id,
+        commands: cmds,
+        utcOffsetMin: cc.utcOffsetMin,
+        now: c.now,
+        timezones: cfg.timezones,
+        userExtras: cfg.sync.userExtras,
+        fullCodes: cfg.sync.fullCodes,
+        holidays,
+      });
+      handler = makeSyncHandler(cc.id, driver, { slots, now: c.now, log: (level, text) => log(level, text) });
+    }
+    try {
+      // `registerAccessSync` journalise lui-meme un refus du socle et rend faux : le module continue de surveiller.
+      registerAccessSync(c, cc.id, handler, cc.syncKey);
+    } catch (err) {
+      log('warn', `controleur ${cc.id} : synchronisation des titulaires non enregistree, surveillance des portes seule (${(err instanceof Error ? err.message : 'erreur').slice(0, 200)})`);
+    }
+  }
+
   // --- Requetes -----------------------------------------------------------------------------------------------------
 
   function badLines(dev: Device, r: BatchResult): void {
@@ -391,13 +441,14 @@ export function create(config: Record<string, unknown>): ZktecoModule {
     // Curseur : seulement quand TOUT le lot est en file (jamais d'avance sur ce que l'appareil doit renvoyer).
     if (r.lastTs !== null && cursors) {
       const stamp = stampOf(req.params.get('stamp')) ?? r.lastIndex;
-      if (stamp !== null) cursors.set(dev.cfg.id, stamp, r.lastTs);
+      // Cle propre a l'epoque : un controleur remplace repart de zero, jamais compare a l'estampille de l'ancien.
+      if (stamp !== null) cursors.set(dev.sup.cursorKey, stamp, r.lastTs);
     }
     return table === 'attlog' ? { status: 200, body: `OK:${r.lines}` } : OK;
   }
 
   function onHandshake(dev: Device, req: FrontRequest): FrontReply {
-    const saved = cursors?.get(dev.cfg.id)?.cursor;
+    const saved = cursors?.get(dev.sup.cursorKey)?.cursor;
     const stamp = minStamp(stampOf(saved), stampOf(req.params.get('attlogstamp') ?? req.params.get('stamp')));
     return {
       status: 200,
@@ -441,6 +492,11 @@ export function create(config: Record<string, unknown>): ZktecoModule {
         limited(`tick:${dev.cfg.id}`, 'error', `controleur ${dev.cfg.id} : erreur interne pendant la supervision (le module continue)`);
       }
     }
+    try {
+      slots?.tick();
+    } catch {
+      limited('tick:slots', 'error', 'erreur interne en ecrivant les fuseaux horaires (le module continue)');
+    }
   }
 
   const mod: ZktecoModule = {
@@ -453,6 +509,11 @@ export function create(config: Record<string, unknown>): ZktecoModule {
       try {
         const dir = resolveStateDir(cfg.stateDir);
         cursors = new CursorStore({ dir, now: c.now, log: (level, text) => log(level, text) });
+        // Une seule table de fuseaux pour le module (une attribution par controleur) ; inutile sans centrale.
+        if (cfg.controllers.some((cc) => cc.kind === 'controller')) {
+          slots = new SlotMap({ dir, now: c.now, log: (level, text) => log(level, text), min: cfg.timezones.min, max: cfg.timezones.max });
+          holidays = new HolidayStore(dir, (level, text) => log(level, text));
+        }
         for (const cc of cfg.controllers) {
           const sup = new ControllerSupervisor({
             controllerId: cc.id,
@@ -461,6 +522,7 @@ export function create(config: Record<string, unknown>): ZktecoModule {
             now: c.now,
             log: (level, text) => log(level, text),
             cursors,
+            epoch: cc.epoch,
             thresholds: {
               denied: { count: cfg.thresholds.deniedCount, windowS: cfg.thresholds.deniedWindowS },
               heartbeatS: cfg.thresholds.heartbeatS,
@@ -482,11 +544,12 @@ export function create(config: Record<string, unknown>): ZktecoModule {
             const driver = createZktecoDriver(cmds, { format: cfg.push.controlFormat, pulseS: new Map(cc.actuators.map((a) => [a.doorNo, a.pulseS])) });
             for (const a of cc.actuators) {
               const handler = makeActuatorHandler({ kind: a.kind, doorNo: a.doorNo }, driver, { longUnlockS: cfg.thresholds.longUnlockS, log: (level, text) => log(level, text) });
-              if (!registerActuator(c, a.id, handler)) {
-                log('warn', `actionneur ${a.id} non enregistre : cette passerelle n'a pas de canal de commande (ouverture a distance indisponible, surveillance seule)`);
-              }
+              // Si l'actionneur n'est pas declare dans la section `actuators` de la passerelle, `registerActuator` journalise deja
+              // la cause (ouverture a distance indisponible, surveillance seule) et le module continue : rien a ajouter ici.
+              registerActuator(c, a.id, handler);
             }
           }
+          registerSync(c, cc, cmds);
         }
         started = true;
         front = createFront({
@@ -527,12 +590,16 @@ export function create(config: Record<string, unknown>): ZktecoModule {
       }
       try {
         cursors?.flush();
+        slots?.flush();
+        holidays?.flush();
       } catch {
         // idem
       }
       devices.clear();
       bySerial.clear();
       cursors = null;
+      slots = null;
+      holidays = null;
       ctx = null;
     },
     addresses() {

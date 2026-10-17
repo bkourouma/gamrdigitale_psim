@@ -3,8 +3,10 @@
  *
  * Par controleur : flux d'evenements HTTP (Digest) -> passages (badge, code, empreinte, visage, bouton, ouverture a distance),
  * etat des portes (ouverte, fermee, forcee, maintenue ouverte), sabotage du boitier, signes de vie, hors ligne, derive d'horloge,
- * refus repetes ; recuperation des passages manques pendant une coupure (F8) ; ouverture a distance par le canal de commande signe
- * (actionneurs `lock` / `gate`). Voir docs/CONTROLE-ACCES.md et gateway/docs/acces-dahua.md.
+ * refus repetes, contrainte (`panic`), mode de chaque porte (F19) ; recuperation des passages manques pendant une coupure (F8,
+ * avec epoque en cas de remplacement du controleur) ; ouverture a distance par le canal de commande signe (actionneurs `lock` /
+ * `gate`) ; synchronisation des titulaires PSIM -> controleur (docs/CONTROLE-ACCES.md, par. 7) pour chaque controleur qui a une `syncKey`.
+ * Voir docs/CONTROLE-ACCES.md et gateway/docs/acces-dahua.md.
  *
  * Le controleur decide TOUJOURS de l'ouverture d'une porte par badge : ce module ne fait que lire et rapporter.
  */
@@ -12,12 +14,13 @@ import { fileURLToPath } from 'node:url';
 import { isAbsolute, resolve } from 'node:path';
 import type { GatewayModule, ModuleContext, ModuleFactory } from '../../module.ts';
 import { makeActuatorHandler, registerActuator } from '../acces-commun/actuator.ts';
-import { CursorStore } from '../acces-commun/commun.ts';
+import { CursorStore, SlotMap, makeSyncHandler, registerAccessSync } from '../acces-commun/commun.ts';
 import type { Emitter } from '../acces-commun/commun.ts';
 import { AccessController } from './controller.ts';
 import type { ControllerDeps, Timers } from './controller.ts';
 import { parseConfig } from './config.ts';
 import type { DahuaAccessConfig } from './config.ts';
+import { DahuaSyncDriver } from './sync.ts';
 import type { openEventStream } from '../../../../server/dahua.ts';
 
 /** Dossier de la passerelle (gateway/) : base des chemins relatifs et du dossier d'etat par defaut. */
@@ -39,6 +42,7 @@ export class AccesDahuaModule implements GatewayModule {
   private readonly internals: Internals;
   private controllers: AccessController[] = [];
   private cursors: CursorStore | null = null;
+  private slots: SlotMap | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private stopping: Promise<void> | null = null;
@@ -66,6 +70,9 @@ export class AccesDahuaModule implements GatewayModule {
     };
     const cursors = new CursorStore({ dir: stateDir, now: () => ctx.now(), log });
     this.cursors = cursors;
+    // Numeros de plage horaire attribues aux horaires du PSIM (un fichier `acces-plages.json` par dossier d'etat).
+    const slots = new SlotMap({ dir: stateDir, now: () => ctx.now(), log, min: this.config.schedules.min, max: this.config.schedules.max });
+    this.slots = slots;
     const emit: Emitter = (deviceId, msg) => ctx.emit(deviceId, msg) as boolean | void;
 
     for (const cfg of this.config.controllers) {
@@ -85,10 +92,11 @@ export class AccesDahuaModule implements GatewayModule {
       this.controllers.push(controller);
       for (const [actuatorId, spec] of cfg.actuators) {
         const handler = makeActuatorHandler({ kind: spec.type, doorNo: spec.door }, controller.driver, { longUnlockS: this.config.thresholds.longUnlockS, log });
-        if (!registerActuator(ctx, actuatorId, handler)) {
-          log('warn', `ouverture a distance indisponible pour « ${actuatorId} » : le canal de commande n'est pas installe dans cette passerelle`);
-        }
+        // `registerActuator` journalise lui-meme la cause (actionneur non declare dans « actuators », module different...) : le module
+        // continue de surveiller et de rapporter les passages, seule l'ouverture a distance de cette porte est indisponible.
+        registerActuator(ctx, actuatorId, handler);
       }
+      this.registerSync(ctx, controller, slots, log);
     }
     for (const c of this.controllers) c.start();
     const tickMs = this.internals.tickMs === undefined ? 1000 : this.internals.tickMs;
@@ -99,9 +107,28 @@ export class AccesDahuaModule implements GatewayModule {
     log('info', `${this.controllers.length} controleur(s) d'acces Dahua suivi(s)`);
   }
 
+  /** Synchronisation des titulaires : un gestionnaire par controleur qui a une `syncKey`. */
+  private registerSync(ctx: ModuleContext, controller: AccessController, slots: SlotMap, log: (level: 'info' | 'warn' | 'error', text: string) => void): void {
+    const cfg = this.config.controllers.find((c) => c.id === controller.id);
+    if (!cfg) return;
+    if (cfg.syncKey === null) {
+      log('info', `synchronisation des titulaires inactive pour ${controller.id} (pas de syncKey)`);
+      return;
+    }
+    const driver = new DahuaSyncDriver({ http: controller.http, doors: cfg.doors, utcOffsetMin: cfg.utcOffsetMin, now: () => ctx.now(), log });
+    try {
+      // `registerAccessSync` journalise lui-meme un refus du socle et rend faux : le module continue de surveiller.
+      registerAccessSync(ctx, controller.id, makeSyncHandler(controller.id, driver, { slots, now: () => ctx.now(), log }), cfg.syncKey);
+    } catch (err) {
+      // Une erreur de declaration de la synchronisation ne doit jamais couper la remontee des passages.
+      log('warn', `controleur ${controller.id} : synchronisation des titulaires non enregistree (${(err instanceof Error ? err.message : 'erreur').slice(0, 160)})`);
+    }
+  }
+
   /** Un tour de surveillance (appele chaque seconde). */
   tick(): void {
     for (const c of this.controllers) c.tick();
+    this.slots?.tick();
   }
 
   stop(): Promise<void> {
@@ -110,6 +137,7 @@ export class AccesDahuaModule implements GatewayModule {
       this.timer = null;
       await Promise.all(this.controllers.map((c) => c.stop().catch(() => undefined)));
       this.cursors?.flush();
+      this.slots?.flush();
     })();
     return this.stopping;
   }
