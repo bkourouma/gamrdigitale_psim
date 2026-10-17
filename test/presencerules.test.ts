@@ -7,7 +7,7 @@ import { openDb } from '../server/db.ts';
 import { createEngine, PsimError } from '../server/engine.ts';
 import type { PresenceChange } from '../server/presence.ts';
 import type { FaceSeen } from '../server/faceobs.ts';
-import { createRuleMachine, createRules, describeRule, faceMatches, validateSpec } from '../server/rules.ts';
+import { createRuleMachine, createRules, describeRule, faceMatches, faceMismatch, validateSpec, whoNeedsReview } from '../server/rules.ts';
 import type { RuleAction, RuleSpec, Who } from '../server/rules.ts';
 import { seedDemo } from '../server/seed.ts';
 
@@ -23,6 +23,14 @@ const KNOWN = {
   cameraIds: new Set(['C-01', 'C-02', 'C-03', 'C-04', 'C-05']),
   zones: new Set(['Accueil', 'Couloir', 'Salle serveurs', 'Entrepot', 'Atelier']),
 };
+
+/**
+ * Appareils des cameras de test : C-01 et C-02 sont deux voies du MEME enregistreur (une seule base de visages), C-03 est une
+ * camera IP a part, C-04 un troisieme appareil ; C-05 n'a pas de source video. Meme table pour la machine (hostOf injecte) et
+ * pour camera_source (moteur complet, voir faceSetup).
+ */
+const HOSTS: Record<string, string> = { 'C-01': '192.0.2.10', 'C-02': '192.0.2.10', 'C-03': '192.0.2.20', 'C-04': '192.0.2.30' };
+const hostOf = (cameraId: string): string | null => HOSTS[cameraId] ?? null;
 
 const spec = (over: Partial<RuleSpec> = {}): RuleSpec => ({
   who: { type: 'anyone' },
@@ -105,7 +113,7 @@ describe('regles de presence : validation de la specification', () => {
     refuse(spec({ where: { cameras: ['C-99'] } }), /camera inconnue « C-99 »/);
     refuse(spec({ where: { zones: ['Cave'] } }), /zone inconnue « Cave »/);
     refuse(spec({ where: { cameras: [42 as never] } }), /nom invalide/);
-    refuse(spec({ who: { type: 'list' } as never }), /identifiant de la liste : texte requis/);
+    refuse(spec({ who: { type: 'list' } as never }), /la camera de la liste est requise/);
     refuse(spec({ who: { type: 'everyone' } as never }), /Qui : choisir/);
     refuse(spec({ when: { type: 'sometimes' } as never }), /Quand : choisir/);
     refuse(spec({ when: { type: 'windows', windows: [] } }), /au moins une plage/);
@@ -182,7 +190,7 @@ describe('regles de presence : phrase en francais', () => {
 // ---- 3. Machine a etats (pure) -----------------------------------------------------------------------------------
 
 function machine(s: RuleSpec, armed: Record<string, boolean> = {}) {
-  return createRuleMachine(s, { cameras: ['C-01', 'C-02'], isArmed: (cameraId) => armed[cameraId] !== false });
+  return createRuleMachine(s, { cameras: ['C-01', 'C-02'], isArmed: (cameraId) => armed[cameraId] !== false, hostOf });
 }
 const change = (sec: number, cameraId: string, kind: 'start' | 'stop') => ({ cameraId, kind, at: at(sec) });
 const changeAt = (ms: number, cameraId: string, kind: 'start' | 'stop') => ({ cameraId, kind, at: ms });
@@ -1104,8 +1112,8 @@ describe('regles de presence : essai sur le passe', () => {
 // ---- 6. Regles d'identite (visages) ------------------------------------------------------------------------------
 
 const UNKNOWN: Who = { type: 'unknown' };
-const FAMILLE: Who = { type: 'list', listId: '2', listName: 'Famille' };
-const AWA: Who = { type: 'person', personId: 'p-7', personName: 'Awa Koné' };
+const FAMILLE: Who = { type: 'list', cameraId: 'C-01', listId: '2', listName: 'Famille' };
+const AWA: Who = { type: 'person', cameraId: 'C-01', personId: 'p-7', personName: 'Awa Koné' };
 const idSpec = (who: Who, over: Partial<RuleSpec> = {}): RuleSpec => spec({ who, ...over });
 
 describe("regles d'identite : validation", () => {
@@ -1120,25 +1128,25 @@ describe("regles d'identite : validation", () => {
     assert.deepEqual(validateSpec(idSpec(UNKNOWN), KNOWN).who, { type: 'unknown' });
     assert.deepEqual(validateSpec(idSpec(FAMILLE), KNOWN).who, FAMILLE);
     assert.deepEqual(validateSpec(idSpec(AWA), KNOWN).who, AWA);
-    assert.deepEqual(validateSpec(idSpec({ type: 'person', personId: ' p  7 ', personName: '  Awa   Koné ' }), KNOWN).who, { type: 'person', personId: 'p 7', personName: 'Awa Koné' });
+    assert.deepEqual(validateSpec(idSpec({ type: 'person', cameraId: 'C-01', personId: ' p  7 ', personName: '  Awa   Koné ' }), KNOWN).who, { type: 'person', cameraId: 'C-01', personId: 'p 7', personName: 'Awa Koné' });
     assert.deepEqual(validateSpec(idSpec(FAMILLE, { cooldownMinutes: 0, then: { severity: 'warning' } }), KNOWN).then, { severity: 'warning' });
     // bornes : 64 pour l'identifiant, 80 pour le nom
-    const edge = validateSpec(idSpec({ type: 'list', listId: 'x'.repeat(64), listName: 'y'.repeat(80) }), KNOWN).who as { listId: string; listName: string };
+    const edge = validateSpec(idSpec({ type: 'list', cameraId: 'C-01', listId: 'x'.repeat(64), listName: 'y'.repeat(80) }), KNOWN).who as { listId: string; listName: string };
     assert.deepEqual([edge.listId.length, edge.listName.length], [64, 80]);
   });
 
   it('refuse les champs manquants, vides, trop longs, de mauvais type ou en trop', () => {
-    refuse(idSpec({ type: 'list', listName: 'F' } as never), /identifiant de la liste : texte requis/);
-    refuse(idSpec({ type: 'list', listId: '2' } as never), /nom de la liste : texte requis/);
-    refuse(idSpec({ type: 'list', listId: '', listName: 'F' }), /identifiant de la liste/);
-    refuse(idSpec({ type: 'list', listId: '   ', listName: 'F' }), /identifiant de la liste/);
-    refuse(idSpec({ type: 'list', listId: 2 as never, listName: 'F' }), /identifiant de la liste/);
-    refuse(idSpec({ type: 'list', listId: 'x'.repeat(65), listName: 'F' }), /64 caracteres au plus/);
-    refuse(idSpec({ type: 'list', listId: '2', listName: 'y'.repeat(81) }), /80 caracteres au plus/);
-    refuse(idSpec({ type: 'person', personId: 'p', personName: null as never }), /nom de la personne : texte requis/);
-    refuse(idSpec({ type: 'person', personId: 'p' } as never), /nom de la personne/);
-    refuse(idSpec({ type: 'person', personId: 'p', personName: 'A', listId: '2' } as never), /champ « listId »/);
-    refuse(idSpec({ type: 'list', listId: '2', listName: 'F', personId: 'p' } as never), /champ « personId »/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listName: 'F' } as never), /identifiant de la liste : texte requis/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '2' } as never), /nom de la liste : texte requis/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '', listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '   ', listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: 2 as never, listName: 'F' }), /identifiant de la liste/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: 'x'.repeat(65), listName: 'F' }), /64 caracteres au plus/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '2', listName: 'y'.repeat(81) }), /80 caracteres au plus/);
+    refuse(idSpec({ type: 'person', cameraId: 'C-01', personId: 'p', personName: null as never }), /nom de la personne : texte requis/);
+    refuse(idSpec({ type: 'person', cameraId: 'C-01', personId: 'p' } as never), /nom de la personne/);
+    refuse(idSpec({ type: 'person', cameraId: 'C-01', personId: 'p', personName: 'A', listId: '2' } as never), /champ « listId »/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '2', listName: 'F', personId: 'p' } as never), /champ « personId »/);
     refuse(idSpec({ type: 'unknown', listId: '2' } as never), /champ « listId »/);
     refuse(idSpec('inconnu' as never), /objet est attendu/);
     refuse(idSpec(Object.create({ type: 'unknown' }) as never), /objet est attendu/);
@@ -1146,8 +1154,8 @@ describe("regles d'identite : validation", () => {
 
   it("refuse les noms hostiles (controles, invisibles, sens d'ecriture) et ne fait pas confiance aux prototypes", () => {
     for (const bad of ['a\nb', 'a\u0000b', 'a‮b', 'a​b', 'a b', 'a\u0085b']) {
-      refuse(idSpec({ type: 'list', listId: '2', listName: bad }), /caracteres de controle ou invisibles/);
-      refuse(idSpec({ type: 'person', personId: bad, personName: 'A' }), /caracteres de controle ou invisibles/);
+      refuse(idSpec({ type: 'list', cameraId: 'C-01', listId: '2', listName: bad }), /caracteres de controle ou invisibles/);
+      refuse(idSpec({ type: 'person', cameraId: 'C-01', personId: bad, personName: 'A' }), /caracteres de controle ou invisibles/);
     }
     const hostile = JSON.parse('{"type":"list","listId":"2","listName":"F","__proto__":{"x":1}}');
     refuse(idSpec(hostile), /champ « __proto__ »/);
@@ -1164,13 +1172,32 @@ describe("regles d'identite : validation", () => {
     assert.equal(validateSpec(stays(5), KNOWN).trigger.type, 'stays');
   });
 
+  it('la camera source est OBLIGATOIRE pour une liste et une personne, et doit etre connue du PSIM', () => {
+    refuse(idSpec({ type: 'list', listId: '2', listName: 'F' } as never), /Qui : la camera de la liste est requise/);
+    refuse(idSpec({ type: 'person', personId: 'p', personName: 'A' } as never), /Qui : la camera de la personne est requise/);
+    for (const cameraId of ['', '   ', null, 7, ['C-01'], {}, true]) {
+      refuse(idSpec({ type: 'list', cameraId, listId: '2', listName: 'F' } as never), /la camera de la liste est requise/);
+      refuse(idSpec({ type: 'person', cameraId, personId: 'p', personName: 'A' } as never), /la camera de la personne est requise/);
+    }
+    refuse(idSpec({ type: 'list', cameraId: 'C-99', listId: '2', listName: 'F' }), /Qui : camera inconnue « C-99 »/);
+    refuse(idSpec({ type: 'person', cameraId: 'C-99', personId: 'p', personName: 'A' }), /Qui : camera inconnue « C-99 »/);
+    refuse(idSpec({ type: 'list', cameraId: ' C-01', listId: '2', listName: 'F' }), /camera inconnue/);
+    refuse(idSpec({ type: 'list', cameraId: '__proto__', listId: '2', listName: 'F' }), /camera inconnue/);
+    refuse(idSpec({ type: 'list', cameraId: 'C-0\u0007x', listId: '2', listName: 'F' }), /camera inconnue « C-0\?x »/);
+    // les cameras de la portee ne comptent pas : seule la camera du « Qui » est verifiee ici
+    assert.equal((validateSpec(idSpec({ ...FAMILLE, cameraId: 'C-03' } as Who, { where: { cameras: ['C-01'] } }), KNOWN).who as { cameraId: string }).cameraId, 'C-03');
+    // « inconnu » et « n'importe qui » n'ont pas de camera et n'en acceptent pas
+    refuse(idSpec({ type: 'unknown', cameraId: 'C-01' } as never), /Qui : champ « cameraId » non reconnu/);
+    refuse(spec({ who: { type: 'anyone', cameraId: 'C-01' } as never }), /Qui : champ « cameraId » non reconnu/);
+  });
+
   it("ne verifie rien aupres de l'enregistreur : une liste inconnue de tous est acceptee", () => {
-    assert.doesNotThrow(() => validateSpec(idSpec({ type: 'list', listId: 'base-supprimee', listName: 'Ancienne liste' }), KNOWN));
+    assert.doesNotThrow(() => validateSpec(idSpec({ type: 'list', cameraId: 'C-01', listId: 'base-supprimee', listName: 'Ancienne liste' }), KNOWN));
   });
 });
 
 describe("regles d'identite : phrase en francais", () => {
-  const names: Record<string, string> = { 'C-01': 'Avant cour', 'C-02': 'Escalier' };
+  const names: Record<string, string> = { 'C-01': 'Avant cour', 'C-02': 'Escalier', 'C-03': 'Portail' };
   const ctx = { cameraName: (id: string) => names[id] ?? id };
 
   it('visage inconnu', () => {
@@ -1181,47 +1208,179 @@ describe("regles d'identite : phrase en francais", () => {
   });
 
   it('liste, en zone, avec plage de nuit et avertissement', () => {
-    const s = idSpec(FAMILLE, { where: { zones: ['Cour'] }, when: night(), then: { severity: 'warning' } });
+    const s = idSpec({ ...FAMILLE, cameraId: 'C-03' }, { where: { zones: ['Cour'] }, when: night(), then: { severity: 'warning' } });
     assert.equal(
       describeRule(s, ctx),
-      'Prévenir (avertissement) si une personne de la liste « Famille » est reconnue dans la zone « Cour », uniquement de 22:00 à 06:00 le lendemain, tous les jours ; ensuite, attendre 10 min avant de signaler à nouveau.',
+      'Prévenir (avertissement) si une personne de la liste « Famille » (caméra « Portail ») est reconnue dans la zone « Cour », uniquement de 22:00 à 06:00 le lendemain, tous les jours ; ensuite, attendre 10 min avant de signaler à nouveau.',
     );
   });
 
   it('personne, plusieurs cameras, zone armee, repos nul', () => {
     assert.equal(
       describeRule(idSpec(AWA, { where: { cameras: ['C-01', 'C-02'] }, when: { type: 'armed' }, cooldownMinutes: 0 }), ctx),
-      'Prévenir (alerte critique) si la personne « Awa Koné » est reconnue devant les caméras « Avant cour » ou « Escalier », uniquement quand la zone est armée ; ensuite, signaler à nouveau sans attendre.',
+      'Prévenir (alerte critique) si la personne « Awa Koné » (caméra « Avant cour ») est reconnue devant les caméras « Avant cour » ou « Escalier », uniquement quand la zone est armée ; ensuite, signaler à nouveau sans attendre.',
     );
   });
 
   it("« n'importe qui » ne change pas", () => {
     assert.match(describeRule(spec(), ctx), /^Prévenir \(alerte critique\) si quelqu'un apparaît devant la caméra « Avant cour »,/);
   });
+
+  it("une regle ancienne sans camera source : « (caméra non précisée) », sans planter ; camera disparue : repli sur l'identifiant", () => {
+    const { cameraId: _list, ...oldList } = FAMILLE as Extract<Who, { type: 'list' }>;
+    const { cameraId: _person, ...oldPerson } = AWA as Extract<Who, { type: 'person' }>;
+    assert.match(describeRule(idSpec(oldList as never), ctx), /^Prévenir \(alerte critique\) si une personne de la liste « Famille » \(caméra non précisée\) est reconnue devant/);
+    assert.match(describeRule(idSpec(oldPerson as never), ctx), /si la personne « Awa Koné » \(caméra non précisée\) est reconnue/);
+    for (const bad of [null, 7, '', {}]) {
+      assert.match(describeRule(idSpec({ ...oldList, cameraId: bad } as never), ctx), /\(caméra non précisée\)/);
+    }
+    assert.match(describeRule(idSpec({ ...FAMILLE, cameraId: 'C-77' } as never), ctx), /« Famille » \(caméra « C-77 »\) est reconnue/);
+    // le visage inconnu et « n'importe qui » ne parlent d'aucune camera source
+    assert.doesNotMatch(describeRule(idSpec(UNKNOWN), ctx), /caméra non précisée/);
+  });
 });
 
 describe("regles d'identite : correspondance", () => {
   it("faceMatches : inconnu, liste (groupe), personne ; « n'importe qui » ne correspond a aucun visage", () => {
-    const known = { kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
-    const unknown = { kind: 'unknown' as const };
-    assert.equal(faceMatches(UNKNOWN, unknown), true);
-    assert.equal(faceMatches(UNKNOWN, known), false);
-    assert.equal(faceMatches(FAMILLE, known), true);
-    assert.equal(faceMatches(FAMILLE, { ...known, groupId: '3' }), false);
-    assert.equal(faceMatches(FAMILLE, { ...known, groupId: null }), false);
-    assert.equal(faceMatches(FAMILLE, unknown), false);
-    assert.equal(faceMatches(FAMILLE, { kind: 'unknown', groupId: '2' }), false, "un inconnu n'a pas de liste");
-    assert.equal(faceMatches(AWA, known), true);
-    assert.equal(faceMatches(AWA, { ...known, personId: 'p-8' }), false);
-    assert.equal(faceMatches(AWA, { kind: 'recognized', personId: null, groupId: '2' }), false);
-    assert.equal(faceMatches(AWA, unknown), false);
-    assert.equal(faceMatches({ type: 'anyone' }, known), false);
-    assert.equal(faceMatches({ type: 'anyone' }, unknown), false);
+    const known = { cameraId: 'C-01', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    const unknown = { cameraId: 'C-01', kind: 'unknown' as const };
+    const matches = (who: Who, obs: Parameters<typeof faceMatches>[1]) => faceMatches(who, obs, hostOf);
+    assert.equal(matches(UNKNOWN, unknown), true);
+    assert.equal(matches(UNKNOWN, known), false);
+    assert.equal(matches(FAMILLE, known), true);
+    assert.equal(matches(FAMILLE, { ...known, groupId: '3' }), false);
+    assert.equal(matches(FAMILLE, { ...known, groupId: null }), false);
+    assert.equal(matches(FAMILLE, unknown), false);
+    assert.equal(matches(FAMILLE, { ...unknown, groupId: '2' }), false, "un inconnu n'a pas de liste");
+    assert.equal(matches(AWA, known), true);
+    assert.equal(matches(AWA, { ...known, personId: 'p-8' }), false);
+    assert.equal(matches(AWA, { ...known, personId: null }), false);
+    assert.equal(matches(AWA, unknown), false);
+    assert.equal(matches({ type: 'anyone' }, known), false);
+    assert.equal(matches({ type: 'anyone' }, unknown), false);
+  });
+
+  it('un enregistreur a plusieurs voies a UNE base : deux cameras du meme hote partagent liste et personne', () => {
+    // FAMILLE est lue par C-01 ; l'observation vient de la voie C-02, meme enregistreur
+    const onSecondChannel = { cameraId: 'C-02', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    assert.equal(faceMatches(FAMILLE, onSecondChannel, hostOf), true);
+    assert.equal(faceMatches(AWA, onSecondChannel, hostOf), true);
+    assert.equal(faceMatches({ ...FAMILLE, cameraId: 'C-02' } as Who, { ...onSecondChannel, cameraId: 'C-01' }, hostOf), true, 'dans les deux sens');
+  });
+
+  it('deux appareils qui ont tous deux la liste « 1 » (et la personne « 1 ») ne se confondent pas', () => {
+    const listOne: Who = { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Famille' };
+    const personOne: Who = { type: 'person', cameraId: 'C-01', personId: '1', personName: 'Awa' };
+    const seenBy = (cameraId: string) => ({ cameraId, kind: 'recognized' as const, personId: '1', groupId: '1' });
+    assert.equal(faceMatches(listOne, seenBy('C-01'), hostOf), true);
+    assert.equal(faceMatches(listOne, seenBy('C-03'), hostOf), false, "la liste « 1 » de l'autre appareil n'est pas la meme");
+    assert.equal(faceMatches(listOne, seenBy('C-04'), hostOf), false);
+    assert.equal(faceMatches(personOne, seenBy('C-01'), hostOf), true);
+    assert.equal(faceMatches(personOne, seenBy('C-03'), hostOf), false, "la personne « 1 » de l'autre appareil n'est pas la meme");
+    // et dans l'autre sens : la regle lue sur la 2e camera ne reagit pas a la 1re
+    assert.equal(faceMatches({ ...listOne, cameraId: 'C-03' } as Who, seenBy('C-01'), hostOf), false);
+    assert.equal(faceMatches({ ...listOne, cameraId: 'C-03' } as Who, seenBy('C-03'), hostOf), true);
+  });
+
+  it('hote inconnu (camera supprimee, sans source), regle ancienne sans camera, valeurs hostiles : AUCUNE correspondance', () => {
+    const known = { cameraId: 'C-01', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    // observation d'une camera sans source ou supprimee
+    assert.equal(faceMatches(FAMILLE, { ...known, cameraId: 'C-05' }, hostOf), false);
+    assert.equal(faceMatches(FAMILLE, { ...known, cameraId: 'C-99' }, hostOf), false);
+    assert.equal(faceMatches(FAMILLE, { ...known, cameraId: '' }, hostOf), false);
+    // camera du « Qui » supprimee ou sans source : meme si l'observation a un hote, pas de « tous appareils »
+    assert.equal(faceMatches({ ...FAMILLE, cameraId: 'C-99' } as Who, known, hostOf), false);
+    assert.equal(faceMatches({ ...AWA, cameraId: 'C-05' } as Who, known, hostOf), false);
+    // deux cameras sans source ne sont pas « le meme appareil »
+    assert.equal(faceMatches({ ...FAMILLE, cameraId: 'C-05' } as Who, { ...known, cameraId: 'C-05' }, hostOf), false);
+    assert.equal(faceMatches({ ...FAMILLE, cameraId: 'C-99' } as Who, { ...known, cameraId: 'C-98' }, () => null), false);
+    // regle ancienne : pas de cameraId, ou une valeur qui n'est pas du texte
+    const { cameraId: _gone, ...oldFamille } = FAMILLE as Extract<Who, { type: 'list' }>;
+    assert.equal(faceMatches(oldFamille as never, known, hostOf), false);
+    assert.equal(faceMatches({ ...oldFamille, cameraId: null } as never, known, hostOf), false);
+    assert.equal(faceMatches({ ...oldFamille, cameraId: 42 } as never, known, hostOf), false);
+    assert.equal(faceMatches({ ...oldFamille, cameraId: '' } as never, { ...known, cameraId: '' }, hostOf), false);
+    // le visage inconnu reste « tout visage inconnu de la portee », quel que soit l'appareil
+    assert.equal(faceMatches(UNKNOWN, { cameraId: 'C-99', kind: 'unknown' }, () => null), true);
+  });
+
+  it("hostOf : casse et espaces ignores ; un hote vide n'est pas un hote ; hostOf est interroge a chaque comparaison", () => {
+    const known = { cameraId: 'C-02', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    const hosts: Record<string, string | null> = { 'C-01': '  NVR.Maison.LOCAL ', 'C-02': 'nvr.maison.local' };
+    assert.equal(faceMatches(FAMILLE, known, (id) => hosts[id] ?? null), true);
+    hosts['C-02'] = 'nvr.maison.local:80'; // un autre texte n'est pas le meme appareil
+    assert.equal(faceMatches(FAMILLE, known, (id) => hosts[id] ?? null), false);
+    hosts['C-01'] = '   ';
+    hosts['C-02'] = '   ';
+    assert.equal(faceMatches(FAMILLE, known, (id) => hosts[id] ?? null), false, 'deux hotes vides ne se correspondent pas');
+    let calls = 0;
+    const counting = (id: string) => (calls++, hostOf(id));
+    faceMatches(FAMILLE, { ...known, cameraId: 'C-01' }, counting);
+    faceMatches(FAMILLE, { ...known, cameraId: 'C-01' }, counting);
+    assert.equal(calls, 4, 'aucune mise en cache dans faceMatches');
+  });
+
+  it('garde de nom : un nom different ne correspond pas (casse, espaces et normalisation ignores) ; sans nom, la correspondance par (appareil, identifiant) reste', () => {
+    const base = { cameraId: 'C-01', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    const list = (groupName: unknown) => faceMatches(FAMILLE, { ...base, groupName } as never, hostOf);
+    const person = (personName: unknown) => faceMatches(AWA, { ...base, personName } as never, hostOf);
+    // egal a la casse, aux espaces et a la forme Unicode pres
+    for (const name of ['Famille', 'famille', 'FAMILLE', '  Famille ', 'Famille  ']) assert.equal(list(name), true, JSON.stringify(name));
+    assert.equal(list('Famille  '), true);
+    assert.equal(person('Awa Koné'), true);
+    assert.equal(person('  awa   koné '), true);
+    assert.equal(person('AWA KONÉ'), true);
+    assert.equal(person('Awa Koné'), true, 'e + accent combinant == e accent (NFC)');
+    // nom different : pas de correspondance, meme avec le bon appareil et le bon numero
+    for (const name of ['Visiteurs', 'Familles', 'Fam ille', 'Famille 2', 'x']) assert.equal(list(name), false, name);
+    assert.equal(person('Bob'), false);
+    assert.equal(person('Awa Kone'), false, "un accent change le nom");
+    // sans nom (absent, null, vide, espaces, pas du texte) : on garde la correspondance par (hote, identifiant)
+    for (const name of [undefined, null, '', '   ', 12]) {
+      assert.equal(list(name), true, String(name));
+      assert.equal(person(name), true, String(name));
+    }
+    // le nom de personne ne protege pas la liste, ni l'inverse
+    assert.equal(faceMatches(FAMILLE, { ...base, personName: 'Bob' }, hostOf), true);
+    assert.equal(faceMatches(AWA, { ...base, groupName: 'Visiteurs' }, hostOf), true);
+    // la garde ne remplace pas les autres conditions
+    assert.equal(faceMatches(FAMILLE, { ...base, groupName: 'Famille', groupId: '3' }, hostOf), false);
+    assert.equal(faceMatches(FAMILLE, { ...base, groupName: 'Famille', cameraId: 'C-03' }, hostOf), false);
+    assert.equal(faceMatches(UNKNOWN, { cameraId: 'C-01', kind: 'unknown', groupName: 'Visiteurs' }, hostOf), true, "« inconnu » n'a pas de nom a verifier");
+  });
+
+  it('faceMismatch : meme appareil, meme identifiant, nom different (et seulement cela)', () => {
+    const base = { cameraId: 'C-02', kind: 'recognized' as const, personId: 'p-7', groupId: '2' };
+    assert.equal(faceMismatch(FAMILLE, { ...base, groupName: 'Visiteurs' }, hostOf), true);
+    assert.equal(faceMismatch(AWA, { ...base, personName: 'Bob' }, hostOf), true);
+    assert.equal(faceMismatch(FAMILLE, { ...base, groupName: ' famille ' }, hostOf), false, 'meme nom');
+    assert.equal(faceMismatch(FAMILLE, base, hostOf), false, 'sans nom');
+    assert.equal(faceMismatch(FAMILLE, { ...base, groupName: 'Visiteurs', groupId: '3' }, hostOf), false, 'autre numero : une autre liste, pas la meme renommee');
+    assert.equal(faceMismatch(FAMILLE, { ...base, groupName: 'Visiteurs', cameraId: 'C-03' }, hostOf), false, 'autre appareil');
+    assert.equal(faceMismatch(FAMILLE, { ...base, groupName: 'Visiteurs', cameraId: 'C-05' }, hostOf), false, 'camera sans source');
+    assert.equal(faceMismatch(FAMILLE, { cameraId: 'C-02', kind: 'unknown', groupName: 'Visiteurs' }, hostOf), false);
+    assert.equal(faceMismatch(UNKNOWN, { ...base, groupName: 'Visiteurs' }, hostOf), false);
+    assert.equal(faceMismatch({ type: 'anyone' }, { ...base, groupName: 'Visiteurs' }, hostOf), false);
+    const { cameraId: _gone, ...old } = FAMILLE as Extract<Who, { type: 'list' }>;
+    assert.equal(faceMismatch(old as never, { ...base, groupName: 'Visiteurs' }, hostOf), false, 'regle ancienne');
+  });
+
+  it('whoNeedsReview : liste / personne sans camera, ou dont la camera est supprimee ou sans source', () => {
+    const { cameraId: _gone, ...oldFamille } = FAMILLE as Extract<Who, { type: 'list' }>;
+    assert.equal(whoNeedsReview(FAMILLE, hostOf), false);
+    assert.equal(whoNeedsReview(AWA, hostOf), false);
+    assert.equal(whoNeedsReview(oldFamille as never, hostOf), true);
+    assert.equal(whoNeedsReview({ ...AWA, cameraId: null } as never, hostOf), true);
+    assert.equal(whoNeedsReview({ ...AWA, cameraId: '' }, hostOf), true);
+    assert.equal(whoNeedsReview({ ...AWA, cameraId: 'C-99' }, hostOf), true, 'camera supprimee');
+    assert.equal(whoNeedsReview({ ...FAMILLE, cameraId: 'C-05' } as Who, hostOf), true, 'camera sans source');
+    assert.equal(whoNeedsReview(UNKNOWN, () => null), false);
+    assert.equal(whoNeedsReview({ type: 'anyone' }, () => null), false);
   });
 });
 
-function idMachine(s: RuleSpec, armed: Record<string, boolean> = {}) {
-  return createRuleMachine(s, { cameras: ['C-01', 'C-02'], isArmed: (cameraId) => armed[cameraId] !== false });
+function idMachine(s: RuleSpec, armed: Record<string, boolean> = {}, hosts: (cameraId: string) => string | null = hostOf) {
+  return createRuleMachine(s, { cameras: ['C-01', 'C-02', 'C-03', 'C-04'], isArmed: (cameraId) => armed[cameraId] !== false, hostOf: hosts });
 }
 const seen = (sec: number, cameraId: string, kind: 'recognized' | 'unknown' = 'unknown', personId: string | null = null, groupId: string | null = null) => ({ cameraId, at: at(sec), kind, personId, groupId });
 const seenAt = (ms: number, cameraId: string, kind: 'recognized' | 'unknown' = 'unknown') => ({ cameraId, at: ms, kind, personId: null, groupId: null });
@@ -1355,6 +1514,102 @@ describe("machine d'identite : periodes (when)", () => {
   });
 });
 
+describe("machine d'identite : correspondance par appareil (hote)", () => {
+  const base = (cameraId: string, groupId: string, personId: string) => seen(0, cameraId, 'recognized', personId, groupId);
+  const listOne: Who = { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Famille' };
+  const personOne: Who = { type: 'person', cameraId: 'C-01', personId: '1', personName: 'Awa' };
+
+  it('deux voies du meme enregistreur : une liste lue par C-01 reagit aux visages vus par C-02', () => {
+    for (const who of [FAMILLE, AWA]) {
+      const m = idMachine(idSpec(who));
+      assert.deepEqual(brief(m.see(seen(0, 'C-02', 'recognized', 'p-7', '2'))), ['face_banned:C-02@0']);
+    }
+  });
+
+  it('deux appareils avec la meme liste « 1 » / personne « 1 » : pas de confusion, ni pour la liste ni pour la personne', () => {
+    for (const who of [listOne, personOne]) {
+      const m = idMachine(idSpec(who));
+      assert.deepEqual(brief(m.see(base('C-03', '1', '1'))), [], "l'autre appareil a aussi un « 1 »");
+      assert.deepEqual(brief(m.see(base('C-04', '1', '1'))), [], 'un troisieme appareil non plus');
+      assert.equal(m.nextWake(), null);
+      assert.deepEqual(brief(m.see(base('C-01', '1', '1'))), ['face_banned:C-01@0'], 'le bon appareil declenche');
+    }
+    // la regle lue sur l'appareil C-03 ne reagit qu'a C-03
+    const other = idMachine(idSpec({ ...listOne, cameraId: 'C-03' }));
+    assert.deepEqual(brief(other.see(base('C-01', '1', '1'))), []);
+    assert.deepEqual(brief(other.see(base('C-02', '1', '1'))), []);
+    assert.deepEqual(brief(other.see(base('C-03', '1', '1'))), ['face_banned:C-03@0']);
+  });
+
+  it("camera du « Qui » ou de l'observation sans source / supprimee : la regle ne se declenche pas (« inconnu » reste inchange)", () => {
+    const noSource = (cameraId: string) => (cameraId === 'C-01' ? null : hostOf(cameraId));
+    for (const who of [FAMILLE, AWA]) {
+      const m = idMachine(idSpec(who), {}, noSource);
+      assert.deepEqual(brief(m.see(seen(0, 'C-02', 'recognized', 'p-7', '2'))), [], 'camera du Qui supprimee');
+      assert.deepEqual(brief(m.see(seen(1, 'C-01', 'recognized', 'p-7', '2'))), []);
+      assert.equal(m.nextWake(), null);
+    }
+    const unreadable = (cameraId: string) => (cameraId === 'C-02' ? null : hostOf(cameraId));
+    assert.deepEqual(brief(idMachine(idSpec(FAMILLE), {}, unreadable).see(seen(0, 'C-02', 'recognized', 'p-7', '2'))), [], "camera de l'observation sans source");
+    assert.deepEqual(brief(idMachine(idSpec(FAMILLE), {}, () => null).see(seen(0, 'C-01', 'recognized', 'p-7', '2'))), []);
+    assert.deepEqual(brief(idMachine(idSpec(UNKNOWN), {}, () => null).see(seen(0, 'C-02'))), ['face_unknown:C-02@0']);
+  });
+
+  it("regle ancienne (sans cameraId) ou valeurs hostiles : la machine se construit, ne plante pas et ne declenche jamais", () => {
+    const { cameraId: _gone, ...oldFamille } = FAMILLE as Extract<Who, { type: 'list' }>;
+    for (const who of [oldFamille, { ...oldFamille, cameraId: null }, { ...oldFamille, cameraId: 12 }, { ...oldFamille, cameraId: {} }]) {
+      const m = idMachine(idSpec(who as never));
+      assert.deepEqual(brief(m.see(seen(0, 'C-01', 'recognized', 'p-7', '2'))), []);
+      assert.deepEqual(brief(m.see(seen(1, 'C-02', 'recognized', 'p-7', '2'))), []);
+      assert.deepEqual(brief(m.tick(at(10_000))), []);
+      assert.equal(m.isTriggered(), false);
+    }
+  });
+
+  it("garde de nom : un nom different ne declenche pas et previent par onMismatch (sans onMismatch, rien ne change) ; un nom egal ou absent declenche", () => {
+    const named = (sec: number, cameraId: string, personId: string, groupId: string, groupName: string | null, personName: string | null = null) =>
+      ({ cameraId, at: at(sec), kind: 'recognized' as const, personId, groupId, groupName, personName });
+    for (const who of [FAMILLE, AWA]) {
+      let mismatches = 0;
+      const m = createRuleMachine(idSpec(who, { cooldownMinutes: 0 }), { cameras: ['C-01', 'C-02', 'C-03'], isArmed: () => true, hostOf, onMismatch: () => void mismatches++ });
+      const wrong = who.type === 'list' ? named(0, 'C-01', 'p-7', '2', 'Visiteurs') : named(0, 'C-01', 'p-7', '2', null, 'Bob');
+      assert.deepEqual(brief(m.see(wrong)), []);
+      assert.equal(mismatches, 1);
+      assert.equal(m.nextWake(), null);
+      // un autre numero, un autre appareil : une autre liste / personne, pas un « nom different »
+      m.see(named(1, 'C-01', 'p-9', '3', 'Visiteurs', 'Bob'));
+      m.see(named(2, 'C-03', 'p-7', '2', 'Visiteurs', 'Bob'));
+      assert.equal(mismatches, 1);
+      // meme nom a la casse pres, ou sans nom : declenche, sans avertissement
+      const right = who.type === 'list' ? named(10, 'C-02', 'p-7', '2', ' FAMILLE ') : named(10, 'C-02', 'p-7', '2', null, 'awa koné');
+      assert.deepEqual(brief(m.see(right)), ['face_banned:C-02@10']);
+      assert.deepEqual(brief(m.see(named(300, 'C-01', 'p-7', '2', null))), [`clear@70`, 'face_banned:C-01@300']);
+      assert.equal(mismatches, 1);
+      // sans callback : meme resultat, aucune exception
+      const quiet = idMachine(idSpec(who, { cooldownMinutes: 0 }));
+      assert.deepEqual(brief(quiet.see(wrong)), []);
+    }
+    // le nom different n'a aucun effet sur « inconnu »
+    let calls = 0;
+    const unknown = createRuleMachine(idSpec(UNKNOWN), { cameras: ['C-01'], isArmed: () => true, hostOf, onMismatch: () => void calls++ });
+    assert.deepEqual(brief(unknown.see(seen(0, 'C-01'))), ['face_unknown:C-01@0']);
+    assert.equal(calls, 0);
+  });
+
+  it("l'hote est relu a chaque observation : changer l'adresse d'une camera fait suivre la correspondance", () => {
+    const hosts: Record<string, string> = { ...HOSTS };
+    const m = idMachine(idSpec(FAMILLE, { cooldownMinutes: 0 }), {}, (id) => hosts[id] ?? null);
+    assert.deepEqual(brief(m.see(seen(0, 'C-03', 'recognized', 'p-7', '2'))), [], 'C-03 est un autre appareil');
+    hosts['C-03'] = hosts['C-01'].toUpperCase() + ' '; // C-03 rejoint l'enregistreur (casse et espace ignores)
+    assert.deepEqual(brief(m.see(seen(10, 'C-03', 'recognized', 'p-7', '2'))), ['face_banned:C-03@10']);
+    m.tick(at(1000)); // fin
+    hosts['C-01'] = '192.0.2.99'; // l'enregistreur change d'adresse : C-02 et C-03 ne sont plus dans le meme appareil que C-01
+    assert.deepEqual(brief(m.see(seen(2000, 'C-02', 'recognized', 'p-7', '2'))), []);
+    assert.deepEqual(brief(m.see(seen(2001, 'C-03', 'recognized', 'p-7', '2'))), []);
+    assert.deepEqual(brief(m.see(seen(2002, 'C-01', 'recognized', 'p-7', '2'))), ['face_banned:C-01@2002']);
+  });
+});
+
 describe("machine d'identite : direct par ticks == essai par sauts", () => {
   it("memes actions, quelle que soit la facon d'avancer le temps (generateur a graine fixe)", () => {
     const prng = (seed: number) => {
@@ -1439,9 +1694,9 @@ const face = (ms: number, cameraId: string, kind: 'recognized' | 'unknown' = 'un
   at: ms,
   kind,
   personId,
-  personName: personId ? 'Nom' : null,
+  personName: personId ? 'Awa Koné' : null,
   groupId,
-  groupName: groupId ? 'Base' : null,
+  groupName: groupId ? 'Famille' : null,
   similarity: kind === 'recognized' ? 90 : null,
 });
 
@@ -1466,11 +1721,21 @@ function faceSetup(opts: { withFaces?: boolean; armed?: Record<string, boolean> 
     setLinks: h.engine.setLinks,
     getSnapshot: h.engine.getSnapshot,
   };
-  const rules = createRules({ db: h.db, engine, presence: h.presence, faces: opts.withFaces === false ? undefined : faces, isArmed: (zone) => h.armed[zone] !== false, now: () => current });
-  return {
+  // Sources video des cameras de test (HOSTS) : sans elles, aucune regle liste / personne ne peut etre enregistree.
+  for (const [id, host] of Object.entries(HOSTS)) {
+    h.db.prepare("INSERT INTO camera_source (device_id, kind, host, port, rtsp_path) VALUES (?, 'rtsp', ?, 554, ?)").run(id, host, `/cam/realmonitor?channel=${Number(id.slice(2))}&subtype=0`);
+  }
+  const build = () => createRules({ db: h.db, engine, presence: h.presence, faces: opts.withFaces === false ? undefined : faces, isArmed: (zone) => h.armed[zone] !== false, now: () => current });
+  const out = {
     h,
     faces,
-    rules,
+    rules: build(),
+    /** Redemarrage du PSIM : memes donnees, nouveau moteur de regles (relecture et reconciliation). */
+    restart(): ReturnType<typeof build> {
+      out.rules.close();
+      out.rules = build();
+      return out.rules;
+    },
     sent,
     triggers: () => sent.filter((m) => m.event !== 'clear'),
     set: (sec: number) => {
@@ -1486,11 +1751,12 @@ function faceSetup(opts: { withFaces?: boolean; armed?: Record<string, boolean> 
           const [, cam, kind, pid, gid] = todo[k++];
           faces.emit(face(current, cam, kind ?? 'unknown', pid ?? null, gid ?? null));
         }
-        rules.tick();
+        out.rules.tick();
       }
     },
     status: (id: string) => h.engine.getDevice(id)?.status,
   };
+  return out;
 }
 
 describe("regles d'identite : direct, detecteur et essai sur le passe", () => {
@@ -1604,5 +1870,339 @@ describe("regles d'identite : direct, detecteur et essai sur le passe", () => {
     assert.deepEqual(sim.triggers, [{ at: at(10), endedAt: at(120), cameraId: 'C-01' }]);
     assert.match(sim.summary, /si un visage inconnu est vu devant la caméra « Camera accueil »/);
     assert.deepEqual(f.rules.simulate(idSpec(AWA), T0, at(100)).triggers, [], 'personne differente');
+  });
+});
+
+// ---- 8. Regles d'identite : appareil du « Qui » (moteur complet) -------------------------------------------------------
+
+const REVIEW = /Cette regle doit etre reenregistree : choisissez a nouveau la liste/;
+const refused = (fn: () => unknown, pattern: RegExp) => assert.throws(fn, (e: unknown) => e instanceof PsimError && e.status === 400 && pattern.test(e.message), `devait etre refuse : ${pattern}`);
+const secs = (list: { at: number }[]) => list.map((t) => (t.at - T0) / S);
+
+describe("regles d'identite par appareil : direct, essai et changement d'adresse", () => {
+  it('deux appareils ayant la meme liste « 2 » ne se confondent pas ; le direct et l\'essai donnent le meme declenchement', () => {
+    const s = idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-02', 'C-03'] }, cooldownMinutes: 3 });
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Famille', spec: s });
+    f.play(
+      [
+        [0, 'C-03', 'recognized', 'p-7', '2'], // la liste « 2 » de l'AUTRE appareil : rien
+        [20, 'C-02', 'recognized', 'p-7', '2'], // autre voie du meme enregistreur : declenche
+        [400, 'C-03', 'recognized', 'p-7', '2'], // rien
+        [900, 'C-01', 'recognized', 'p-9', '2'], // declenche
+        [1000, 'C-03', 'recognized', 'p-7', '2'], // rien (prolongation d'une autre identite)
+      ],
+      0,
+      1500,
+    );
+    assert.deepEqual(f.triggers().map((m) => m.sec), [20, 900]);
+    assert.deepEqual(f.sent.filter((m) => m.event === 'clear').map((m) => m.sec), [80, 960]);
+    const sim = f.rules.simulate(s, T0, at(1500));
+    assert.deepEqual(secs(sim.triggers), [20, 900], "l'essai donne les memes declenchements que le direct");
+    assert.deepEqual(sim.triggers.map((t) => (t.endedAt === null ? null : (t.endedAt - T0) / S)), [80, 960]);
+    assert.deepEqual(sim.triggers.map((t) => t.cameraId), ['C-02', 'C-01']);
+    assert.match(sim.summary, /« Famille » \(caméra « Camera accueil »\) est reconnue/);
+  });
+
+  it("une personne : meme identifiant sur deux appareils, seule celle de l'appareil de la regle declenche (direct == essai)", () => {
+    const s = idSpec({ ...AWA, personId: '1' } as Who, { where: { cameras: ['C-01', 'C-03'] }, cooldownMinutes: 0 });
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Awa', spec: s });
+    f.play([[0, 'C-03', 'recognized', '1', '1'], [100, 'C-01', 'recognized', '1', '1'], [300, 'C-03', 'recognized', '1', '1']], 0, 500);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [100]);
+    assert.deepEqual(secs(f.rules.simulate(s, T0, at(500)).triggers), [100]);
+  });
+
+  it("changer l'adresse d'une camera (UPDATE camera_source SET host) fait suivre la correspondance, en direct comme en essai", () => {
+    const s = idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-02', 'C-03'] }, cooldownMinutes: 0 });
+    const f = faceSetup();
+    const setHost = (id: string, host: string) => f.h.db.prepare('UPDATE camera_source SET host = ? WHERE device_id = ?').run(host, id);
+    f.rules.create('admin', { name: 'Famille', spec: s });
+    f.play([[0, 'C-03', 'recognized', 'p-7', '2']], 0, 5);
+    assert.equal(f.triggers().length, 0, 'C-03 est un autre appareil');
+    assert.deepEqual(f.rules.simulate(s, T0, at(5)).triggers, []);
+
+    setHost('C-03', '192.0.2.10'); // C-03 rejoint l'enregistreur de C-01
+    assert.deepEqual(secs(f.rules.simulate(s, T0, at(5)).triggers), [0], "l'essai suit le nouvel hote");
+    f.play([[10, 'C-03', 'recognized', 'p-7', '2']], 6, 12);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [10], 'le direct aussi, sans redemarrer');
+    f.play([], 13, 80); // retour au calme
+
+    setHost('C-01', '192.0.2.99'); // l'enregistreur de la liste change d'adresse : C-02 et C-03 n'y sont plus
+    f.play([[200, 'C-02', 'recognized', 'p-7', '2'], [201, 'C-03', 'recognized', 'p-7', '2']], 81, 210);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [10], 'plus aucune correspondance');
+    f.play([[300, 'C-01', 'recognized', 'p-7', '2']], 211, 310);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [10, 300]);
+    assert.equal(f.rules.get(1)!.needsReview, false, "l'adresse a change mais la camera a toujours une source");
+  });
+
+  it("garde de nom : une camera deplacee vers un appareil dont la liste (ou personne) « 2 » porte un autre nom ne correspond pas, en direct comme en essai ; un seul avertissement par vie du direct", () => {
+    for (const who of [FAMILLE, AWA] as Who[]) {
+      const isList = who.type === 'list';
+      const f = faceSetup();
+      const s = idSpec(who, { where: { cameras: ['C-01', 'C-02', 'C-03'] }, cooldownMinutes: 0 });
+      const rule = f.rules.create('admin', { name: 'Identite', spec: s });
+      const visitor = (sec: number, cameraId: string): FaceSeen => ({ ...face(at(sec), cameraId, 'recognized', 'p-7', '2'), groupName: 'Visiteurs', personName: 'Bob' });
+      const right = (sec: number, cameraId: string): FaceSeen => face(at(sec), cameraId, 'recognized', 'p-7', '2');
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => void warnings.push(args.join(' '));
+      try {
+        f.h.db.prepare("UPDATE camera_source SET host = '192.0.2.10' WHERE device_id = 'C-03'").run(); // C-03 rejoint l'appareil de C-01
+        const emit = (face: FaceSeen) => {
+          f.set((face.at - T0) / S);
+          f.faces.emit(face);
+        };
+        // Un visage « liste 2 / personne p-7 » mais d'une AUTRE liste (nom different) : pas de correspondance, meme appareil, meme numero.
+        emit(visitor(10, 'C-03'));
+        emit(visitor(20, 'C-03'));
+        emit(visitor(30, 'C-02'));
+        assert.equal(f.triggers().length, 0);
+        assert.equal(warnings.length, 1, 'un seul avertissement malgre trois observations');
+        const what = isList ? 'la liste « Famille »' : 'la personne « Awa Koné »';
+        assert.equal(warnings[0], `[rules] regle ${rule.id} : ${what} n'est plus trouvee sur l'appareil de la camera « Camera accueil » : reenregistrez la regle`);
+        // Essai sur le passe : meme verdict, et il ne journalise rien.
+        assert.deepEqual(f.rules.simulate(s, T0, at(100)).triggers, []);
+        assert.equal(warnings.length, 1, "l'essai ne journalise rien");
+        // Le bon nom (ou aucun nom) correspond toujours, en direct comme en essai.
+        emit(right(200, 'C-03'));
+        emit({ ...right(400, 'C-02'), groupName: null, personName: null });
+        assert.deepEqual(f.triggers().map((m) => m.sec), [200, 400]);
+        assert.deepEqual(secs(f.rules.simulate(s, T0, at(500)).triggers), [200, 400], "l'essai donne les memes declenchements que le direct");
+        assert.equal(warnings.length, 1);
+        // Reconstruction du direct (redemarrage, ou modification de la regle) : l'avertissement peut revenir, une fois.
+        f.restart();
+        emit(visitor(600, 'C-03'));
+        emit(visitor(610, 'C-03'));
+        assert.equal(warnings.length, 2);
+        f.rules.update('admin', rule.id, { spec: idSpec(who, { where: { cameras: ['C-01', 'C-02', 'C-03'] }, cooldownMinutes: 1 }) });
+        emit(visitor(700, 'C-03'));
+        emit(visitor(710, 'C-03'));
+        assert.equal(warnings.length, 3);
+        assert.equal(f.triggers().length, 2, 'les observations au mauvais nom ne declenchent jamais');
+        // Une autre liste (autre numero) ou un autre appareil ne produit aucun avertissement : ce n'est pas la meme liste renommee.
+        emit({ ...visitor(800, 'C-03'), groupId: '9', personId: 'p-9' });
+        emit(visitor(810, 'C-04'));
+        assert.equal(warnings.length, 3);
+      } finally {
+        console.warn = original;
+      }
+    }
+  });
+
+  it("camera du « Qui » supprimee ou sans source : needsReview, la regle ne declenche plus, ne se reactive pas, mais se desactive / se renomme / se supprime", () => {
+    const f = faceSetup();
+    const rule = f.rules.create('admin', { name: 'Famille', spec: idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-02'] }, cooldownMinutes: 0 }) });
+    assert.equal(rule.needsReview, false);
+    f.h.db.prepare("DELETE FROM camera_source WHERE device_id = 'C-01'").run();
+    assert.equal(f.rules.get(rule.id)!.needsReview, true);
+    assert.equal(f.rules.list()[0].needsReview, true);
+    f.play([[0, 'C-02', 'recognized', 'p-7', '2'], [1, 'C-01', 'recognized', 'p-7', '2']], 0, 5);
+    assert.equal(f.triggers().length, 0, 'sans source, rien ne correspond');
+    // activation refusee (apres une desactivation, qui reste possible)
+    f.rules.update('admin', rule.id, { enabled: false });
+    refused(() => f.rules.update('admin', rule.id, { enabled: true }), REVIEW);
+    assert.equal(f.rules.get(rule.id)!.enabled, false);
+    assert.equal(f.rules.update('admin', rule.id, { name: 'Famille a refaire' }).name, 'Famille a refaire');
+    // la source revient : la regle est de nouveau valide telle quelle
+    f.h.db.prepare("INSERT INTO camera_source (device_id, kind, host, port, rtsp_path) VALUES ('C-01', 'rtsp', '192.0.2.10', 554, '/cam/realmonitor?channel=1&subtype=0')").run();
+    assert.equal(f.rules.get(rule.id)!.needsReview, false);
+    assert.equal(f.rules.update('admin', rule.id, { enabled: true }).enabled, true);
+    f.rules.remove('admin', rule.id);
+    assert.equal(f.rules.list().length, 0);
+  });
+});
+
+describe("regles d'identite anciennes (sans cameraId) : chargement, needsReview, reenregistrement", () => {
+  /** Regle creee normalement puis ramenee a l'ancienne forme dans la base (comme avant l'ajout de la camera source). */
+  function legacySetup(opts: { enabled?: boolean; who?: Who } = {}) {
+    const f = faceSetup();
+    const rule = f.rules.create('admin', { name: 'Famille', spec: idSpec(opts.who ?? FAMILLE, { where: { cameras: ['C-01', 'C-02'] }, cooldownMinutes: 0 }), enabled: opts.enabled ?? true });
+    const old = JSON.parse(JSON.stringify(rule.spec)) as { who: Record<string, unknown> };
+    delete old.who.cameraId;
+    f.h.db.prepare('UPDATE presence_rule SET spec = ? WHERE id = ?').run(JSON.stringify(old), rule.id);
+    return { f, id: rule.id };
+  }
+
+  it('au redemarrage, une regle activee sans cameraId se charge sans planter, est a reenregistrer et ne declenche rien', () => {
+    for (const who of [FAMILLE, AWA]) {
+      const { f, id } = legacySetup({ who });
+      const errors: unknown[][] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]) => void errors.push(args);
+      let rules: ReturnType<typeof f.restart>;
+      try {
+        rules = f.restart();
+        f.play([[0, 'C-01', 'recognized', 'p-7', '2'], [1, 'C-02', 'recognized', 'p-7', '2']], 0, 120);
+      } finally {
+        console.error = original;
+      }
+      assert.deepEqual(errors, [], 'aucune erreur journalisee');
+      const loaded = rules.get(id)!;
+      assert.equal(loaded.needsReview, true);
+      assert.equal(loaded.enabled, true);
+      assert.match(loaded.summary, /\(caméra non précisée\) est reconnue/);
+      assert.equal(rules.list().length, 1);
+      assert.equal(f.triggers().length, 0, 'ne declenche plus');
+      assert.equal(f.status(loaded.deviceId), 'normal');
+      assert.deepEqual(secs(rules.simulate(idSpec(who), T0, at(60)).triggers), [0], "l'essai d'une saisie valide, lui, rejoue les visages deja vus");
+    }
+  });
+
+  it("l'activation d'une regle a reenregistrer est refusee (400), la desactivation, le renommage et la suppression restent possibles", () => {
+    const { f, id } = legacySetup({ enabled: false });
+    const rules = f.restart();
+    assert.equal(rules.get(id)!.needsReview, true);
+    refused(() => rules.update('admin', id, { enabled: true }), REVIEW);
+    refused(() => rules.update('admin', id, { name: 'Autre nom', enabled: true }), REVIEW);
+    assert.equal(rules.get(id)!.enabled, false);
+    assert.equal(rules.get(id)!.name, 'Famille', "rien n'a ete modifie par la demande refusee");
+    assert.equal(rules.update('admin', id, { name: 'Famille (ancienne)' }).name, 'Famille (ancienne)');
+    assert.equal(rules.update('admin', id, { enabled: false }).enabled, false, 'deja desactivee : sans effet');
+    rules.remove('admin', id);
+    assert.equal(rules.list().length, 0);
+
+    // activee : on peut la desactiver, puis plus la reactiver telle quelle
+    const second = legacySetup();
+    const again = second.f.restart();
+    assert.equal(again.update('admin', second.id, { enabled: true }).enabled, true, 'deja activee : pas une activation');
+    assert.equal(again.update('admin', second.id, { enabled: false }).enabled, false);
+    refused(() => again.update('admin', second.id, { enabled: true }), REVIEW);
+  });
+
+  it("un nouveau spec valide la reenregistre normalement (et peut l'activer) ; un spec invalide est refuse", () => {
+    const { f, id } = legacySetup({ enabled: false });
+    const rules = f.restart();
+    refused(() => rules.update('admin', id, { spec: { ...idSpec(FAMILLE), who: { type: 'list', listId: '2', listName: 'Famille' } }, enabled: true }), /la camera de la liste est requise/);
+    refused(() => rules.update('admin', id, { spec: idSpec({ ...FAMILLE, cameraId: 'C-99' } as Who), enabled: true }), /camera inconnue « C-99 »/);
+    assert.equal(rules.get(id)!.enabled, false);
+    const fixed = rules.update('admin', id, { spec: idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-02'] }, cooldownMinutes: 0 }), enabled: true });
+    assert.equal(fixed.needsReview, false);
+    assert.equal(fixed.enabled, true);
+    assert.match(fixed.summary, /« Famille » \(caméra « Camera accueil »\) est reconnue/);
+    f.play([[10, 'C-02', 'recognized', 'p-7', '2']], 0, 15);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [10]);
+    // et la regle redevient modifiable normalement
+    assert.equal(rules.update('admin', id, { enabled: false }).enabled, false);
+    assert.equal(rules.update('admin', id, { enabled: true }).enabled, true);
+  });
+
+  it('un nouveau spec seul (sans enabled) sur une regle activee ancienne la rebranche', () => {
+    const { f, id } = legacySetup();
+    const rules = f.restart();
+    assert.equal(rules.get(id)!.needsReview, true);
+    rules.update('admin', id, { spec: idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-02'] }, cooldownMinutes: 0 }) });
+    assert.equal(rules.get(id)!.needsReview, false);
+    f.play([[5, 'C-01', 'recognized', 'p-7', '2']], 0, 8);
+    assert.deepEqual(f.triggers().map((m) => m.sec), [5]);
+  });
+
+  it("la regle « inconnu » et « n'importe qui » ne sont jamais a reenregistrer", () => {
+    const f = faceSetup();
+    f.rules.create('admin', { name: 'Inconnus', spec: idSpec(UNKNOWN) });
+    f.rules.create('admin', { name: 'Presence', spec: spec() });
+    assert.deepEqual(f.rules.list().map((r) => r.needsReview), [false, false]);
+  });
+});
+
+describe("regles d'identite : la portee doit contenir une camera de l'appareil du « Qui »", () => {
+  const FAMILLE_REFUS = /Ou : aucune camera choisie n'appartient a l'appareil de la liste « Famille » \(camera « Camera accueil »\) : elle ne pourrait jamais se declencher/;
+  const AWA_REFUS = /Ou : aucune camera choisie n'appartient a l'appareil de la personne « Awa Koné » \(camera « Camera accueil »\) : elle ne pourrait jamais se declencher/;
+
+  it('create : cameras ou zones sur un autre appareil => refus 400 sans aucune trace', () => {
+    const f = faceSetup();
+    const devices = f.h.engine.getSnapshot().devices.length;
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec(FAMILLE, { where: { cameras: ['C-03'] } }) }), FAMILLE_REFUS);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec(FAMILLE, { where: { cameras: ['C-03', 'C-04'] } }) }), FAMILLE_REFUS);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec(AWA, { where: { cameras: ['C-04'] } }) }), AWA_REFUS);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec(FAMILLE, { where: { zones: ['Salle serveurs'] } }) }), FAMILLE_REFUS);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec(FAMILLE, { where: { zones: ['Salle serveurs', 'Entrepot'] } }) }), FAMILLE_REFUS);
+    assert.equal(f.rules.list().length, 0);
+    assert.equal(f.h.engine.getSnapshot().devices.length, devices, 'aucun detecteur cree');
+  });
+
+  it("une camera sur le bon appareil (autre voie) suffit, par camera comme par zone, meme parmi d'autres appareils", () => {
+    const f = faceSetup();
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'a', spec: idSpec(FAMILLE, { where: { cameras: ['C-02'] } }) })); // autre voie
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'b', spec: idSpec(FAMILLE, { where: { cameras: ['C-01'] } }) })); // la camera elle-meme
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'c', spec: idSpec(FAMILLE, { where: { cameras: ['C-03', 'C-02'] } }) })); // une seule suffit
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'd', spec: idSpec(FAMILLE, { where: { zones: ['Couloir'] } }) })); // zone de C-02
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'e', spec: idSpec(AWA, { where: { zones: ['Salle serveurs', 'Couloir'] } }) }));
+    assert.equal(f.rules.list().length, 5);
+  });
+
+  it("la camera du « Qui » sans source video (ou une zone sans camera de cet appareil) est refusee ; « inconnu » et « n'importe qui » ne sont pas concernes", () => {
+    const f = faceSetup();
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec({ ...FAMILLE, cameraId: 'C-05' } as Who, { where: { cameras: ['C-05'] } }) }), /Qui : la camera « Camera atelier » de la liste « Famille » n'est reliee a aucun appareil/);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec({ ...FAMILLE, cameraId: 'C-05' } as Who, { where: { cameras: ['C-01'] } }) }), /n'est reliee a aucun appareil/);
+    refused(() => f.rules.create('admin', { name: 'x', spec: idSpec({ ...AWA, cameraId: 'C-05' } as Who) }), /de la personne « Awa Koné » n'est reliee a aucun appareil/);
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'u', spec: idSpec(UNKNOWN, { where: { cameras: ['C-03', 'C-05'] } }) }));
+    assert.doesNotThrow(() => f.rules.create('admin', { name: 'p', spec: spec({ where: { cameras: ['C-05'] } }) }));
+  });
+
+  it("update : un spec fourni est verifie de la meme facon ; sans spec, rien n'est reverifie", () => {
+    const f = faceSetup();
+    const rule = f.rules.create('admin', { name: 'Famille', spec: idSpec(FAMILLE, { where: { cameras: ['C-01', 'C-03'] } }) });
+    refused(() => f.rules.update('admin', rule.id, { spec: idSpec(FAMILLE, { where: { cameras: ['C-03'] } }) }), FAMILLE_REFUS);
+    refused(() => f.rules.update('admin', rule.id, { spec: idSpec(FAMILLE, { where: { zones: ['Entrepot'] } }) }), FAMILLE_REFUS);
+    assert.deepEqual(f.rules.get(rule.id)!.spec.where, { cameras: ['C-01', 'C-03'] }, 'regle inchangee');
+    assert.deepEqual(f.rules.update('admin', rule.id, { spec: idSpec(FAMILLE, { where: { cameras: ['C-02', 'C-04'] } }) }).spec.where, { cameras: ['C-02', 'C-04'] });
+    // une camera deplacee sur un autre appareil APRES l'enregistrement n'empeche ni renommage ni desactivation
+    f.h.db.prepare("UPDATE camera_source SET host = '192.0.2.77' WHERE device_id IN ('C-02', 'C-04')").run();
+    assert.equal(f.rules.update('admin', rule.id, { name: 'Famille 2' }).name, 'Famille 2');
+    assert.equal(f.rules.update('admin', rule.id, { enabled: false }).enabled, false);
+    assert.equal(f.rules.update('admin', rule.id, { enabled: true }).enabled, true);
+  });
+
+  it("une regle deja enregistree dont la portee n'a plus l'appareil se charge sans erreur (rien n'est verifie au chargement)", () => {
+    const f = faceSetup();
+    const rule = f.rules.create('admin', { name: 'Famille', spec: idSpec(FAMILLE, { where: { cameras: ['C-02'] } }) });
+    f.h.db.prepare("UPDATE camera_source SET host = '192.0.2.77' WHERE device_id = 'C-02'").run();
+    const errors: unknown[][] = [];
+    const original = console.error;
+    const warn = console.warn;
+    console.error = (...args: unknown[]) => void errors.push(args);
+    console.warn = (...args: unknown[]) => void errors.push(args);
+    try {
+      const rules = f.restart();
+      assert.equal(rules.get(rule.id)!.enabled, true);
+      assert.equal(rules.get(rule.id)!.needsReview, false);
+      f.play([[0, 'C-02', 'recognized', 'p-7', '2']], 0, 3);
+    } finally {
+      console.error = original;
+      console.warn = warn;
+    }
+    assert.deepEqual(errors, []);
+    assert.equal(f.triggers().length, 0, "elle ne declenche pas : l'appareil de C-02 n'est plus celui de C-01");
+  });
+
+  it('simulate applique la meme verification', () => {
+    const f = faceSetup();
+    refused(() => f.rules.simulate(idSpec(FAMILLE, { where: { cameras: ['C-03'] } }), T0, at(60)), FAMILLE_REFUS);
+    refused(() => f.rules.simulate(idSpec(AWA, { where: { zones: ['Entrepot'] } }), T0, at(60)), AWA_REFUS);
+    refused(() => f.rules.simulate(idSpec({ ...FAMILLE, cameraId: 'C-05' } as Who), T0, at(60)), /n'est reliee a aucun appareil/);
+    assert.deepEqual(f.rules.simulate(idSpec(FAMILLE, { where: { cameras: ['C-02'] } }), T0, at(60)).triggers, []);
+  });
+
+  it('validate() : validateSpec + portee + verification, sans effet de bord', () => {
+    const f = faceSetup();
+    const count = (t: string) => (f.h.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+    const before = { audit: count('audit_log'), rule: count('presence_rule'), devices: f.h.engine.getSnapshot().devices.length, sent: f.sent.length };
+    const good = idSpec(FAMILLE, { where: { zones: ['Couloir', 'Couloir'] } });
+    assert.deepEqual(f.rules.validate(good), { ...good, where: { zones: ['Couloir'] } }, 'spec normalisee (doublons retires)');
+    assert.deepEqual(f.rules.validate(spec()), spec());
+    assert.deepEqual(f.rules.validate(idSpec(UNKNOWN, { where: { cameras: ['C-03'] } })).who, UNKNOWN);
+    refused(() => f.rules.validate(idSpec(FAMILLE, { where: { cameras: ['C-04'] } })), FAMILLE_REFUS); // autre appareil
+    refused(() => f.rules.validate(idSpec(AWA, { where: { zones: ['Salle serveurs'] } })), AWA_REFUS); // zone sur un autre appareil
+    refused(() => f.rules.validate(idSpec({ ...FAMILLE, cameraId: 'C-05' } as Who)), /n'est reliee a aucun appareil/);
+    refused(() => f.rules.validate(idSpec({ type: 'list', listId: '2', listName: 'F' } as never)), /la camera de la liste est requise/);
+    refused(() => f.rules.validate(spec({ where: { cameras: ['C-99'] } })), /camera inconnue « C-99 »/);
+    refused(() => f.rules.validate(spec({ where: { zones: ['Cave'] } })), /zone inconnue « Cave »/);
+    refused(() => f.rules.validate(null), /objet est attendu/);
+    refused(() => f.rules.validate(stays(5, { who: FAMILLE })), /seul « apparait »/);
+    assert.deepEqual({ audit: count('audit_log'), rule: count('presence_rule'), devices: f.h.engine.getSnapshot().devices.length, sent: f.sent.length }, before);
+    // la verification suit le hote courant
+    f.h.db.prepare("UPDATE camera_source SET host = '192.0.2.10' WHERE device_id = 'C-04'").run();
+    assert.doesNotThrow(() => f.rules.validate(idSpec(FAMILLE, { where: { cameras: ['C-04'] } })));
   });
 });

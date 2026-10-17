@@ -304,5 +304,8 @@ export function siteDetail(db: DatabaseSync, site: VisibleSite, days: number, no
       .map((z) => ({ zone: z.zone, index: z.index, stale: z.stale, ...(z.index === null ? { level: null, levelLabel: null } : { level: levelOf(z.index).level, levelLabel: levelOf(z.index).label }) }))
       .sort((a, b) => (b.index ?? -1) - (a.index ?? -1) || a.zone.localeCompare(b.zone, 'fr')),
     riskHistory: lastRiskDays(db, site.id, days),
+    // Rondes de securite par semaine, telles que le site les a envoyees (fenetre de l'instantane, pas la plage choisie) :
+    // des compteurs seulement. `null` : ce site n'a pas l'application des agents (ou un ancien PSIM) : rien n'est invente.
+    patrols: s?.patrols ?? null,
   };
 }

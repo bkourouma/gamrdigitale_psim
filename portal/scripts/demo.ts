@@ -59,6 +59,33 @@ interface Plan {
    * evenement de la passerelle, qualification] ; le portail n'en recoit que des comptes (jamais de nom, de badge ni de controleur).
    */
   doors?: { n: number; incidents: [number, number, 'door_forced' | 'door_held_open' | 'badge_denied_repeated' | 'tamper', 'fire' | 'false_alarm'][] };
+  /** Le site a l'application des agents : des rondes de nuit sur 35 jours (tables minimales) et quelques SOS. */
+  patrols?: boolean;
+}
+
+/**
+ * Rondes de demonstration : trois par nuit, la plupart effectuees, quelques-unes incompletes ou ratees, les dernieres encore
+ * a venir ; deux SOS. Seules les colonnes lues par le resume (statut, heures) sont creees : le portail ne voit que des compteurs.
+ */
+function addPatrolDemo(db: ReturnType<typeof openDb>, at: number, random: () => number): void {
+  db.exec(`CREATE TABLE patrol_route (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+    CREATE TABLE patrol_run (id INTEGER PRIMARY KEY AUTOINCREMENT, route_id INTEGER NOT NULL, due_start INTEGER NOT NULL, due_end INTEGER NOT NULL, status TEXT NOT NULL, UNIQUE (route_id, due_start))`);
+  db.prepare("INSERT INTO patrol_route (name) VALUES ('Circuit de nuit')").run();
+  const insert = db.prepare('INSERT INTO patrol_run (route_id, due_start, due_end, status) VALUES (1, ?, ?, ?)');
+  for (let day = 34; day >= 0; day--) {
+    const base = new Date(new Date(at).getFullYear(), new Date(at).getMonth(), new Date(at).getDate() - day).getTime();
+    for (const hour of [22, 24, 26]) {
+      const start = base + hour * HOUR;
+      if (start > at + 3 * HOUR) continue;
+      const r = random();
+      // Une semaine un peu moins bonne (jours 14 a 20) pour que la courbe ne soit pas plate.
+      const bad = day >= 14 && day <= 20 ? 0.25 : 0.06;
+      const status = start > at ? 'pending' : r < bad ? 'missed' : r < bad * 2 ? 'incomplete' : 'done';
+      insert.run(start, start + HOUR, status);
+    }
+  }
+  const sos = db.prepare("INSERT INTO incident (detector_id, severity, status, opened_at, closed_at, event) VALUES ('D-01', 'critical', 'closed', ?, ?, 'sos')");
+  for (const ago of [20, 9]) sos.run(at - ago * 24 * HOUR, at - ago * 24 * HOUR + 10 * MIN);
 }
 
 function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSummary; at: number } {
@@ -138,6 +165,7 @@ function simulate(siteId: string, plan: Plan, seed: number): { summary: SiteSumm
     e.run();
   }
   clock = at;
+  if (plan.patrols) addPatrolDemo(db, at, random);
   return { summary: buildSiteSummary(db, { siteId, version: '0.1.0', startedAt: at - 3 * 24 * HOUR, now: at, risk: () => risk.overview() }), at };
 }
 
@@ -165,6 +193,7 @@ const SITES: { org: string; id: string; name: string; plan: Plan; seed: number; 
       // Quatre portes : une série de refus et une porte restée ouverte (fausses alarmes), une porte forcée avérée, une porte hors ligne depuis 40 min.
       now: { 'P-04': ['offline', 40] },
       doors: { n: 4, incidents: [[300, 0, 'door_held_open', 'false_alarm'], [120, 1, 'badge_denied_repeated', 'false_alarm'], [48, 2, 'door_forced', 'fire']] },
+      patrols: true,
     },
   },
   {

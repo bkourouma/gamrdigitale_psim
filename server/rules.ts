@@ -26,11 +26,19 @@ import type { Device } from './types.ts';
 /**
  * Qui : n'importe qui (presence) ou une identite de visage (reconnaissance faciale de l'enregistreur). Les noms de liste et de
  * personne sont recopies dans la regle : aucune verification aupres de l'enregistreur (qui peut etre injoignable).
+ *
+ * Les bases de visages et les personnes sont numerotees PAR APPAREIL Dahua (liste « 1 », personne « 1 » existent sur chaque
+ * appareil) : `cameraId` est la camera du PSIM par laquelle la base est lue (comme `cameraId` de GET /api/faces/lists). C'est
+ * l'APPAREIL de cette camera (son hote, dans camera_source) qui compte, pas la voie : un enregistreur a plusieurs voies n'a
+ * qu'une seule base. Une regle ancienne sans `cameraId` ne correspond a rien (voir `needsReview`).
+ *
+ * `listName` / `personName` ne sont pas qu'un libelle : une observation qui porte un nom different (casse et espaces ignores) ne
+ * correspond pas, meme avec le bon appareil et le bon numero (voir `faceMatches`).
  */
 export type Who =
   | { type: 'anyone' }
-  | { type: 'list'; listId: string; listName: string }
-  | { type: 'person'; personId: string; personName: string }
+  | { type: 'list'; cameraId: string; listId: string; listName: string }
+  | { type: 'person'; cameraId: string; personId: string; personName: string }
   | { type: 'unknown' };
 
 export interface RuleSpec {
@@ -49,6 +57,11 @@ export interface Rule {
   spec: RuleSpec;
   deviceId: string;
   summary: string;
+  /**
+   * Vrai : regle d'identite (liste ou personne) a reenregistrer. Elle ne se declenche pas, et ne peut pas etre reactivee telle
+   * quelle. Cas : enregistree avant l'ajout de la camera source (`who.cameraId` absent), ou camera supprimee / sans source video.
+   */
+  needsReview: boolean;
   sourceText: string | null;
   createdBy: string;
   createdAt: number;
@@ -124,7 +137,15 @@ function faceText(value: unknown, max: number, label: string): string {
   return flat;
 }
 
-function validateWho(raw: unknown): Who {
+/** Camera source d'une identite (liste, personne) : obligatoire, et connue du PSIM (la comparaison se fait sur son appareil). */
+function faceCamera(who: Record<string, unknown>, what: string, cameraIds: ReadonlySet<string>): string {
+  const id = own(who, 'cameraId');
+  if (typeof id !== 'string' || id.trim() === '') throw new PsimError(400, `Qui : la camera de la ${what} est requise`);
+  if (!cameraIds.has(id)) throw new PsimError(400, `Qui : camera inconnue « ${shown(id)} »`);
+  return id;
+}
+
+function validateWho(raw: unknown, ctx: { cameraIds: ReadonlySet<string> }): Who {
   const who = plain(raw, 'Qui');
   switch (own(who, 'type')) {
     case 'anyone':
@@ -133,12 +154,16 @@ function validateWho(raw: unknown): Who {
     case 'unknown':
       only(who, ['type'], 'Qui');
       return { type: 'unknown' };
-    case 'list':
-      only(who, ['type', 'listId', 'listName'], 'Qui');
-      return { type: 'list', listId: faceText(own(who, 'listId'), MAX_FACE_ID, 'Qui : identifiant de la liste'), listName: faceText(own(who, 'listName'), MAX_FACE_NAME, 'Qui : nom de la liste') };
-    case 'person':
-      only(who, ['type', 'personId', 'personName'], 'Qui');
-      return { type: 'person', personId: faceText(own(who, 'personId'), MAX_FACE_ID, 'Qui : identifiant de la personne'), personName: faceText(own(who, 'personName'), MAX_FACE_NAME, 'Qui : nom de la personne') };
+    case 'list': {
+      only(who, ['type', 'cameraId', 'listId', 'listName'], 'Qui');
+      const cameraId = faceCamera(who, 'liste', ctx.cameraIds);
+      return { type: 'list', cameraId, listId: faceText(own(who, 'listId'), MAX_FACE_ID, 'Qui : identifiant de la liste'), listName: faceText(own(who, 'listName'), MAX_FACE_NAME, 'Qui : nom de la liste') };
+    }
+    case 'person': {
+      only(who, ['type', 'cameraId', 'personId', 'personName'], 'Qui');
+      const cameraId = faceCamera(who, 'personne', ctx.cameraIds);
+      return { type: 'person', cameraId, personId: faceText(own(who, 'personId'), MAX_FACE_ID, 'Qui : identifiant de la personne'), personName: faceText(own(who, 'personName'), MAX_FACE_NAME, 'Qui : nom de la personne') };
+    }
     default:
       throw new PsimError(400, 'Qui : choisir « n\'importe qui », une liste de visages, une personne ou « un visage inconnu »');
   }
@@ -163,7 +188,7 @@ export function validateSpec(input: unknown, ctx: { cameraIds: ReadonlySet<strin
   for (const [key, label] of boxes) if (own(spec, key) === undefined) throw new PsimError(400, `Il manque la case « ${label} » dans la regle`);
 
   // Qui
-  const whoOut = validateWho(own(spec, 'who'));
+  const whoOut = validateWho(own(spec, 'who'), ctx);
 
   // Ou
   const where = plain(own(spec, 'where'), 'Ou');
@@ -281,13 +306,18 @@ function describeMinutes(m: number): string {
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
 }
 
+/** « (caméra « Portail ») » ; une regle ancienne sans camera (ou avec une valeur qui n'est pas du texte) : « (caméra non précisée) ». */
+function faceCameraPhrase(cameraId: unknown, cameraName: (id: string) => string): string {
+  return typeof cameraId === 'string' && cameraId !== '' ? `(caméra « ${cameraName(cameraId)} »)` : '(caméra non précisée)';
+}
+
 /** Phrase francaise courante, complete et sans jargon, qui dit exactement ce que fera la regle. */
 export function describeRule(spec: RuleSpec, ctx: { cameraName: (id: string) => string }): string {
   const action = spec.then.severity === 'critical' ? 'Prévenir (alerte critique)' : 'Prévenir (avertissement)';
   let cause: string;
   if (spec.who.type === 'unknown') cause = 'si un visage inconnu est vu';
-  else if (spec.who.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » est reconnue`;
-  else if (spec.who.type === 'person') cause = `si la personne « ${spec.who.personName} » est reconnue`;
+  else if (spec.who.type === 'list') cause = `si une personne de la liste « ${spec.who.listName} » ${faceCameraPhrase(spec.who.cameraId, ctx.cameraName)} est reconnue`;
+  else if (spec.who.type === 'person') cause = `si la personne « ${spec.who.personName} » ${faceCameraPhrase(spec.who.cameraId, ctx.cameraName)} est reconnue`;
   else cause = spec.trigger.type === 'appears' ? "si quelqu'un apparaît" : `si quelqu'un reste au moins ${describeMinutes(spec.trigger.minutes)}`;
   let where: string;
   if ('cameras' in spec.where) {
@@ -316,20 +346,86 @@ export interface FaceSighting {
   kind: 'recognized' | 'unknown';
   personId?: string | null;
   groupId?: string | null;
+  /** Noms portes par l'observation (recus de l'appareil) : garde contre une liste / personne renumerotee ou deplacee. Absents : sans effet. */
+  personName?: string | null;
+  groupName?: string | null;
 }
 
-/** Une observation correspond-elle a la case « Qui » ? « n'importe qui » ne correspond a aucun visage (c'est la presence qui le pilote). */
-export function faceMatches(who: Who, obs: Pick<FaceSighting, 'kind' | 'personId' | 'groupId'>): boolean {
-  switch (who.type) {
-    case 'unknown':
-      return obs.kind === 'unknown';
-    case 'list':
-      return obs.kind === 'recognized' && typeof obs.groupId === 'string' && obs.groupId === who.listId;
-    case 'person':
-      return obs.kind === 'recognized' && typeof obs.personId === 'string' && obs.personId === who.personId;
-    default:
-      return false;
+/** Hote d'un appareil tel que compare : sans espaces autour, en minuscules ; absent ou vide : null. */
+function deviceKey(host: unknown): string | null {
+  if (typeof host !== 'string') return null;
+  const key = host.trim().toLowerCase();
+  return key === '' ? null : key;
+}
+
+/**
+ * Deux cameras sont-elles lues par le MEME appareil (meme hote) ? Faux des qu'un hote est inconnu (camera supprimee, sans source
+ * video, valeur absente) : jamais de « tous appareils ».
+ */
+function sameDevice(hostOf: (cameraId: string) => string | null, a: unknown, b: unknown): boolean {
+  if (typeof a !== 'string' || a === '' || typeof b !== 'string' || b === '') return false;
+  const ha = deviceKey(hostOf(a));
+  return ha !== null && ha === deviceKey(hostOf(b));
+}
+
+type FaceProbe = Pick<FaceSighting, 'cameraId' | 'kind' | 'personId' | 'groupId' | 'personName' | 'groupName'>;
+
+/** Nom compare : normalise comme faceText (NFC, espaces compactes, trim), casse ignoree. Absent ou vide : null. */
+function nameKey(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  const key = normalizeName(name).replace(/\s+/gu, ' ').toLowerCase();
+  return key === '' ? null : key;
+}
+
+/**
+ * Verdict d'une observation pour une liste ou une personne : `match` (meme appareil, meme identifiant, et nom egal ou absent),
+ * `mismatch` (meme appareil et meme identifiant, mais nom different) ou `none`. Une seule lecture de `hostOf` par comparaison.
+ */
+function faceVerdict(who: Who, obs: FaceProbe, hostOf: (cameraId: string) => string | null): 'match' | 'mismatch' | 'none' {
+  if (obs.kind !== 'recognized') return 'none';
+  let seenId: unknown;
+  let wantedId: string;
+  let seenName: unknown;
+  let wantedName: string;
+  if (who.type === 'list') {
+    [seenId, wantedId, seenName, wantedName] = [obs.groupId, who.listId, obs.groupName, who.listName];
+  } else if (who.type === 'person') {
+    [seenId, wantedId, seenName, wantedName] = [obs.personId, who.personId, obs.personName, who.personName];
+  } else {
+    return 'none';
   }
+  if (typeof seenId !== 'string' || seenId !== wantedId || !sameDevice(hostOf, obs.cameraId, who.cameraId)) return 'none';
+  const seen = nameKey(seenName);
+  return seen === null || seen === nameKey(wantedName) ? 'match' : 'mismatch';
+}
+
+/**
+ * Une observation correspond-elle a la case « Qui » ? « n'importe qui » ne correspond a aucun visage (c'est la presence qui le pilote).
+ *
+ * Liste et personne : les numeros sont ceux de l'APPAREIL qui les connait, donc l'observation doit venir du meme appareil que
+ * `who.cameraId` (`hostOf` : hote de la source video d'une camera, ou null) ET porter le meme identifiant. Un `who` sans
+ * `cameraId` (regle ancienne) ou une camera sans hote ne correspond a rien. « Inconnu » : tout visage inconnu, quel que soit l'appareil.
+ *
+ * GARDE DE NOM : si l'observation porte un nom (de liste, ou de personne), il doit etre egal a `listName` (ou `personName`) de la
+ * regle, casse et espaces ignores ; sinon pas de correspondance (une camera deplacee vers un autre appareil dont la liste « 1 » est
+ * une autre liste ne doit pas declencher une regle sur la liste « 1 » de l'ancien). Une observation sans nom garde la
+ * correspondance par (appareil, identifiant). Pure : aucune E/S.
+ */
+export function faceMatches(who: Who, obs: FaceProbe, hostOf: (cameraId: string) => string | null): boolean {
+  if (who.type === 'unknown') return obs.kind === 'unknown';
+  return faceVerdict(who, obs, hostOf) === 'match';
+}
+
+/** Meme appareil et meme identifiant, mais un NOM different : la liste / personne de la regle n'est plus celle de l'appareil (a reenregistrer). */
+export function faceMismatch(who: Who, obs: FaceProbe, hostOf: (cameraId: string) => string | null): boolean {
+  return faceVerdict(who, obs, hostOf) === 'mismatch';
+}
+
+/** Regle d'identite a reenregistrer : pas de camera source (regle ancienne), ou camera supprimee / sans source video. */
+export function whoNeedsReview(who: Who, hostOf: (cameraId: string) => string | null): boolean {
+  if (who.type !== 'list' && who.type !== 'person') return false;
+  const cameraId: unknown = who.cameraId;
+  return typeof cameraId !== 'string' || cameraId === '' || deviceKey(hostOf(cameraId)) === null;
 }
 
 export type RuleAction =
@@ -341,6 +437,17 @@ export interface MachineContext {
   cameras: readonly string[];
   /** La zone de cette camera est-elle armee ? Ne sert qu'a `when.armed`. */
   isArmed: (cameraId: string, at: number) => boolean;
+  /**
+   * Hote (appareil) de la source video d'une camera, ou null (camera supprimee, sans source). Ne sert qu'aux regles liste / personne
+   * (`faceMatches`). Appelee a chaque comparaison, jamais mise en cache. Pure du point de vue de la machine : aucune E/S ici.
+   */
+  hostOf: (cameraId: string) => string | null;
+  /**
+   * Optionnel : appele (sans argument) quand une observation de la portee a le meme appareil et le meme identifiant que la liste /
+   * personne de la regle mais un NOM different (`faceMismatch`). Le direct y branche un avertissement unique ; l'essai sur le passe
+   * ne le fournit pas. La machine ne fait rien d'autre de cette information : l'observation ne correspond simplement pas.
+   */
+  onMismatch?: () => void;
 }
 
 export interface RuleMachine {
@@ -387,7 +494,8 @@ export interface RuleMachine {
  *    ou zone armee (pour `appears` : la camera du « start » ; pour `stays` : au moins une camera presente a cet instant).
  *
  * REGLES D'IDENTITE (`who` : liste, personne, inconnu) : la machine ignore la presence (`feed`) et n'est pilotee que par les
- * visages vus (`see`). Une observation correspondante (faceMatches), dans la portee, pendant une periode active (`appears` : la
+ * visages vus (`see`). Une observation correspondante (faceMatches : meme appareil que `who.cameraId`, via `ctx.hostOf`, et meme
+ * identifiant), dans la portee, pendant une periode active (`appears` : la
  * camera de l'observation), hors repos et si la regle n'est pas deja declenchee, declenche. Les observations correspondantes
  * suivantes prolongent ; `clear` a l'instant EXACT derniere-observation-correspondante + 60 s, puis repos `cooldownMinutes`.
  *
@@ -549,7 +657,8 @@ export function createRuleMachine(spec: RuleSpec, ctx: MachineContext): RuleMach
       if (!identity || !scope.has(obs.cameraId)) return out;
       advance(obs.at, out);
       const t = clock;
-      if (!faceMatches(spec.who, obs)) return out;
+      if (ctx.onMismatch && faceMismatch(spec.who, obs, ctx.hostOf)) ctx.onMismatch();
+      if (!faceMatches(spec.who, obs, ctx.hostOf)) return out;
       if (triggered) {
         lastMatch = t; // prolonge : retour au calme 60 s apres cette observation
       } else if (t >= restUntil && isActive(obs.cameraId, t)) {
@@ -668,6 +777,52 @@ export function createRules(deps: {
 
   const cameraName = (id: string): string => engine.getDevice(id)?.name ?? id;
 
+  /**
+   * Hote (appareil) de la source video d'une camera : relu a chaque comparaison (une camera dont on change l'adresse reste
+   * coherente), meme fonction pour le direct, l'essai sur le passe et la verification. Camera supprimee, sans source ou hote vide : null.
+   */
+  let hostQuery: ReturnType<DatabaseSync['prepare']> | null = null;
+  function hostOf(cameraId: string): string | null {
+    if (typeof cameraId !== 'string' || cameraId === '') return null;
+    try {
+      hostQuery ??= db.prepare('SELECT host FROM camera_source WHERE device_id = ?');
+      const row = hostQuery.get(cameraId) as { host?: unknown } | undefined;
+      return typeof row?.host === 'string' && row.host.trim() !== '' ? row.host : null;
+    } catch {
+      return null; // base illisible : jamais de correspondance plutot qu'une exception dans le traitement d'un visage
+    }
+  }
+
+  /**
+   * Une regle liste / personne ne peut se declencher que si une camera de sa portee est lue par l'APPAREIL de `who.cameraId`
+   * (sinon aucune observation de la portee ne correspondrait jamais). Refus 400 sinon ; sans effet de bord. Ne s'applique qu'a une
+   * saisie : une regle deja enregistree n'est jamais verifiee ainsi au chargement.
+   */
+  function checkReachable(spec: RuleSpec, scope: Device[]): void {
+    const who = spec.who;
+    if (who.type !== 'list' && who.type !== 'person') return;
+    const label = who.type === 'list' ? `de la liste « ${shown(who.listName)} »` : `de la personne « ${shown(who.personName)} »`;
+    if (deviceKey(hostOf(who.cameraId)) === null) {
+      throw new PsimError(400, `Qui : la camera « ${shown(cameraName(who.cameraId))} » ${label} n'est reliee a aucun appareil (pas de source video) : la regle ne pourrait jamais se declencher`);
+    }
+    if (!scope.some((c) => sameDevice(hostOf, c.id, who.cameraId))) {
+      throw new PsimError(400, `Ou : aucune camera choisie n'appartient a l'appareil ${label} (camera « ${shown(cameraName(who.cameraId))} ») : elle ne pourrait jamais se declencher`);
+    }
+  }
+
+  /** Saisie complete : forme (validateSpec), portee (cameras ou zones existantes) puis possibilite de declenchement. Sans effet de bord. */
+  function checked(input: unknown, env: ReturnType<typeof environment>): { spec: RuleSpec; scope: Device[] } {
+    const spec = validateSpec(input, env.ctx);
+    const scope = resolveScope(spec, env.cameras);
+    checkReachable(spec, scope);
+    return { spec, scope };
+  }
+
+  /** Verification d'une specification telle que la ferait `create` (l'API l'utilise pour la proposition de l'assistant). */
+  function validate(input: unknown): RuleSpec {
+    return checked(input, environment()).spec;
+  }
+
   // -- Lecture ------------------------------------------------------------------------------------------------------
 
   const rowOf = (id: number): Row | undefined => db.prepare('SELECT * FROM presence_rule WHERE id = ?').get(id) as Row | undefined;
@@ -681,6 +836,7 @@ export function createRules(deps: {
       spec,
       deviceId: r.device_id as string,
       summary: describeRule(spec, { cameraName }),
+      needsReview: whoNeedsReview(spec.who, hostOf),
       sourceText: (r.source_text as string | null) ?? null,
       createdBy: r.created_by as string,
       createdAt: r.created_at as number,
@@ -737,10 +893,21 @@ export function createRules(deps: {
     const cameras = devices.filter((d) => d.kind === 'camera');
     const scope = tolerantScope(spec, cameras);
     const zones = new Map(scope.map((c) => [c.id, c.zone] as const));
+    let warned = false;
     const machine = createRuleMachine(spec, {
       cameras: scope.map((c) => c.id),
       // La zone est relue a chaque fois : une camera deplacee dans une autre zone est jugee sur sa zone actuelle.
       isArmed: (cameraId) => deps.isArmed(engine.getDevice(cameraId)?.zone ?? zones.get(cameraId) ?? ''),
+      hostOf,
+      // Avertissement UNIQUE par vie du direct (reinitialise quand la regle est reconstruite). L'essai sur le passe ne journalise rien.
+      onMismatch: () => {
+        if (warned) return;
+        warned = true;
+        const who = spec.who;
+        if (who.type !== 'list' && who.type !== 'person') return;
+        const what = who.type === 'list' ? `la liste « ${shown(who.listName)} »` : `la personne « ${shown(who.personName)} »`;
+        console.warn(`[rules] regle ${id} : ${what} n'est plus trouvee sur l'appareil de la camera « ${shown(cameraName(who.cameraId))} » : reenregistrez la regle`);
+      },
     });
     const entry: Live = { machine, scope: new Set(scope.map((c) => c.id)), deviceId, identity: spec.who.type !== 'anyone' };
     live.set(id, entry);
@@ -827,10 +994,9 @@ export function createRules(deps: {
     only(body, ['name', 'spec', 'sourceText', 'enabled'], 'La demande');
     const name = cleanName(own(body, 'name'));
     const env = environment();
-    const spec = validateSpec(own(body, 'spec'), env.ctx);
+    const { spec, scope } = checked(own(body, 'spec'), env);
     const sourceText = cleanSourceText(own(body, 'sourceText'));
     const enabled = cleanEnabled(own(body, 'enabled'), true);
-    const scope = resolveScope(spec, env.cameras);
 
     // Identifiant : jamais celui d'un equipement existant (un detecteur R-n a conserver pour son historique, par exemple).
     let id = (db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM presence_rule').get() as { m: number }).m + 1;
@@ -872,9 +1038,15 @@ export function createRules(deps: {
     const name = own(body, 'name') === undefined ? old.name : cleanName(own(body, 'name'));
     const enabled = cleanEnabled(own(body, 'enabled'), old.enabled);
     const specGiven = own(body, 'spec') !== undefined;
-    const spec = specGiven ? validateSpec(own(body, 'spec'), env.ctx) : old.spec;
+    // Une regle d'identite a reenregistrer ne se reactive pas telle quelle (elle ne se declencherait jamais) ; la desactiver,
+    // la renommer ou la supprimer reste possible, et un nouveau spec valide la reenregistre normalement.
+    if (enabled && !old.enabled && !specGiven && old.needsReview) {
+      throw new PsimError(400, 'Cette regle doit etre reenregistree : choisissez a nouveau la liste');
+    }
     const previousScope = tolerantScope(old.spec, env.cameras);
-    const scope = specGiven ? resolveScope(spec, env.cameras) : previousScope;
+    const given = specGiven ? checked(own(body, 'spec'), env) : null;
+    const spec = given ? given.spec : old.spec;
+    const scope = given ? given.scope : previousScope;
     const specChanged = JSON.stringify(spec) !== JSON.stringify(old.spec);
     const scopeChanged = specGiven && (scope.length !== previousScope.length || scope.some((c, i) => c.id !== previousScope[i].id));
     const renamed = name !== old.name;
@@ -934,11 +1106,11 @@ export function createRules(deps: {
     }
     if (to - from > SIM_MAX_SPAN_MS) throw new PsimError(400, 'Periode trop longue (31 jours au plus)');
     const env = environment();
-    const spec = validateSpec(specInput, env.ctx);
-    const scope = resolveScope(spec, env.cameras);
+    const { spec, scope } = checked(specInput, env);
     const ids = scope.map((c) => c.id);
     const zones = new Map(scope.map((c) => [c.id, c.zone] as const));
-    const machine = createRuleMachine(spec, { cameras: ids, isArmed: (cameraId) => deps.isArmed(zones.get(cameraId) ?? '') });
+    // Meme `hostOf` que le direct : un meme historique donne les memes declenchements.
+    const machine = createRuleMachine(spec, { cameras: ids, isArmed: (cameraId) => deps.isArmed(zones.get(cameraId) ?? ''), hostOf });
 
     const horizon = to + SIM_MARGIN_MS;
     const identity = spec.who.type !== 'anyone';
@@ -969,7 +1141,7 @@ export function createRules(deps: {
     for (const change of changes) collect(machine.feed(change));
     for (const seen of sightings) collect(machine.see(seen));
     collect(machine.tick(horizon));
-    return { summary: describeRule(spec, { cameraName: (id) => scope.find((c) => c.id === id)?.name ?? id }), triggers: triggers.filter((t) => t.at >= from && t.at <= to) };
+    return { summary: describeRule(spec, { cameraName: (id) => scope.find((c) => c.id === id)?.name ?? cameraName(id) }), triggers: triggers.filter((t) => t.at >= from && t.at <= to) };
   }
 
   // -- Demarrage : reconciliation -----------------------------------------------------------------------------------
@@ -1014,7 +1186,7 @@ export function createRules(deps: {
 
   reconcile();
 
-  return { list, get, create, update, remove, tick, simulate, close };
+  return { list, get, create, update, remove, tick, simulate, validate, close };
 }
 
 export type Rules = ReturnType<typeof createRules>;

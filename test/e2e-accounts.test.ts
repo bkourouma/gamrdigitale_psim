@@ -164,7 +164,7 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
   });
 
   it("l'administrateur cree un compte : il doit changer son mot de passe avant tout usage", async () => {
-    const created = await call('POST', '/api/users', { username: 'Camille', role: 'operator', password: 'Mot-de-passe-temporaire-8', displayName: 'Camille Martin' }, state.adminCookie);
+    const created = await call('POST', '/api/users', { username: 'Camille', role: 'operator', password: 'Mot-de-passe-temporaire-8', displayName: 'Camille Martin', reauth: ADMIN_PW }, state.adminCookie);
     assert.equal(created.status, 201);
     assert.equal(created.body.username, 'camille');
     assert.equal(created.body.mustChangePassword, true);
@@ -186,10 +186,10 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
   it("desactiver un compte ferme SA SESSION IMMEDIATEMENT, et il ne peut plus se connecter", async () => {
     const session = (await login('camille', 'Nouveau-mot-de-passe-99')).cookie!;
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 200);
-    assert.equal((await call('PATCH', '/api/users/camille', { active: false }, state.adminCookie)).status, 200);
+    assert.equal((await call('PATCH', '/api/users/camille', { active: false, reauth: ADMIN_PW }, state.adminCookie)).status, 200);
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 401, 'session coupee a la requete suivante');
     assert.equal((await login('camille', 'Nouveau-mot-de-passe-99')).status, 401);
-    await call('PATCH', '/api/users/camille', { active: true }, state.adminCookie);
+    await call('PATCH', '/api/users/camille', { active: true, reauth: ADMIN_PW }, state.adminCookie);
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 401, "reactiver ne ressuscite pas l'ancienne session");
   });
 
@@ -202,15 +202,15 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
   });
 
   it("le dernier administrateur ne peut etre ni retrograde, ni desactive, ni supprime", async () => {
-    assert.equal((await call('PATCH', '/api/users/admin', { role: 'operator' }, state.adminCookie)).status, 409);
-    assert.equal((await call('PATCH', '/api/users/admin', { active: false }, state.adminCookie)).status, 409);
-    assert.equal((await call('DELETE', '/api/users/admin', undefined, state.adminCookie)).status, 409);
+    assert.equal((await call('PATCH', '/api/users/admin', { role: 'operator', reauth: ADMIN_PW }, state.adminCookie)).status, 409);
+    assert.equal((await call('PATCH', '/api/users/admin', { active: false, reauth: ADMIN_PW }, state.adminCookie)).status, 409);
+    assert.equal((await call('DELETE', '/api/users/admin', { reauth: ADMIN_PW }, state.adminCookie)).status, 409);
     assert.equal((await call('GET', '/api/me', undefined, state.adminCookie)).body.role, 'admin');
   });
 
   it("reinitialiser un mot de passe force son changement et ferme les sessions du compte", async () => {
     const session = (await login('operateur', OPERATOR_PW)).cookie!;
-    const reset = await call('POST', '/api/users/operateur/reset-password', { password: 'Mot-de-passe-reinitialise-4' }, state.adminCookie);
+    const reset = await call('POST', '/api/users/operateur/reset-password', { password: 'Mot-de-passe-reinitialise-4', reauth: ADMIN_PW }, state.adminCookie);
     assert.equal(reset.status, 200);
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 401);
     assert.equal((await login('operateur', OPERATOR_PW)).status, 401);
@@ -218,7 +218,7 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
   });
 
   it("l'administrateur reinitialise la 2FA d'un compte (telephone perdu)", async () => {
-    await call('POST', '/api/users', { username: 'paul', role: 'operator', password: 'Mot-de-passe-temporaire-8' }, state.adminCookie);
+    await call('POST', '/api/users', { username: 'paul', role: 'operator', password: 'Mot-de-passe-temporaire-8', reauth: ADMIN_PW }, state.adminCookie);
     const paul = (await login('paul', 'Mot-de-passe-temporaire-8')).cookie!;
     await call('POST', '/api/me/password', { current: 'Mot-de-passe-temporaire-8', next: 'Mot-de-passe-solide-12' }, paul);
     const session = (await login('paul', 'Mot-de-passe-solide-12')).cookie!;
@@ -226,7 +226,7 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
     assert.equal(setup.status, 200, JSON.stringify(setup.body));
     assert.equal((await call('POST', '/api/me/2fa/enable', { code: totp(base32Decode(setup.body.secret), Date.now()) }, session)).status, 200);
     assert.equal((await login('paul', 'Mot-de-passe-solide-12')).body.twoFactor, true);
-    const reset = await call('POST', '/api/users/paul/reset-2fa', undefined, state.adminCookie);
+    const reset = await call('POST', '/api/users/paul/reset-2fa', { reauth: ADMIN_PW }, state.adminCookie);
     assert.equal(reset.body.totpEnabled, false);
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 401, 'ses sessions sont fermees');
     assert.equal((await login('paul', 'Mot-de-passe-solide-12')).body.twoFactor, undefined, 'plus de seconde etape');
@@ -265,7 +265,7 @@ describe('comptes et double authentification (processus reel)', { timeout: 120_0
   it("supprimer un compte supprime sa session", async () => {
     const session = (await login('paul', 'Mot-de-passe-solide-12')).cookie!;
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 200);
-    assert.equal((await call('DELETE', '/api/users/paul', undefined, state.adminCookie)).status, 204);
+    assert.equal((await call('DELETE', '/api/users/paul', { reauth: ADMIN_PW }, state.adminCookie)).status, 204);
     assert.equal((await call('GET', '/api/state', undefined, session)).status, 401);
   });
 });

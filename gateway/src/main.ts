@@ -46,6 +46,10 @@ async function check(config: GatewayConfig): Promise<number> {
       console.log(`  module       : ${spec.label} (${spec.name}) : ERREUR ${(err as Error).message}`);
     }
   }
+  for (const a of config.actuators) {
+    const actions = Object.entries(a.actions).map(([n, s]) => `${n}${s.maxS === null ? '' : ` <= ${s.maxS} s${s.unbounded ? ' (sans duree permis)' : ''}`}`);
+    console.log(`  actionneur   : ${a.id} (module ${a.module}) : ${actions.join(', ')} ; repos ${a.rest ?? 'aucun'}${a.emergencyExit ? ' ; ISSUE DE SECOURS (lock interdit)' : ''} ; cle : ${a.keySource}`);
+  }
   try {
     const c = await mqtt.connectAsync(config.psim.url, {
       username: config.psim.username,

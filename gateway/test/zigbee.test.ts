@@ -64,6 +64,7 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG, start = true
       return link;
     },
     log: (level, text) => void h.logs.push({ level, text }),
+    onActuator: () => undefined,
     config,
     now: () => now,
   };
@@ -154,7 +155,7 @@ test('baseTopic personnalise', async () => {
 
 test("echec d'ouverture MQTT : l'erreur remonte au socle", async () => {
   const mod = create(BASE_CONFIG);
-  const ctx = { emit() {}, openMqtt: async () => Promise.reject(new Error('refuse')), log() {}, config: {}, now: () => T0 } as ModuleContext;
+  const ctx = { emit() {}, openMqtt: async () => Promise.reject(new Error('refuse')), log() {}, onActuator() {}, config: {}, now: () => T0 } as ModuleContext;
   await assert.rejects(mod.start(ctx), /refuse/);
 });
 

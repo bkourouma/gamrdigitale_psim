@@ -582,6 +582,7 @@ export function createNotifier(deps: NotifierDeps) {
     const lines = [
       `${title} - ${incident.detectorName}`,
       `Zone : ${incident.zone || 'non renseignee'}${manyFloors && incident.floor ? ` - Etage : ${incident.floor}` : ''}`,
+      incident.detail ? `Detail : ${incident.detail}` : '',
       incident.lastValue === null ? '' : `Derniere mesure : ${incident.lastValue}${incident.valueUnit ? ` ${incident.valueUnit}` : ''}`,
       `Incident n°${incident.id}, ouvert a ${new Date(incident.openedAt).toLocaleTimeString('fr-FR')}`,
       confirmed ? `Confirmee : ${incident.confirmationReason?.replace('neighbor:', 'detecteur voisin ').replace('persistence', 'persistance')}` : "A confirmer : rien ne la corrobore pour l'instant, a traiter quand meme",
@@ -609,6 +610,8 @@ export function createNotifier(deps: NotifierDeps) {
         zone: incident.zone,
         floor: incident.floor,
         cameras,
+        // Precision portee par le message de l'equipement ; absente (et non null) sans precision, comme avant.
+        ...(incident.detail ? { detail: incident.detail } : {}),
       },
     };
   }

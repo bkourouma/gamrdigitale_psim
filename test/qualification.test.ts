@@ -503,7 +503,7 @@ describe('fiches de recette : sections, gabarits et coherence avec le registre',
     assert.ok(combos.length >= 40);
     assert.deepEqual(
       fiches.map((f) => f.id).sort(),
-      ['camera-onvif', 'enregistreur-dahua', 'lorawan', 'modbus', 'mqtt-ingest', 'notifications', 'onduleur', 'sia', 'socle', 'tuya', 'zigbee'],
+      ['camera-onvif', 'controle-acces', 'enregistreur-dahua', 'lorawan', 'modbus', 'mqtt-ingest', 'notifications', 'onduleur', 'sia', 'socle', 'tuya', 'zigbee'],
     );
   });
 

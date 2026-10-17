@@ -102,6 +102,7 @@ export function createUsersService(deps: UsersDeps) {
   function create(actor: string, input: Record<string, unknown>): UserView {
     const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
     if (!USERNAME_PATTERN.test(username)) throw new PsimError(400, "Identifiant invalide (3 a 32 caracteres : lettres minuscules, chiffres, . _ -)");
+    if (input.role === 'agent') throw new PsimError(400, "Les agents se creent depuis l'ecran Rondes, pas depuis les comptes");
     if (input.role !== 'operator' && input.role !== 'admin') throw new PsimError(400, 'Role invalide (operator ou admin)');
     if (db.prepare('SELECT 1 AS x FROM app_user WHERE username = ?').get(username)) throw new PsimError(409, 'Cet identifiant existe deja');
     const password = checkPassword(input.password, username);
@@ -113,13 +114,34 @@ export function createUsersService(deps: UsersDeps) {
     return get(username);
   }
 
+  /**
+   * Compte d'un agent de terrain (voir agents.ts, qui y ajoute le profil et l'audit `agent_created`). Mot de passe : 32 octets
+   * aleatoires, jamais communiques ni stockes ailleurs (l'agent entre par son code, sur un telephone appaire) ; rien a changer
+   * a la premiere connexion. Pas d'entree d'audit ici. Tout est valide avant la moindre ecriture.
+   */
+  function createAgentAccount(actor: string, username: string, displayName: string): UserView {
+    void actor; // l'audit de la creation est celui d'agents.ts
+    const id = typeof username === 'string' ? username.trim().toLowerCase() : '';
+    if (!USERNAME_PATTERN.test(id)) throw new PsimError(400, "Identifiant invalide (3 a 32 caracteres : lettres minuscules, chiffres, . _ -)");
+    const name = cleanName(displayName);
+    if (db.prepare('SELECT 1 AS x FROM app_user WHERE username = ?').get(id)) throw new PsimError(409, 'Cet identifiant existe deja');
+    createUser(db, id, 'agent', randomBytes(32).toString('hex'), now());
+    db.prepare('UPDATE app_user SET display_name = ?, must_change_password = 0 WHERE username = ?').run(name, id);
+    return get(id);
+  }
+
   function update(actor: string, username: string, patch: Record<string, unknown>): UserView {
     const current = view(row(username));
     const changes: string[] = [];
     let epoch = false;
     const displayName = patch.displayName === undefined ? undefined : cleanName(patch.displayName); // valide d'abord
-    if (patch.role !== undefined && patch.role !== 'operator' && patch.role !== 'admin') throw new PsimError(400, 'Role invalide');
+    if (patch.role !== undefined && patch.role !== 'operator' && patch.role !== 'admin' && patch.role !== 'agent') throw new PsimError(400, 'Role invalide');
     if (patch.active !== undefined && typeof patch.active !== 'boolean') throw new PsimError(400, 'active doit etre vrai ou faux');
+    // Le role agent ne s'acquiert ni ne se perd ici : un agent a son profil (code, zones, telephones), gere depuis l'ecran Rondes.
+    // Activer ou desactiver un agent, ou changer son nom affiche, reste possible.
+    if (patch.role !== undefined && patch.role !== current.role && (patch.role === 'agent' || current.role === 'agent')) {
+      throw new PsimError(409, "Le role agent ne se change pas ici : gerer les agents depuis l'ecran Rondes");
+    }
 
     // Tout ou rien : si une des modifications demandees est refusee, aucune n'est appliquee.
     db.exec('BEGIN');
@@ -154,6 +176,8 @@ export function createUsersService(deps: UsersDeps) {
   /** Reinitialise le mot de passe (oubli) : a changer a la prochaine connexion, sessions fermees. */
   function resetPassword(actor: string, username: string, newPassword: unknown): UserView {
     const r = row(username);
+    // Le mot de passe d'un agent est aleatoire et inutilisable : il n'ouvre aucune session (l'agent entre par son code, sur son telephone).
+    if (r.role === 'agent') throw new PsimError(409, "Un agent n'a pas de mot de passe : son code se change depuis l'ecran Rondes");
     const password = checkPassword(newPassword, username);
     createUser(db, username, r.role as Role, password, now());
     db.prepare('UPDATE app_user SET must_change_password = 1 WHERE username = ?').run(username);
@@ -174,6 +198,7 @@ export function createUsersService(deps: UsersDeps) {
   /** Changement par l'utilisateur lui-meme : exige le mot de passe actuel. */
   function changeOwnPassword(username: string, current: unknown, next: unknown): void {
     const r = row(username);
+    if (r.role === 'agent') throw new PsimError(409, "Un agent n'a pas de mot de passe a changer");
     if (typeof current !== 'string' || checkCredentials(db, username, current) === null) throw new PsimError(403, 'Mot de passe actuel incorrect');
     const password = checkPassword(next, username);
     if (password === current) throw new PsimError(400, "Le nouveau mot de passe doit etre different de l'ancien");
@@ -184,7 +209,8 @@ export function createUsersService(deps: UsersDeps) {
 
   // ---------------------------------------------------------------- connexion
 
-  const needsTotp = (role: Role) => requireTotp === 'all' || (requireTotp === 'admin' && role === 'admin');
+  // Un agent n'a pas de mot de passe utilisable ni d'ecran de connexion classique : la double authentification ne le concerne jamais.
+  const needsTotp = (role: Role) => role !== 'agent' && (requireTotp === 'all' || (requireTotp === 'admin' && role === 'admin'));
 
   /** Etape a accomplir avant d'utiliser l'application : changer son mot de passe, activer la 2FA. */
   function restrictionFor(username: string): Restriction {
@@ -354,6 +380,7 @@ export function createUsersService(deps: UsersDeps) {
     list,
     get,
     create,
+    createAgentAccount,
     update,
     resetPassword,
     remove,
