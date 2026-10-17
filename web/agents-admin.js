@@ -25,8 +25,8 @@
 
 // ---------------------------------------------------------------- règles et fonctions pures
 
-/** Identifiant d'un agent : même règle que le serveur (et que l'écran des comptes). */
-export const AGENT_USERNAME = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+/** Identifiant d'un agent : même règle que server/agents.ts (le détecteur `A-<identifiant>` n'admet pas le point). */
+export const AGENT_USERNAME = /^[a-z0-9][a-z0-9_-]{2,29}$/;
 export const MAX_NAME = 80;
 export const MAX_PHONE_LABEL = 60;
 export const DEFAULT_SHIFT_HOURS = 12;
@@ -165,8 +165,8 @@ export function agentProblems(form, { edit = false } = {}) {
   else if (name.length > MAX_NAME) out.push({ key: 'displayName', message: `Le nom est trop long : ${MAX_NAME} caractères au plus.` });
   if (!edit) {
     const id = normalizeUsername(f.username);
-    if (!id) out.push({ key: 'username', message: 'Indiquez un identifiant (ex. marie.dupont).' });
-    else if (!AGENT_USERNAME.test(id)) out.push({ key: 'username', message: 'Identifiant invalide : 3 à 32 caractères, lettres minuscules sans accent, chiffres, point ou tiret (ex. marie.dupont).' });
+    if (!id) out.push({ key: 'username', message: 'Indiquez un identifiant (ex. marie-dupont).' });
+    else if (!AGENT_USERNAME.test(id)) out.push({ key: 'username', message: 'Identifiant invalide : 3 à 30 caractères, lettres minuscules sans accent, chiffres, tiret ou soulignement, sans point (ex. marie-dupont).' });
   }
   const pin = f.pin === null || f.pin === undefined ? '' : typeof f.pin === 'string' ? f.pin : String(f.pin);
   if (!edit || pin !== '') {
@@ -785,7 +785,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
   /** Formulaire construit une fois : jamais effacé par un rafraîchissement de la liste. */
   function buildCreateForm() {
     const displayName = h('input', { maxlength: String(MAX_NAME), autocomplete: 'off', required: true, placeholder: 'ex. Marie Dupont', 'data-key': 'ag:new:name' });
-    const username = h('input', { maxlength: '32', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', required: true, placeholder: 'ex. marie.dupont', 'data-key': 'ag:new:username' });
+    const username = h('input', { maxlength: '30', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', required: true, placeholder: 'ex. marie-dupont', 'data-key': 'ag:new:username' });
     const pin = pinField({ required: true, label: 'Code personnel', hint: 'L’agent le tape pour ouvrir sa session. Communiquez-le-lui de vive voix. 4 à 6 chiffres.', keyBase: 'ag:new' });
     const picker = zonePicker({ legend: 'Zones', keyBase: 'ag:new' });
     const hours = h('input', { type: 'number', min: String(MIN_SHIFT_HOURS), max: String(MAX_SHIFT_HOURS), step: 'any', inputmode: 'decimal', autocomplete: 'off', 'data-key': 'ag:new:hours' });
@@ -850,7 +850,7 @@ export function createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe = ()
         'div',
         { class: 'form-grid adm-grid' },
         field(h, 'Nom affiché', displayName, 'Tel qu’on le verra dans la liste et dans le journal des rondes.'),
-        field(h, 'Identifiant', username, 'Minuscules, chiffres, point, tiret ; sert à le reconnaître, pas à se connecter.'),
+        field(h, 'Identifiant', username, 'Minuscules, chiffres, tiret, soulignement (pas de point) ; sert à le reconnaître, pas à se connecter.'),
       ),
       pin.el,
       picker.el,

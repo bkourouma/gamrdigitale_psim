@@ -194,6 +194,67 @@ function withCredentials(uri: string, username: string | null, password: string 
   return url.toString();
 }
 
+// ---- Relecture de l'enregistreur (voies Dahua) ------------------------------------------
+
+/** Le clip relu : 10 s avant le passage, 20 s apres. */
+export const PLAYBACK_BEFORE_MS = 10_000;
+export const PLAYBACK_AFTER_MS = 20_000;
+/** Relectures simultanees (un ffmpeg PAR demande : on borne la charge de l'enregistreur et du poste). */
+export const MAX_PLAYBACKS = 2;
+/** Temps de relecture au plus : le clip dure 30 s a vitesse reelle, plus une marge de connexion. */
+const PLAYBACK_MAX_MS = PLAYBACK_BEFORE_MS + PLAYBACK_AFTER_MS + 15_000;
+/** Une heure demandee ne peut pas etre dans le futur de plus d'une minute, ni plus vieille que 400 jours. */
+const PLAYBACK_FUTURE_MS = 60_000;
+const PLAYBACK_MAX_AGE_MS = 400 * 86_400_000;
+/** Bornes de l'heure d'un passage pour la fonction pure (1er janvier 2000 - 1er janvier 2100). */
+const AT_MIN = 946_684_800_000;
+const AT_MAX = 4_102_444_800_000;
+export const NO_RECORDING_MESSAGE = 'Aucun enregistrement a cette heure ou enregistreur injoignable';
+
+/** Voie d'enregistreur Dahua : `/cam/realmonitor?channel=N` avec eventuellement `&subtype=M` (dans l'un ou l'autre ordre). */
+const DAHUA_LIVE_PATH = /^\/cam\/realmonitor\?(?:channel=([1-9]\d{0,2})(?:&subtype=\d{1,2})?|subtype=\d{1,2}&channel=([1-9]\d{0,2}))$/;
+
+/** Numero de voie (1 a 256) d'un chemin RTSP de type enregistreur Dahua, ou null pour tout autre chemin. */
+export function dahuaChannel(rtspPath: string | null | undefined): number | null {
+  if (typeof rtspPath !== 'string') return null;
+  const m = DAHUA_LIVE_PATH.exec(rtspPath);
+  if (!m) return null;
+  const channel = Number(m[1] ?? m[2]);
+  return channel >= 1 && channel <= 256 ? channel : null;
+}
+
+const two = (n: number) => String(n).padStart(2, '0');
+
+/** Heure locale du PSIM (celle de l'enregistreur sur un site) : `AAAA_MM_JJ_HH_mm_ss`. */
+export function localStamp(ms: number): string {
+  const d = new Date(ms);
+  return [d.getFullYear(), two(d.getMonth() + 1), two(d.getDate()), two(d.getHours()), two(d.getMinutes()), two(d.getSeconds())].join('_');
+}
+
+/** Meme heure locale, lisible (journal d'audit) : `AAAA-MM-JJ HH:mm:ss`. */
+export function localDateTime(ms: number): string {
+  const [y, mo, d, h, mi, s] = localStamp(ms).split('_');
+  return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+}
+
+/**
+ * Adresse de relecture Dahua d'une voie d'enregistreur, SANS identifiants :
+ * `rtsp://hote:port/cam/playback?channel=N&subtype=0&starttime=AAAA_MM_JJ_HH_mm_ss&endtime=AAAA_MM_JJ_HH_mm_ss`.
+ * Debut = passage - 10 s, fin = passage + 20 s, en heure locale du PSIM. Renvoie null pour tout chemin qui n'est pas une
+ * voie d'enregistreur Dahua, un hote ou un port invalide, ou une heure qui n'est pas un entier plausible : aucun
+ * morceau du chemin recu n'est recopie (seul le numero de voie, relu en entier, l'est).
+ */
+export function playbackUrl(rtspPath: string | null | undefined, host: string, port: number, atMs: number): string | null {
+  const channel = dahuaChannel(rtspPath);
+  if (channel === null) return null;
+  if (typeof host !== 'string' || !HOST_PATTERN.test(host)) return null;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (!Number.isSafeInteger(atMs) || atMs < AT_MIN || atMs > AT_MAX) return null;
+  const start = localStamp(atMs - PLAYBACK_BEFORE_MS);
+  const end = localStamp(atMs + PLAYBACK_AFTER_MS);
+  return `rtsp://${host}:${port}/cam/playback?channel=${channel}&subtype=0&starttime=${start}&endtime=${end}`;
+}
+
 /**
  * Retient l'image courante toutes les `everyMs` (la premiere apres `settleMs`), jusqu'a `count` images ou la fin du flux.
  * Une image deja retenue (meme objet : rien de neuf n'est arrive) n'est pas reprise.
@@ -260,6 +321,21 @@ export interface VideoOptions {
   idleStopMs?: number;
   /** Surcharge des arguments ffmpeg (tests uniquement). */
   argsFor?: (url: string, once: boolean, aspect: Aspect, info: boolean) => string[];
+  /** Horloge injectee (tests) : bornes de l'heure d'une relecture. */
+  now?: () => number;
+  /** Duree maximale d'une relecture (tests uniquement ; defaut : clip de 30 s plus une marge). */
+  playbackMaxMs?: number;
+}
+
+/** Une relecture en cours : son ffmpeg, sa reponse, ses minuteries. */
+interface Playback {
+  proc: ChildProcess | null;
+  viewer: Viewer;
+  frames: number;
+  stderr: string;
+  maxTimer: NodeJS.Timeout | null;
+  firstFrameTimer: NodeJS.Timeout | null;
+  done: boolean;
 }
 
 export function createVideoService(opts: VideoOptions) {
@@ -267,7 +343,11 @@ export function createVideoService(opts: VideoOptions) {
   const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
   const argsFor = opts.argsFor ?? defaultArgs;
   const idleStop = opts.idleStopMs ?? IDLE_STOP_MS;
+  const now = opts.now ?? Date.now;
+  const playbackMax = opts.playbackMaxMs ?? PLAYBACK_MAX_MS;
   const feeds = new Map<string, Feed>();
+  /** Relectures en cours (une par demande, jamais partagees). */
+  const playbacks = new Set<Playback>();
 
   // ---- Configuration des sources --------------------------------------------------------
 
@@ -351,18 +431,20 @@ export function createVideoService(opts: VideoOptions) {
 
   // ---- Resolution de l'adresse du flux --------------------------------------------------
 
+  function passwordOf(row: SourceRow): string | null {
+    if (!row.secret) return null;
+    try {
+      return unseal(key, row.secret);
+    } catch {
+      throw new PsimError(500, 'Mot de passe de la camera illisible (cle de chiffrement changee) : le saisir a nouveau');
+    }
+  }
+
   async function resolve(cameraId: string): Promise<{ url: string; note: string; aspect: Aspect }> {
     const row = getRow(cameraId);
     if (!row) throw new PsimError(404, 'Cette camera utilise la source simulee');
     const aspect: Aspect = ASPECTS.includes(row.aspect) ? row.aspect : 'auto';
-    let password: string | null = null;
-    if (row.secret) {
-      try {
-        password = unseal(key, row.secret);
-      } catch {
-        throw new PsimError(500, 'Mot de passe de la camera illisible (cle de chiffrement changee) : le saisir a nouveau');
-      }
-    }
+    const password = passwordOf(row);
     if (row.kind === 'rtsp') {
       const url = withCredentials(`rtsp://${row.host}:${row.port}${row.rtsp_path ?? '/'}`, row.username, password);
       return { url, note: `RTSP ${row.host}:${row.port}`, aspect };
@@ -552,8 +634,95 @@ export function createVideoService(opts: VideoOptions) {
     if (!feed.proc && !feed.starting) void start(feed);
   }
 
+  // ---- Relecture de l'enregistreur : un ffmpeg PAR demande, arrete a la fin du clip ---------
+
+  /** Voie d'enregistreur Dahua relisible : source RTSP dont le chemin est `/cam/realmonitor?channel=N`. */
+  function isReplayable(row: SourceRow | null): row is SourceRow {
+    return row !== null && row.kind === 'rtsp' && dahuaChannel(row.rtsp_path) !== null && HOST_PATTERN.test(row.host);
+  }
+
+  function replayable(cameraId: string): boolean {
+    return engine.getDevice(cameraId)?.kind === 'camera' && isReplayable(getRow(cameraId));
+  }
+
+  function listReplayable(): string[] {
+    const rows = db.prepare("SELECT * FROM camera_source WHERE kind = 'rtsp' ORDER BY device_id").all() as unknown as SourceRow[];
+    return rows.filter((r) => engine.getDevice(r.device_id)?.kind === 'camera' && isReplayable(r)).map((r) => r.device_id);
+  }
+
+  /** Fin d'une relecture (une seule fois) : ffmpeg tue, minuteries coupees, place rendue, reponse fermee. */
+  function endPlayback(pb: Playback, err: PsimError | null): void {
+    if (pb.done) return;
+    pb.done = true;
+    playbacks.delete(pb);
+    if (pb.maxTimer) clearTimeout(pb.maxTimer);
+    if (pb.firstFrameTimer) clearTimeout(pb.firstFrameTimer);
+    pb.maxTimer = null;
+    pb.firstFrameTimer = null;
+    pb.proc?.kill();
+    pb.proc = null;
+    endViewer(pb.viewer, err);
+  }
+
+  /**
+   * Relit l'enregistrement de la camera autour de `atMs` (10 s avant, 20 s apres) et le diffuse comme le direct
+   * (multipart MJPEG). Seule l'heure vient du navigateur (entier, ms) ; l'adresse est toujours deduite de la source
+   * enregistree. Un ffmpeg par demande, au plus MAX_PLAYBACKS a la fois ; il s'arrete a la fin du clip, a la
+   * fermeture de la reponse ou apres PLAYBACK_MAX_MS.
+   */
+  function attachPlayback(cameraId: string, atMs: number, res: ServerResponse): void {
+    requireCamera(cameraId);
+    const row = getRow(cameraId);
+    if (!row) throw new PsimError(404, 'Cette camera utilise la source simulee');
+    if (!isReplayable(row)) throw new PsimError(409, 'Cette camera ne permet pas la relecture depuis le PSIM');
+    if (!Number.isSafeInteger(atMs)) throw new PsimError(400, 'Heure invalide');
+    const t = now();
+    if (atMs > t + PLAYBACK_FUTURE_MS) throw new PsimError(400, 'Heure invalide : dans le futur');
+    if (atMs < t - PLAYBACK_MAX_AGE_MS) throw new PsimError(400, 'Heure trop ancienne : les enregistrements ne remontent pas a plus de 400 jours');
+    const bare = playbackUrl(row.rtsp_path, row.host, row.port, atMs);
+    if (!bare) throw new PsimError(400, 'Heure invalide');
+    if (playbacks.size >= MAX_PLAYBACKS) throw new PsimError(503, 'Trop de relectures en cours');
+    const url = withCredentials(bare, row.username, passwordOf(row));
+    const aspect: Aspect = ASPECTS.includes(row.aspect) ? row.aspect : 'auto';
+
+    const viewer: Viewer = { res, started: false };
+    const pb: Playback = { proc: null, viewer, frames: 0, stderr: '', maxTimer: null, firstFrameTimer: null, done: false };
+    playbacks.add(pb);
+    res.on('close', () => endPlayback(pb, null));
+
+    const proc = spawn(ffmpeg, argsFor(url, false, aspect, false), { stdio: ['ignore', 'pipe', 'pipe'] });
+    pb.proc = proc;
+    pb.maxTimer = setTimeout(() => endPlayback(pb, pb.frames > 0 ? null : new PsimError(504, NO_RECORDING_MESSAGE)), playbackMax);
+    pb.firstFrameTimer = setTimeout(() => endPlayback(pb, new PsimError(504, NO_RECORDING_MESSAGE)), FIRST_FRAME_TIMEOUT_MS);
+    proc.stdout.on(
+      'data',
+      createJpegSplitter((frame) => {
+        if (pb.done) return;
+        if (pb.frames++ === 0 && pb.firstFrameTimer) {
+          clearTimeout(pb.firstFrameTimer);
+          pb.firstFrameTimer = null;
+        }
+        sendFrame(viewer, Buffer.from(frame));
+      }),
+    );
+    proc.stderr.on('data', (d: Buffer) => (pb.stderr = (pb.stderr + d.toString()).slice(-2000)));
+    proc.on('error', () => endPlayback(pb, new PsimError(500, "ffmpeg introuvable : l'installer ou renseigner PSIM_FFMPEG")));
+    proc.on('close', (code) => {
+      if (pb.done) return;
+      if (pb.frames === 0 || code) {
+        const errors = errorLines(pb.stderr);
+        if (errors.trim()) console.warn(`[video] relecture ${cameraId} : ${redact(errors)}`);
+      }
+      // Fin normale du clip (des images ont ete servies) : la reponse se ferme sans erreur.
+      if (pb.frames > 0) return endPlayback(pb, null);
+      const refused = /401|unauthorized/i.test(pb.stderr) ? " (identifiants refuses par l'enregistreur)" : '';
+      endPlayback(pb, new PsimError(502, `${NO_RECORDING_MESSAGE}${refused}`));
+    });
+  }
+
   function shutdown(): void {
     for (const feed of [...feeds.values()]) dispose(feed, null);
+    for (const pb of [...playbacks]) endPlayback(pb, null);
   }
 
   /**
@@ -609,7 +778,7 @@ export function createVideoService(opts: VideoOptions) {
     }
   }
 
-  return { view, setSource, test, snapshot, snapshotSeries, attachViewer, closeFeed, shutdown, activeFeeds: () => feeds.size };
+  return { view, setSource, test, snapshot, snapshotSeries, attachViewer, replayable, listReplayable, attachPlayback, closeFeed, shutdown, activeFeeds: () => feeds.size, activePlaybacks: () => playbacks.size };
 }
 
 export type VideoService = ReturnType<typeof createVideoService>;

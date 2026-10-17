@@ -1,0 +1,213 @@
+/* =====================================================================================================================
+   Écran « Accès » (access.js) : journal des passages, portes, fiche d'une porte, déclaration. Jetons et composants de
+   base.css seulement (.btn, .panel, .pill, .tag, .notice, .empty, .state-block, .segmented, .field, table.data) : rien de
+   neuf en couleur, en police ni en ombre. Classes préfixées `acc-`. Aucun style en ligne n'est posé par le script (CSP).
+   Les tableaux deviennent des cartes selon la largeur DU PANNEAU (requêtes de conteneur), pas celle de la fenêtre.
+   ===================================================================================================================== */
+.access-layout { container-type: inline-size; display: grid; gap: var(--s4); max-width: 1180px; min-width: 0; }
+.acc-root { display: grid; gap: var(--s4); min-width: 0; align-content: start; }
+.acc-root h3 { font-size: var(--fs-md); }
+.acc-spacer { flex: 1 1 auto; }
+
+/* Onglets : même forme que les boutons groupés, cibles de 44 px pour le doigt et le poste de garde. */
+.acc-tabs { justify-self: start; max-width: 100%; flex-wrap: wrap; }
+.acc-tabs button { min-height: var(--control-h); padding: 0 var(--s4); font-size: var(--fs-md); }
+.acc-tabs button .icon { width: 20px; height: 20px; }
+.acc-pane[hidden], .acc-fiche[hidden] { display: none; }
+.acc-panel { min-width: 0; container-type: inline-size; }
+
+/* Messages (erreur de lecture, état vide) : jamais un trou dans la page. */
+.acc-message:empty { display: none; }
+.acc-notice-body { display: grid; gap: var(--s2); min-width: 0; }
+.acc-notice .actions { margin-top: var(--s1); }
+.acc-status { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.acc-status:empty { display: none; }
+.acc-status.is-ok { color: var(--ok-ink); }
+.acc-status.is-warning { color: var(--warning-ink); }
+.acc-status.is-alarm { color: var(--alarm-ink); }
+.acc-status.is-info { color: var(--info-ink); }
+
+/* ------------------------------------------------------------------------------------------------ journal : filtres */
+.acc-filters { display: grid; gap: var(--s4); }
+.acc-filter-group { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3) var(--s4) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.acc-filter-group > h3 { color: var(--ink-2); font-size: var(--fs-sm); }
+.acc-presets { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+.acc-presets button { min-height: var(--control-h); }
+.acc-fields { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); align-items: start; min-width: 0; }
+.acc-fields > * { min-width: 0; }
+.acc-fields-inline { align-items: end; }
+.acc-fields-inline .segmented { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+.acc-fields-inline .segmented button { min-height: var(--control-h); }
+.acc-check { display: grid; gap: var(--s1); }
+.acc-check .check { min-height: var(--control-h); }
+.acc-check .hint { padding-left: calc(20px + var(--s2)); }
+.acc-privacy { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); }
+.acc-privacy .icon { align-self: center; color: var(--ink-3); }
+
+/* ------------------------------------------------------------------------------------------------ journal : résultats */
+.acc-results { display: grid; gap: var(--s3); min-width: 0; }
+.acc-results.is-loading .acc-tablewrap { opacity: 0.55; }
+.acc-results-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s1) var(--s4); }
+.acc-results-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); }
+.acc-total { font-size: var(--fs-lg); font-weight: 700; outline: none; }
+.acc-total:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.acc-range, .acc-loaded-at { font-size: var(--fs-sm); color: var(--ink-2); }
+.acc-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); }
+.acc-page-text { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.acc-video-help { display: flex; align-items: flex-start; gap: var(--s2); }
+.acc-video-help .icon { margin-top: 2px; color: var(--ink-3); }
+
+/* Tableaux : cellules à deux lignes (valeur, précision), liens et libellés de carte. */
+.acc-tablewrap { container-type: inline-size; container-name: acctable; }
+.acc-stack td { vertical-align: top; }
+.acc-cell-stack { display: grid; justify-items: start; gap: var(--s1); min-width: 0; max-width: 100%; }
+.acc-sub { display: block; font-size: var(--fs-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+.acc-when { white-space: nowrap; }
+.acc-when time { display: grid; gap: 1px; }
+.acc-who strong { display: block; overflow-wrap: anywhere; }
+.acc-stack strong, .acc-stack .mono { overflow-wrap: anywhere; }
+.acc-stack .tag, .acc-stack .pill { white-space: normal; max-width: 100%; }
+.acc-video-cell { min-width: 9rem; }
+.acc-link { font-size: var(--fs-sm); font-weight: 600; }
+.acc-actions-cell { width: 1%; }
+.acc-actions-cell .actions { flex-wrap: nowrap; justify-content: flex-end; }
+.acc-actions-cell .actions .btn { white-space: nowrap; }
+.acc-stack td.num { text-align: right; }
+
+/* Sous 960 px de panneau : une carte par ligne, chaque cellule avec son libellé (pas de défilement de côté). */
+@container acctable (max-width: 960px) {
+  table.acc-journal-table thead, table.acc-decl-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.acc-journal-table, table.acc-journal-table tbody, table.acc-decl-table, table.acc-decl-table tbody { display: block; }
+  table.acc-journal-table tbody, table.acc-decl-table tbody { display: grid; gap: var(--s3); }
+  table.acc-journal-table tr, table.acc-decl-table tr { display: grid; gap: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+  table.acc-journal-table tbody tr:hover, table.acc-decl-table tbody tr:hover { background: var(--surface); }
+  table.acc-journal-table td, table.acc-decl-table td { display: grid; grid-template-columns: minmax(96px, 36%) minmax(0, 1fr); gap: var(--s2); align-items: start; padding: 0; border: 0; white-space: normal; text-align: left; }
+  table.acc-journal-table td[data-label]::before, table.acc-decl-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+  table.acc-journal-table td.acc-when, table.acc-decl-table td.acc-who { grid-template-columns: minmax(0, 1fr); }
+  table.acc-journal-table td.acc-when::before, table.acc-decl-table td.acc-who::before { display: none; }
+  table.acc-decl-table td.acc-actions-cell { display: block; width: auto; padding-top: var(--s2); border-top: 1px solid var(--line); }
+  table.acc-decl-table td.acc-actions-cell .actions { justify-content: flex-start; flex-wrap: wrap; }
+  table.acc-decl-table td.acc-actions-cell .actions > .btn-danger { margin-left: auto; }
+  table.acc-journal-table td.num, table.acc-decl-table td.num { text-align: left; }
+  table.acc-journal-table td.acc-video-cell { min-width: 0; }
+  /* En carte, les boutons se touchent au doigt : 44 px. */
+  table.acc-journal-table .btn-sm, table.acc-decl-table .btn-sm { min-height: var(--control-h); }
+}
+/* Entre 560 et 960 px : la carte du journal se range sur deux colonnes (libellé au-dessus de la valeur) : quatre lignes au lieu de neuf. */
+@container acctable (min-width: 560px) and (max-width: 960px) {
+  table.acc-journal-table tr { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s5); row-gap: var(--s3); }
+  table.acc-journal-table td { grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start; }
+  table.acc-journal-table td.acc-when { grid-column: 1 / -1; }
+}
+@container acctable (max-width: 640px) {
+  table.acc-mini-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.acc-mini-table, table.acc-mini-table tbody { display: block; }
+  table.acc-mini-table tbody { display: grid; gap: var(--s3); }
+  table.acc-mini-table tr { display: grid; gap: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+  table.acc-mini-table tbody tr:hover { background: var(--surface); }
+  table.acc-mini-table td { display: grid; grid-template-columns: minmax(96px, 36%) minmax(0, 1fr); gap: var(--s2); align-items: start; padding: 0; border: 0; white-space: normal; }
+  table.acc-mini-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+  table.acc-mini-table td.acc-when { grid-template-columns: minmax(0, 1fr); }
+  table.acc-mini-table td.acc-when::before { display: none; }
+}
+
+/* ------------------------------------------------------------------------------------------------ portes */
+.acc-doors-pane { display: grid; gap: var(--s4); min-width: 0; align-content: start; }
+.acc-doors-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s4); }
+.acc-doors-summary { font-size: var(--fs-lg); font-weight: 700; }
+.acc-doors-updated { margin-top: var(--s1); }
+.acc-doors { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); margin: 0; padding: 0; list-style: none; }
+
+/* Carte d'une porte : la forme du cadre dit l'état en plus de l'icône et du mot (double = forcée, tirets = maintenue). */
+.acc-door { display: grid; gap: var(--s3); align-content: start; min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-1); }
+.acc-door.tone-info { border-color: var(--info); }
+.acc-door.tone-ok { border-color: var(--line-strong); }
+.acc-door.tone-warning { border: 2px dashed var(--warning-ink); background: var(--warning-soft); }
+.acc-door.tone-alarm { border: 4px double var(--alarm-ink); background: var(--alarm-soft); }
+.acc-door.tone-muted { border: 2px dotted var(--offline-ink); background: var(--offline-soft); }
+.acc-door-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s2) var(--s3); }
+.acc-door-title { overflow-wrap: anywhere; min-width: 0; font-size: var(--fs-lg); }
+.acc-door-states { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
+.acc-door-hint { font-weight: 600; }
+.acc-door .actions .btn { min-height: var(--control-h); }
+
+/* Faits : libellé en petit, valeur dessous (carte) ou côte à côte (fiche). */
+.acc-facts { display: grid; gap: var(--s2); margin: 0; min-width: 0; }
+.acc-facts > dt { font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+.acc-facts > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.acc-facts > dt:not(:first-child) { margin-top: var(--s1); }
+.acc-facts-wide { grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 560px) {
+  .acc-facts-wide { grid-template-columns: minmax(140px, 36%) minmax(0, 1fr); gap: var(--s2) var(--s4); }
+  .acc-facts-wide > dt { align-self: baseline; }
+  .acc-facts-wide > dt:not(:first-child) { margin-top: 0; }
+}
+
+/* ------------------------------------------------------------------------------------------------ fiche d'une porte */
+.acc-fiche { display: grid; gap: var(--s4); min-width: 0; align-content: start; }
+.acc-fiche-top { display: flex; }
+.acc-fiche-title { font: 800 var(--fs-xl) / 1.15 var(--font-brand); color: var(--brand-ink); overflow-wrap: anywhere; outline: none; }
+.acc-fiche-title:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; }
+.acc-fiche-state { padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.acc-fiche-state > .icon { width: 40px; height: 40px; }
+.acc-fiche-state .state-title { font-size: var(--fs-xl); }
+.acc-fiche-state > div { display: grid; gap: var(--s2); justify-items: start; min-width: 0; }
+.acc-fiche-state .state-detail { font-size: var(--fs-md); color: var(--ink); margin-top: 0; }
+.acc-fiche-state.is-alarm { border: 4px double var(--alarm-ink); background: var(--alarm-soft); }
+.acc-fiche-state.is-warning { border: 2px dashed var(--warning-ink); background: var(--warning-soft); }
+.acc-fiche-state.is-offline { border: 2px dotted var(--offline-ink); background: var(--offline-soft); }
+.acc-fiche-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); align-items: start; }
+.acc-fiche-panel { min-width: 0; container-type: inline-size; }
+@container (min-width: 900px) {
+  .acc-fiche-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .acc-fiche-grid > :nth-child(3) { grid-column: 1 / -1; }
+}
+.acc-remote { padding: var(--s3) var(--s4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--ink-2); }
+.acc-remote-text { margin: 0; }
+.acc-fiche-passages, .acc-fiche-cameras { display: grid; gap: var(--s3); min-width: 0; }
+
+/* Image en direct. Le fond sombre est celui du flux (voile des loupes) : le canvas se peint lui-même en noir. */
+.acc-viewer { display: grid; gap: var(--s2); min-width: 0; }
+.acc-viewer-caption { margin: 0; }
+.acc-viewer-picker { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+.acc-viewer-picker button { min-height: var(--control-h); }
+.acc-viewer-stage { position: relative; border-radius: var(--r-md); overflow: hidden; background: var(--scrim); aspect-ratio: 16 / 9; }
+.acc-viewer-canvas { width: 100%; height: 100%; object-fit: contain; }
+.acc-viewer-status { position: absolute; inset: auto 0 0 0; margin: 0; padding: var(--s2) var(--s3); background: var(--scrim); color: #fff; font-size: var(--fs-sm); }
+.acc-viewer-status.is-error { background: var(--frame-alarm); }
+.acc-video { display: grid; gap: var(--s3); min-width: 0; }
+
+/* ------------------------------------------------------------------------------------------------ déclaration */
+.acc-decl { display: grid; gap: var(--s4); min-width: 0; }
+.acc-undeclared:empty { display: none; }
+.acc-undeclared-list { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.acc-undeclared-item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.acc-undeclared-item .btn { min-height: var(--control-h); }
+.acc-form-slot:empty { display: none; }
+.acc-form { display: grid; gap: var(--s4); min-width: 0; padding: var(--s4); border: 1px solid var(--brand); border-radius: var(--r-md); background: var(--surface-2); }
+.acc-form > h3 { outline: none; font-size: var(--fs-lg); }
+.acc-form > h3:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; }
+.acc-form input[readonly]:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']) { background: var(--surface-2); color: var(--ink-2); }
+.acc-secret { display: grid; gap: var(--s3); }
+.acc-secret-state { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
+.acc-readonly { margin: 0; min-height: var(--control-h); display: flex; align-items: center; gap: var(--s2); }
+.acc-settings { display: grid; gap: var(--s4); min-width: 0; }
+.acc-retention-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); font-weight: 700; }
+.acc-retention-row input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']) { width: 11ch; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+.acc-panel .panel-head .actions.is-apart { margin-left: auto; }
+
+/* Téléphone : toutes les commandes restent des cibles de 44 px, les boutons d'une rangée se partagent la largeur. */
+@container (max-width: 520px) {
+  .acc-filters .actions .btn, .acc-pager .btn { flex: 1 1 auto; min-height: var(--control-h); }
+  .acc-spacer { display: none; }
+  .acc-door .actions .btn { flex: 1 1 auto; }
+  .acc-tabs { width: 100%; }
+  .acc-tabs button { flex: 1 1 0; justify-content: center; padding: 0 var(--s2); }
+  .acc-form { padding: var(--s3); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .acc-results.is-loading .acc-tablewrap { opacity: 1; }
+}
+@media (forced-colors: active) {
+  .acc-door, .acc-fiche-state, .acc-form { border-color: CanvasText; }
+}

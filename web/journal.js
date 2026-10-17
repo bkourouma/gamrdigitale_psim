@@ -14,6 +14,17 @@ const MORE_LABEL = {
   login_2fa_failed: 'Code de double authentification refusé',
   device_flapping: 'Équipement instable',
   secret_key_mismatch: 'Clés de double authentification illisibles',
+  access_controller_created: "Contrôleur d'accès déclaré",
+  access_controller_updated: "Contrôleur d'accès modifié",
+  access_controller_deleted: "Contrôleur d'accès supprimé",
+  access_door_declared: 'Porte déclarée',
+  access_door_updated: 'Porte modifiée',
+  access_door_removed: 'Porte retirée',
+  access_search: 'Recherche dans les passages',
+  access_export: 'Export des passages',
+  access_retention_changed: 'Durée de conservation des passages modifiée',
+  access_purge: 'Passages anciens supprimés',
+  access_door_held_escalated: 'Porte maintenue ouverte : alarme',
 };
 const actionLabel = (action) => ACTION_LABEL[action] ?? MORE_LABEL[action] ?? action;
 
@@ -22,8 +33,8 @@ const ACTOR_LABEL = { systeme: 'Système', detecteur: 'Détecteur' };
 
 /** Famille de chaque action, pour le filtre segmenté. */
 function groupOf(action) {
-  if (/^(incident_|intrusion_ignored|snapshot_failed|notification_)/.test(action)) return 'alarms';
-  if (/^(device_|floor_|plan_|links_|camera_|detector_|sim_trigger|zone_|arming_|risk_)/.test(action)) return 'equipment';
+  if (/^(incident_|intrusion_ignored|snapshot_failed|notification_|access_door_held_escalated$)/.test(action)) return 'alarms';
+  if (/^(device_|access_|floor_|plan_|links_|camera_|detector_|sim_trigger|zone_|arming_|risk_)/.test(action)) return 'equipment';
   if (/^(login|logout|user_|password_|totp_|recovery_|recipient_)/.test(action)) return 'accounts';
   return 'system';
 }

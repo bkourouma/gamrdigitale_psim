@@ -825,7 +825,7 @@ describe('alarmes et zones', () => {
     assert.equal(acked.status, 'acknowledged');
     assert.equal(acked.ackedBy, 'hall');
     assert.deepEqual(h.agents.alarms('hall')[0].acknowledged, true);
-    assert.equal(h.agents.alarms('hall')[0].acknowledgedBy, 'hall');
+    assert.equal(h.agents.alarms('hall')[0].acknowledgedBy, 'Agent hall', "le nom affiché de l'agent, pas son identifiant");
     assert.throws(() => h.agents.ackAlarm('hall', id), status(409));
     assert.equal(h.actions('incident_acked')[0].actor, 'hall');
     // L'agent ne cloture jamais : aucune methode de qualification n'est exposee.
@@ -1196,6 +1196,44 @@ describe('detecteurs virtuels liberes a l\'acquittement', () => {
     assert.equal(releaseAcknowledged(h.db, h.engine, 'P-'), 0);
   });
 
+  it("décision de l'utilisateur : un agent qui n'a pas pris son service voit, acquitte et signale « j'y vais » / « sur place »", () => {
+    const h = setup();
+    h.makeAgent('hall', { zones: ['Hall'] });
+    h.engine.handleDetectorMessage('D-HALL', { state: 'alarm' });
+    assert.equal(h.agents.me('hall').shift, null, 'hors service');
+    const id = h.agents.alarms('hall')[0].id;
+    h.agents.dispatch('hall', id, 'en_route');
+    h.agents.dispatch('hall', id, 'on_site');
+    h.agents.ackAlarm('hall', id);
+    const a = h.agents.alarms('hall')[0];
+    assert.equal(a.acknowledged, true);
+    assert.deepEqual(a.dispatch.map((d) => d.status), ['on_site'], 'un seul état par agent : le dernier');
+  });
+
+  it("releaseAcknowledged ne libère jamais un détecteur du site nommé A-01 (contrôle d'accès) : seuls les détecteurs d'agents le sont", () => {
+    const h = setup();
+    // Le site de démonstration (et .env.example) a un détecteur d'accès « A-01 » : même préfixe que les agents.
+    h.engine.createDevice('admin', { id: 'A-01', kind: 'detector', name: 'Porte de service', category: 'access' });
+    h.makeAgent('moussa');
+    h.engine.handleDetectorMessage('A-01', { state: 'alarm' });
+    h.engine.handleDetectorMessage('A-moussa', { event: 'sos' });
+    for (const i of h.engine.getSnapshot().incidents) h.engine.acknowledge(i.id, 'oscar');
+    assert.equal(releaseAcknowledged(h.db, h.engine, 'A-'), 1, 'seul A-moussa');
+    assert.equal(h.engine.getDevice('A-moussa')!.status, 'normal');
+    assert.equal(h.engine.getDevice('A-01')!.status, 'alarm', 'la porte reste en alarme tant qu\'elle l\'est');
+  });
+
+  it("l'identifiant d'un agent n'admet pas le point : le détecteur A-<identifiant> ne le supporterait pas (400 net, rien créé)", () => {
+    const h = setup();
+    assert.throws(() => h.makeAgent('marie.dupont'), (e) => status(400)(e) && /sans point/.test((e as Error).message));
+    assert.ok(!h.engine.getDevice('A-marie.dupont'));
+    assert.equal(h.users.list().some((u) => u.username === 'marie.dupont'), false, 'aucun compte à moitié créé');
+    h.makeAgent('marie-dupont');
+    assert.ok(h.engine.getDevice('A-marie-dupont'));
+    assert.throws(() => h.makeAgent('a'.repeat(31)), status(400), 'A- + 31 caractères dépasse 32');
+    h.makeAgent('a'.repeat(30)); // A- + 30 = 32 : la limite
+  });
+
   it("l'acquittement d'un compte supprimé ou administrateur libère aussi (seul le rôle agent retient)", () => {
     const h = setup();
     h.engine.createDevice('admin', { id: 'P-9', kind: 'detector', name: 'Circuit', category: 'people', heartbeatS: 0 });
@@ -1549,7 +1587,7 @@ describe('HTTP : alarmes, image, direct, SOS', () => {
     assert.equal((await hall.post(`/api/agent/alarms/${id}/ack`)).status, 409);
     const after_ = (await hall.get('/api/agent/alarms')).json!.alarms[0];
     assert.equal(after_.acknowledged, true);
-    assert.equal(after_.acknowledgedBy, 'hall');
+    assert.equal(after_.acknowledgedBy, 'Agent hall');
     assert.deepEqual(after_.dispatch.map((d: { username: string; status: string }) => [d.username, d.status]), [['hall', 'en_route']]);
     // Identifiants hostiles : 404, jamais 500.
     for (const bad of ['abc', '0', '-1', '1e3', '99999999999999999999', '1%20OR%201=1']) {

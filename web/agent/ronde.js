@@ -5,7 +5,7 @@
 
 import { beep, vibrate } from './sound.js';
 import { nfcSupported, parseCheckpointCode, qrSupported, startNfcScan, startQrScan } from './scan.js';
-import { fmtClock, fmtDuration, h, local, setChildren, uuid } from './util.js';
+import { fmtClock, fmtDuration, fmtWhen, h, local, setChildren, uuid } from './util.js';
 
 const RUNS_KEY = 'psim-agent-runs';
 const POLL_FAST_MS = 5000; // onglet Ronde affiche
@@ -165,7 +165,7 @@ export function createRonde({ api, queue, toast, getUser, openLogbook }) {
     bar.style.setProperty('--p', `${percent}%`);
 
     const due = upcoming
-      ? h('p', { class: 'rd-due' }, `Prochaine ronde à ${fmtClock(run.dueStart)} : ${run.name}`)
+      ? h('p', { class: 'rd-due' }, `Prochaine ronde ${fmtWhen(run.dueStart, now)} : ${run.name}`)
       : h('p', { class: `rd-due${urgent ? (overdue ? ' rd-due-late' : ' rd-due-soon') : ''}` },
           urgent ? h('span', { class: 'rd-icon', 'aria-hidden': 'true', text: '!' }) : null,
           `À finir avant ${fmtClock(run.dueEnd)} (${timeLeftLabel(run.dueEnd, now)})`);
@@ -219,7 +219,7 @@ export function createRonde({ api, queue, toast, getUser, openLogbook }) {
     }
     if (others.length > 0) {
       parts.push(h('ul', { class: 'rd-upcoming' }, others.map((r) =>
-        h('li', { text: `Prochaine ronde à ${fmtClock(r.dueStart)} : ${r.name}` }))));
+        h('li', { text: `Prochaine ronde ${fmtWhen(r.dueStart, now)} : ${r.name}` }))));
     }
     if (finished.length > 0) {
       parts.push(h('ul', { class: 'rd-finished' }, finished.map(finishedLine)));

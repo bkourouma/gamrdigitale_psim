@@ -16,7 +16,8 @@ import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
 import { createKeysAdmin } from './keys.js';
 import { createRulesView } from './rules.js';
-import { $, h, icon, api, toast, S, on, emit, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
+import { createAccessView } from './access.js';
+import { $, h, icon, api, toast, S, on, emit, go, loadDoors, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
 import { renderIncidents, tickIncidents, ariaTable } from './incidents.js';
@@ -125,6 +126,7 @@ const patrolsView = createPatrolsView({
 });
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
+const accessView = createAccessView({ api, h, toast, getMe: () => S.me, dialogs });
 
 // Session perdue : l'écran de connexion. S'il est déjà affiché, un minuteur oublié ne doit pas l'effacer (mot de passe
 // tapé, étape du code de double authentification en cours).
@@ -132,6 +134,27 @@ on('unauthorized', () => $('login').hidden && showLogin());
 on('restricted', () => account.openAccount());
 on('incident', (incident) => onIncident(incident));
 on('snapshot', (snap) => applySnapshot(snap));
+// Fiche d'une porte demandée depuis le plan : on ouvre l'écran Accès, puis la fiche.
+on('open-door', (id) => {
+  go('acces');
+  accessView.openDoor(id);
+});
+
+// ---------------------------------------------------------------- portes (contrôle d'accès)
+
+let doorsTimer = null; // regroupe les évènements d'un même instant en une seule relecture
+let doorsPoll = null; // relecture périodique tant que l'écran Accès est visible
+
+/** Relit les portes puis redessine le plan (état de porte sous les pastilles). */
+function refreshDoors() {
+  loadDoors().then(() => render.plan());
+}
+
+/** Évènements temps réel d'une porte : relecture groupée (~400 ms). */
+function scheduleDoors() {
+  clearTimeout(doorsTimer);
+  doorsTimer = setTimeout(refreshDoors, 400);
+}
 
 $('whoami').addEventListener('click', () => account.openAccount());
 $('logout').addEventListener('click', logout);
@@ -149,6 +172,7 @@ const ROUTES = {
   surveillance: { title: 'Surveillance', sub: 'Plan du site, alarmes en cours et caméras' },
   alarmes: { title: 'Alarmes', sub: 'Alarmes en cours et clôturées récemment' },
   cameras: { title: 'Caméras', sub: 'Choisissez les caméras à afficher sur le mur' },
+  acces: { title: 'Accès', sub: 'Passages, état des portes et déclaration du contrôle d’accès' },
   armement: { title: 'Armement', sub: "Zones d'intrusion : armement, désarmement et planning" },
   risques: { title: 'Risques', sub: "Indice de sécurité GAMR par zone et priorités d'action" },
   rapports: { title: 'Rapports', sub: 'Rapports imprimables, exports et envoi automatique' },
@@ -193,6 +217,10 @@ function leave(view) {
     renderAdmin();
   } else if (view === 'cameras') {
     $('video-home').append(videoPanel);
+  } else if (view === 'acces') {
+    accessView.hide();
+    clearInterval(doorsPoll);
+    doorsPoll = null;
   } else if (view === 'cles') {
     keysAdmin.hide();
   } else if (view === 'regles') {
@@ -223,6 +251,10 @@ function enter(view) {
     // (alarme, autre onglet touché), on l'arrête aussitôt.
     riskView.show().then(() => S.view !== 'risques' && riskView.hide());
     loadRailGauge();
+  } else if (view === 'acces') {
+    accessView.show($('access-view'), location.hash.replace(/^#\/acces\/?/, ''));
+    clearInterval(doorsPoll);
+    doorsPoll = setInterval(refreshDoors, 15000);
   } else if (view === 'utilisateurs') {
     usersAdmin.loadUsers();
   } else if (view === 'notifications') {
@@ -255,7 +287,11 @@ function route(requested) {
   }
   closeDrawer(false);
   const previous = S.view;
-  if (previous === name) return;
+  if (previous === name) {
+    // Adresse modifiée à la main dans l'écran Accès : onglet, filtres ou fiche demandés par la nouvelle adresse.
+    if (name === 'acces') accessView.show($('access-view'), location.hash.replace(/^#\/acces\/?/, ''));
+    return;
+  }
   S.view = name;
   if (previous) leave(previous);
   $('lightbox').hidden = true; // l'image agrandie appartient à l'écran quitté (une alarme ne reste pas cachée dessous)
@@ -394,6 +430,7 @@ function applySnapshot(snap) {
   for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
+  patrolsView.refresh(); // étages arrivés après l'ouverture de l'écran Rondes
   rulesView.refreshChoices(); // caméras ajoutées, renommées ou retirées pendant la saisie d'une règle
   S.arming = snap.arming ?? {};
   armingView.load(); // état détaillé des zones d'intrusion (planning, dérogations)
@@ -419,6 +456,7 @@ function applySnapshot(snap) {
   if (S.editId && !S.devices.has(S.editId)) S.editId = null;
   S.manualCams = S.manualCams.filter((id) => S.devices.has(id));
   renderAll(true);
+  refreshDoors(); // l'état des portes suit celui des détecteurs (nouvelle connexion, configuration changée)
 }
 
 function onIncident(incident) {
@@ -450,6 +488,7 @@ function onMessage(msg) {
       break;
     case 'device':
       S.devices.set(msg.device.id, msg.device);
+      if (msg.device.category === 'access') scheduleDoors();
       renderPlan();
       renderWall();
       renderIncidents();
@@ -548,6 +587,8 @@ function showLogin() {
   S.me = null;
   S.loaded = false;
   S.incidents = new Map();
+  S.doors = new Map();
+  clearTimeout(doorsTimer);
   clearTimeout(connect.timer); // une reconnexion déjà planifiée n'ouvrirait qu'un canal inutile derrière l'écran de connexion
   S.ws?.close();
   stopTiles();
@@ -632,6 +673,11 @@ $('login-form').addEventListener('submit', async (e) => {
 });
 
 function showApp() {
+  // Un agent de terrain n'a rien à faire dans l'interface du poste de garde (le serveur lui refuse tout) : son application l'attend.
+  if (S.me?.role === 'agent') {
+    location.replace('/agent/');
+    return;
+  }
   $('login').hidden = true;
   document.querySelector('.skip').hidden = Boolean(S.me.restricted); // compte restreint : seule la fenêtre Mon compte
   if (S.me.restricted) {
