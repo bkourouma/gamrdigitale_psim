@@ -1,5 +1,7 @@
 # Passation — chantier « Contrôle d'accès »
 
+> **Actualisation du 17 octobre 2026, après reprise :** les branches `acces-integration` et `acces-regles` ont été fusionnées par avance rapide dans `main` (tête `9be9987`). L'arbre final avec les modifications téléphoniques locales réappliquées passe 4 720 tests, sans échec ni test ignoré, ainsi que `npm run typecheck`. Le texte ci-dessous conserve l'état historique au moment de l'arrêt et sa liste de points à vérifier. Les essais sur le contrôleur Dahua réel, l'issue de secours et la revue visuelle restent à faire avant R3.
+
 Dernière mise à jour : 17 octobre 2026, session « PRD — Contrôle d'accès » (chef de projet Opus, superviseurs Sonnet).
 Arrêté à la demande de l'utilisateur pendant la vague 3. Autres passations : [catalogue](HANDOFF-catalogue.md),
 [portail](HANDOFF-portail.md), [Tuya](HANDOFF-tuya.md).
