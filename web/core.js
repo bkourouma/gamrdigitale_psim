@@ -146,6 +146,7 @@ export const ACTION_LABEL = {
   heartbeat_recovered: 'Supervision externe rétablie',
   zone_armed: 'Zone armée',
   report_exported: 'Export / rapport',
+  export_preuve: 'Dossier de preuve exporté',
   report_schedule_updated: 'Rapport automatique réglé',
   report_email_sent: 'Rapport envoyé par e-mail',
   report_email_failed: "Échec d'envoi du rapport",
@@ -204,6 +205,12 @@ export const ACTION_LABEL = {
   actionneur_cle_renouvelee: 'Clé d’actionneur renouvelée',
   commandes_verrouillees: 'Commandes verrouillées (maintenance)',
   commandes_deverrouillees: 'Commandes rétablies',
+  rule_created: 'Règle créée',
+  rule_updated: 'Règle modifiée',
+  rule_enabled: 'Règle activée',
+  rule_disabled: 'Règle désactivée',
+  rule_deleted: 'Règle supprimée',
+  rule_assist: "Proposition de l'assistant de règles",
 };
 
 // ---------------------------------------------------------------- bus d'évènements

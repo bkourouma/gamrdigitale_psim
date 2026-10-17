@@ -206,7 +206,7 @@ Le menu **Risques** (ou un clic sur la jauge GAMR) ouvre une vue qui répond à 
 
 ## Notifications et escalade
 
-Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram**, **WhatsApp** (API officielle de Meta, ou CallMeBot pour un essai) et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
+Le PSIM peut prévenir des personnes hors de l'écran, par **e-mail (SMTP)**, **Telegram**, **WhatsApp** (API officielle de Meta, ou CallMeBot pour un essai), **appel téléphonique** (Vonage) et **webhook** (Slack, Teams, passerelle SMS, etc.). Sans aucun canal configuré, les alarmes ne préviennent personne en dehors de l'interface : le démarrage l'indique.
 
 **Qui est prévenu, et quand**
 
@@ -225,7 +225,7 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 - **Une alarme notifie toujours**, même « à confirmer » : les règles anti-fausses alarmes qualifient, elles ne font jamais taire.
 - **Jamais bloquant** : les envois partent en tâche de fond, avec 3 tentatives (0, 2 puis 10 s). Un canal en panne n'empêche pas les autres, et ne retarde pas l'alarme. Un échec définitif est inscrit au journal (« Notification en échec ») et compté dans l'état des canaux.
 - **Aucun secret dans les journaux** : jeton Telegram et mot de passe SMTP sont masqués dans les erreurs ; un webhook n'est affiché que par son hôte (son adresse complète peut contenir un jeton) ; les adresses e-mail sont abrégées (`a***@domaine`).
-- Webhook : corps JSON, signé en HMAC SHA-256 dans l'en-tête `X-PSIM-Signature` si `PSIM_WEBHOOK_SECRET` est défini (vérifiez-le côté récepteur).
+- Webhook : corps JSON, signé en HMAC SHA-256 dans l'en-tête `X-PSIM-Signature` si `PSIM_WEBHOOK_SECRET` est défini (vérifiez-le côté récepteur). Champs communs : `event` (**type de message** : `opened`, `escalated`, `confirmed`, `unacked`, `reminder`, `silent`, `restart`, `integrity`, `security`, `test`), `incidentId` (ou `null`), `subject`, `text`. Pour un message d'incident s'y ajoutent : `severity`, `category`, **`reason`** (motif en code de l'alarme, par exemple `gas` ou `power_loss`, ou `null` s'il n'y en a pas), **`reasonLabel`** (le même motif en clair sans accent, par exemple `Gaz detecte`, ou `null`), `value`, `confirmed`, `status`, `detectorId`, `detector`, `zone`, `floor`, `cameras`. `event` ne désigne jamais le motif : celui-ci n'est que dans `reason` / `reasonLabel` (un récepteur qui lisait `event` pour le type de message continue de fonctionner).
 
 **Configuration** (voir `.env.example`) : serveur SMTP (`PSIM_SMTP_*`), jeton Telegram (`PSIM_TELEGRAM_TOKEN`), destinataires par niveau (`PSIM_NOTIFY_EMAIL_L1/L2`, `PSIM_NOTIFY_TELEGRAM_L1/L2` = identifiants de conversation, `PSIM_NOTIFY_WEBHOOK_L1/L2`), `PSIM_PUBLIC_URL` (lien ajouté aux messages). En administrateur, **Administration → Personnes prévenues → Envoyer un message de test** vérifie chaque destinataire des deux niveaux et affiche le résultat par destinataire.
 
@@ -234,6 +234,8 @@ L'acquittement, ou la clôture, arrête l'escalade. Une confirmation qui rouvre 
 **WhatsApp officiel (Meta)** : le canal à privilégier là où WhatsApp est la messagerie de tous les jours. Guide pas à pas : [docs/WHATSAPP.md](docs/WHATSAPP.md) (application Meta, modèle `psim_alerte` approuvé en catégorie *Utilitaire*, jeton permanent, numéro expéditeur). Chaque alerte part par ce **modèle** à 3 variables : titre, lieu (zone et étage), détails ; Meta refusant retours à la ligne et tabulations dans une variable, les lignes y deviennent « | ». Réglages : `PSIM_WHATSAPP_TOKEN`, `PSIM_WHATSAPP_PHONE_ID`, destinataires `PSIM_NOTIFY_WHATSAPP_L1/L2` (numéros internationaux, une entrée mal formée bloque le démarrage) ou ajoutés dans l'interface. Erreurs de Meta traduites en clair (modèle non approuvé, jeton expiré, numéro de test non autorisé…), jeton jamais affiché. « Accepté par Meta » n'est pas « lu » : la remise n'est pas suivie (accusés de Meta non branchés) ; pas d'image par WhatsApp. Coût : Meta facture chaque message (gratuit seulement dans les 24 h qui suivent un message du destinataire). Le numéro de production doit être **enregistré** une fois sur la Cloud API : `npm run whatsapp-register:prod -- <PIN à 6 chiffres>`. Vérification : `npm run commission -- --whatsapp-to +225…` ; sans l'option, rien n'est envoyé mais tout est contrôlé chez Meta (jeton, enregistrement du numéro, **modèle approuvé** en `fr` avec 3 variables : un modèle en attente est un échec). Des destinataires WhatsApp sans jeton, ou une adresse de service en `http://`, font refuser le démarrage en production. Un modèle mis en pause par Meta compte comme un échec d'envoi.
 
 **WhatsApp par CallMeBot** (canal « WhatsApp (CallMeBot) ») : service **gratuit, à usage personnel, sans garantie** de délai ni de disponibilité : pour un essai personnel, jamais seul pour une alarme. Pas de compte : chaque téléphone envoie une fois « I allow callmebot to send me messages » au numéro indiqué sur la [page CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/) et reçoit **sa clé**. Destinataires dans le `.env` uniquement (la clé est secrète) : `PSIM_NOTIFY_CALLMEBOT_L1=+2250700000000:1234567` ; une entrée mal formée **bloque le démarrage** (le message donne sa position, jamais son contenu). Texte seulement (1 500 caractères). L'interface et le journal des envois n'affichent que `+225...00`, jamais la clé. CallMeBot ne documente pas ses réponses : un code HTTP d'erreur, ou une réponse qui annonce une erreur, compte comme un échec ; seule la réception prouve l'envoi (`npm run commission -- --callmebot-test`). En octobre 2026, la page CallMeBot indiquait le service **complet** pour les nouvelles activations.
+
+**Appel téléphonique (Vonage)** : le téléphone du destinataire **sonne** et une voix lit l'alarme (deux fois, en français). Utile pour réveiller une personne d'astreinte qui ne regarde pas ses messages. Guide pas à pas : [docs/VONAGE.md](docs/VONAGE.md). L'appel ne part que pour une **alarme** (ouverture, aggravation, non-acquittement, rappels) et pour le message de test, jamais pour un redémarrage, un détecteur muet ou une alerte de compte. Il **complète** les autres canaux sans les remplacer : « accepté par Vonage » veut dire que l'appel est lancé, pas que la personne a décroché, et il n'y a pas d'acquittement par touche (on acquitte dans le PSIM). Réglages : `PSIM_VONAGE_APPLICATION_ID`, `PSIM_VONAGE_PRIVATE_KEY_FILE` (fichier de la clé privée), `PSIM_VONAGE_FROM` (numéro Vonage qui appelle), destinataires `PSIM_NOTIFY_VONAGE_L1/L2` (numéros internationaux, aussi dans l'interface). `npm run commission -- --vonage-to +2250700000000` vérifie les identifiants, puis passe un appel de test.
 
 **Démonstration** : la démo lance un faux serveur SMTP et un faux Telegram locaux et **affiche dans le terminal** chaque message (`[courrier]`, `[telegram]`), avec une escalade à 25 s : rien ne quitte la machine.
 
@@ -272,6 +274,8 @@ npm run device-key -- list
 npm run device-key -- rotate 3 --grace 60   # nouvelle clé ; l'ancienne reste valable 60 min
 npm run device-key -- revoke 3
 ```
+
+**Où cliquer** : menu **Administration → Clés et passerelles** (administrateurs seulement) : créer une clé (nom + équipements), la copier (affichée une seule fois, avec un exemple `curl`), la remplacer avec un délai de grâce, la révoquer ; la même page montre l'état des passerelles MQTT (connectée ou non, dernier message reçu, capteurs non surveillés). Détail : [docs/PASSERELLE.md](docs/PASSERELLE.md).
 
 Même chose en API d'administration (session administrateur) : `GET /api/device-keys`, `POST /api/device-keys` `{"label", "devices": ["I-01"]}`, `POST /api/device-keys/<n>/rotate` `{"graceMinutes": 60}`, `DELETE /api/device-keys/<n>`. Création, rotation, révocation et refus sont inscrits au journal, sans jamais la clé.
 
@@ -507,6 +511,12 @@ Chaque entrée du journal contient l'**empreinte SHA-256 de la précédente** (c
 - Ne couvre que le **journal** (`audit_log`) : pas les incidents, les comptes, ni l'historique des notifications. Les entrées **antérieures** à l'activation (mise à jour) ne sont pas protégées ; elles sont comptées à part.
 - Ce n'est pas un horodatage certifié : l'heure reste celle du serveur.
 
+## Dossier de preuve d'un incident
+
+Pour un incident (même clos), le bouton **« Dossier de preuve »** (fiche de l'alarme et liste des alarmes clôturées) télécharge un **fichier `.zip` unique** (`GET /api/incidents/:id/proof`, opérateurs et administrateurs connectés, débit limité) : `LISEZ-MOI.txt`, `rapport.html` (imprimable, sans script), `incident.json` (identité, équipement, zone, étage, états, acquittement, qualification, clôture, personnes intervenues), `journal-extrait.json` (entrées liées à l'incident et à l'équipement, avec leurs empreintes et l'ancre du journal), `images/` (originaux scellés), `notifications.json` (sans secret) et `MANIFEST.sha256` (empreinte de chaque fichier). Chaque export est inscrit au journal (`export_preuve`, avec l'empreinte du `.zip`) **avant** la livraison ; une image manquante ou modifiée n'empêche pas l'export, elle est signalée en clair.
+
+**Vérification hors ligne**, sans accès à la base : `npm run verify-proof -- dossier.zip` (verdict en français, code de sortie 0 conforme / 1 altéré, anomalie ou refusé ; fichier traité comme non fiable : zip tronqué, noms piégés, bombe de décompression refusés). `--anchor 1234:<empreinte>` compare à une ancre conservée ailleurs, `--sha256 <empreinte>` à l'empreinte du `.zip` relevée au journal. **Limites** : heure du serveur sans horodatage certifié ; un dossier entièrement refabriqué par quelqu'un qui a un accès complet à la base n'est révélé que par une ancre externe ou l'empreinte du `.zip` inscrite au journal ; l'extrait ne prouve pas son propre caractère complet. Mode d'emploi pour un gestionnaire : [`docs/PREUVE.md`](docs/PREUVE.md).
+
 ## Architecture
 
 ```
@@ -547,6 +557,7 @@ caméras (simulées) ◄── mur vidéo             │
 | `scripts/supervise.ts` | Superviseur portable : relance avec pause croissante, détection des blocages, arrêt propre |
 | `server/auditchain.ts`, `server/journal.ts` | Journal infalsifiable : chaîne d'empreintes, vérification, ancres, alerte d'altération |
 | `scripts/verify-journal.ts` | Vérification du journal hors PSIM (base, sauvegarde, ancre externe) |
+| `server/proofpack.ts`, `server/proofformat.ts`, `server/zip.ts`, `scripts/verify-proof.ts` | Dossier de preuve d'un incident (zip sans dépendance, manifeste, journal extrait, images scellées) et sa vérification hors ligne |
 | `server/reportmail.ts` | Rapport périodique par e-mail : calendrier, rattrapage borné, reprises, contenu |
 | `server/risk.ts` | Indice de risque par zone, priorités d'action chiffrées, tendances |
 | `server/notifications.ts` | Notifications e-mail / Telegram / webhook, niveaux, escalade, rappels, reprises |
@@ -568,6 +579,21 @@ caméras (simulées) ◄── mur vidéo             │
 
 Message MQTT attendu sur `psim/detectors/<id>/state` : `{"state": "normal" | "prealarm" | "alarm" | "fault" | "offline"}`, ou `{"event": …}` / `{"value": …}` pour les autres sources (voir plus haut).
 
+## Qualification en atelier du matériel
+
+**Aucune référence n'entre dans un pack sans recette en atelier** : chaque équipement du catalogue est marqué `qualified`, `to_qualify` ou `rejected` dans `qualification/registry.json`. État honnête aujourd'hui : seuls **une voie d'un enregistreur Dahua DH-XVR5108HS-I3/T** et **un détecteur de fumée WiFi Tuya** sont qualifiés (portée précise écrite au registre) ; tout le reste, y compris les modèles cités dans les packs (XVR5104HS-I3, HAC-HFW1500TH-I8, Heiman HS1SA-E), est **à qualifier** : le tout a été éprouvé avec des équipements simulés, ce qui ne qualifie rien.
+
+```
+npm run qualify -- list [--status to_qualify]     statuts de tous les modèles
+npm run qualify -- sheet <id>                     fiche de recette vierge (HTML imprimable + Markdown)
+npm run qualify -- record <id> --file saisie.json résultat d'essai (ne change pas le statut)
+npm run qualify -- promote <id> --result … --by … --scope …   qualifie si tout est « pass » sur matériel réel
+npm run qualify -- check-pack packs/mon-pack.json signale les modèles non qualifiés d'un pack
+npm run bench -- --all                            rejoue les fiches contre un PSIM simulé (vérifie les fiches, pas le matériel)
+```
+
+Les fiches par famille sont dans [docs/qualification/](docs/qualification/) ; le processus complet (qui signe, où ranger les résultats, API `isQualified`) dans [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
+
 ## Mise en service sur site
 
 Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équipement réel n'a été testé**. Pour que la première rencontre avec le matériel réel soit méthodique, le PSIM livre un **guide** ([docs/MISE-EN-SERVICE.md](docs/MISE-EN-SERVICE.md) : de la machine vide à la recette signée) et trois outils, en lecture seule, qui n'envoient aucune alerte :
@@ -577,6 +603,18 @@ Tout le PSIM a été éprouvé avec des équipements **simulés** ; **aucun équ
 - **`npm run commission -- sheet --out recette.html`** produit la **fiche de recette** imprimable : une ligne par équipement de l'inventaire (message reçu, alarme testée, image visible, retour à la normale), les essais de bout en bout (alarme, escalade, pannes, sécurité) et les signatures.
 
 **Limites** : ces outils vérifient ce qu'ils peuvent mesurer depuis le serveur ; ils ne remplacent pas la constatation sur place (le détecteur déclenche-t-il vraiment, la sirène retentit-elle, le destinataire a-t-il reçu l'alerte). Les équipements qui ne parlent pas MQTT/JSON passent par la **Passerelle GAMR** (voir plus haut et [docs/PASSERELLE.md](docs/PASSERELLE.md)).
+
+## Packs d'installation
+
+Un **pack** (dossier `packs/<nom>/` : un `pack.json` et ses plans d'étage) décrit une installation type du catalogue (segment, niveau Essentiel / Confort / Renforcé) : étages, zones, équipements avec leur **modèle** (identifiant du registre de qualification, qui fait foi sur le statut `qualified` / `to_qualify` ; un modèle rejeté ou un registre invalide fait refuser le pack), sources (voie d'enregistreur Dahua, Tuya, caméra RTSP/ONVIF, supervision réseau), liens détecteur → caméras, planning d'armement, évaluation de risque, destinataires **en gabarit**, comptes et modules de passerelle. **Jamais de secret dans un pack** : mots de passe, identifiants et adresses sont des questions (`{"$ask": "libellé"}`) ou des variables (`{"$env": "NOM"}`) ; un mot de passe écrit en clair fait refuser le pack.
+
+- `npm run pack -- check <pack>` : validation stricte (clé inconnue refusée, chemin fautif cité) ;
+- `npm run pack -- plan <pack>` : **simulation** sur une copie de la base (rien n'est écrit, PSIM en marche ou non) ;
+- `npm run pack -- apply <pack>` : montre le plan, pose les questions, demande confirmation, applique **tout ou rien** en une transaction, par les fonctions du PSIM (même journal) et inscrit `pack_applique` au journal. Réappliquer ne crée aucun doublon ; une différence avec l'existant est un **conflit** (rien n'est appliqué) sauf `--update` ou `--keep-existing`. Modèles à qualifier : `--allow-unqualified`. Refuse d'agir pendant que le PSIM tourne ;
+- `npm run pack -- export --out <dossier>` : l'installation courante en pack, sans secret, pour reproduire un site ;
+- recette : `npm run commission -- --pack <pack>` (« le pack est complet »), `watch --pack`, `sheet --pack` (la fiche cite le pack et sa version).
+
+Trois packs d'exemple : `pack-standard-4cam-2fumee` (4 caméras Dahua HAC-HFW1500TH-I8, enregistreur XVR5104HS-I3, 2 détecteurs de fumée Heiman HS1SA-E), `villa-essentiel`, `appartement-confort`. Guide de l'installateur : [docs/PACKS.md](docs/PACKS.md).
 
 ## Passer aux équipements réels
 

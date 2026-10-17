@@ -1,0 +1,212 @@
+/* =====================================================================================================================
+   Écran « Règles » (rules.js). Jetons et composants de base.css seulement : rien de neuf en couleur, en police ni en
+   forme. Toute mise en forme passe par des classes (la politique de sécurité interdit le style en ligne).
+   ===================================================================================================================== */
+
+.rl-intro p + p { margin-top: var(--s2); }
+.rl-load-error .rl-error-text { display: grid; gap: var(--s2); justify-items: start; }
+.rl-count { font-size: var(--fs-sm); color: var(--ink-2); }
+.view-regles h3 { font-size: var(--fs-md); }
+.view-regles .form-error:empty { display: none; }
+
+/* ------------------------------------------------------------------------------------------------ liste des règles */
+.rl-list { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.rl-list[hidden] { display: none; }
+
+/* Une carte par règle : la phrase d'abord (elle dit tout), le nom au-dessus, l'interrupteur à droite. */
+.rl-rule { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4) var(--s5); border-radius: var(--r-md); box-shadow: none; }
+.rl-rule-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.rl-name { color: var(--brand-ink); border-radius: var(--r-xs); overflow-wrap: anywhere; }
+.rl-rule-head .rl-switch { margin-left: auto; }
+.rl-phrase { max-width: 72ch; font-size: var(--fs-lg); font-weight: 600; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.rl-meta { overflow-wrap: anywhere; }
+.rl-live { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); font-weight: 700; color: var(--info-ink); }
+/* Règle inactive : pointillé et fond calme (la forme dit l'état, avec l'icône et le mot « Inactive »). */
+.rl-rule.is-inactive { border-style: dashed; border-color: var(--line-strong); background: var(--surface-2); }
+.rl-rule.is-inactive .rl-phrase { color: var(--ink-2); font-weight: 400; }
+.rl-rule-actions { margin-top: var(--s1); }
+.rl-confirm-body { display: grid; gap: var(--s3); min-width: 0; }
+.rl-confirm-body p { font-size: var(--fs-md); font-weight: 600; overflow-wrap: anywhere; }
+.rl-confirm:focus { outline: none; }
+
+/* Interrupteur actif / inactif : une vraie case (role=switch), sa piste, son icône et son mot. */
+.rl-switch { position: relative; display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--control-h); padding: 0 var(--s2); border-radius: var(--r-md); font-size: var(--fs-sm); font-weight: 700; cursor: pointer; }
+.rl-switch-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.rl-switch:has(.rl-switch-input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.rl-switch-track { position: relative; flex: none; width: 46px; height: 26px; border: 2px solid var(--ink-3); border-radius: var(--r-pill); background: var(--surface-2); transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.rl-switch-track i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink-2); transition: transform var(--t-fast) var(--ease-out), background-color var(--t-fast) ease; }
+.rl-switch-input:checked ~ .rl-switch-track { background: var(--brand); border-color: var(--brand); }
+.rl-switch-input:checked ~ .rl-switch-track i { transform: translateX(20px); background: var(--on-brand); }
+.rl-switch-input:disabled ~ * { opacity: 0.6; }
+.rl-switch-icon { display: inline-flex; color: var(--offline-ink); }
+.rl-switch-word { min-width: 4.5em; color: var(--offline-ink); }
+.rl-switch-input:checked ~ .rl-switch-icon, .rl-switch-input:checked ~ .rl-switch-word { color: var(--ok-ink); }
+
+/* ------------------------------------------------------------------------------------------------ formulaire */
+/* Le haut de l'écran est collant (barre du titre) : le formulaire ouvert ne doit pas se glisser dessous. */
+.rl-form { container-type: inline-size; scroll-margin-top: 84px; }
+.rl-form h2, .rl-name, .rl-result { scroll-margin-top: 84px; }
+.rl-form-slot { min-width: 0; }
+.rl-form .panel-head h2 { border-radius: var(--r-xs); }
+.rl-boxes-lead { max-width: 70ch; }
+.rl-boxes { display: grid; gap: var(--s3); align-items: start; grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 900px) {
+  .rl-boxes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rl-box-when { grid-column: 1 / -1; }
+}
+.rl-box { min-width: 0; gap: var(--s3); background: var(--surface); }
+.rl-box legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); padding: 0 var(--s2); }
+.rl-box-word { font-size: var(--fs-lg); font-weight: 800; color: var(--brand-ink); }
+.rl-box-lead { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+
+/* Choix : une grande cible par option, l'option choisie est cernée ET cochée. */
+.rl-choices { display: flex; flex-wrap: wrap; gap: var(--s2); min-width: 0; }
+.rl-choices.is-column { flex-direction: column; flex-wrap: nowrap; }
+.rl-choice { display: flex; align-items: flex-start; gap: var(--s3); min-width: 0; min-height: var(--control-h); padding: var(--s2) var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); cursor: pointer; transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.rl-choice:hover { border-color: var(--brand); }
+.rl-choice:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.rl-choice:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.rl-choice input { margin-top: 2px; }
+.rl-choice-text { display: grid; gap: 2px; min-width: 0; }
+.rl-choice-label { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-weight: 700; color: var(--ink); }
+.rl-choice .hint { font-weight: 400; }
+.rl-choice:has(input:checked) .hint { color: var(--ink); }
+.rl-num-wrap { display: inline-block; width: 9ch; }
+.rl-num-wrap input { text-align: center; }
+.rl-cooldown { max-width: 520px; }
+.rl-cooldown input { max-width: 160px; }
+
+/* Un choix qui n'est pas possible (« reste plus de N minutes » pour un visage) : grisé ET expliqué par son texte. */
+.rl-choice.is-disabled { cursor: not-allowed; border-style: dashed; background: var(--surface-2); color: var(--ink-2); }
+.rl-choice.is-disabled:hover { border-color: var(--line-strong); }
+.rl-choice.is-disabled .rl-choice-label { color: var(--ink-2); }
+.rl-choice.is-disabled input { cursor: not-allowed; }
+.rl-change-note { max-width: 70ch; font-weight: 600; color: var(--ink); }
+.rl-change-note:empty { display: none; }
+.rl-who-caution { max-width: 70ch; }
+
+/* « Qui » : la liste de visages (menu, lecture en cours, erreur, aucune liste, remarques sur les caméras muettes). */
+.rl-faces { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.rl-faces-field { max-width: 460px; }
+.rl-faces-status { display: flex; align-items: center; gap: var(--s2); }
+.rl-faces-fail-body { display: grid; gap: var(--s2); justify-items: start; min-width: 0; }
+.rl-faces-fail-body p, .rl-faces .notice p { overflow-wrap: anywhere; }
+.rl-faces-notes { display: grid; gap: var(--s1); margin: 0; padding: 0; list-style: none; color: var(--ink-2); overflow-wrap: anywhere; }
+.rl-faces > .btn { justify-self: start; }
+.rl-faces select[disabled] { cursor: progress; }
+
+/* Zone de l'assistant : une phrase, une proposition à relire (elle remplit le formulaire, elle n'enregistre rien). */
+.rl-assist { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4); border: 1px solid var(--tube); border-radius: var(--r-md); background: var(--sky); }
+.rl-assist h3 { display: flex; align-items: center; gap: var(--s2); color: var(--brand-ink); }
+.rl-assist h3 label { font: inherit; color: inherit; }
+.rl-assist > .hint { max-width: 70ch; }
+.rl-assist textarea { min-height: 96px; }
+.rl-assist-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.rl-assist-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.rl-assist-ask-body, .rl-assist-proposal-body { display: grid; gap: var(--s2); min-width: 0; flex: 1 1 auto; }
+.rl-assist-question { font-size: var(--fs-md); font-weight: 700; color: var(--ink); overflow-wrap: anywhere; border-radius: var(--r-xs); }
+.rl-assist-reply { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.rl-assist-reply input { flex: 1 1 220px; width: auto; }
+.rl-assist-summary { font-size: var(--fs-md); font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.rl-assist-issues { display: grid; gap: var(--s1); margin: 0; padding-left: var(--s5); font-weight: 600; overflow-wrap: anywhere; }
+.rl-assist-issues:empty { display: none; }
+.rl-assist-proposal:focus { outline: none; }
+.rl-assist-proposal:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* Caméras ou zones à cocher. */
+.rl-picks { display: grid; gap: var(--s2); min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.rl-picks > .notice { grid-column: 1 / -1; }
+.rl-pick { display: flex; align-items: flex-start; gap: var(--s3); min-width: 0; min-height: var(--control-h); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); cursor: pointer; }
+.rl-pick:hover { border-color: var(--brand); }
+.rl-pick:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.rl-pick:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.rl-pick input { margin-top: 2px; }
+.rl-pick-text { display: grid; gap: 2px; min-width: 0; }
+.rl-pick-name { font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.rl-pick-note { font-size: var(--fs-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+.rl-pick.is-missing .rl-pick-note { color: var(--warning-ink); font-weight: 700; }
+.rl-pick-live { justify-self: start; min-height: 24px; height: auto; padding: 2px 8px; white-space: normal; }
+.rl-pick-actions { gap: var(--s2); }
+.rl-pick-actions[hidden] { display: none; }
+
+/* Plages horaires : jours en boutons bascule (une ligne de 7, même au téléphone), de / à, retrait. */
+.rl-windows { display: grid; gap: var(--s3); min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.rl-windows > .hint { max-width: 70ch; }
+.rl-slots { display: grid; gap: var(--s3); min-width: 0; margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
+.rl-slots:empty { display: none; }
+.rl-slot { display: grid; min-width: 0; }
+.rl-slot fieldset { gap: var(--s3); min-width: 0; background: var(--surface-2); }
+.rl-slot legend { color: var(--ink); }
+.rl-days { display: grid; grid-template-columns: repeat(7, minmax(34px, 1fr)); gap: 4px; max-width: 440px; }
+.rl-day { min-width: 0; padding: 0 2px; }
+.rl-day[aria-pressed='true'] { --btn-bg: var(--brand); --btn-ink: var(--on-brand); --btn-line: var(--brand); }
+.rl-day[aria-pressed='true']:hover:not(:disabled) { --btn-bg: var(--brand-2); border-color: var(--brand-2); color: var(--on-brand); }
+.rl-hours { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+.rl-hours .field { flex: 1 1 130px; max-width: 190px; }
+.rl-remove { margin-left: auto; }
+.rl-slot-note { font-weight: 600; color: var(--ink); }
+.rl-slot-note:empty { display: none; }
+.rl-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+
+/* La phrase de la règle, sur du verre bleu ciel. */
+.rl-sentence { display: grid; gap: var(--s2); padding: var(--s4); border: 1px solid var(--tube); border-radius: var(--r-md); background: var(--sky); }
+.rl-sentence h3 { color: var(--brand-ink); }
+.rl-sentence-text { max-width: 72ch; font-size: var(--fs-lg); font-weight: 600; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.rl-sentence-text.is-empty { font-size: var(--fs-md); font-weight: 400; color: var(--ink-2); }
+
+/* Essai sur le passé. */
+.rl-trial { display: grid; gap: var(--s3); padding: var(--s4); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); min-width: 0; }
+.rl-trial h3 { display: flex; align-items: center; gap: var(--s2); color: var(--brand-ink); }
+.rl-trial > .hint { max-width: 70ch; }
+.rl-trial-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+.rl-trial-days { flex: 0 1 170px; }
+.rl-result { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.rl-result-head { display: flex; align-items: center; gap: var(--s3); }
+.rl-result-head > .icon { width: 28px; height: 28px; color: var(--brand-ink); }
+.rl-result-head.is-quiet > .icon { color: var(--ink-3); }
+.rl-result-title { font-size: var(--fs-lg); font-weight: 800; line-height: 1.3; color: var(--brand-ink); }
+.rl-result-rule { color: var(--ink); overflow-wrap: anywhere; }
+.rl-hits { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.rl-hit { display: grid; align-items: center; gap: var(--s1) var(--s3); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1fr); }
+.rl-hit p { display: flex; align-items: center; gap: var(--s2); min-width: 0; overflow-wrap: anywhere; }
+.rl-hit-when { color: var(--ink); }
+.rl-hit-detail, .rl-hit-cam { font-size: var(--fs-sm); color: var(--ink-2); }
+.rl-hit-detail .icon, .rl-hit-cam .icon { color: var(--ink-3); }
+
+.rl-form-error { font-size: var(--fs-md); }
+.rl-form-foot { margin-top: var(--s2); }
+.rl-enable { min-height: var(--control-h); }
+
+/* Cibles tactiles : 44 px partout dans cet écran (les petits boutons de liste dense n'y servent pas). */
+.rl-form .btn-sm, .rl-rule .btn-sm { min-height: var(--control-h); }
+
+@media (max-width: 760px) {
+  .rl-form, .rl-form h2, .rl-name, .rl-result { scroll-margin-top: 140px; } /* barre du haut sur deux lignes */
+  .rl-rule { padding: var(--s4); }
+  .rl-phrase, .rl-sentence-text { font-size: var(--fs-md); }
+  .rl-hit { grid-template-columns: minmax(0, 1fr); }
+  .rl-rule-head .rl-switch { margin-left: 0; }
+  .rl-slots { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .rl-list-panel .panel-head, .rl-form .panel-head { padding-left: var(--s4); padding-right: var(--s4); }
+  .rl-list-panel .panel-body, .rl-form .panel-body { padding-left: var(--s4); padding-right: var(--s4); }
+  .rl-rule-actions .btn { flex: 1 1 auto; }
+  .rl-form-foot .btn { flex: 1 1 auto; }
+  .rl-assist { padding: var(--s3); }
+  .rl-assist-row .btn, .rl-assist-reply .btn, .rl-faces .btn { flex: 1 1 auto; }
+  .rl-assist-count { margin-left: 0; }
+  .rl-faces { padding: var(--s3) var(--s2); }
+  .rl-faces > .btn { justify-self: stretch; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rl-switch-track, .rl-switch-track i, .rl-choice { transition: none; }
+}
+@media (forced-colors: active) {
+  .rl-switch-track { border-color: CanvasText; }
+  .rl-switch-track i { background: CanvasText; }
+  .rl-switch-input:checked ~ .rl-switch-track { background: Highlight; border-color: Highlight; }
+  .rl-switch-input:checked ~ .rl-switch-track i { background: HighlightText; }
+  .rl-choice:has(input:checked), .rl-pick:has(input:checked) { border-color: Highlight; outline: 2px solid Highlight; }
+}

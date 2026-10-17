@@ -7,6 +7,9 @@
  *
  * Routes : #/ (vue d'ensemble), #/site/<id>/<onglet>?days=7|30|90 (onglets : synthese, securite, equipements,
  * incidents, disponibilite). Un compte qui ne voit qu'un site arrive directement sur son site.
+ * Clients à plusieurs sites rangés en groupes (régions, agences) : #/ devient le tableau de bord de l'organisation,
+ * #/org/<id> (prestataire, plusieurs clients) et #/group/<id> descendent d'un niveau (voir groups.js). Sans groupe,
+ * rien ne change.
  */
 import {
   $, h, icon, NB, fmtPct, fmtAvail, fmtDur, relTime, fmtDateTime, fmtClock, fmtDayText, plural, timeEl,
@@ -15,6 +18,7 @@ import {
 } from './ui.js';
 import { createRing, createThermometer, createTube, BANDS } from './gauge.js';
 import { disposeCharts, downtimeChart, riskTrend } from './charts.js';
+import { clientsPage, crumbs, groupHref, groupPage, orgPage, orgTrail, railTree, soloGroupId } from './groups.js';
 
 const DAY_MS = 86_400_000;
 const PERIODS = [7, 30, 90];
@@ -33,7 +37,9 @@ const state = {
   me: null,
   /** Cartes des sites visibles (GET /api/sites), pour le rail et la vue d'ensemble. */
   sites: [],
-  /** Écran affiché : { kind: 'home' } ou { kind: 'site', id, tab, days }. */
+  /** Organisations, groupes et leurs chiffres (GET /api/groups). `hasGroups` faux : l'interface reste celle d'avant les groupes. */
+  groups: null,
+  /** Écran affiché : { kind: 'home' }, { kind: 'org', id }, { kind: 'group', id } ou { kind: 'site', id, tab, days }. */
   page: null,
   /** Bascules « Voir en tableau », gardées d'un rafraîchissement à l'autre. */
   prefs: { downtime: false, risk: false },
@@ -103,6 +109,7 @@ function showGate(kind, content, title) {
 function showLogin(message) {
   state.me = null;
   state.sites = [];
+  state.groups = null;
   state.page = null;
   const error = h('p', { class: 'form-error', role: 'alert', hidden: !message }, message ?? '');
   const submit = h('button', { class: 'btn btn-primary btn-lg btn-block', type: 'submit' }, 'Se connecter');
@@ -213,7 +220,8 @@ function enterApp({ fresh = false } = {}) {
   $('app').hidden = false;
   $('skip').hidden = false;
   $('who-name').textContent = state.me.displayName || state.me.username;
-  $('who-role').textContent = ROLE[state.me.role] ?? '';
+  const scope = (state.me.scopeGroups ?? []).map((g) => g.name).join(', ');
+  $('who-role').textContent = `${ROLE[state.me.role] ?? ''}${scope ? ` · ${scope}` : ''}`;
   startRefresh();
   route({ fresh });
 }
@@ -314,11 +322,12 @@ function siteHref(id, tab = 'synthese', days = 30) {
 
 function renderRail(r) {
   const multi = state.sites.length > 1;
+  const byGroup = state.groups?.hasGroups === true;
   const home = $('nav-home');
   home.hidden = !multi;
-  if (r.kind === 'home') home.setAttribute('aria-current', 'page');
+  if (r.kind === 'home' || r.kind === 'org') home.setAttribute('aria-current', 'page');
   else home.removeAttribute('aria-current');
-  $('nav-sites-title').textContent = multi ? 'Vos sites' : 'Votre site';
+  $('nav-sites-title').textContent = byGroup ? 'Vos groupes et sites' : multi ? 'Vos sites' : 'Votre site';
   const homeHref = multi || state.sites.length === 0 ? '#/' : siteHref(state.sites[0].id);
   $('rail-brand').setAttribute('href', homeHref);
   $('topbar-brand').setAttribute('href', homeHref);
@@ -350,7 +359,9 @@ function renderRail(r) {
       ),
     );
   };
-  const blocks = grouped
+  const blocks = byGroup
+    ? railTree(ctx, r, link)
+    : grouped
     ? orgs.map((org) => h('div', { class: 'nav-org' }, h('p', { class: 'nav-org-title' }, org), h('ul', { class: 'nav-list', 'aria-label': org }, sorted.filter((c) => c.organization === org).map(link))))
     : [h('ul', { class: 'nav-list', 'aria-labelledby': 'nav-sites-title' }, sorted.map(link))];
   $('nav-sites').replaceChildren(...blocks);
@@ -363,6 +374,8 @@ function parseRoute() {
   const [path, query = ''] = raw.split('?');
   const asked = Number(new URLSearchParams(query).get('days'));
   const days = PERIODS.includes(asked) ? asked : 30;
+  const g = path.match(/^\/(group|org)\/(\d{1,10})\/?$/);
+  if (g) return { kind: g[1], id: Number(g[2]), days };
   const m = path.match(/^\/site\/([^/]+)(?:\/([a-z]+))?\/?$/);
   if (!m) return { kind: 'home', days };
   let id = m[1];
@@ -388,21 +401,39 @@ async function route({ quiet = false, fresh = false } = {}) {
   if (!quiet) main.classList.add('is-loading');
   try {
     let content;
+    const missing = (err) => (err.status === 404 ? null : Promise.reject(err));
     if (r.kind === 'home') {
-      const [overview, sites] = await Promise.all([api('/api/overview'), api('/api/sites')]);
+      const [overview, sites, groups] = await Promise.all([api('/api/overview'), api('/api/sites'), api('/api/groups')]);
       if (seq !== state.seq) return;
       state.sites = sites;
+      state.groups = groups;
       // Un seul site : pas de vue d'ensemble, le site directement.
       if (sites.length === 1) return void location.replace(siteHref(sites[0].id, 'synthese', r.days));
-      content = overviewPage(overview, sites);
-    } else {
-      const [detail, sites] = await Promise.all([
-        api(`/api/sites/${encodeURIComponent(r.id)}?days=${r.days}`).catch((err) => (err.status === 404 ? null : Promise.reject(err))),
-        api('/api/sites'),
-      ]);
+      if (groups.hasGroups) {
+        // Un directeur régional (limité à un seul groupe) arrive sur son groupe ; un prestataire à plusieurs clients, sur la liste des clients.
+        const solo = soloGroupId(groups);
+        if (solo !== null) return void location.replace(groupHref(solo));
+        content = groups.organizations.length > 1 ? clientsPage(ctx, groups) : orgPage(ctx, groups.organizations[0]);
+      } else content = overviewPage(overview, sites);
+    } else if (r.kind === 'org') {
+      const [sites, groups] = await Promise.all([api('/api/sites'), api('/api/groups')]);
       if (seq !== state.seq) return;
       state.sites = sites;
-      content = detail ? sitePage(detail, r) : notFoundPage();
+      state.groups = groups;
+      const node = groups.organizations.find((o) => o.id === r.id);
+      content = node ? orgPage(ctx, node) : notFoundPage('organisation');
+    } else if (r.kind === 'group') {
+      const [detail, sites, groups] = await Promise.all([api(`/api/groups/${r.id}`).catch(missing), api('/api/sites'), api('/api/groups')]);
+      if (seq !== state.seq) return;
+      state.sites = sites;
+      state.groups = groups;
+      content = detail ? groupPage(ctx, detail) : notFoundPage('groupe');
+    } else {
+      const [detail, sites, groups] = await Promise.all([api(`/api/sites/${encodeURIComponent(r.id)}?days=${r.days}`).catch(missing), api('/api/sites'), api('/api/groups')]);
+      if (seq !== state.seq) return;
+      state.sites = sites;
+      state.groups = groups;
+      content = detail ? sitePage(detail, r) : notFoundPage('site');
     }
     state.loadedAt = Date.now();
     disposeCharts();
@@ -533,24 +564,12 @@ function worstFirst(a, b) {
   );
 }
 
-function overviewPage(ov, sites) {
-  document.title = 'Vos sites · Suivi des sites';
-  if (sites.length === 0) {
-    return [pageHead({ title: 'Vos sites' }), emptyBlock('building', 'Aucun site n’est encore rattaché à votre compte.', `Votre prestataire rattache les sites à votre compte${NB}: contactez-le si un site manque.`)];
-  }
-  const chips = h(
-    'ul',
-    { class: 'state-row', 'aria-label': 'Vos sites par état' },
-    ['alarm', 'unreachable', 'degraded', 'recent', 'unknown', 'ok']
-      .filter((level) => ov.counts[level] > 0)
-      .map((level) => {
-        const st = SITE_STATE[level];
-        const n = ov.counts[level];
-        return h('li', null, pill(st.pill, st.icon, `${plural(n, 'site', 'sites')} ${st.count[n > 1 ? 1 : 0]}`));
-      }),
-  );
-
-  const rows = [...sites].sort(worstFirst).map((c) => {
+/**
+ * Le tableau des sites, du plus préoccupant au plus serein (le serveur les a déjà classés pour un groupe : `sorted`).
+ * Sert à la vue d'ensemble, aux sites sans groupe d'une organisation et aux sites d'un groupe.
+ */
+function sitesPanel({ title, iconName, note, sites, sorted = false }) {
+  const rows = (sorted ? sites : [...sites].sort(worstFirst)).map((c) => {
     const href = siteHref(c.id);
     const tr = h(
       'tr',
@@ -568,13 +587,36 @@ function overviewPage(ov, sites) {
     });
     return tr;
   });
-
   const table = panel(
-    { title: 'Tous vos sites', iconName: 'building' },
-    h('p', { class: 'panel-note' }, `Du plus préoccupant au plus serein${NB}: l’état d’abord, puis les incidents en cours, puis l’indice de sécurité. Touchez un site pour l’ouvrir.`),
-    dataTable([['Site'], ['État'], ['Indice de sécurité'], [`Disponibilité (30${NB}j)`, true], ['Dernier signal']], rows, { caption: 'Vos sites, du plus préoccupant au plus serein' }),
+    { title, iconName },
+    note && h('p', { class: 'panel-note' }, note),
+    dataTable([['Site'], ['État'], ['Indice de sécurité'], [`Disponibilité (30${NB}j)`, true], ['Dernier signal']], rows, { caption: title }),
   );
   table.querySelector('table')?.classList.add('sites-table');
+  return table;
+}
+
+/** Ce que les écrans de groupes (groups.js) empruntent à cette page. */
+const ctx = { state, siteHref, pageHead: (opts) => pageHead(opts), sitesPanel };
+
+function overviewPage(ov, sites) {
+  document.title = 'Vos sites · Suivi des sites';
+  if (sites.length === 0) {
+    return [pageHead({ title: 'Vos sites' }), emptyBlock('building', 'Aucun site n’est encore rattaché à votre compte.', `Votre prestataire rattache les sites à votre compte${NB}: contactez-le si un site manque.`)];
+  }
+  const chips = h(
+    'ul',
+    { class: 'state-row', 'aria-label': 'Vos sites par état' },
+    ['alarm', 'unreachable', 'degraded', 'recent', 'unknown', 'ok']
+      .filter((level) => ov.counts[level] > 0)
+      .map((level) => {
+        const st = SITE_STATE[level];
+        const n = ov.counts[level];
+        return h('li', null, pill(st.pill, st.icon, `${plural(n, 'site', 'sites')} ${st.count[n > 1 ? 1 : 0]}`));
+      }),
+  );
+
+  const table = sitesPanel({ title: 'Tous vos sites', iconName: 'building', note: `Du plus préoccupant au plus serein${NB}: l’état d’abord, puis les incidents en cours, puis l’indice de sécurité. Touchez un site pour l’ouvrir.`, sites });
 
   // La fréquence d'envoi se règle sur chaque site : on ne promet pas un chiffre, on dit ce que fait cette page.
   return [pageHead({ title: 'Vos sites', sub: `${plural(sites.length, 'site suivi', 'sites suivis')}. Chaque site envoie ses chiffres régulièrement${NB}; cette page se met à jour toute seule chaque minute.`, after: chips }), table, h('div', { class: 'grid-2' }, monthPanel(ov), exposurePanel(ov, sites))];
@@ -634,11 +676,19 @@ function exposurePanel(ov, sites) {
 
 // ------------------------------------------------------------------ page d'un site
 
-function notFoundPage() {
-  document.title = 'Site introuvable · Suivi des sites';
+const NOT_FOUND = {
+  site: { title: 'Site introuvable', text: 'Ce site est introuvable.', menu: 'un site' },
+  groupe: { title: 'Groupe introuvable', text: 'Ce groupe est introuvable.', menu: 'un groupe' },
+  organisation: { title: 'Organisation introuvable', text: 'Cette organisation est introuvable.', menu: 'un site' },
+};
+
+/** Introuvable : jamais « interdit » (on ne révèle pas ce qui existe hors de votre périmètre). */
+function notFoundPage(what = 'site') {
+  const nf = NOT_FOUND[what];
+  document.title = `${nf.title} · Suivi des sites`;
   return [
-    pageHead({ title: 'Site introuvable', crumb: state.sites.length > 1 && crumbLink() }),
-    emptyBlock('search', 'Ce site est introuvable.', state.sites.length ? 'Vérifiez le lien, ou choisissez un site dans le menu.' : 'Aucun site n’est rattaché à votre compte.'),
+    pageHead({ title: nf.title, crumb: state.sites.length > 1 && crumbLink() }),
+    emptyBlock('search', nf.text, state.sites.length ? `Vérifiez le lien, ou choisissez ${nf.menu} dans le menu.` : 'Aucun site n’est rattaché à votre compte.'),
   ];
 }
 
@@ -684,7 +734,7 @@ function sitePage(d, r) {
   document.title = `${d.site.name} · ${tabInfo.label} · Suivi des sites`;
   const head = pageHead({
     title: d.site.name,
-    crumb: multi && crumbLink(),
+    crumb: state.groups?.hasGroups ? crumbs([...orgTrail(ctx, d.site.organizationId, d.site.organization), ...(d.groupPath ?? []).map((g) => ({ label: g.name, href: groupHref(g.id) }))]) : multi && crumbLink(),
     sub: isAdmin() && d.site.organization !== d.site.name ? d.site.organization : null,
   });
 

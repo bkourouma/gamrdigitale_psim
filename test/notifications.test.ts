@@ -462,6 +462,68 @@ describe('canal webhook (faux serveur)', () => {
   });
 });
 
+describe('canal webhook : `event` est le type de message, le motif est dans `reason`', () => {
+  // Chaine complete : moteur -> notifieur -> canal webhook reel -> faux recepteur HTTP.
+  async function recu(run: (t: ReturnType<typeof setup>) => Promise<void>) {
+    const api = await fakeHttp(() => ({ ok: true }));
+    const url = `${api.base}/hooks/x`;
+    const t = setup({ channels: [webhookChannel({ secret: '' }, [[url], [url]])] });
+    await run(t);
+    await api.close();
+    return api.calls.map((c) => JSON.parse(c.body.toString()) as Record<string, unknown>);
+  }
+
+  it('une alarme avec motif `gas` : event = opened, reason = gas, reasonLabel lisible sans accent', async () => {
+    const bodies = await recu(async (t) => {
+      t.engine.handleDetectorMessage('D-06', { event: 'gas' });
+      await t.notifier.notifyIncident(t.incident('D-06'), 'opened');
+    });
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].event, 'opened', 'le type de message reste sous `event`');
+    assert.equal(bodies[0].reason, 'gas');
+    assert.equal(bodies[0].reasonLabel, 'Gaz detecte');
+    // Les autres champs historiques sont intacts.
+    for (const champ of ['incidentId', 'subject', 'text', 'severity', 'category', 'value', 'confirmed', 'status', 'detectorId', 'detector', 'zone', 'floor', 'cameras']) {
+      assert.ok(champ in bodies[0], `champ ${champ} present`);
+    }
+  });
+
+  it('un incident sans motif : reason et reasonLabel valent null, event reste le type', async () => {
+    const bodies = await recu(async (t) => {
+      t.send('D-06', 'alarm');
+      await t.notifier.notifyIncident(t.incident('D-06'), 'opened');
+    });
+    assert.equal(bodies[0].event, 'opened');
+    assert.equal(bodies[0].reason, null);
+    assert.equal(bodies[0].reasonLabel, null);
+  });
+
+  it('chaque type de message garde son `event`, avec ou sans motif', async () => {
+    for (const event of [null, 'gas']) {
+      const bodies = await recu(async (t) => {
+        if (event) t.engine.handleDetectorMessage('D-06', { event });
+        else t.send('D-06', 'alarm');
+        for (const kind of ['opened', 'escalated', 'confirmed'] as const) await t.notifier.notifyIncident(t.incident('D-06'), kind);
+        await t.notifier.notifySilent(t.engine.getDevice('D-02')!);
+        await t.notifier.notifyRestart({ from: T0, to: T0 + 60 * S, durationMs: 60 * S, clean: true }, 0);
+        await t.notifier.notifySecurity('admin', 'login', 'test');
+        await t.notifier.notifyIntegrity([{ id: 1, reason: 'x' }]);
+      });
+      assert.deepEqual(bodies.map((b) => b.event), ['opened', 'escalated', 'confirmed', 'silent', 'restart', 'security', 'integrity', 'integrity'], "l'integrite previent les deux niveaux (meme adresse ici)");
+      assert.deepEqual(bodies.slice(0, 3).map((b) => b.reason), [event, event, event]);
+    }
+  });
+
+  it('aucune donnee ne peut ecraser `event` : un message dont les donnees portent une cle `event` garde son type', async () => {
+    const api = await fakeHttp(() => ({ ok: true }));
+    const url = `${api.base}/h`;
+    const channel = webhookChannel({ secret: '' }, [[url], []]);
+    await channel.send({ ...message, data: { severity: 'critical', event: 'gas' } }, url);
+    await api.close();
+    assert.equal(JSON.parse(api.calls[0].body.toString()).event, 'opened');
+  });
+});
+
 describe('boite de reception de la demo', () => {
   it('recoit e-mails (objets accentues decodes, pieces jointes comptees) et messages Telegram', async () => {
     const { startInbox } = await import('../scripts/demo/inbox.ts');

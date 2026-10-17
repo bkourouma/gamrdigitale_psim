@@ -1,0 +1,2440 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "id": "generic-mini-pc-psim",
+      "family": "socle",
+      "manufacturer": "Générique",
+      "model": "Mini-PC du PSIM (Windows 11 ou Linux, Node 24)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Poste qui fait tourner le PSIM : tâche de démarrage ou systemd."
+      },
+      "fiche": "socle",
+      "profile": "mini-pc",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/watchdog.test.ts",
+        "test/windows-scripts.test.ts",
+        "test/e2e-resilience.test.ts"
+      ],
+      "history": [],
+      "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
+    },
+    {
+      "id": "generic-onduleur-poste",
+      "family": "socle",
+      "manufacturer": "Générique",
+      "model": "Onduleur du poste PSIM",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Alimente le mini-PC, le switch et le routeur ; sa supervision par la passerelle est un autre profil (module ups)."
+      },
+      "fiche": "socle",
+      "profile": "onduleur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/watchdog.test.ts",
+        "test/windows-scripts.test.ts",
+        "test/e2e-resilience.test.ts"
+      ],
+      "history": [],
+      "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
+    },
+    {
+      "id": "generic-routeur-4g",
+      "family": "socle",
+      "manufacturer": "Générique",
+      "model": "Routeur 4G",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Accès Internet de secours ou principal (notifications, supervision externe, portail)."
+      },
+      "fiche": "socle",
+      "profile": "routeur-4g",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/watchdog.test.ts",
+        "test/windows-scripts.test.ts",
+        "test/e2e-resilience.test.ts"
+      ],
+      "history": [],
+      "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
+    },
+    {
+      "id": "generic-switch-poe",
+      "family": "socle",
+      "manufacturer": "Générique",
+      "model": "Switch PoE",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Alimente et relie les caméras IP."
+      },
+      "fiche": "socle",
+      "profile": "switch-poe",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/watchdog.test.ts",
+        "test/windows-scripts.test.ts",
+        "test/e2e-resilience.test.ts"
+      ],
+      "history": [],
+      "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
+    },
+    {
+      "id": "generic-parafoudre",
+      "family": "socle",
+      "manufacturer": "Générique",
+      "model": "Parafoudre",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Protection des lignes réseau et secteur ; équipement passif."
+      },
+      "fiche": "socle",
+      "profile": "parafoudre",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/watchdog.test.ts",
+        "test/windows-scripts.test.ts",
+        "test/e2e-resilience.test.ts"
+      ],
+      "history": [],
+      "notes": "Poste du PSIM et équipements d'infrastructure : essai en conditions de pack."
+    },
+    {
+      "id": "gamr-passerelle",
+      "family": "socle",
+      "manufacturer": "GAMR",
+      "model": "Passerelle GAMR (boîtier terrain : Zigbee, Modbus, onduleur, SIA, LoRaWAN)",
+      "kind": "generic",
+      "aliases": [
+        "Passerelle GAMR"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Boîtier qui fait tourner la passerelle GAMR : relié au PSIM par MQTT (compte et clé de liaison), signe de vie (module heartbeat) et file d'attente hors ligne."
+      },
+      "fiche": "socle",
+      "profile": "mini-pc",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/gateway.test.ts",
+        "gateway/test/e2e-module-psim.test.ts",
+        "gateway/test/queue.test.ts"
+      ],
+      "history": [],
+      "notes": "Boîtier de la passerelle dans les packs (signe de vie GW-01) : essai en conditions de pack, chaque module raccordé ayant sa propre entrée."
+    },
+    {
+      "id": "dahua-xvr5108hs-i3t-voie",
+      "family": "video",
+      "manufacturer": "Dahua",
+      "model": "DH-XVR5108HS-I3/T (une voie)",
+      "kind": "model",
+      "aliases": [
+        "DH-XVR5108HS-I3/T",
+        "XVR5108HS-I3/T",
+        "XVR5108HS-I3"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Flux RTSP direct de l'enregistreur et événements `eventManager.cgi` (authentification Digest), lus par le PSIM lui-même."
+      },
+      "fiche": "enregistreur-dahua",
+      "profile": "enregistreur",
+      "status": "qualified",
+      "scope": "UNE voie (la voie 1) d'un enregistreur réel DH-XVR5108HS-I3/T : affichage du flux secondaire RTSP et réception des événements de détection VideoMotion et SmartMotionHuman, voie par voie, avec authentification Digest.",
+      "not_covered": "Les autres voies, les autres modèles d'enregistreur (dont le XVR5104HS-I3 des packs), la perte vidéo, la reprise après coupure réseau ou changement de mot de passe, la latence mesurée, la répétabilité chiffrée, les conditions tropicales. Aucune fiche de recette signée n'existe pour cet essai.",
+      "last_trial": {
+        "date": "2026-10-04",
+        "reference": "README.md, sections « Détection des enregistreurs Dahua » et « Brancher une caméra ONVIF réelle » (commits 004313c et 2a1e689)",
+        "psim_version": "0.1.0 (développement, octobre 2026)",
+        "gateway_version": null,
+        "real_hardware": true,
+        "conditions": "Matériel réel : enregistreur DH-XVR5108HS-I3/T du propriétaire du dépôt, PSIM de développement. Constat fait avant l'existence de ce registre : pas de fiche signée ni de numéro de série relevé.",
+        "serial_numbers": [],
+        "firmware": null,
+        "result_file": null,
+        "result_sha256": null,
+        "legacy": true
+      },
+      "simulated_tests": [
+        "test/dahua.test.ts"
+      ],
+      "history": [
+        {
+          "at": "2026-10-11T08:00:00Z",
+          "by": "État initial du registre (constat historique)",
+          "from": null,
+          "to": "qualified",
+          "reason": "Essai réel sur une voie d'un XVR5108HS-I3/T relevé dans le README ; portée limitée à ce qui est écrit dans « scope ».",
+          "result_file": null
+        }
+      ],
+      "notes": "Qualification limitée à la voie et aux fonctions ci-dessus. Pour étendre la portée, refaire la fiche « enregistreur-dahua » avec toutes les voies du pack."
+    },
+    {
+      "id": "dahua-xvr5104hs-i3",
+      "family": "video",
+      "manufacturer": "Dahua",
+      "model": "DH-XVR5104HS-I3",
+      "kind": "model",
+      "aliases": [
+        "XVR5104HS-I3",
+        "DH-XVR5104HS-I3",
+        "XVR5104"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Enregistreur 4 voies des packs : flux RTSP et événements Dahua lus par le PSIM."
+      },
+      "fiche": "enregistreur-dahua",
+      "profile": "enregistreur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/dahua.test.ts"
+      ],
+      "history": [],
+      "notes": "Autre modèle que le XVR5108HS-I3/T qualifié sur une voie : même famille, mais rien n'en est déduit. Doit passer la fiche sur chaque voie du pack."
+    },
+    {
+      "id": "generic-dahua-nvr-xvr",
+      "family": "video",
+      "manufacturer": "Dahua",
+      "model": "NVR / XVR Dahua (famille)",
+      "kind": "generic",
+      "aliases": [
+        "NVR Dahua",
+        "XVR Dahua"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Enregistreurs Dahua : flux RTSP et événements lus par le PSIM."
+      },
+      "fiche": "enregistreur-dahua",
+      "profile": "enregistreur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/dahua.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée de famille : chaque modèle précis a sa propre entrée."
+    },
+    {
+      "id": "dahua-hac-hfw1500th-i8",
+      "family": "video",
+      "manufacturer": "Dahua",
+      "model": "HAC-HFW1500TH-I8",
+      "kind": "model",
+      "aliases": [
+        "HAC-HFW1500TH-I8",
+        "DH-HAC-HFW1500TH-I8",
+        "HFW1500TH-I8"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Caméra HDCVI 5 Mpx raccordée en coaxial à un enregistreur XVR ; image et événements passent par la voie de l'enregistreur."
+      },
+      "fiche": "enregistreur-dahua",
+      "profile": "camera-hdcvi",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/dahua.test.ts"
+      ],
+      "history": [],
+      "notes": "Caméra analogique HD (pas IP) : son image n'existe qu'à travers un enregistreur."
+    },
+    {
+      "id": "generic-onvif-camera-fixe",
+      "family": "video",
+      "manufacturer": "Générique",
+      "model": "Caméra IP fixe ONVIF",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Découverte ONVIF ou flux RTSP direct lu par le PSIM."
+      },
+      "fiche": "camera-onvif",
+      "profile": "fixe",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/video.test.ts",
+        "test/camerahealth.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-onvif-camera-ptz",
+      "family": "video",
+      "manufacturer": "Générique",
+      "model": "Caméra PTZ ONVIF",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Flux ONVIF/RTSP ; le PSIM n'envoie aucune commande de pilotage."
+      },
+      "fiche": "camera-onvif",
+      "profile": "ptz",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/video.test.ts",
+        "test/camerahealth.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-onvif-camera-panoramique",
+      "family": "video",
+      "manufacturer": "Générique",
+      "model": "Caméra panoramique ONVIF",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Flux ONVIF/RTSP."
+      },
+      "fiche": "camera-onvif",
+      "profile": "panoramique",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/video.test.ts",
+        "test/camerahealth.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-camera-solaire-4g",
+      "family": "video",
+      "manufacturer": "Générique",
+      "model": "Caméra solaire 4G",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Flux RTSP/ONVIF à travers la liaison 4G."
+      },
+      "fiche": "camera-onvif",
+      "profile": "solaire-4g",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/video.test.ts",
+        "test/camerahealth.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-camera-thermique",
+      "family": "video",
+      "manufacturer": "Générique",
+      "model": "Caméra thermique",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Flux ONVIF/RTSP."
+      },
+      "fiche": "camera-onvif",
+      "profile": "thermique",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/video.test.ts",
+        "test/camerahealth.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-sia-centrale",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Centrale d'alarme SIA DC-09",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Récepteur SIA DC-09 de la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée de famille : chaque marque et modèle a sa propre entrée."
+    },
+    {
+      "id": "ajax-hub2",
+      "family": "intrusion",
+      "manufacturer": "Ajax",
+      "model": "Hub 2 / Hub 2 Plus",
+      "kind": "model",
+      "aliases": [
+        "Ajax Hub 2"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "paradox-ip150",
+      "family": "intrusion",
+      "manufacturer": "Paradox",
+      "model": "IP150 / IP180",
+      "kind": "model",
+      "aliases": [
+        "IP150"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "texecom-comip",
+      "family": "intrusion",
+      "manufacturer": "Texecom",
+      "model": "ComIP / SmartCom (SIA-DCS)",
+      "kind": "model",
+      "aliases": [
+        "ComIP"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "risco-lightsys",
+      "family": "intrusion",
+      "manufacturer": "Risco",
+      "model": "LightSYS / ProSYS",
+      "kind": "model",
+      "aliases": [
+        "LightSYS"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "dsc-powerseries-neo",
+      "family": "intrusion",
+      "manufacturer": "DSC / Tyco",
+      "model": "TL280 / PowerSeries Neo",
+      "kind": "model",
+      "aliases": [
+        "PowerSeries Neo"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "honeywell-galaxy",
+      "family": "intrusion",
+      "manufacturer": "Honeywell / Resideo",
+      "model": "Galaxy / Vista + module IP",
+      "kind": "model",
+      "aliases": [
+        "Galaxy"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "hikvision-ax-pro",
+      "family": "intrusion",
+      "manufacturer": "Hikvision",
+      "model": "AX PRO",
+      "kind": "model",
+      "aliases": [
+        "AX PRO"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Centrale qui transmet en SIA DC-09 à la passerelle."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Marque citée « à qualifier sur site » dans gateway/docs/sia.md."
+    },
+    {
+      "id": "generic-detecteur-mouvement",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Détecteur de mouvement intérieur (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-detecteur-exterieur",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Détecteur extérieur (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie relais sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-contact-ouverture",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Contact d'ouverture (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-bris-de-vitre",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Détecteur de bris de vitre (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie relais sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-barriere-infrarouge",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Barrière infrarouge (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie relais sur un module d'entrées Modbus TCP (exemple de gateway/docs/modbus.md)."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-cable-de-cloture",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Câble de clôture (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie relais sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-radar",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Radar de détection (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie relais sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-clavier-alarme",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Clavier d'alarme",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Aucune intégration de clavier dans le PSIM aujourd'hui."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "capteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé : le raccordement au PSIM reste à développer, puis à essayer sur le matériel réel.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-sirene",
+      "family": "intrusion",
+      "manufacturer": "Générique",
+      "model": "Sirène",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Actionneur : dépend de la fonction de commande en cours de développement (le PSIM ne commande rien aujourd'hui)."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "actionneur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé : le raccordement au PSIM reste à développer, puis à essayer sur le matériel réel.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "aqara-rtcgq11lm",
+      "family": "intrusion",
+      "manufacturer": "Aqara",
+      "model": "RTCGQ11LM (mouvement)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "aqara-mccgq11lm",
+      "family": "intrusion",
+      "manufacturer": "Aqara",
+      "model": "MCCGQ11LM (contact)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "aqara-djt11lm",
+      "family": "intrusion",
+      "manufacturer": "Aqara",
+      "model": "DJT11LM (vibration)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "vibration",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": "Ne renvoie pas toujours « vibration: false » : voir gateway/docs/zigbee.md."
+    },
+    {
+      "id": "sonoff-snzb-03",
+      "family": "intrusion",
+      "manufacturer": "Sonoff",
+      "model": "SNZB-03 (mouvement)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "sonoff-snzb-04",
+      "family": "intrusion",
+      "manufacturer": "Sonoff",
+      "model": "SNZB-04 (contact)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-zigbee-ts0202",
+      "family": "intrusion",
+      "manufacturer": "Tuya Zigbee",
+      "model": "TS0202 (mouvement)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-zigbee-ts0203",
+      "family": "intrusion",
+      "manufacturer": "Tuya Zigbee",
+      "model": "TS0203 (contact)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "heiman-hs1ms",
+      "family": "intrusion",
+      "manufacturer": "Heiman",
+      "model": "HS1MS (mouvement)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "heiman-hs1ds",
+      "family": "intrusion",
+      "manufacturer": "Heiman",
+      "model": "HS1DS (contact)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-contact-wifi",
+      "family": "intrusion",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Contact de porte ou fenêtre WiFi (catégorie mcs)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "contact",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle : relever la référence exacte de chaque exemplaire essayé. Événement bref possiblement manqué (docs/TUYA.md)."
+    },
+    {
+      "id": "tuya-pir-wifi",
+      "family": "intrusion",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Détecteur de mouvement WiFi (catégorie pir)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "pir",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle : relever la référence exacte de chaque exemplaire essayé."
+    },
+    {
+      "id": "milesight-ws301",
+      "family": "intrusion",
+      "manufacturer": "Milesight",
+      "model": "WS301 (contact de porte)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `milesight-ws301` classé « à qualifier »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-porte",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "dragino-lds03a",
+      "family": "intrusion",
+      "manufacturer": "Dragino",
+      "model": "LDS03A (contact de porte)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `dragino-lds03a` classé « probable »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-porte",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "milesight-ws202",
+      "family": "intrusion",
+      "manufacturer": "Milesight",
+      "model": "WS202 (mouvement PIR)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `milesight-ws202` classé « probable »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-mouvement",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-smoke-wifi",
+      "family": "incendie_gaz",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Détecteur de fumée WiFi « Smoke Alarm » (catégorie ywbj, S01/S441/S433)",
+      "kind": "model",
+      "aliases": [
+        "Smoke Alarm Tuya",
+        "S01/S441/S433"
+      ],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM ; supervision de 300 s."
+      },
+      "fiche": "tuya",
+      "profile": "fumee",
+      "status": "qualified",
+      "scope": "Un détecteur de fumée WiFi réel (catégorie Tuya ywbj, modèle S01/S441/S433, pile 9 V) : lecture réelle de son état dans le cloud Tuya (région eu), fonction smoke_sensor_status à « normal », pile 93 %, lecture du PSIM = normal.",
+      "not_covered": "Le déclenchement par le bouton TEST jusqu'à l'ouverture d'un incident (cet essai n'est pas consigné dans les documents du dépôt), la pile faible, la latence mesurée, la coupure d'Internet, la répétabilité, les conditions tropicales, et tous les autres capteurs Tuya. À compléter en passant la fiche « tuya », profil « fumee ».",
+      "last_trial": {
+        "date": "2026-10-07",
+        "reference": "docs/HANDOFF-tuya.md, section « Validé contre le vrai matériel » (commit 5d30464)",
+        "psim_version": "0.1.0 (développement, octobre 2026)",
+        "gateway_version": null,
+        "real_hardware": true,
+        "conditions": "Matériel réel : détecteur de fumée du propriétaire du dépôt, cloud Tuya réel interrogé en lecture seule. Constat fait avant l'existence de ce registre : pas de fiche signée.",
+        "serial_numbers": [
+          "bf466dd7b79fe07dd5jizp (Device ID Tuya)"
+        ],
+        "firmware": null,
+        "result_file": null,
+        "result_sha256": null,
+        "legacy": true
+      },
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [
+        {
+          "at": "2026-10-11T08:00:00Z",
+          "by": "État initial du registre (constat historique)",
+          "from": null,
+          "to": "qualified",
+          "reason": "Lecture réelle du cloud Tuya avec un détecteur de fumée réel (docs/HANDOFF-tuya.md) ; portée limitée à ce qui est écrit dans « scope ».",
+          "result_file": null
+        }
+      ],
+      "notes": "Détecteur grand public non certifié EN 54 : détection complémentaire, jamais en remplacement d'une centrale incendie certifiée."
+    },
+    {
+      "id": "heiman-hs1sa-e",
+      "family": "incendie_gaz",
+      "manufacturer": "Heiman",
+      "model": "HS1SA-E (fumée Zigbee)",
+      "kind": "model",
+      "aliases": [
+        "HS1SA-E",
+        "HS1SA",
+        "Heiman HS1SA"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fumee",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": "Non certifié EN 54 : information complémentaire seulement. Cité dans les packs."
+    },
+    {
+      "id": "heiman-hs1ca",
+      "family": "incendie_gaz",
+      "manufacturer": "Heiman",
+      "model": "HS1CA (monoxyde de carbone Zigbee)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "co",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "heiman-hs1cg",
+      "family": "incendie_gaz",
+      "manufacturer": "Heiman",
+      "model": "HS1CG (gaz Zigbee)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "gaz",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-detecteur-fumee-zigbee",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Détecteur de fumée Zigbee",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fumee",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": "Non certifié EN 54 : complémentaire."
+    },
+    {
+      "id": "generic-detecteur-gaz",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Détecteur de gaz (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "gaz",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-detecteur-co",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Détecteur de monoxyde de carbone (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "co",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-detecteur-adressable",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Détecteur incendie adressable (via sa centrale)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Les détecteurs adressables se lisent à travers la centrale qui les gère (SIA DC-09)."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-centrale-incendie-certifiee",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Centrale incendie certifiée",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "sia",
+        "detail": "Transmission SIA DC-09, ou contact sec sur un module Modbus."
+      },
+      "fiche": "sia",
+      "profile": "centrale",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/sia.test.ts"
+      ],
+      "history": [],
+      "notes": "Le PSIM ne remplace pas la centrale certifiée : il en reçoit les événements."
+    },
+    {
+      "id": "generic-declencheur-manuel",
+      "family": "incendie_gaz",
+      "manufacturer": "Générique",
+      "model": "Déclencheur manuel (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie contact sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-gaz-wifi",
+      "family": "incendie_gaz",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Détecteur de gaz WiFi (catégorie rqbj ou jwbj)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "gaz",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle. La catégorie jwbj n'est pas certaine dans la documentation Tuya (docs/TUYA.md)."
+    },
+    {
+      "id": "tuya-co-wifi",
+      "family": "incendie_gaz",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Détecteur de monoxyde de carbone WiFi (catégorie cobj)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "co",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle."
+    },
+    {
+      "id": "generic-controleur-acces",
+      "family": "acces",
+      "manufacturer": "Générique",
+      "model": "Contrôleur de contrôle d'accès",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Événements envoyés par `POST /api/ingest/<id>` ou MQTT par le pont du constructeur."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "capteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/sources.test.ts"
+      ],
+      "history": [],
+      "notes": "Le PSIM ne parle pas Wiegand ni les protocoles propriétaires : un pont de traduction par modèle est à écrire et à essayer."
+    },
+    {
+      "id": "generic-capteur-temperature",
+      "family": "environnement",
+      "manufacturer": "Générique",
+      "model": "Capteur de température (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-capteur-fuite",
+      "family": "environnement",
+      "manufacturer": "Générique",
+      "model": "Capteur de fuite d'eau (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-niveau-cuve",
+      "family": "environnement",
+      "manufacturer": "Générique",
+      "model": "Niveau de cuve (sonde 4-20 mA)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sonde 4-20 mA sur un module Modbus TCP (exemple de gateway/docs/modbus.md)."
+      },
+      "fiche": "modbus",
+      "profile": "mesure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-capteur-vibration",
+      "family": "environnement",
+      "manufacturer": "Générique",
+      "model": "Capteur de vibration (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "vibration",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-qualite-air",
+      "family": "environnement",
+      "manufacturer": "Générique",
+      "model": "Capteur de qualité de l'air",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Sortie Modbus (registre de mesure) : modèle précis à choisir."
+      },
+      "fiche": "modbus",
+      "profile": "mesure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "aqara-sjcgq11lm",
+      "family": "environnement",
+      "manufacturer": "Aqara",
+      "model": "SJCGQ11LM (fuite)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "aqara-wsdcgq11lm",
+      "family": "environnement",
+      "manufacturer": "Aqara",
+      "model": "WSDCGQ11LM (température / humidité)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "sonoff-snzb-02",
+      "family": "environnement",
+      "manufacturer": "Sonoff",
+      "model": "SNZB-02 (température / humidité)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "sonoff-snzb-05",
+      "family": "environnement",
+      "manufacturer": "Sonoff",
+      "model": "SNZB-05 (fuite)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-zigbee-ts0201",
+      "family": "environnement",
+      "manufacturer": "Tuya Zigbee",
+      "model": "TS0201 (température / humidité)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-zigbee-ts0207",
+      "family": "environnement",
+      "manufacturer": "Tuya Zigbee",
+      "model": "TS0207 (fuite)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "heiman-hs1wl",
+      "family": "environnement",
+      "manufacturer": "Heiman",
+      "model": "HS1WL (fuite)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-fuite-wifi",
+      "family": "environnement",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Détecteur de fuite d'eau WiFi (catégorie sj)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle."
+    },
+    {
+      "id": "tuya-temp-hum-wifi",
+      "family": "environnement",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Température et humidité WiFi (catégorie wsdcg)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle. L'échelle de la mesure se lit dans les spécifications de l'appareil."
+    },
+    {
+      "id": "dragino-lht65",
+      "family": "environnement",
+      "manufacturer": "Dragino",
+      "model": "LHT65 (température / humidité)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `dragino-lht65` classé « probable »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "milesight-th",
+      "family": "environnement",
+      "manufacturer": "Milesight",
+      "model": "Famille EM300-TH (température / humidité)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `milesight-th` classé « probable »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-temperature",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "dragino-lwl03a",
+      "family": "environnement",
+      "manufacturer": "Dragino",
+      "model": "LWL03A (fuite d'eau)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `dragino-lwl03a` classé « probable »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-fuite",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "dragino-ldds75",
+      "family": "environnement",
+      "manufacturer": "Dragino",
+      "model": "LDDS75 / LDDS45 (niveau de cuve)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `dragino-ldds75` classé « à qualifier »."
+      },
+      "fiche": "lorawan",
+      "profile": "capteur-niveau",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": "La hauteur de cuve (`emptyAt`) est à régler par cuve."
+    },
+    {
+      "id": "generic-detecteur-coupure",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Détecteur de coupure secteur (contact sec)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Contact sur un module d'entrées Modbus TCP."
+      },
+      "fiche": "modbus",
+      "profile": "contact-sec",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-supervision-onduleur",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Supervision d'onduleur USB (NUT)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "ups",
+        "detail": "Module ups, transport NUT."
+      },
+      "fiche": "onduleur",
+      "profile": "nut-usb",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/ups.test.ts"
+      ],
+      "history": [],
+      "notes": "Chaque marque d'onduleur est un modèle à part : créer une entrée par référence réellement essayée."
+    },
+    {
+      "id": "generic-supervision-onduleur-snmp",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Supervision d'onduleur par carte réseau (SNMP)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "ups",
+        "detail": "Module ups, transport SNMP (UPS-MIB)."
+      },
+      "fiche": "onduleur",
+      "profile": "snmp",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/ups.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-compteur-energie",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Compteur d'énergie Modbus",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Registres Modbus TCP ou RTU via convertisseur (exemple de gateway/docs/modbus.md)."
+      },
+      "fiche": "modbus",
+      "profile": "mesure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-groupe-electrogene",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Groupe électrogène (contrôleur Modbus)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Registres et contacts du contrôleur (exemple de gateway/docs/modbus.md)."
+      },
+      "fiche": "modbus",
+      "profile": "mesure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-kit-solaire",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Kit solaire (régulateur ou onduleur solaire)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "modbus",
+        "detail": "Selon le modèle, sortie Modbus du régulateur."
+      },
+      "fiche": "modbus",
+      "profile": "mesure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/modbus.test.ts"
+      ],
+      "history": [],
+      "notes": "Aucune intégration spécifique : à valider modèle par modèle."
+    },
+    {
+      "id": "generic-passerelle-lorawan",
+      "family": "energie",
+      "manufacturer": "Générique",
+      "model": "Passerelle radio LoRaWAN",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Concentrateur LoRa relié à ChirpStack."
+      },
+      "fiche": "lorawan",
+      "profile": "passerelle-radio",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-bouton-panique",
+      "family": "personnes",
+      "manufacturer": "Générique",
+      "model": "Bouton de panique / d'urgence (Zigbee)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "panique",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "heiman-hs1eb",
+      "family": "personnes",
+      "manufacturer": "Heiman",
+      "model": "HS1EB (bouton d'urgence)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "zigbee",
+        "detail": "Via Zigbee2MQTT."
+      },
+      "fiche": "zigbee",
+      "profile": "panique",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/zigbee.test.ts"
+      ],
+      "history": [],
+      "notes": "Doit publier « action: emergency » ou « panic » : à vérifier."
+    },
+    {
+      "id": "milesight-ws101",
+      "family": "personnes",
+      "manufacturer": "Milesight",
+      "model": "WS101 (bouton)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `milesight-ws101` classé « à qualifier »."
+      },
+      "fiche": "lorawan",
+      "profile": "bouton",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-lora-bouton-sos",
+      "family": "personnes",
+      "manufacturer": "Générique",
+      "model": "Bouton SOS LoRaWAN",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "gateway",
+        "module": "lorawan",
+        "detail": "Via ChirpStack ; profil `bouton-sos` classé « à qualifier »."
+      },
+      "fiche": "lorawan",
+      "profile": "bouton",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/lorawan.test.ts"
+      ],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "tuya-sos-wifi",
+      "family": "personnes",
+      "manufacturer": "Tuya / Smart Life",
+      "model": "Bouton SOS WiFi (catégorie sos)",
+      "kind": "model",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Lu dans le cloud Tuya toutes les 60 s par le PSIM."
+      },
+      "fiche": "tuya",
+      "profile": "sos",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/tuya.test.ts",
+        "test/tuya-sensors.test.ts"
+      ],
+      "history": [],
+      "notes": "Type de capteur, pas un modèle. Un appui bref peut passer inaperçu : ne pas utiliser pour la protection des personnes en première ligne."
+    },
+    {
+      "id": "generic-balise",
+      "family": "personnes",
+      "manufacturer": "Générique",
+      "model": "Balise de localisation de personnes",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Aucune intégration de balise dans le PSIM aujourd'hui."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "capteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé : le raccordement au PSIM reste à développer, puis à essayer sur le matériel réel.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-ronde-nfc",
+      "family": "personnes",
+      "manufacturer": "Générique",
+      "model": "Ronde de gardiennage par badges NFC",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Aucune intégration de ronde NFC dans le PSIM aujourd'hui."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "capteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé : le raccordement au PSIM reste à développer, puis à essayer sur le matériel réel.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": ""
+    },
+    {
+      "id": "generic-suivi-vehicule",
+      "family": "vehicules",
+      "manufacturer": "Générique",
+      "model": "Suivi de véhicule (balise GPS)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Aucune intégration de suivi de véhicule dans le PSIM aujourd'hui."
+      },
+      "fiche": "mqtt-ingest",
+      "profile": "capteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé : le raccordement au PSIM reste à développer, puis à essayer sur le matériel réel.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": "Le contenu exact de la famille « véhicules » du catalogue reste à préciser ; une entrée par équipement retenu viendra la compléter."
+    },
+    {
+      "id": "notif-email-smtp",
+      "family": "notifications",
+      "manufacturer": "Générique",
+      "model": "E-mail (SMTP)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Canal de notification du PSIM."
+      },
+      "fiche": "notifications",
+      "profile": "email",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/notifications.test.ts",
+        "test/whatsapp.test.ts",
+        "test/recipients.test.ts"
+      ],
+      "history": [],
+      "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    },
+    {
+      "id": "notif-telegram",
+      "family": "notifications",
+      "manufacturer": "Telegram",
+      "model": "Bot Telegram",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Canal de notification du PSIM."
+      },
+      "fiche": "notifications",
+      "profile": "telegram",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/notifications.test.ts",
+        "test/whatsapp.test.ts",
+        "test/recipients.test.ts"
+      ],
+      "history": [],
+      "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    },
+    {
+      "id": "notif-whatsapp-meta",
+      "family": "notifications",
+      "manufacturer": "Meta",
+      "model": "WhatsApp Business (API Meta)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Canal de notification du PSIM (modèle de message approuvé)."
+      },
+      "fiche": "notifications",
+      "profile": "whatsapp",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/notifications.test.ts",
+        "test/whatsapp.test.ts",
+        "test/recipients.test.ts"
+      ],
+      "history": [],
+      "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    },
+    {
+      "id": "notif-callmebot",
+      "family": "notifications",
+      "manufacturer": "CallMeBot",
+      "model": "CallMeBot",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Canal de notification du PSIM."
+      },
+      "fiche": "notifications",
+      "profile": "callmebot",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/notifications.test.ts",
+        "test/whatsapp.test.ts",
+        "test/recipients.test.ts"
+      ],
+      "history": [],
+      "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    },
+    {
+      "id": "notif-webhook",
+      "family": "notifications",
+      "manufacturer": "Générique",
+      "model": "Webhook signé (HMAC SHA-256)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "existing",
+        "module": null,
+        "detail": "Canal de notification du PSIM."
+      },
+      "fiche": "notifications",
+      "profile": "webhook",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Le raccordement a seulement été éprouvé avec des équipements simulés.",
+      "not_covered": "",
+      "last_trial": null,
+      "simulated_tests": [
+        "test/notifications.test.ts",
+        "test/whatsapp.test.ts",
+        "test/recipients.test.ts"
+      ],
+      "history": [],
+      "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    }
+  ]
+}

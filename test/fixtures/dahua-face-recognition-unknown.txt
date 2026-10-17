@@ -1,0 +1,12 @@
+Code=FaceRecognition;action=Pulse;index=7;data={
+  "IsGlobalScene" : true,
+  "Object" : { "ObjectID" : 412, "ObjectType" : "HumanFace", "Action" : "Appear", "Sex" : "Woman", "Age" : 30, "Candidates" : [] },
+  "Face" : { "ObjectID" : 412, "ObjectType" : "HumanFace", "Candidates" : [] },
+  "Code" : "FaceRecognition",
+  "Name" : "Face Recognition",
+  "UTC" : 1776717100,
+  "UTCMS" : 0,
+  "Sequence" : 579801,
+  "Class" : "FaceAnalysis",
+  "Candidates" : []
+}

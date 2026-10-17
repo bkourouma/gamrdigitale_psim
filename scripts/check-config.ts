@@ -27,7 +27,7 @@ if (existsSync(dbFile)) {
     // base absente, ancienne ou verrouillee : on s'en tient au .env
   }
 }
-type ChannelKey = 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'webhook';
+type ChannelKey = 'email' | 'telegram' | 'whatsapp' | 'callmebot' | 'vonage' | 'webhook';
 const count = (channel: ChannelKey, level: 1 | 2) => (n.recipients[channel][level - 1]?.length ?? 0) + (dbRecipients.get(`${channel}:${level}`) ?? 0);
 const setup = channelSetup(n);
 const channels = ([...setup.map((c) => [c.id, c.configured] as const), ['callmebot', true] as const, ['webhook', true] as const] as (readonly [ChannelKey, boolean])[]).filter(

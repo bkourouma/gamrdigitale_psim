@@ -23,9 +23,10 @@ export const CHANNEL = {
   telegram: { label: 'Telegram', icon: 'send' },
   whatsapp: { label: 'WhatsApp', icon: 'chat' },
   callmebot: { label: 'WhatsApp (CallMeBot)', icon: 'chat' },
+  vonage: { label: 'Appel téléphonique', icon: 'phone' },
   webhook: { label: 'Autre logiciel', icon: 'external' },
 };
-const MAIN_CHANNELS = ['whatsapp', 'email', 'telegram', 'webhook'];
+const MAIN_CHANNELS = ['whatsapp', 'vonage', 'email', 'telegram', 'webhook'];
 
 /** Canal : icône + mot. Accepte l'identifiant (« email ») ou le libellé du serveur (« E-mail »). */
 export function channelTag(idOrLabel) {
@@ -163,7 +164,7 @@ export async function loadNotifStatus({ recipients = !hasUnsavedInput($('recipie
       ...problems,
       channelList(st),
       unconfigured
-        ? h('p', { class: 'hint' }, 'Un canal « non réglé » se règle dans le fichier de réglages du PSIM (', h('code', { text: '.env' }), ' : PSIM_SMTP_*, PSIM_TELEGRAM_TOKEN, PSIM_WHATSAPP_*, voir .env.example), puis le PSIM est redémarré.')
+        ? h('p', { class: 'hint' }, 'Un canal « non réglé » se règle dans le fichier de réglages du PSIM (', h('code', { text: '.env' }), ' : PSIM_SMTP_*, PSIM_TELEGRAM_TOKEN, PSIM_WHATSAPP_*, PSIM_VONAGE_*, voir .env.example), puis le PSIM est redémarré.')
         : null,
       h('p', { class: 'adm-facts-line' }, icon('clock', 'icon-sm'), escalationText(st)),
       h('p', { class: 'adm-facts-line' }, icon('history', 'icon-sm'), `Dernières 24 h : ${plural(st.sentLast24h, 'message envoyé', 'messages envoyés')}, ${st.failedLast24h} en échec.`),

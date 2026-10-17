@@ -1,0 +1,33 @@
+/* =====================================================================================================================
+   Ecran « Cles et passerelles » (keys.js). Jetons et composants de base.css et admin.css seulement : rien de neuf en
+   couleur, en police ni en forme. Les tableaux reprennent `table.adm-stack` (cartes a partir de 1400 px).
+   ===================================================================================================================== */
+.view-cles h3 { font-size: var(--fs-md); }
+.gw-list, .keys-list { display: grid; gap: var(--s3); min-width: 0; }
+
+/* Identifiants et prefixes : meme police que les autres valeurs techniques (admin.css .adm-mono). */
+.keys-pattern { display: inline-block; padding: 1px var(--s2); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--surface-2); font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.keys-chips-inline { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
+.keys-ids { font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+
+/* Creation : equipements choisis, un par ligne, avec ce que le PSIM en sait. */
+.keys-chips { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.keys-chips[hidden] { display: none; }
+.keys-chip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); padding: var(--s1) var(--s2) var(--s1) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.keys-chip-note { flex: 1 1 12ch; min-width: 0; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+
+.keys-chip-note.is-unknown { color: var(--warning-ink); }
+/* Dans une fenetre, le libelle d'un champ est en gras (base.css) : son aide reste en texte courant. */
+.dialog-form .field .hint { font-weight: 400; }
+
+/* Fenetre d'affichage unique de la cle. */
+.keys-reveal { display: grid; gap: var(--s4); min-width: 0; }
+.keys-block { display: grid; gap: var(--s2); min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.keys-block h3 { margin: 0; font: 700 var(--fs-md) / 1.2 var(--font-ui); color: var(--brand-ink); }
+.keys-secret-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); min-width: 0; }
+.keys-secret, .keys-cmd { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+.keys-secret { flex: 1 1 22ch; min-width: 0; padding: var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); color: var(--ink); font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.02em; }
+.keys-pre { margin: 0; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.keys-cmd { font-size: var(--fs-xs); color: var(--ink); }
+/* Le bouton de fermeture reste visible en bas de la fenetre, meme sur un ecran bas (la cle et l'exemple defilent derriere). */
+.keys-reveal .dialog-actions { position: sticky; bottom: 0; padding: var(--s3) 0 0; border-top: 1px solid var(--line); background: var(--surface); }

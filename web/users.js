@@ -20,11 +20,12 @@ const USERNAME = /^[a-z0-9][a-z0-9._-]{2,31}$/; // même règle que le serveur (
 const MIN_PASSWORD = 12;
 const ADDRESS = {
   whatsapp: { placeholder: '+2250700000000', hint: "Numéro au format international, sans espace : « + », puis l’indicatif du pays et le numéro." },
+  vonage: { placeholder: '+2250700000000', hint: "Numéro à appeler, au format international, sans espace. Le téléphone sonne et une voix lit l’alarme (alarmes et escalade seulement) : à compléter par un message écrit, jamais seul." },
   email: { placeholder: 'agent@exemple.ci', hint: "Adresse e-mail de la personne, ou d’une liste de diffusion." },
   telegram: { placeholder: '123456789 ou @canal', hint: 'Numéro de la conversation Telegram (chiffres), ou nom du canal commençant par @.' },
   webhook: { placeholder: 'https://…', hint: "Adresse (« webhook ») d’un autre logiciel — main courante, télésurveillance — qui reçoit chaque alarme automatiquement." },
 };
-const ADD_CHANNELS = ['whatsapp', 'email', 'telegram', 'webhook'];
+const ADD_CHANNELS = ['whatsapp', 'vonage', 'email', 'telegram', 'webhook'];
 const LEVEL_LABEL = { 1: 'Niveau 1 : tout de suite', 2: 'Niveau 2 : en renfort' };
 const plural = (n, one, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 

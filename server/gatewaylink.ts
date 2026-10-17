@@ -31,6 +31,12 @@ export interface GatewayLinkStatus {
   down: boolean;
   /** Capteurs actuellement non surveilles a cause d'elle. */
   unmonitored: number;
+  /** Identifiants et prefixes declares pour ce compte (PSIM_MQTT_GATEWAYS), tels que configures. */
+  detectors: string[];
+  /** Detecteurs reellement representes aujourd'hui (declares ET existants, hors sources lues par le PSIM lui-meme). */
+  represents: string[];
+  /** Dernier message d'etat publie par un client de ce compte (en memoire : null depuis le demarrage du PSIM si aucun). */
+  lastMessageAt: number | null;
 }
 
 export interface GatewayLinkOptions {
@@ -70,7 +76,7 @@ export function createGatewayLink(options: GatewayLinkOptions) {
   const { db, timeoutMs, graceMs } = options;
   const now = options.now ?? Date.now;
   const startedAt = now();
-  const state = new Map(options.gateways.map((g) => [g.user, { clients: new Set<object>(), since: startedAt, down: false, connectedAt: null as number | null }]));
+  const state = new Map(options.gateways.map((g) => [g.user, { clients: new Set<object>(), since: startedAt, down: false, connectedAt: null as number | null, lastMessageAt: null as number | null }]));
 
   /** Detecteurs que la passerelle represente (hors sources lues par le PSIM lui-meme, et hors equipements reseau). */
   function covered(user: string): string[] {
@@ -161,6 +167,12 @@ export function createGatewayLink(options: GatewayLinkOptions) {
     s.since = t;
   }
 
+  /** Broker : un client de ce compte vient de publier un message (sert seulement a l'affichage « dernier message recu »). */
+  function message(user: string): void {
+    const s = state.get(user);
+    if (s) s.lastMessageAt = now();
+  }
+
   /** A appeler regulierement (une fois par seconde). */
   function tick(): void {
     if (timeoutMs <= 0) return;
@@ -193,10 +205,13 @@ export function createGatewayLink(options: GatewayLinkOptions) {
       since: s.since,
       down: s.down,
       unmonitored: s.down ? linkLost(covered(user)).length : 0,
+      detectors: [...(options.gateways.find((g) => g.user === user)?.detectors ?? [])],
+      represents: covered(user),
+      lastMessageAt: s.lastMessageAt,
     }));
   }
 
-  return { connection, tick, silenceReference, status };
+  return { connection, message, tick, silenceReference, status };
 }
 
 export type GatewayLink = ReturnType<typeof createGatewayLink>;

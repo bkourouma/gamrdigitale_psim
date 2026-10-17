@@ -1,0 +1,88 @@
+{
+  "packVersion": 1,
+  "id": "appartement-confort",
+  "name": "Appartement - Confort",
+  "segment": "appartement",
+  "level": "confort",
+  "version": "1.0.0",
+  "description": "Détecter et faire réagir. Appartement : une caméra IP intérieure (ONVIF) face à la porte d'entrée, un contact de porte et un détecteur de mouvement Zigbee armés en journée de semaine (logement vide), un détecteur de fumée WiFi Tuya au séjour, deux capteurs de fuite d'eau Zigbee (salle de bain, cuisine). Les capteurs Zigbee passent par la Passerelle GAMR (clé Zigbee et Zigbee2MQTT). Qualifié : le détecteur de fumée WiFi Tuya ; tout le reste est à qualifier. L'interphone vidéo du catalogue n'est pas encore raccordable au PSIM. Pas de plan fourni : charger celui du logement dans l'interface, puis placer les pastilles.",
+  "floors": [
+    { "id": "appartement", "name": "Appartement" }
+  ],
+  "zones": [
+    { "name": "Entrée", "floor": "appartement" },
+    { "name": "Séjour", "floor": "appartement" },
+    { "name": "Cuisine", "floor": "appartement" },
+    { "name": "Salle de bain", "floor": "appartement" },
+    { "name": "Placard technique", "floor": "appartement" }
+  ],
+  "devices": [
+    {
+      "id": "CAM-ENTREE", "kind": "camera", "name": "Caméra entrée", "zone": "Entrée", "x": 15, "y": 20,
+      "model": "generic-onvif-camera-fixe", "qualification": "to_qualify",
+      "source": {
+        "type": "onvif", "host": { "$ask": "Adresse IP de la caméra de l'entrée" }, "port": 80,
+        "credentials": { "username": { "$ask": "Identifiant de la caméra de l'entrée" }, "password": { "$ask": "Mot de passe de la caméra de l'entrée" } }
+      }
+    },
+    {
+      "id": "C-PORTE", "kind": "detector", "name": "Porte d'entrée", "zone": "Entrée", "x": 8, "y": 30,
+      "model": "generic-contact-ouverture", "qualification": "to_qualify",
+      "category": "intrusion", "heartbeatS": 180
+    },
+    {
+      "id": "M-SEJOUR", "kind": "detector", "name": "Mouvement séjour", "zone": "Séjour", "x": 50, "y": 35,
+      "model": "generic-detecteur-mouvement", "qualification": "to_qualify",
+      "category": "intrusion", "heartbeatS": 180
+    },
+    {
+      "id": "F-SEJOUR", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 45, "y": 45,
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
+      "category": "fire",
+      "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur de fumée (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
+    },
+    {
+      "id": "E-FUITE-SDB", "kind": "detector", "name": "Fuite d'eau salle de bain", "zone": "Salle de bain", "x": 80, "y": 70,
+      "model": "generic-capteur-fuite", "qualification": "to_qualify",
+      "category": "environment", "heartbeatS": 180
+    },
+    {
+      "id": "E-FUITE-CUISINE", "kind": "detector", "name": "Fuite d'eau sous l'évier", "zone": "Cuisine", "x": 75, "y": 25,
+      "model": "generic-capteur-fuite", "qualification": "to_qualify",
+      "category": "environment", "heartbeatS": 180
+    },
+    {
+      "id": "GW-01", "kind": "detector", "name": "Passerelle GAMR (signe de vie)", "zone": "Placard technique", "x": 20, "y": 80,
+      "model": "gamr-passerelle", "qualification": "to_qualify",
+      "category": "environment", "heartbeatS": 240
+    }
+  ],
+  "links": {
+    "C-PORTE": ["CAM-ENTREE"],
+    "M-SEJOUR": ["CAM-ENTREE"],
+    "F-SEJOUR": ["CAM-ENTREE"]
+  },
+  "arming": [
+    { "zone": "Entrée", "schedule": [ { "days": [1, 2, 3, 4, 5], "from": "08:30", "to": "18:00" } ] },
+    { "zone": "Séjour", "schedule": [ { "days": [1, 2, 3, 4, 5], "from": "08:30", "to": "18:00" } ] }
+  ],
+  "risk": [
+    { "zone": "Entrée", "probability": 2, "defenses": [], "impacts": { "image": 1, "economy": 3, "human": 2 }, "notes": "Seul accès du logement." },
+    { "zone": "Séjour", "probability": 1, "defenses": ["extincteurs"], "impacts": { "image": 2, "economy": 3, "human": 4 } },
+    { "zone": "Cuisine", "probability": 2, "defenses": ["extincteurs"], "impacts": { "image": 1, "economy": 2, "human": 3 } },
+    { "zone": "Salle de bain", "probability": 2, "defenses": [], "impacts": { "image": 1, "economy": 2, "human": 1 }, "notes": "Dégât des eaux possible chez le voisin du dessous." }
+  ],
+  "recipients": [
+    { "channel": "whatsapp", "level": 1, "label": "Occupant", "address": { "$ask": "Numéro WhatsApp de l'occupant (+225...)" } },
+    { "channel": "email", "level": 1, "label": "Occupant", "address": { "$ask": "E-mail de l'occupant" } },
+    { "channel": "whatsapp", "level": 2, "label": "Proche", "address": { "$ask": "Numéro WhatsApp d'un proche (+225...)" } },
+    { "channel": "whatsapp", "level": 2, "label": "Gardien de la résidence", "address": { "$ask": "Numéro WhatsApp du gardien de la résidence (+225...)" }, "zones": ["Entrée"] }
+  ],
+  "gateway": {
+    "accounts": [ { "name": "gw-appart", "devices": ["GW-01", "C-PORTE", "M-SEJOUR", "E-*"] } ],
+    "modules": [
+      { "module": "heartbeat", "note": "deviceId GW-01, everyS 60" },
+      { "module": "zigbee", "note": "C-PORTE type contact, M-SEJOUR type motion, E-FUITE-* type leak ; staleAfterS 7200 et heartbeatEveryS 60 (supervision 180 s dans le pack)" }
+    ]
+  }
+}

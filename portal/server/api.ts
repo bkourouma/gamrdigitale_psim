@@ -6,6 +6,7 @@ import { MAX_SKEW_MS } from '../../server/portal.ts';
 import { checkCredentials, clearFailures, createSession, destroySession, isThrottled, principalFor, recordFailure, setPassword, visibleSite, visibleSites } from './accounts.ts';
 import type { Principal } from './accounts.ts';
 import { writeAudit } from './db.ts';
+import { groupDetail, groupsOverview, scopeOf, withGroupPaths } from './groupviews.ts';
 import { authenticateIngest, parseSummary, storeSummary } from './ingest.ts';
 import { RANGES, overview, siteCards, siteDetail } from './views.ts';
 
@@ -124,7 +125,8 @@ export function createPortalApp(options: PortalAppOptions) {
     if (req.principal!.mustChangePassword) return void res.status(403).json({ error: 'password_change_required' });
     next();
   }
-  const me = (p: Principal) => ({ username: p.username, displayName: p.displayName, role: p.role, mustChangePassword: p.mustChangePassword });
+  // `scopeGroups` : les groupes auxquels un directeur est limite (vide : toute son organisation), pour le lui dire a l'ecran.
+  const me = (p: Principal) => ({ username: p.username, displayName: p.displayName, role: p.role, mustChangePassword: p.mustChangePassword, scopeGroups: p.mustChangePassword ? [] : scopeOf(db, p) });
 
   app.post('/api/login', (req, res) => {
     const t = now();
@@ -185,7 +187,7 @@ export function createPortalApp(options: PortalAppOptions) {
   });
 
   app.get('/api/sites', user, ready, (req, res) => {
-    res.json(siteCards(db, visibleSites(db, req.principal!), now(), options.staleAfterMs));
+    res.json(withGroupPaths(db, req.principal!, siteCards(db, visibleSites(db, req.principal!), now(), options.staleAfterMs)));
   });
 
   app.get('/api/sites/:id', user, ready, (req, res) => {
@@ -193,7 +195,21 @@ export function createPortalApp(options: PortalAppOptions) {
     if (!site) return void res.status(404).json({ error: 'Site introuvable' });
     const asked = Number(req.query.days ?? 30);
     const days = (RANGES as readonly number[]).includes(asked) ? asked : 30;
-    res.json(siteDetail(db, site, days, now(), options.staleAfterMs));
+    const detail = siteDetail(db, site, days, now(), options.staleAfterMs);
+    res.json({ ...detail, groupPath: withGroupPaths(db, req.principal!, [{ groupId: site.group_id }])[0].groupPath });
+  });
+
+  // Niveau groupe : organisations, groupes classes pire-d'abord, sites sans groupe. Tout vient du compte, rien du navigateur.
+  app.get('/api/groups', user, ready, (req, res) => {
+    res.json(groupsOverview(db, req.principal!, now(), options.staleAfterMs));
+  });
+
+  app.get('/api/groups/:id', user, ready, (req, res) => {
+    // Un identifiant mal forme, absent ou hors perimetre : meme reponse (on ne revele pas qu'un groupe existe).
+    const raw = String(req.params.id);
+    const detail = /^[1-9]\d{0,9}$/.test(raw) ? groupDetail(db, req.principal!, Number(raw), now(), options.staleAfterMs) : null;
+    if (!detail) return void res.status(404).json({ error: 'Groupe introuvable' });
+    res.json(detail);
   });
 
   app.all('/api/*splat', (_req, res) => void res.status(404).json({ error: 'Introuvable' }));

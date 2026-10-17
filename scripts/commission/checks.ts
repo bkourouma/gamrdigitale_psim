@@ -15,8 +15,8 @@ import nodemailer from 'nodemailer';
 import { accountsWithDevPassword } from '../../server/auth.ts';
 import { verify as verifyJournal } from '../../server/auditchain.ts';
 import { listBackups, verifyBackup } from '../../server/backup.ts';
-import { PHONE_E164, callmebotChannel, clip, maskCallmebot, maskPhone, whatsappChannel } from '../../server/notifications.ts';
-import type { WhatsappConfig } from '../../server/notifications.ts';
+import { PHONE_E164, callmebotChannel, clip, maskCallmebot, maskPhone, vonageChannel, vonageToken, whatsappChannel } from '../../server/notifications.ts';
+import type { VonageConfig, WhatsappConfig } from '../../server/notifications.ts';
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip';
 
@@ -295,6 +295,54 @@ export async function checkCallmebot(cfg: { apiBase: string }, recipients: strin
   }
   if (failures.length) return check('callmebot', 'WhatsApp (CallMeBot)', 'fail', failures.join(' | '), 'Verifier la cle CallMeBot de ce numero (message « I allow callmebot to send me messages ») et le format +<indicatif><numero>:<cle>.');
   return check('callmebot', 'WhatsApp (CallMeBot)', 'ok', `message de test confie a CallMeBot pour ${targets.length} destinataire(s) de niveau ${level} : verifier qu'il est bien arrive sur chaque telephone`);
+}
+
+// ---------------------------------------------------------------- Appel telephonique (Vonage)
+
+/**
+ * Sans --vonage-to : verifie que Vonage accepte l'identifiant et la cle de l'application (lecture de la liste des appels,
+ * gratuite), n'appelle personne. Avec : UN appel de test a ce numero, par le meme code que les alertes. « Accepte par Vonage »
+ * n'est pas « decroche » : la preuve est la sonnerie sur le telephone.
+ */
+export async function checkVonage(
+  cfg: VonageConfig,
+  recipients: string[][],
+  opts: { to?: string; dbRecipients?: number; fetchImpl?: typeof fetch } = {},
+): Promise<Check> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const count = recipients[0].length + recipients[1].length + (opts.dbRecipients ?? 0);
+  if (!cfg.applicationId || !cfg.privateKey || !cfg.from) {
+    return count
+      ? check('vonage', 'Appel telephonique (Vonage)', 'fail', `${count} destinataire(s) d'appel, mais canal non configure : ils ne recoivent rien`, 'Renseigner PSIM_VONAGE_APPLICATION_ID, PSIM_VONAGE_PRIVATE_KEY_FILE et PSIM_VONAGE_FROM (docs/VONAGE.md).')
+      : check('vonage', 'Appel telephonique (Vonage)', 'skip', 'non configure (PSIM_VONAGE_APPLICATION_ID, PSIM_VONAGE_PRIVATE_KEY_FILE, PSIM_VONAGE_FROM)');
+  }
+  try {
+    const res = await fetchImpl(`${cfg.apiBase.replace(/\/$/, '')}/v1/calls?page_size=1`, {
+      headers: { Authorization: `Bearer ${vonageToken(cfg)}` },
+      signal: AbortSignal.timeout(15000),
+      redirect: 'error',
+    });
+    if (res.status === 401 || res.status === 403) {
+      return check('vonage', 'Appel telephonique (Vonage)', 'fail', `Vonage refuse l'application (HTTP ${res.status})`, "Verifier PSIM_VONAGE_APPLICATION_ID et que le fichier PSIM_VONAGE_PRIVATE_KEY_FILE est la cle generee avec CETTE application, dont la capacite Voice est activee (docs/VONAGE.md).");
+    }
+    if (!res.ok) return check('vonage', 'Appel telephonique (Vonage)', 'fail', `Vonage repond HTTP ${res.status}`, "Reessayer plus tard, ou verifier PSIM_VONAGE_API.");
+  } catch (err) {
+    // Jamais le message d'origine de fetch (il pourrait citer l'adresse), mais une cle illisible se dit.
+    if (/cle privee/.test(msg(err))) return check('vonage', 'Appel telephonique (Vonage)', 'fail', msg(err), 'Utiliser le fichier .key telecharge a la creation de l\'application Vonage.');
+    return check('vonage', 'Appel telephonique (Vonage)', 'fail', 'Vonage injoignable (reseau, pare-feu ou proxy)', 'Le serveur doit pouvoir joindre api.nexmo.com en HTTPS.');
+  }
+  const sender = `appelant +${cfg.from}, langue ${cfg.language}`;
+  if (opts.to) {
+    if (!PHONE_E164.test(opts.to)) return check('vonage', 'Appel telephonique (Vonage)', 'fail', '--vonage-to : numero invalide', 'Format international, sans espace : +2250700000000.');
+    try {
+      await vonageChannel(cfg, [[opts.to], []])!.send({ kind: 'test', incidentId: null, subject: '[PSIM] Appel de test', text: 'Appel de test de mise en service.', data: {} }, opts.to);
+    } catch (err) {
+      return check('vonage', 'Appel telephonique (Vonage)', 'fail', `${sender} ; appel de ${maskPhone(opts.to)} refuse : ${msg(err)}`, "Compte d'essai Vonage : le numero appele doit etre verifie dans le tableau de bord. Sinon verifier le credit et PSIM_VONAGE_FROM.");
+    }
+    return check('vonage', 'Appel telephonique (Vonage)', 'ok', `${sender} ; appel de test lance vers ${maskPhone(opts.to)} : verifier que le telephone sonne et que le message est compris`);
+  }
+  if (count === 0) return check('vonage', 'Appel telephonique (Vonage)', 'warn', `${sender} ; identifiants acceptes mais aucun destinataire ; aucun appel passe`, "Ajouter des numeros (PSIM_NOTIFY_VONAGE_L1, ou l'interface : Notifications).");
+  return check('vonage', 'Appel telephonique (Vonage)', 'ok', `${sender} ; identifiants acceptes ; ${count} destinataire(s) ; aucun appel passe (--vonage-to +225... pour un essai reel)`);
 }
 
 // ---------------------------------------------------------------- Telegram

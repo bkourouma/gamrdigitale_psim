@@ -12,7 +12,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { authorization, createDahuaEvents, createPartParser, parseChallenge, parseEventPart } from '../server/dahua.ts';
+import { authorization, createDahuaEvents, createPartParser, openEventStream, parseChallenge, parseEventPart } from '../server/dahua.ts';
+import type { Credentials } from '../server/dahua.ts';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
 import { buildChannels, createNotifier, maskPhone } from '../server/notifications.ts';
@@ -34,9 +35,16 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 
 describe('Dahua : lecture du flux', () => {
   it("evenement « Code=...;action=...;index=... » -> voie a partir de 1 ; un Heartbeat n'est pas un evenement", () => {
-    assert.deepEqual(parseEventPart('Code=SmartMotionHuman;action=Start;index=0;data={\n "RegionName": ["Portail"]\n}'), { code: 'SmartMotionHuman', action: 'Start', channel: 1 });
-    assert.deepEqual(parseEventPart('Code=VideoMotion;action=Stop;index=7'), { code: 'VideoMotion', action: 'Stop', channel: 8 });
+    assert.deepEqual(parseEventPart('Code=SmartMotionHuman;action=Start;index=0;data={\n "RegionName": ["Portail"]\n}'), { code: 'SmartMotionHuman', action: 'Start', channel: 1, data: '{\n "RegionName": ["Portail"]\n}' });
+    assert.deepEqual(parseEventPart('Code=VideoMotion;action=Stop;index=7'), { code: 'VideoMotion', action: 'Stop', channel: 8, data: null });
     assert.equal(parseEventPart('Heartbeat'), null);
+  });
+
+  it("donnees « data=... » : une ligne, plusieurs lignes, espaces et fin de ligne retires ; absentes ou vides -> null", () => {
+    assert.equal(parseEventPart('Code=FaceRecognition;action=Pulse;index=4;data={"Name":"A"}')!.data, '{"Name":"A"}');
+    assert.equal(parseEventPart('Code=FaceRecognition;action=Pulse;index=4;data={\r\n  "Candidates": [\r\n    { "Similarity": 91 }\r\n  ]\r\n}\r\n\r\n')!.data, '{\r\n  "Candidates": [\r\n    { "Similarity": 91 }\r\n  ]\r\n}');
+    assert.equal(parseEventPart('Code=VideoMotion;action=Start;index=0\r\n')!.data, null, 'pas de data');
+    assert.equal(parseEventPart('Code=VideoMotion;action=Start;index=0;data=  \r\n')!.data, null, 'data vide');
   });
 
   it("parties decoupees n'importe ou : chacune livree des qu'elle est complete (Content-Length), sans attendre la suivante", () => {
@@ -331,6 +339,213 @@ describe('Dahua : regle « mouvement au portail la nuit »', () => {
   });
 });
 
+// ---------------------------------------------------------------- observation de toutes les voies
+
+describe('Dahua : observations sur toutes les voies (presence)', () => {
+  const xvr = fakeRecorder();
+  let port = 0;
+  before(async () => {
+    port = await xvr.start();
+  });
+  after(() => xvr.stop());
+
+  type Obs = { host: string; channel: number; code: string; action: string; at: number; data: string | null };
+
+  function setup(opts: { observeAll?: boolean; withCreds?: boolean; onObservation?: (o: Obs) => void; onLinkLost?: (h: string) => void } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'psim-dahua-obs-'));
+    const db = openDb(join(dir, 'psim.db'));
+    seedDemo(db, dir, join(ROOT, 'seed'));
+    const key = randomBytes(32);
+    const user = opts.withCreds === false ? null : USER;
+    const secret = opts.withCreds === false ? null : seal(key, PASSWORD);
+    db.prepare("INSERT INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES ('C-01', 'rtsp', '127.0.0.1', 554, '/cam/realmonitor?channel=1&subtype=1', ?, ?)").run(user, secret);
+    db.prepare("INSERT INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES ('C-02', 'rtsp', '127.0.0.1', 554, '/cam/realmonitor?channel=2&subtype=1', ?, ?)").run(user, secret);
+    const state = { observeAll: opts.observeAll ?? false };
+    const observations: Obs[] = [];
+    const lost: string[] = [];
+    const opened: Credentials[] = [];
+    const engine = createEngine(db, () => {}, Date.now, { isArmed: () => true });
+    const dahua = createDahuaEvents({
+      db,
+      engine,
+      key,
+      log: () => {},
+      isArmed: () => true,
+      now: () => 4242,
+      observeAll: () => state.observeAll,
+      onObservation: opts.onObservation ?? ((o) => void observations.push(o)),
+      onLinkLost: opts.onLinkLost ?? ((h) => void lost.push(h)),
+      // Le faux enregistreur ecoute sur un port libre : on note ce que le service demande, puis on redirige.
+      open: (creds, handlers) => (opened.push(creds), openEventStream({ ...creds, port }, handlers)),
+    });
+    return { db, engine, dahua, state, observations, lost, opened };
+  }
+
+  it("observeAll vrai, aucun detecteur : un flux est ouvert (port 80), chaque evenement de toute voie est rapporte avec ses champs, rien n'arrive au moteur", async () => {
+    const t = setup({ observeAll: true });
+    t.dahua.reload();
+    await until(() => xvr.connected() === 1);
+    assert.deepEqual(t.opened.map((c) => [c.host, c.port, c.username]), [['127.0.0.1', 80, USER]]);
+    xvr.emit('Code=SmartMotionHuman;action=Start;index=2;data={\n "Object": "Human"\n}');
+    xvr.emit('Code=VideoMotion;action=Pulse;index=7'); // aucun detecteur ne le suit : rapporte quand meme
+    xvr.emit('Code=SmartMotionHuman;action=Stop;index=2');
+    xvr.emit('Heartbeat'); // pas un evenement
+    await until(() => t.observations.length === 3);
+    assert.deepEqual(t.observations, [
+      { host: '127.0.0.1', channel: 3, code: 'SmartMotionHuman', action: 'Start', at: 4242, data: '{\n "Object": "Human"\n}' },
+      { host: '127.0.0.1', channel: 8, code: 'VideoMotion', action: 'Pulse', at: 4242, data: null },
+      { host: '127.0.0.1', channel: 3, code: 'SmartMotionHuman', action: 'Stop', at: 4242, data: null },
+    ]);
+    assert.equal(t.engine.getSnapshot().incidents.length, 0);
+    assert.equal(t.engine.getDevice('I-01')!.status, 'normal');
+    t.dahua.stop();
+    await until(() => xvr.connected() === 0);
+  });
+
+  it("observeAll faux ou absent : aucun flux ; vrai puis faux : le lien sans detecteur est ferme et la perte signalee ; sans identifiants lisibles : aucun lien", async () => {
+    const off = setup();
+    off.dahua.reload();
+    await wait(200);
+    assert.equal(off.opened.length, 0);
+    assert.equal(xvr.connected(), 0);
+    off.dahua.stop();
+
+    const nocreds = setup({ observeAll: true, withCreds: false });
+    nocreds.dahua.reload();
+    await wait(200);
+    assert.equal(nocreds.opened.length, 0, 'sans utilisateur ni mot de passe : pas de flux');
+    nocreds.dahua.stop();
+
+    const t = setup({ observeAll: true });
+    t.dahua.reload();
+    await until(() => xvr.connected() === 1);
+    t.dahua.reload(); // inchange : meme lien, pas de nouvelle connexion
+    await wait(100);
+    assert.equal(t.opened.length, 1);
+    assert.deepEqual(t.lost, []);
+    t.state.observeAll = false;
+    t.dahua.reload();
+    await until(() => xvr.connected() === 0);
+    assert.deepEqual(t.lost, ['127.0.0.1']);
+    t.dahua.stop();
+    assert.deepEqual(t.lost, ['127.0.0.1'], "une seule fois par lien : deja ferme, rien de plus a l'arret");
+  });
+
+  it("une seule connexion par hote : le lien d'un detecteur (port different de 80) est reutilise pour les autres voies, dans les deux ordres", async () => {
+    const t = setup({ observeAll: true });
+    t.dahua.setSource('admin', 'I-01', { cameraId: 'C-01', channel: 1, events: ['SmartMotionHuman'], httpPort: port }); // observeAll deja vrai
+    await until(() => t.dahua.view('I-01')!.connection.state === 'connected');
+    await wait(200);
+    assert.equal(xvr.connected(), 1);
+    assert.deepEqual(t.opened.map((c) => c.port), [port], "aucun lien supplementaire pour l'hote (port 80 inutile)");
+    xvr.emit('Code=SmartMotionHuman;action=Start;index=1;data={"x":1}'); // voie 2 : observee sur le lien du detecteur
+    await until(() => t.observations.length === 1);
+    assert.equal(t.observations[0].channel, 2);
+    assert.equal(t.engine.getSnapshot().incidents.length, 0, 'voie 2 : pas celle du detecteur');
+    xvr.emit('Code=SmartMotionHuman;action=Start;index=0');
+    await until(() => t.engine.getSnapshot().incidents.length === 1);
+    assert.equal(t.observations.length, 2, 'la voie du detecteur est aussi rapportee, une seule fois');
+    t.dahua.stop();
+    await until(() => xvr.connected() === 0);
+
+    // Ordre inverse : le detecteur arrive d'abord, observeAll devient vrai ensuite : toujours un seul lien.
+    const u = setup({ observeAll: false });
+    u.dahua.setSource('admin', 'I-01', { cameraId: 'C-01', channel: 1, events: ['SmartMotionHuman'], httpPort: port });
+    await until(() => u.dahua.view('I-01')!.connection.state === 'connected');
+    u.state.observeAll = true;
+    u.dahua.reload();
+    await wait(200);
+    assert.equal(xvr.connected(), 1);
+    assert.equal(u.opened.length, 1);
+    u.dahua.stop();
+    await until(() => xvr.connected() === 0);
+  });
+
+  it("deux detecteurs sur le meme appareil gardent un seul lien, observeAll ou non", async () => {
+    const t = setup({ observeAll: true });
+    t.db.prepare("UPDATE device SET category = 'intrusion', zone = 'Couloir' WHERE id = 'D-01'").run();
+    t.dahua.setSource('admin', 'I-01', { cameraId: 'C-01', channel: 1, events: ['SmartMotionHuman'], httpPort: port });
+    t.dahua.setSource('admin', 'D-01', { cameraId: 'C-02', channel: 2, events: ['SmartMotionHuman'], httpPort: port });
+    await until(() => t.dahua.view('D-01')!.connection.state === 'connected');
+    await wait(200);
+    assert.equal(xvr.connected(), 1);
+    assert.equal(t.opened.length, 1);
+    t.dahua.stop();
+    await until(() => xvr.connected() === 0);
+  });
+
+  it("faceHosts : un appareil par hote (premiere camera par identifiant), port 80 sans detecteur, port du detecteur sinon ; sans identifiants lisibles ou sans voie : ignore", () => {
+    const t = setup();
+    const key = randomBytes(32);
+    const add = (id: string, host: string, path: string | null, user: string | null = USER, password: string | null = PASSWORD) =>
+      t.db.prepare("INSERT OR REPLACE INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES (?, 'rtsp', ?, 554, ?, ?, ?)").run(id, host, path, user, password === null ? null : seal(key, password));
+    // Deux cameras (C-01, C-02) deja sur 127.0.0.1 avec la cle de setup(), illisible ici : on les refait avec notre cle.
+    t.db.prepare("DELETE FROM camera_source").run();
+    t.dahua.stop();
+    // Aucune connexion reelle : ces adresses sont fictives.
+    const dahua = createDahuaEvents({ db: t.db, engine: t.engine, key, log: () => {}, isArmed: () => true, open: () => ({ ready: new Promise<void>(() => {}), stop: () => {} }) });
+    try {
+      assert.deepEqual(dahua.faceHosts(), [], 'aucune camera reelle');
+      add('C-02', '10.0.0.2', '/cam/realmonitor?channel=3&subtype=1');
+      add('C-01', '10.0.0.2', '/cam/realmonitor?channel=1&subtype=1'); // meme hote : la premiere par identifiant est retenue
+      add('C-03', '10.0.0.3', '/stream1'); // pas de « channel=N » : pas un appareil a voies
+      add('C-04', '10.0.0.4', '/cam/realmonitor?channel=1', null, null); // sans identifiants
+      add('C-05', '10.0.0.5', '/cam/realmonitor?channel=1');
+      const hosts = dahua.faceHosts();
+      assert.deepEqual(hosts.map((h) => [h.cameraId, h.creds.host, h.creds.port, h.creds.username, h.creds.password]), [
+        ['C-01', '10.0.0.2', 80, USER, PASSWORD],
+        ['C-05', '10.0.0.5', 80, USER, PASSWORD],
+      ]);
+      // Un hote deja relie a un detecteur garde le port de ce detecteur.
+      dahua.setSource('admin', 'I-01', { cameraId: 'C-05', channel: 1, events: ['SmartMotionHuman'], httpPort: 8081 });
+      assert.deepEqual(dahua.faceHosts().map((h) => [h.cameraId, h.creds.port]), [['C-01', 80], ['C-05', 8081]]);
+    } finally {
+      dahua.stop();
+    }
+  });
+
+  it("onLinkLost : a la coupure du flux, puis a l'arret apres la reconnexion", async () => {
+    const t = setup({ observeAll: true });
+    t.dahua.reload();
+    await until(() => xvr.connected() === 1);
+    xvr.cut();
+    await until(() => t.lost.length === 1);
+    assert.deepEqual(t.lost, ['127.0.0.1']);
+    await until(() => xvr.connected() === 1, 6000); // reconnexion a reculons
+    await wait(100);
+    t.dahua.stop();
+    assert.deepEqual(t.lost, ['127.0.0.1', '127.0.0.1']);
+    await until(() => xvr.connected() === 0);
+  });
+
+  it("une exception du rappel d'observation ou de perte n'interrompt jamais le flux ni le traitement des detecteurs", async () => {
+    const calls = { obs: 0, lost: 0 };
+    const t = setup({
+      onObservation: () => {
+        calls.obs += 1;
+        throw new Error('rappel casse');
+      },
+      onLinkLost: () => {
+        calls.lost += 1;
+        throw new Error('rappel casse');
+      },
+    });
+    t.dahua.setSource('admin', 'I-01', { cameraId: 'C-01', channel: 1, events: ['SmartMotionHuman'], httpPort: port });
+    await until(() => t.dahua.view('I-01')!.connection.state === 'connected');
+    xvr.emit('Code=SmartMotionHuman;action=Start;index=0');
+    await until(() => t.engine.getSnapshot().incidents.length === 1);
+    xvr.emit('Code=SmartMotionHuman;action=Stop;index=0');
+    await until(() => t.engine.getDevice('I-01')!.status === 'normal');
+    assert.equal(calls.obs, 2);
+    xvr.cut();
+    await until(() => calls.lost === 1);
+    await until(() => t.dahua.view('I-01')!.connection.state === 'connected', 6000);
+    xvr.emit('Code=SmartMotionHuman;action=Start;index=0');
+    await until(() => t.engine.getDevice('I-01')!.status === 'alarm');
+    t.dahua.stop();
+  });
+});
+
 // ---------------------------------------------------------------- destinataires limites a une zone
 
 describe('destinataires limites a des zones (le gardien : zone Portail)', () => {
@@ -350,8 +565,8 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
     const recipients = createRecipientsService({
       db,
       audit: () => {},
-      env: { email: [[], []], telegram: [[], []], whatsapp: [['+2250100000001'], []], callmebot: [[], []], webhook: [[], []] },
-      available: { email: false, telegram: false, whatsapp: true, callmebot: false, webhook: true },
+      env: { email: [[], []], telegram: [[], []], whatsapp: [['+2250100000001'], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] },
+      available: { email: false, telegram: false, whatsapp: true, callmebot: false, vonage: false, webhook: true },
     });
     const gardien = recipients.add('admin', { channel: 'whatsapp', address: '+2250700000002', level: 1, label: 'Gardien', zones: ['Portail'] });
     assert.deepEqual(gardien.zones, ['Portail']);
@@ -393,8 +608,8 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
     const recipients = createRecipientsService({
       db,
       audit: () => {},
-      env: { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], webhook: [[], []] },
-      available: { email: false, telegram: false, whatsapp: true, callmebot: false, webhook: true },
+      env: { email: [[], []], telegram: [[], []], whatsapp: [[], []], callmebot: [[], []], vonage: [[], []], webhook: [[], []] },
+      available: { email: false, telegram: false, whatsapp: true, callmebot: false, vonage: false, webhook: true },
     });
     return { db, engine, recipients };
   }
@@ -409,6 +624,7 @@ describe('destinataires limites a des zones (le gardien : zone Portail)', () => 
         telegram: { token: '', apiBase: '' },
         whatsapp: { apiBase: 'http://127.0.0.1:9', token: 'jeton', phoneId: '123', template: 'psim_alerte', language: 'fr' },
         callmebot: { apiBase: '' },
+        vonage: { apiBase: '', applicationId: '', privateKey: '', from: '', language: 'fr-FR' },
         webhookSecret: '',
       },
       recipients.effective,

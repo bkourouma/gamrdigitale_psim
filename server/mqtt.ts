@@ -74,6 +74,8 @@ export async function startBroker(
     onGateway?: (user: string, connected: boolean, client: object) => void;
     /** Accuse de commande recu d'un compte autorise pour cet actionneur (voir actuators.ts, qui verifie la signature). */
     onActuatorAck?: (actuatorId: string, payload: Buffer) => void;
+    /** Message publie par un client d'un compte de passerelle (ecran « Cles et passerelles » : dernier message recu). */
+    onGatewayMessage?: (user: string) => void;
   },
 ): Promise<Broker> {
   const aedes = await Aedes.createBroker({ connectTimeout: 10_000, maxClientsIdLength: 64 });
@@ -191,6 +193,14 @@ export async function startBroker(
     if (ack) {
       // Seuls les accuses venus d'un client (deja autorise ci-dessus) comptent ; la signature est verifiee par actuators.ts.
       if (!client || (packet.payload as Buffer).length > MAX_PAYLOAD_BYTES || !opts.onActuatorAck) return;
+      const ackUser = (client as unknown as PsimClient).psimGateway;
+      if (ackUser && opts.onGatewayMessage) {
+        try {
+          opts.onGatewayMessage(ackUser); // un accuse est aussi un signe de vie de la passerelle
+        } catch (err) {
+          console.error('[mqtt] message passerelle :', err);
+        }
+      }
       try {
         opts.onActuatorAck(ack[1], packet.payload as Buffer);
       } catch (err) {
@@ -200,6 +210,14 @@ export async function startBroker(
     }
     const match = TOPIC.exec(packet.topic);
     if (!match) return;
+    const gatewayUser = client ? (client as unknown as PsimClient).psimGateway : undefined;
+    if (gatewayUser && opts.onGatewayMessage) {
+      try {
+        opts.onGatewayMessage(gatewayUser);
+      } catch (err) {
+        console.error('[mqtt] message passerelle :', err);
+      }
+    }
     const raw = packet.payload as Buffer;
     if (raw.length > MAX_PAYLOAD_BYTES) return;
     let parsed: unknown;

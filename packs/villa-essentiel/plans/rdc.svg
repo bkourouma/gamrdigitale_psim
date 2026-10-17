@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" font-family="Segoe UI, Arial, sans-serif" font-size="22">
+  <title>Villa - rez-de-chaussee (plan type)</title>
+  <rect x="0" y="0" width="1000" height="700" fill="#eef3ea"/>
+  <rect x="20" y="20" width="960" height="660" fill="none" stroke="#7a8a70" stroke-width="4" stroke-dasharray="14 8"/>
+  <rect x="440" y="10" width="120" height="20" fill="#b9b19f"/>
+  <text x="470" y="60" fill="#444">Portail</text>
+  <text x="60" y="640" fill="#556">Jardin</text>
+  <rect x="220" y="150" width="560" height="380" fill="#ffffff" stroke="#333" stroke-width="5"/>
+  <line x1="560" y1="150" x2="560" y2="530" stroke="#333" stroke-width="3"/>
+  <line x1="220" y1="430" x2="560" y2="430" stroke="#333" stroke-width="3"/>
+  <text x="330" y="300">Sejour</text>
+  <text x="610" y="330">Cuisine</text>
+  <text x="250" y="490">Local technique</text>
+</svg>

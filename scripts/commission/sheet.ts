@@ -16,6 +16,17 @@ export interface SheetDevice {
   /** Camera : « ONVIF 192.168.1.20 », « RTSP ... » ou « simulee ». */
   source?: string;
   links?: string[];
+  /** Modele catalogue (equipement pose par un pack), « (a qualifier) » le cas echeant. */
+  model?: string;
+}
+
+/** Pack dont c'est la recette (`--pack`), et packs appliques au site d'apres le journal. */
+export interface SheetPack {
+  id: string;
+  version: string;
+  name?: string;
+  appliedAt?: number | null;
+  by?: string | null;
 }
 
 const esc = (v: unknown): string =>
@@ -52,11 +63,18 @@ const ESSAIS: { titre: string; etapes: string[] }[] = [
   },
 ];
 
-export function buildSheet(opts: { site: string; generatedAt: number; devices: SheetDevice[] }): string {
+export function buildSheet(opts: { site: string; generatedAt: number; devices: SheetDevice[]; pack?: SheetPack | null; packs?: SheetPack[] }): string {
+  const day = (ts: number) => new Date(ts).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
+  const packLine = opts.pack
+    ? `<p><b>Recette du pack ${esc(opts.pack.id)}, version ${esc(opts.pack.version)}</b>${opts.pack.name ? ` (${esc(opts.pack.name)})` : ''} : ${opts.pack.appliedAt ? `applique le ${esc(day(opts.pack.appliedAt))}${opts.pack.by ? ` par ${esc(opts.pack.by)}` : ''} (journal du PSIM)` : '<b>aucune application de cette version au journal</b>'}. Seuls les equipements du pack sont listes.</p>`
+    : opts.packs?.length
+      ? `<p>Pack(s) applique(s) a ce site : ${opts.packs.map((p) => `${esc(p.id)} version ${esc(p.version)}${p.appliedAt ? ` (${esc(day(p.appliedAt))})` : ''}`).join(' ; ')}.</p>`
+      : '';
   const row = (d: SheetDevice) => {
     const cat = d.kind === 'camera' ? 'Camera' : CATEGORY_LABEL[d.category];
+    const model = d.model ? `<br><small>modele ${esc(d.model)}</small>` : '';
     const extra = d.kind === 'camera' ? esc(d.source ?? '') : d.links?.length ? `cameras : ${esc(d.links.join(', '))}` : 'aucune camera liee';
-    return `<tr><td><b>${esc(d.id)}</b></td><td>${esc(d.name)}<br><small>${esc(d.zone || 'sans zone')}${d.floor ? ` - etage : ${esc(d.floor)}` : ''}</small></td><td>${esc(cat)}<br><small>${extra}</small></td>${
+    return `<tr><td><b>${esc(d.id)}</b></td><td>${esc(d.name)}<br><small>${esc(d.zone || 'sans zone')}${d.floor ? ` - etage : ${esc(d.floor)}` : ''}</small></td><td>${esc(cat)}${model}<br><small>${extra}</small></td>${
       d.kind === 'detector'
         ? '<td class="c">&#9744;</td><td class="c">&#9744;</td><td class="c">&#9744;</td><td class="c">&#9744;</td>'
         : '<td class="c">&mdash;</td><td class="c">&mdash;</td><td class="c">&#9744;</td><td class="c">&mdash;</td>'
@@ -75,6 +93,7 @@ ul{margin:4px 0;padding-left:0;list-style:none}li{margin:5px 0}li:before{content
 </style></head><body>
 <h1>Fiche de recette - ${esc(opts.site)}</h1>
 <p>Etablie le ${esc(when)} a partir de l'inventaire du PSIM. Une ligne par equipement ; cocher au fur et a mesure. Detecteurs : <code>npm run commission -- watch</code> montre ce que le PSIM comprend de chaque message.</p>
+${packLine}
 <h2>1. Equipements</h2>
 <table><thead><tr><th>Id</th><th>Nom / zone</th><th>Type</th><th>Message recu</th><th>Alarme testee</th><th>Image visible</th><th>Retour normal</th><th>Date, technicien, remarque</th></tr></thead><tbody>
 ${opts.devices.map(row).join('\n')}

@@ -5,7 +5,7 @@ import type { AuditEntry, Role, Snapshot } from './types.ts';
  * d'erreur internes, gestion des comptes, reglages de securite. Il garde ce qui sert a son travail (incidents, acquittements,
  * etats des detecteurs, armements). L'administrateur voit tout.
  */
-const ADMIN_ONLY_DETAILS = new Set([
+export const ADMIN_ONLY_DETAILS = new Set([
   'camera_source_updated',
   'backup_failed',
   'notification_failed',

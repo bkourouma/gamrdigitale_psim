@@ -13,7 +13,7 @@ import { after, before, describe, it } from 'node:test';
 import { openDb } from '../server/db.ts';
 import { createEngine } from '../server/engine.ts';
 import { seedDemo } from '../server/seed.ts';
-import { createTuya, createTuyaClient, readDevice, TUYA_SUPERVISION_S } from '../server/tuya.ts';
+import { batteryOf, createTuya, createTuyaClient, readDevice, TUYA_SUPERVISION_S } from '../server/tuya.ts';
 import type { TuyaDevice } from '../server/tuya.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -93,6 +93,15 @@ describe('Tuya : lecture de l\'etat d\'un detecteur de fumee', () => {
     assert.equal(readDevice({ id: 'x', online: true, status: smoke('normal', [{ code: 'battery_percentage', value: 12 }]) }).kind, 'fault');
     assert.equal(readDevice({ id: 'x', online: true, status: smoke('normal', [{ code: 'battery_percentage', value: 80 }, { code: 'battery_state', value: 'high' }]) }).kind, 'normal');
   });
+
+  it('niveau de pile affichable : pourcentage et/ou etat, jamais une valeur inventee ni hors limites', () => {
+    assert.deepEqual(batteryOf({ id: 'x', status: smoke('normal', [{ code: 'battery_percentage', value: 80 }, { code: 'battery_state', value: 'high' }]) }), { percent: 80, state: 'high' });
+    assert.deepEqual(batteryOf({ id: 'x', status: smoke('normal', [{ code: 'battery_state', value: 'low' }]) }), { percent: null, state: 'low' });
+    assert.deepEqual(batteryOf({ id: 'x', status: smoke('normal', [{ code: 'battery_percentage', value: 66.6 }]) }), { percent: 67, state: null });
+    assert.equal(batteryOf({ id: 'x', status: smoke('normal') }), null, 'modele sans pile publiee');
+    assert.equal(batteryOf({ id: 'x' }), null);
+    assert.equal(batteryOf({ id: 'x', status: [{ code: 'battery_percentage', value: 250 }, { code: 'battery_state', value: 7 }] }), null, 'valeurs absurdes ignorees');
+  });
 });
 
 describe('Tuya : cloud et detecteurs du PSIM', () => {
@@ -126,6 +135,7 @@ describe('Tuya : cloud et detecteurs du PSIM', () => {
     assert.equal(t.engine.getDevice('D-01')!.heartbeatS, TUYA_SUPERVISION_S);
     assert.ok(t.audits.some((a) => a === `tuya_source_updated:appareil Tuya ${DEV_A} ; supervision ${TUYA_SUPERVISION_S} s`));
     assert.ok(t.engine.getDevice('D-01')!.lastSeen, 'une lecture reussie vaut signe de vie');
+    assert.deepEqual(t.tuya.view('D-01').connection?.battery, { percent: 90, state: null }, 'la pile lue est montree dans l\'interface');
 
     cloud.devices.set(DEV_A, { id: DEV_A, online: true, status: smoke('alarm') });
     await t.tuya.poll();

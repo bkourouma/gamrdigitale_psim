@@ -1,0 +1,7 @@
+Code=FaceDetection;action=Start;index=7;data={
+  "Name" : "FaceDetection",
+  "Class" : "FaceDetection",
+  "RuleName" : "Visage",
+  "UTC" : 1776717300,
+  "Object" : { "ObjectID" : 9, "ObjectType" : "HumanFace", "BoundingBox" : [ 3120, 1460, 3960, 3180 ], "Center" : [ 3540, 2320 ], "RelativeID" : 9 }
+}

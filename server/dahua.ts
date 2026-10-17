@@ -46,12 +46,17 @@ export interface DahuaEvent {
   action: string;
   /** Voie, a partir de 1. */
   channel: number;
+  /** JSON brut apres « data= » (peut tenir sur plusieurs lignes), nettoye ; null s'il n'y en a pas. */
+  data: string | null;
 }
 
 /** « Code=SmartMotionHuman;action=Start;index=0;data={...} » -> evenement (voie = index + 1), ou null (Heartbeat...). */
 export function parseEventPart(text: string): DahuaEvent | null {
   const m = /Code=([A-Za-z]+);action=([A-Za-z]+);index=(\d+)/.exec(text);
-  return m ? { code: m[1], action: m[2], channel: Number(m[3]) + 1 } : null;
+  if (!m) return null;
+  const d = /;data=([\s\S]*)$/.exec(text.slice(m.index + m[0].length));
+  const data = d ? d[1].trim() : '';
+  return { code: m[1], action: m[2], channel: Number(m[3]) + 1, data: data === '' ? null : data };
 }
 
 /**
@@ -297,6 +302,8 @@ interface Link {
   lastData: number;
   retry: ReturnType<typeof setTimeout> | null;
   failures: number;
+  /** Perte deja signalee (onLinkLost) : une seule fois par coupure ; remis a faux quand la liaison revient. */
+  lost: boolean;
 }
 
 export interface DahuaDeps {
@@ -311,6 +318,12 @@ export interface DahuaDeps {
   isArmed?: (zone: string) => boolean;
   /** Pour les tests : cadence des signes de vie (30 s). */
   aliveEveryMs?: number;
+  /** Chaque evenement lu (tous codes, toutes voies, meme ceux qu'aucun detecteur ne suit). Une exception est journalisee, jamais propagee. */
+  onObservation?: (o: { host: string; channel: number; code: string; action: string; at: number; data: string | null }) => void;
+  /** Le flux d'un hote est perdu (coupure, silence, lien ferme, arret) : ce qui y etait en cours doit se terminer. */
+  onLinkLost?: (host: string) => void;
+  /** Vrai : un flux est aussi ouvert vers chaque hote de camera_source dont le chemin RTSP contient « channel=N », sans detecteur lie. */
+  observeAll?: () => boolean;
 }
 
 export function createDahuaEvents(deps: DahuaDeps) {
@@ -343,6 +356,44 @@ export function createDahuaEvents(deps: DahuaDeps) {
       return { host: row.host, port: row.http_port, username: row.username, password: unseal(deps.key, row.secret) };
     } catch {
       return null; // cle perdue ou secret altere : la camera doit etre ressaisie (signale par le statut)
+    }
+  }
+
+  /** Hotes et identifiants des cameras reelles a voie (« channel=N »), pour l'observation de toutes les voies. */
+  function observedCredentials(): Credentials[] {
+    return faceHosts().map((h) => h.creds);
+  }
+
+  /**
+   * Un enregistreur ou une camera Dahua par hote de camera_source (chemin RTSP avec « channel=N », identifiants lisibles),
+   * avec la premiere camera de cet hote par ordre d'identifiant. Port HTTP 80 (limite connue), sauf pour un hote deja relie
+   * a un detecteur : le port de ce detecteur est repris (c'est aussi celui du lien reutilise par reload). Sert a lire les
+   * bases de visages (findGroup) sur chaque appareil, et a ouvrir les flux d'observation.
+   */
+  function faceHosts(): { cameraId: string; creds: Credentials }[] {
+    const found: { cameraId: string; creds: Credentials }[] = [];
+    const seen = new Set<string>();
+    const portOf = new Map<string, number>();
+    for (const row of rows()) if (!portOf.has(row.host)) portOf.set(row.host, row.http_port);
+    const cams = db.prepare("SELECT device_id, host, username, secret, rtsp_path FROM camera_source WHERE rtsp_path IS NOT NULL ORDER BY device_id").all() as unknown as { device_id: string; host: string; username: string | null; secret: string | null; rtsp_path: string }[];
+    for (const cam of cams) {
+      if (!/channel=\d+/i.test(cam.rtsp_path) || seen.has(cam.host)) continue;
+      const creds = credentials({ host: cam.host, http_port: portOf.get(cam.host) ?? 80, username: cam.username, secret: cam.secret });
+      if (!creds) continue; // sans identifiants lisibles : cet hote est ignore, une autre camera du meme hote peut en avoir
+      seen.add(cam.host);
+      found.push({ cameraId: cam.device_id, creds });
+    }
+    return found;
+  }
+
+  /** Signale la perte du flux d'un hote, une seule fois par coupure. Ne propage jamais d'exception. */
+  function lose(link: Link): void {
+    if (link.lost) return;
+    link.lost = true;
+    try {
+      deps.onLinkLost?.(link.creds.host);
+    } catch (err) {
+      log(`${link.creds.host} : erreur du suivi de perte de flux (${(err as Error).message})`);
     }
   }
 
@@ -421,7 +472,15 @@ export function createDahuaEvents(deps: DahuaDeps) {
       onPart: (body) => {
         link.lastData = now();
         const ev = parseEventPart(body);
-        if (ev) onEvent(link, ev);
+        if (!ev) return;
+        if (deps.onObservation) {
+          try {
+            deps.onObservation({ host: link.creds.host, channel: ev.channel, code: ev.code, action: ev.action, at: now(), data: ev.data });
+          } catch (err) {
+            log(`${link.creds.host} : erreur du suivi des observations (${(err as Error).message})`);
+          }
+        }
+        onEvent(link, ev);
       },
       onEnd: (reason, authRefused) => fail(link, reason, authRefused),
     });
@@ -433,6 +492,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
         link.since = now();
         link.error = null;
         link.failures = 0;
+        link.lost = false;
         link.lastData = now();
         log(`${link.creds.host} : connecte (${link.detectors.length} detecteur(s))`);
         for (const det of link.detectors) send(det.id, 'heartbeat');
@@ -447,6 +507,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
     link.stream = null;
     // Ce qui avait commence ne finira jamais sur cette connexion : retour au calme (l'incident ouvert, lui, reste).
     for (const det of link.detectors) release(det.id);
+    lose(link);
     if (link.state !== 'error' || link.error !== reason) log(`${link.creds.host} : ${reason}`);
     link.state = 'error';
     link.since = now();
@@ -490,6 +551,16 @@ export function createDahuaEvents(deps: DahuaDeps) {
       entry.detectors.push({ id: row.device_id, channel: row.channel, codes: new Set(JSON.parse(row.events) as string[]) });
       wanted.set(key, entry);
     }
+    // Observation de toutes les voies : une seule connexion par hote. Un hote deja relie pour un detecteur (meme avec un
+    // autre port ou d'autres identifiants) est reutilise tel quel ; sinon un lien sans detecteur, port 80.
+    if (deps.observeAll?.()) {
+      const covered = new Set([...wanted.values()].map((e) => e.creds.host));
+      for (const creds of observedCredentials()) {
+        if (covered.has(creds.host)) continue;
+        covered.add(creds.host);
+        wanted.set(`${creds.host}|${creds.port}|${creds.username}|${createHash('sha256').update(creds.password).digest('hex').slice(0, 16)}`, { creds, detectors: [] });
+      }
+    }
     // Detecteur retire, change de voie ou d'evenements : ce qui etait en cours pour lui se termine. Une connexion fermee
     // (identifiants changes) n'enverra jamais les « Stop » attendus : idem pour ses detecteurs.
     const next = new Map([...wanted.values()].flatMap((e) => e.detectors.map((d) => [d.id, d] as const)));
@@ -507,6 +578,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
       clearTimeout(link.retry ?? undefined);
       links.delete(key);
       for (const det of link.detectors) release(det.id);
+      lose(link);
     }
     for (const [key, entry] of wanted) {
       const existing = links.get(key);
@@ -514,7 +586,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
         existing.detectors = entry.detectors;
         continue;
       }
-      const link: Link = { key, creds: entry.creds, detectors: entry.detectors, stream: null, state: 'connecting', since: now(), error: null, lastData: now(), retry: null, failures: 0 };
+      const link: Link = { key, creds: entry.creds, detectors: entry.detectors, stream: null, state: 'connecting', since: now(), error: null, lastData: now(), retry: null, failures: 0, lost: false };
       links.set(key, link);
       connect(link);
     }
@@ -603,7 +675,7 @@ export function createDahuaEvents(deps: DahuaDeps) {
       onPart: (body) => {
         const ev = parseEventPart(body);
         if (ev) {
-          if (events.length < 50) events.push({ ...ev, at: now() });
+          if (events.length < 50) events.push({ ...ev, data: ev.data === null ? null : ev.data.slice(0, 2000), at: now() });
         } else if (/heartbeat/i.test(body)) heartbeats += 1;
       },
       onEnd: (reason) => (ended = reason),
@@ -631,12 +703,13 @@ export function createDahuaEvents(deps: DahuaDeps) {
     for (const link of links.values()) {
       link.stream?.stop();
       clearTimeout(link.retry ?? undefined);
+      lose(link);
     }
     for (const t of pulses.values()) clearTimeout(t);
     links.clear();
   }
 
-  return { reload, view, setSource, removeSource, test, stop };
+  return { reload, view, setSource, removeSource, test, stop, faceHosts };
 }
 
 export type DahuaEvents = ReturnType<typeof createDahuaEvents>;

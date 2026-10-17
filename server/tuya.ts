@@ -89,6 +89,24 @@ export function readAny(device: TuyaDevice, opts: { requested: SensorType | null
   return { ...readSensor(device, choice.type, { psimCategory: opts.psimCategory, settings: opts.settings, scales: opts.scales }), sensor: choice.type };
 }
 
+/** Pile telle que le detecteur la publie : pourcentage et/ou etat (« low », « normal », « high »...). Selon le modele, l'un ou l'autre manque. */
+export interface TuyaBattery {
+  percent: number | null;
+  state: string | null;
+}
+
+/** Niveau de pile d'un appareil, ou `null` si le modele n'en publie aucun. Jamais une valeur inventee. */
+export function batteryOf(device: TuyaDevice): TuyaBattery | null {
+  const status = Array.isArray(device.status) ? device.status : [];
+  const percent = status.find((s) => s?.code === 'battery_percentage')?.value;
+  const state = status.find((s) => s?.code === 'battery_state')?.value;
+  const out: TuyaBattery = {
+    percent: typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 && percent <= 100 ? Math.round(percent) : null,
+    state: typeof state === 'string' && state ? state.slice(0, 20) : null,
+  };
+  return out.percent === null && out.state === null ? null : out;
+}
+
 // ---------------------------------------------------------------- client de l'API cloud
 
 export class TuyaError extends Error {
@@ -245,6 +263,8 @@ interface Link {
   kind: string | null;
   reason: string | null;
   sensor: string | null;
+  /** Derniere pile lue (conservee si une lecture echoue : mieux vaut un niveau date que rien). */
+  battery: TuyaBattery | null;
 }
 
 export interface TuyaSourceView {
@@ -254,7 +274,7 @@ export interface TuyaSourceView {
   sensorType: string | null;
   /** Modeles pris en charge, pour l'interface. */
   catalog: ReturnType<typeof sensorCatalog>;
-  connection: { state: Link['state']; since: number; error: string | null; lastPoll: number | null; online: boolean | null; reading: string | null; reason: string | null; sensor: string | null } | null;
+  connection: { state: Link['state']; since: number; error: string | null; lastPoll: number | null; online: boolean | null; reading: string | null; reason: string | null; sensor: string | null; battery: TuyaBattery | null } | null;
 }
 
 export interface TuyaDeps {
@@ -284,7 +304,7 @@ export function createTuya(deps: TuyaDeps) {
       .all() as unknown as Row[];
 
   function setLink(id: string, patch: Partial<Link>): void {
-    const link = links.get(id) ?? { state: 'connecting', since: now(), error: null, lastPoll: null, online: null, kind: null, reason: null, sensor: null };
+    const link = links.get(id) ?? { state: 'connecting', since: now(), error: null, lastPoll: null, online: null, kind: null, reason: null, sensor: null, battery: null };
     if (patch.state && patch.state !== link.state) link.since = now();
     Object.assign(link, patch);
     links.set(id, link);
@@ -342,7 +362,7 @@ export function createTuya(deps: TuyaDeps) {
         }
         const settings = engine.getDevice(row.device_id) ?? undefined;
         const reading = readAny(device, { requested: sensorTypeOf(row.sensor_type), psimCategory: row.category, settings, scales: scales.get(row.tuya_id) ?? undefined });
-        setLink(row.device_id, { state: 'connected', error: null, lastPoll: now(), online: device.online ?? null, kind: reading.kind, reason: reading.reason, sensor: reading.sensor });
+        setLink(row.device_id, { state: 'connected', error: null, lastPoll: now(), online: device.online ?? null, kind: reading.kind, reason: reading.reason, sensor: reading.sensor, battery: batteryOf(device) });
         if (reading.kind === 'silent') continue; // aucun signe de vie : la supervision fera son travail
         for (const payload of reading.payloads) engine.handleDetectorMessage(row.device_id, payload);
       }
@@ -378,8 +398,8 @@ export function createTuya(deps: TuyaDeps) {
     if (!row) return { configured, tuyaId: null, sensorType: null, catalog, connection: null };
     const link = links.get(detectorId);
     const connection: NonNullable<TuyaSourceView['connection']> = link
-      ? { state: link.state, since: link.since, error: link.error, lastPoll: link.lastPoll, online: link.online, reading: link.kind, reason: link.reason, sensor: link.sensor }
-      : { state: 'error', since: now(), error: 'lecture non demarree', lastPoll: null, online: null, reading: null, reason: null, sensor: null };
+      ? { state: link.state, since: link.since, error: link.error, lastPoll: link.lastPoll, online: link.online, reading: link.kind, reason: link.reason, sensor: link.sensor, battery: link.battery }
+      : { state: 'error', since: now(), error: 'lecture non demarree', lastPoll: null, online: null, reading: null, reason: null, sensor: null, battery: null };
     return { configured, tuyaId: row.tuya_id, sensorType: sensorTypeOf(row.sensor_type), catalog, connection };
   }
 
@@ -439,17 +459,17 @@ export function createTuya(deps: TuyaDeps) {
   }
 
   /** Essai : lit l'appareil une fois et montre ce que le cloud en dit (jamais d'incident, rien n'est envoye au moteur). */
-  async function test(tuyaIdRaw: unknown, sensorTypeRaw?: unknown, detectorIdRaw?: unknown): Promise<{ ok: boolean; message: string; name: string | null; online: boolean | null; reading: string | null; sensor: string | null; data: { code: string; value: string }[] }> {
+  async function test(tuyaIdRaw: unknown, sensorTypeRaw?: unknown, detectorIdRaw?: unknown): Promise<{ ok: boolean; message: string; name: string | null; online: boolean | null; reading: string | null; sensor: string | null; battery: TuyaBattery | null; data: { code: string; value: string }[] }> {
     const c = needClient();
     const tuyaId = cleanId(tuyaIdRaw);
     let device: TuyaDevice | undefined;
     try {
       device = (await c.devices([tuyaId])).find((d) => d.id === tuyaId);
     } catch (err) {
-      return { ok: false, message: err instanceof TuyaError ? err.message : (err as Error).message, name: null, online: null, reading: null, sensor: null, data: [] };
+      return { ok: false, message: err instanceof TuyaError ? err.message : (err as Error).message, name: null, online: null, reading: null, sensor: null, battery: null, data: [] };
     }
     if (!device) {
-      return { ok: false, message: "Compte Tuya joint, mais cet appareil n'y est pas : verifier l'identifiant et que le compte Smart Life est lie au projet Tuya (onglet « Appareils » du projet)", name: null, online: null, reading: null, sensor: null, data: [] };
+      return { ok: false, message: "Compte Tuya joint, mais cet appareil n'y est pas : verifier l'identifiant et que le compte Smart Life est lie au projet Tuya (onglet « Appareils » du projet)", name: null, online: null, reading: null, sensor: null, battery: null, data: [] };
     }
     // Type choisi dans l'interface (ou automatique) ; avec le detecteur concerne, on verifie aussi sa categorie et on applique ses seuils.
     const requested = sensorTypeOf(typeof sensorTypeRaw === 'string' ? sensorTypeRaw : null);
@@ -474,7 +494,7 @@ export function createTuya(deps: TuyaDeps) {
             : reading.sensor === 'smoke'
               ? 'connecte ; aucune fumee, appareil en ligne'
               : `connecte ; ${label} : ${reading.reason}, appareil en ligne`;
-    return { ok, message: `${ok ? 'Appareil lu' : 'Appareil lu, mais'} : ${text}`, name: device.name ? String(device.name).slice(0, 80) : null, online, reading: reading.kind, sensor: reading.sensor, data };
+    return { ok, message: `${ok ? 'Appareil lu' : 'Appareil lu, mais'} : ${text}`, name: device.name ? String(device.name).slice(0, 80) : null, online, reading: reading.kind, sensor: reading.sensor, battery: batteryOf(device), data };
   }
 
   function stop(): void {

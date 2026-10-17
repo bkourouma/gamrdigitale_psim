@@ -1,0 +1,80 @@
+{
+  "packVersion": 1,
+  "id": "villa-essentiel",
+  "name": "Villa - Essentiel",
+  "segment": "villa",
+  "level": "essentiel",
+  "version": "1.0.0",
+  "description": "Voir et être prévenu. Villa à étage : 2 caméras extérieures (portail, jardin) sur un enregistreur Dahua 4 voies supervisé sur le réseau, détection de personnes de l'enregistreur au portail armée la nuit, 2 détecteurs de fumée WiFi Tuya / Smart Life (séjour, couloir de l'étage), lus par le PSIM dans le cloud Tuya sans passerelle. Qualifié : le détecteur de fumée WiFi Tuya. Caméras, enregistreur 4 voies XVR5104HS-I3 et sa détection de personnes sont à qualifier (seule une voie d'un XVR5108HS-I3/T a été essayée sur matériel réel ; le registre de qualification n'en déduit rien pour le XVR5104HS-I3). Prérequis : compte Tuya configuré dans le .env (docs/TUYA.md), et les détecteurs appairés dans l'application Smart Life.",
+  "floors": [
+    { "id": "rdc", "name": "Rez-de-chaussée", "plan": "plans/rdc.svg" },
+    { "id": "etage", "name": "Étage", "plan": "plans/etage.svg" }
+  ],
+  "zones": [
+    { "name": "Portail", "floor": "rdc" },
+    { "name": "Jardin", "floor": "rdc" },
+    { "name": "Séjour", "floor": "rdc" },
+    { "name": "Local technique", "floor": "rdc" },
+    { "name": "Étage - Couloir", "floor": "etage" }
+  ],
+  "devices": [
+    {
+      "id": "CAM-PORTAIL", "kind": "camera", "name": "Caméra portail", "zone": "Portail", "x": 50, "y": 8,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=1&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "CAM-JARDIN", "kind": "camera", "name": "Caméra jardin", "zone": "Jardin", "x": 10, "y": 88,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=2&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "NVR-01", "kind": "detector", "name": "Enregistreur vidéo", "zone": "Local technique", "x": 30, "y": 70,
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
+      "category": "environment",
+      "source": { "type": "network", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 80 }
+    },
+    {
+      "id": "I-PORTAIL", "kind": "detector", "name": "Personne détectée au portail", "zone": "Portail", "x": 54, "y": 8,
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
+      "category": "intrusion",
+      "source": { "type": "dahua", "camera": "CAM-PORTAIL", "channel": 1, "events": ["SmartMotionHuman"] }
+    },
+    {
+      "id": "F-SEJOUR", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 40, "y": 40,
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
+      "category": "fire",
+      "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur du séjour (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
+    },
+    {
+      "id": "F-ETAGE", "kind": "detector", "name": "Fumée couloir de l'étage", "zone": "Étage - Couloir", "x": 50, "y": 49,
+      "model": "tuya-smoke-wifi", "qualification": "qualified",
+      "category": "fire",
+      "source": { "type": "tuya", "tuyaId": { "$ask": "Identifiant Tuya du détecteur de l'étage (console Tuya, onglet Appareils)" }, "sensorType": "smoke" }
+    }
+  ],
+  "links": {
+    "F-SEJOUR": ["CAM-JARDIN", "CAM-PORTAIL"],
+    "F-ETAGE": ["CAM-JARDIN"],
+    "I-PORTAIL": ["CAM-PORTAIL"]
+  },
+  "arming": [
+    { "zone": "Portail", "schedule": [ { "days": [0, 1, 2, 3, 4, 5, 6], "from": "22:00", "to": "06:00" } ] }
+  ],
+  "risk": [
+    { "zone": "Séjour", "probability": 2, "defenses": ["extincteurs"], "impacts": { "image": 2, "economy": 3, "human": 4 } },
+    { "zone": "Étage - Couloir", "probability": 1, "defenses": ["consignes"], "impacts": { "image": 2, "economy": 3, "human": 5 }, "notes": "Chambres à l'étage : une seule issue par l'escalier." },
+    { "zone": "Portail", "probability": 3, "defenses": [], "impacts": { "image": 2, "economy": 3, "human": 2 }, "notes": "Accès principal, visible depuis la rue." }
+  ],
+  "recipients": [
+    { "channel": "whatsapp", "level": 1, "label": "Propriétaire", "address": { "$ask": "Numéro WhatsApp du propriétaire (+225...)" } },
+    { "channel": "email", "level": 1, "label": "Propriétaire", "address": { "$ask": "E-mail du propriétaire" } },
+    { "channel": "whatsapp", "level": 2, "label": "Gardien ou voisin de confiance", "address": { "$ask": "Numéro WhatsApp du gardien ou du voisin (+225...)" } }
+  ]
+}

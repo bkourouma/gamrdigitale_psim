@@ -26,7 +26,15 @@ import type { Engine } from './engine.ts';
 import { PsimError } from './engine.ts';
 import { PLAN_TYPES } from './floors.ts';
 import type { Floors } from './floors.ts';
-import type { DahuaEvents } from './dahua.ts';
+import { DahuaAuthError } from './dahua.ts';
+import type { Credentials, DahuaEvents } from './dahua.ts';
+import { fetchFaceGroups } from './faces.ts';
+import type { FaceGroup } from './faces.ts';
+import type { FaceObs } from './faceobs.ts';
+import type { Presence } from './presence.ts';
+import { describeRule } from './rules.ts';
+import type { Rules } from './rules.ts';
+import { createRuleAssistant } from './ruleassist.ts';
 import type { TuyaService } from './tuya.ts';
 import { createNetworkTargets } from './networkhealth.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -38,6 +46,7 @@ import type { RiskService } from './risk.ts';
 import type { SnapshotService } from './snapshots.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import type { Actuators } from './actuators.ts';
+import type { ProofService } from './proofpack.ts';
 import type { VideoService } from './video.ts';
 import type { Role } from './types.ts';
 
@@ -50,6 +59,13 @@ export interface ApiDeps {
   engine: Engine;
   floors: Floors;
   dahua: DahuaEvents;
+  /** Regles de presence (detecteurs virtuels R-<id>) et presence courante des cameras. */
+  rules: Rules;
+  presence: Presence;
+  /** Visages vus par les cameras (GET /api/faces/recent). Absent : aucune observation. */
+  faceObs?: FaceObs;
+  /** Assistant de regles (cle de l'API, modele, adresse du service) ; sans cle, l'assistant n'est pas configure. */
+  assist?: { apiKey: string; model?: string; apiUrl?: string };
   tuya: TuyaService;
   video: VideoService;
   snapshots: SnapshotService;
@@ -81,6 +97,8 @@ export interface ApiDeps {
   deviceImages?: DeviceImages;
   /** Commandes des equipements (sirenes, relais, gaches...) : voir actuators.ts et docs/COMMANDES.md. */
   actuators?: Actuators;
+  /** Dossier de preuve exportable par incident (GET /api/incidents/:id/proof). */
+  proofs?: ProofService;
 }
 
 type AuthedRequest = Request & { session: Session };
@@ -88,6 +106,247 @@ type AuthedRequest = Request & { session: Session };
 export function sessionFromRequest(req: Pick<Request, 'headers'>): Session | null {
   return getSession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
 }
+
+// ---------------------------------------------------------------- listes de visages (cache partage)
+
+export interface FaceListEntry {
+  id: string;
+  name: string;
+  size?: number;
+  cameraId: string;
+  cameraName: string;
+  /**
+   * Identifiants de TOUTES les cameras du PSIM lues par le meme appareil que `cameraId` (triees, `cameraId` comprise), relus a chaque
+   * lecture ; sert a retrouver la liste d'une regle creee depuis une autre voie du meme enregistreur. Aucune adresse.
+   */
+  deviceCameraIds?: string[];
+}
+
+export interface FaceListsResult {
+  lists: FaceListEntry[];
+  notes: string[];
+  /** Nombre d'appareils interroges. */
+  hosts: number;
+}
+
+const FACE_OK_TTL_MS = 5 * 60_000;
+/** Un echec n'est pas retente avant 60 s (des essais en rafale bloqueraient le compte de l'appareil) ; un refus d'identifiants, 5 min. */
+const FACE_FAIL_TTL_MS = 60_000;
+const FACE_AUTH_TTL_MS = 5 * 60_000;
+const FACE_READ_TIMEOUT_MS = 12_000;
+/** Message de fetchFaceGroups pour un appareil sans reconnaissance faciale (HTTP 404 ou 501) : pas un incident, rien a signaler. */
+const NO_FACE_SERVICE = /ne propose pas la reconnaissance faciale/;
+
+interface FaceHostState {
+  cameraId: string;
+  /** Fin de la derniere lecture terminee (0 : jamais). */
+  at: number;
+  groups: FaceGroup[];
+  failure: { reason: string; auth: boolean } | null;
+  pending: Promise<void> | null;
+}
+
+/**
+ * Bases de visages lues sur chaque appareil Dahua de camera_source (un enregistreur, mais aussi une camera IP a
+ * reconnaissance embarquee). Cache PAR HOTE : 5 min pour un succes (une reponse vide ou « sans reconnaissance faciale » en
+ * est un : l'enregistreur actuel n'a aucune base), 60 s pour un echec, 5 min pour des identifiants refuses. Partage par la
+ * route des listes et par le contexte de l'assistant. Aucune adresse ni mot de passe dans ce qui sort.
+ */
+export function createFaceLists(deps: {
+  hosts: () => { cameraId: string; creds: Credentials }[];
+  cameraName: (cameraId: string) => string;
+  /** Cameras du meme appareil que la camera donnee (voir `deviceIndex`) : ajoute `deviceCameraIds` a chaque entree. */
+  deviceCameraIds?: (cameraId: string) => string[];
+  fetchGroups?: (creds: Credentials) => Promise<FaceGroup[]>;
+  now?: () => number;
+}) {
+  const now = deps.now ?? Date.now;
+  const fetchGroups = deps.fetchGroups ?? ((creds: Credentials) => fetchFaceGroups(creds));
+  const cache = new Map<string, FaceHostState>();
+  const keyOf = (c: Credentials) => `${c.host}|${c.port}|${c.username}|${createHash('sha256').update(c.password).digest('hex').slice(0, 16)}`;
+
+  const fresh = (e: FaceHostState): boolean => e.at > 0 && now() - e.at < (e.failure ? (e.failure.auth ? FACE_AUTH_TTL_MS : FACE_FAIL_TTL_MS) : FACE_OK_TTL_MS);
+
+  /** Raison lisible : jamais le mot de passe ni l'adresse, meme si un message d'appareil les citait. */
+  const safeReason = (err: unknown, creds: Credentials): string => {
+    let text = err instanceof Error ? err.message : 'erreur inconnue';
+    for (const secret of [creds.password, creds.host]) if (secret) text = text.split(secret).join('***');
+    return text.replace(/[\r\n]+/g, ' ').slice(0, 200);
+  };
+
+  function load(entry: FaceHostState, creds: Credentials): Promise<void> {
+    if (entry.pending) return entry.pending;
+    entry.pending = (async () => {
+      try {
+        entry.groups = await fetchGroups(creds);
+        entry.failure = null;
+      } catch (err) {
+        if (err instanceof Error && NO_FACE_SERVICE.test(err.message)) {
+          entry.groups = []; // appareil sans reconnaissance faciale : ignore proprement, sans note
+          entry.failure = null;
+        } else {
+          // Les dernieres bases connues restent utilisables (un trou de 60 s ne vide pas le contexte de l'assistant).
+          entry.failure = { reason: safeReason(err, creds), auth: err instanceof DahuaAuthError };
+        }
+      } finally {
+        entry.at = now();
+        entry.pending = null;
+      }
+    })();
+    return entry.pending;
+  }
+
+  /** Relit ce qui est perime (en parallele) et attend au plus `timeoutMs` ; ce qui n'a pas fini le sera pour la fois suivante. */
+  async function read(timeoutMs = FACE_READ_TIMEOUT_MS): Promise<FaceListsResult> {
+    const hosts = deps.hosts();
+    const wanted = new Set(hosts.map((h) => keyOf(h.creds)));
+    for (const key of [...cache.keys()]) if (!wanted.has(key)) cache.delete(key);
+    const states = hosts.map((h) => {
+      const key = keyOf(h.creds);
+      let entry = cache.get(key);
+      if (!entry) {
+        entry = { cameraId: h.cameraId, at: 0, groups: [], failure: null, pending: null };
+        cache.set(key, entry);
+      }
+      entry.cameraId = h.cameraId;
+      if (!fresh(entry)) void load(entry, h.creds);
+      return entry;
+    });
+    const running = states.map((e) => e.pending).filter((p): p is Promise<void> => p !== null);
+    if (running.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(running), new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))]);
+      clearTimeout(timer);
+    }
+    return compose(states);
+  }
+
+  function compose(states: FaceHostState[]): FaceListsResult {
+    const lists: FaceListEntry[] = [];
+    const notes: string[] = [];
+    for (const e of states) {
+      const cameraName = deps.cameraName(e.cameraId);
+      const sameDevice = deps.deviceCameraIds ? { deviceCameraIds: deps.deviceCameraIds(e.cameraId) } : {};
+      for (const g of e.groups) lists.push({ id: g.id, name: g.name, ...(g.size === undefined ? {} : { size: g.size }), cameraId: e.cameraId, cameraName, ...sameDevice });
+      if (e.failure) {
+        notes.push(`La caméra « ${cameraName} » ne répond pas : ${e.failure.reason}.`);
+      } else if (e.at === 0) {
+        notes.push(`La caméra « ${cameraName} » ne répond pas : pas de réponse de l'appareil.`); // lecture encore en cours
+      }
+    }
+    return { lists, notes, hosts: states.length };
+  }
+
+  /**
+   * Ce que le cache contient maintenant, sans rien lire (contexte de l'assistant) : UNE ligne par (appareil, liste), avec la camera
+   * par laquelle la liste se lit. Aucun dedoublonnage entre appareils : chaque appareil numerote ses listes lui-meme, deux appareils
+   * peuvent avoir chacun une liste « 1 » (meme nom ou non), et ce sont deux listes distinctes.
+   */
+  function cached(): { cameraId: string; cameraName: string; id: string; name: string }[] {
+    const out: { cameraId: string; cameraName: string; id: string; name: string }[] = [];
+    const done = new Set<FaceHostState>();
+    for (const h of deps.hosts()) {
+      const entry = cache.get(keyOf(h.creds));
+      if (!entry || done.has(entry)) continue;
+      done.add(entry);
+      const cameraName = deps.cameraName(h.cameraId);
+      for (const g of entry.groups) out.push({ cameraId: h.cameraId, cameraName, id: g.id, name: g.name });
+    }
+    return out;
+  }
+
+  return { read, cached };
+}
+
+/**
+ * Stabilise la camera annoncee pour chaque appareil. `faceHosts()` prend la premiere camera de l'hote par ordre d'identifiant : y
+ * ajouter une camera d'identifiant plus petit (ou corriger les identifiants de la premiere) changerait le `cameraId` annonce, et
+ * l'ecran ne retrouverait plus la liste d'une regle deja enregistree. On garde donc, par hote, la camera deja annoncee tant qu'elle
+ * lit encore cet hote (source video avec une voie) ; sinon (camera supprimee, adresse changee) on prend celle que `faceHosts()` donne.
+ * La correspondance des regles se fait par APPAREIL (hote) : ce choix ne change jamais le declenchement, seulement ce que l'ecran affiche.
+ * La memoire vit dans le processus : apres un redemarrage, c'est de nouveau la premiere camera de l'hote par ordre d'identifiant.
+ */
+export function stableFaceHosts(db: DatabaseSync, hosts: () => { cameraId: string; creds: Credentials }[]): () => { cameraId: string; creds: Credentials }[] {
+  const chosen = new Map<string, string>();
+  const stillReads = (cameraId: string, host: string): boolean => {
+    try {
+      const row = db.prepare('SELECT host, rtsp_path FROM camera_source WHERE device_id = ?').get(cameraId) as { host?: unknown; rtsp_path?: unknown } | undefined;
+      return row?.host === host && typeof row.rtsp_path === 'string' && /channel=\d+/i.test(row.rtsp_path);
+    } catch {
+      return false;
+    }
+  };
+  return () =>
+    hosts().map((h) => {
+      const kept = chosen.get(h.creds.host);
+      if (kept !== undefined && kept !== h.cameraId && stillReads(kept, h.creds.host)) return { ...h, cameraId: kept };
+      chosen.set(h.creds.host, h.cameraId);
+      return h;
+    });
+}
+
+/**
+ * Index des appareils (un par hote de camera_source). Reperes d'appareil OPAQUES pour le contexte de l'assistant : « appareil 1 », « appareil 2 »... un par hote distinct de
+ * camera_source (hotes tries, hote -> rang), le meme pour toutes les cameras d'un meme hote (enregistreur a plusieurs voies).
+ * Camera sans source video ou a hote vide : aucun repere. L'hote lui-meme (adresse) ne sort JAMAIS d'ici. Relu a chaque appel :
+ * une camera dont on change l'adresse change d'appareil au contexte suivant.
+ */
+export function deviceIndex(db: DatabaseSync): { mark: (cameraId: string) => string | undefined; cameras: (cameraId: string) => string[] } {
+  // Meme comparaison d'hotes que les regles (rules.ts) : sans espaces autour, en minuscules.
+  const keyOf = (host: unknown): string | null => (typeof host === 'string' && host.trim() !== '' ? host.trim().toLowerCase() : null);
+  let rows: { device_id: string; host: unknown }[] = [];
+  try {
+    rows = db.prepare('SELECT device_id, host FROM camera_source').all() as unknown as { device_id: string; host: unknown }[];
+  } catch {
+    return { mark: () => undefined, cameras: () => [] }; // base illisible : rien plutot qu'une reponse en erreur
+  }
+  const hosts = [...new Set(rows.map((r) => keyOf(r.host)).filter((k): k is string => k !== null))].sort();
+  const rank = new Map(hosts.map((h, i) => [h, i + 1] as const));
+  const byCamera = new Map(rows.map((r) => [r.device_id, keyOf(r.host)] as const));
+  const byHost = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = keyOf(r.host);
+    if (key !== null) byHost.set(key, [...(byHost.get(key) ?? []), r.device_id]);
+  }
+  for (const ids of byHost.values()) ids.sort();
+  return {
+    mark: (cameraId) => {
+      const key = byCamera.get(cameraId);
+      const n = key ? rank.get(key) : undefined;
+      return n === undefined ? undefined : `appareil ${n}`;
+    },
+    /** Toutes les cameras lues par le meme appareil que `cameraId` (triees, elle comprise) ; aucune si elle n'a pas de source. */
+    cameras: (cameraId) => {
+      const key = byCamera.get(cameraId);
+      return key ? [...(byHost.get(key) ?? [])] : [];
+    },
+  };
+}
+
+/** Compteur glissant : au plus `max` appels par `windowMs` et par cle. */
+function createQuota(max: number, windowMs: number, now: () => number = Date.now) {
+  const calls = new Map<string, number[]>();
+  return {
+    /** Prend une place si elle existe ; faux si la limite est atteinte. */
+    take(key: string): boolean {
+      const t = now();
+      const recent = (calls.get(key) ?? []).filter((at) => t - at < windowMs);
+      if (recent.length >= max) {
+        calls.set(key, recent);
+        return false;
+      }
+      recent.push(t);
+      calls.set(key, recent);
+      if (calls.size > 1000) for (const [k, v] of calls) if (v.every((at) => t - at >= windowMs)) calls.delete(k);
+      return true;
+    },
+  };
+}
+
+const ASSIST_PER_HOUR = 20;
+/** Meme borne que ruleassist.ts (MAX_TEXT) : une phrase trop longue est refusee avant d'entamer le quota. */
+const ASSIST_MAX_TEXT = 1000;
+const ASSIST_WARM_MS = 3000;
 
 export function createApp(deps: ApiDeps) {
   const { db, engine, users } = deps;
@@ -469,6 +728,10 @@ export function createApp(deps: ApiDeps) {
   });
   app.delete('/api/devices/:id', adminOnly, (req, res) => {
     const id = String(req.params.id);
+    // Le detecteur virtuel d'une regle de presence vit et meurt avec sa regle : le supprimer ici la laisserait orpheline.
+    if (db.prepare('SELECT 1 AS x FROM presence_rule WHERE device_id = ?').get(id)) {
+      throw new PsimError(409, 'Ce detecteur appartient a une regle de presence : modifier ou supprimer la regle');
+    }
     engine.deleteDevice(actorOf(req), id);
     deps.video.closeFeed(id);
     res.status(204).end();
@@ -476,6 +739,149 @@ export function createApp(deps: ApiDeps) {
   app.put('/api/devices/:id/links', adminOnly, json, (req, res) => {
     const { cameraIds } = (req.body ?? {}) as { cameraIds?: unknown };
     res.json({ cameraIds: engine.setLinks(actorOf(req), String(req.params.id), cameraIds) });
+  });
+
+  // ---- Regles de presence (administrateur : ecriture ; tout utilisateur connecte : lecture) --------------
+
+  /** Identifiant numerique d'une regle ; tout le reste (texte, 0, negatif, trop grand) est « introuvable ». */
+  const ruleId = (req: Request): number => {
+    const text = String(req.params.id);
+    const id = /^[0-9]{1,15}$/.test(text) ? Number(text) : 0;
+    if (!Number.isSafeInteger(id) || id < 1) throw new PsimError(404, 'Regle introuvable');
+    return id;
+  };
+  /** Corps d'une demande : l'absence de corps devient un objet vide (le module des regles dit ce qui manque). */
+  const ruleBody = (req: Request): unknown => req.body ?? {};
+  // Les regles ouvrent ou ferment les flux d'observation de l'enregistreur (« existe-t-il une regle active ? »).
+  const afterRuleChange = () => {
+    try {
+      deps.dahua.reload();
+    } catch (err) {
+      console.error('[psim] relecture des flux apres un changement de regle :', err);
+    }
+  };
+
+  app.get('/api/rules', anyUser, (_req, res) => res.json(deps.rules.list()));
+  app.get('/api/presence', anyUser, (_req, res) => res.json(deps.presence.current()));
+  app.post('/api/rules', adminOnly, json, (req, res) => {
+    const rule = deps.rules.create(actorOf(req), ruleBody(req) as Parameters<Rules['create']>[1]);
+    afterRuleChange();
+    res.status(201).json(rule);
+  });
+
+  // Listes de visages (bases des appareils Dahua de camera_source) : cache partage avec le contexte de l'assistant.
+  const cameraNameOf = (id: string): string => engine.getDevice(id)?.name ?? id;
+  const faceLists = createFaceLists({
+    hosts: stableFaceHosts(deps.db, () => deps.dahua.faceHosts()),
+    cameraName: cameraNameOf,
+    deviceCameraIds: (cameraId) => deviceIndex(deps.db).cameras(cameraId),
+  });
+
+  // Assistant : meme validation et meme phrase francaise que la saisie manuelle ; le contexte ne contient que des noms.
+  const assistEnvironment = () => {
+    const devices = engine.getSnapshot().devices;
+    const cameras = devices.filter((d) => d.kind === 'camera');
+    return {
+      cameras,
+      ctx: { cameraIds: new Set(cameras.map((c) => c.id)) as ReadonlySet<string>, zones: new Set(devices.map((d) => d.zone).filter((z) => z !== '')) as ReadonlySet<string> },
+    };
+  };
+  const assistant = createRuleAssistant({
+    apiKey: deps.assist?.apiKey,
+    model: deps.assist?.model,
+    url: deps.assist?.apiUrl,
+    // Meme verification que la saisie manuelle (forme, portee, et camera de la portee sur l'appareil de la liste).
+    validate: (input) => deps.rules.validate(input),
+    describe: (spec) => describeRule(spec, { cameraName: cameraNameOf }),
+    context: () => {
+      const { cameras, ctx } = assistEnvironment();
+      const markOf = deviceIndex(deps.db).mark;
+      const mark = (cameraId: string) => {
+        const device = markOf(cameraId);
+        return device === undefined ? {} : { device };
+      };
+      return {
+        cameras: cameras.map((c) => ({ id: c.id, name: c.name, zone: c.zone, ...mark(c.id) })),
+        zones: [...ctx.zones],
+        // Le repere d'une liste est celui de sa camera : une liste et les cameras de son appareil portent le meme.
+        lists: faceLists.cached().map((l) => ({ cameraId: l.cameraId, cameraName: l.cameraName, ...mark(l.cameraId), id: l.id, name: l.name })),
+      };
+    },
+  });
+  const assistQuota = createQuota(ASSIST_PER_HOUR, 3_600_000);
+
+  app.get('/api/rules/assist', adminOnly, (_req, res) => res.json({ configured: assistant.configured }));
+  app.post('/api/rules/assist', adminOnly, json, async (req, res) => {
+    const body = ruleBody(req);
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new PsimError(400, 'La demande : un objet est attendu');
+    for (const key of Object.keys(body)) {
+      if (key !== 'text' && key !== 'history') throw new PsimError(400, `La demande : champ « ${key.replace(/[^ -~]/g, '?').slice(0, 40)} » non reconnu`);
+    }
+    const { text, history } = body as { text?: unknown; history?: unknown };
+    if (typeof text !== 'string') throw new PsimError(400, 'La demande : « text » (la phrase décrivant la règle) est requis');
+    let turns: { role: 'user' | 'assistant'; text: string }[] | undefined;
+    if (history !== undefined) {
+      if (!Array.isArray(history) || history.length > 40) throw new PsimError(400, 'La demande : « history » doit être une liste de 40 échanges au plus');
+      turns = history.map((turn) => {
+        if (typeof turn !== 'object' || turn === null || Array.isArray(turn) || Object.keys(turn).some((k) => k !== 'role' && k !== 'text')) {
+          throw new PsimError(400, 'La demande : chaque échange de « history » est { role, text }');
+        }
+        const { role, text: said } = turn as { role?: unknown; text?: unknown };
+        if ((role !== 'user' && role !== 'assistant') || typeof said !== 'string') throw new PsimError(400, 'La demande : chaque échange de « history » est { role: "user" ou "assistant", text }');
+        return { role, text: said };
+      });
+    }
+    // Refus avant d'atteindre le service (aucun appel, donc aucune place prise sur le quota).
+    if (!assistant.configured) throw new PsimError(503, 'Assistant non configuré');
+    if (text.trim() === '') throw new PsimError(400, 'Décrivez la règle en une phrase.');
+    if (text.length > ASSIST_MAX_TEXT) throw new PsimError(400, `La phrase est trop longue (${ASSIST_MAX_TEXT} caractères au plus).`);
+    const actor = actorOf(req);
+    if (!assistQuota.take(actor)) throw new PsimError(429, `Trop de demandes à l'assistant (${ASSIST_PER_HOUR} par heure). Réessayez plus tard.`);
+    // Les listes de visages se lisent sur les appareils : on leur laisse quelques secondes, pas davantage.
+    await faceLists.read(ASSIST_WARM_MS).catch(() => undefined);
+    let kind = 'erreur';
+    try {
+      const proposal = await assistant.propose(text, turns);
+      kind = proposal.kind;
+      res.json(proposal);
+    } finally {
+      engine.audit(actor, 'rule_assist', { details: `${text.length} caractères ; proposition : ${kind}` });
+    }
+  });
+
+  app.get('/api/faces/lists', adminOnly, async (_req, res) => res.json(await faceLists.read()));
+  app.get('/api/faces/recent', adminOnly, (_req, res) => {
+    res.json(
+      (deps.faceObs?.recent(50) ?? []).map((o) => ({ cameraId: o.cameraId, cameraName: cameraNameOf(o.cameraId), at: o.at, kind: o.kind, personName: o.personName, groupName: o.groupName, similarity: o.similarity })),
+    );
+  });
+
+  // Essai sur le passe : rien n'est ecrit, le moteur ne recoit aucun message.
+  app.post('/api/rules/simulate', adminOnly, json, (req, res) => {
+    const body = ruleBody(req);
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new PsimError(400, 'La demande : un objet est attendu');
+    for (const key of Object.keys(body)) {
+      if (key !== 'spec' && key !== 'days') throw new PsimError(400, `La demande : champ « ${key.replace(/[^ -~]/g, '?').slice(0, 40)} » non reconnu`);
+    }
+    const { spec, days } = body as { spec?: unknown; days?: unknown };
+    if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 30) throw new PsimError(400, 'Nombre de jours invalide (1 a 30)');
+    const to = Date.now();
+    const from = to - days * 86_400_000;
+    const result = deps.rules.simulate(spec, from, to);
+    // L'historique d'armement n'est pas conserve : pour « quand la zone est armee », l'armement ACTUEL sert pour tout le passe.
+    const when = typeof spec === 'object' && spec !== null ? (spec as { when?: unknown }).when : undefined;
+    const armedNote = typeof when === 'object' && when !== null && (when as { type?: unknown }).type === 'armed';
+    res.json({ summary: result.summary, triggers: result.triggers, days, from, to, armedNote });
+  });
+  app.put('/api/rules/:id', adminOnly, json, (req, res) => {
+    const rule = deps.rules.update(actorOf(req), ruleId(req), ruleBody(req) as Parameters<Rules['update']>[2]);
+    afterRuleChange();
+    res.json(rule);
+  });
+  app.delete('/api/rules/:id', adminOnly, (req, res) => {
+    deps.rules.remove(actorOf(req), ruleId(req));
+    afterRuleChange();
+    res.status(204).end();
   });
 
   // ---- Cameras reelles (ONVIF / RTSP) ---------------------------------------------------
@@ -633,6 +1039,7 @@ export function createApp(deps: ApiDeps) {
   }
   deps.deviceImages?.mount(app, { adminOnly, actorOf });
   deps.actuators?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
+  deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------
 

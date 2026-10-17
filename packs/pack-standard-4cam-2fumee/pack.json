@@ -1,0 +1,107 @@
+{
+  "packVersion": 1,
+  "id": "pack-standard-4cam-2fumee",
+  "name": "Pack standard : 4 caméras et 2 détecteurs de fumée",
+  "segment": "autre",
+  "level": "essentiel",
+  "version": "1.0.0",
+  "description": "Reprend la proposition « Pack standard : 4 caméras et 2 détecteurs de fumée » (9 octobre 2026) : 4 caméras Dahua HAC-HFW1500TH-I8 sur un enregistreur Dahua XVR5104HS-I3 (le PSIM lit chaque voie en RTSP et supervise l'enregistreur sur le réseau), 2 détecteurs de fumée Heiman HS1SA-E (Zigbee, par la Passerelle GAMR et sa clé de liaison), et la détection de personnes de l'enregistreur sur la voie de l'entrée, armée la nuit. Rien n'est encore qualifié dans ce pack : caméras, enregistreur XVR5104HS-I3 et sa détection de personnes, détecteurs Heiman et passerelle sont à qualifier (seule une voie d'un XVR5108HS-I3/T a été essayée sur matériel réel ; le registre de qualification n'en déduit rien pour le XVR5104HS-I3). Variante possible en attendant la qualification des Heiman : détecteurs de fumée WiFi Tuya (modèle qualifié), voir le pack villa-essentiel. À prévoir hors pack : disque dur de surveillance, alimentation et onduleur.",
+  "floors": [
+    { "id": "rdc", "name": "Rez-de-chaussée", "plan": "plans/rdc.svg" }
+  ],
+  "zones": [
+    { "name": "Entrée", "floor": "rdc" },
+    { "name": "Cour avant", "floor": "rdc" },
+    { "name": "Cour arrière", "floor": "rdc" },
+    { "name": "Côté est", "floor": "rdc" },
+    { "name": "Séjour", "floor": "rdc" },
+    { "name": "Couloir des chambres", "floor": "rdc" },
+    { "name": "Local technique", "floor": "rdc" }
+  ],
+  "devices": [
+    {
+      "id": "CAM-01", "kind": "camera", "name": "Caméra entrée", "zone": "Entrée", "x": 50, "y": 8,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=1&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "CAM-02", "kind": "camera", "name": "Caméra cour avant", "zone": "Cour avant", "x": 15, "y": 15,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=2&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "CAM-03", "kind": "camera", "name": "Caméra cour arrière", "zone": "Cour arrière", "x": 50, "y": 90,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=3&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "CAM-04", "kind": "camera", "name": "Caméra côté est", "zone": "Côté est", "x": 90, "y": 50,
+      "model": "dahua-hac-hfw1500th-i8", "qualification": "to_qualify",
+      "source": {
+        "type": "rtsp", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 554, "path": "/cam/realmonitor?channel=4&subtype=1",
+        "credentials": { "username": { "$ask": "Identifiant de l'enregistreur (compte en lecture seule)" }, "password": { "$ask": "Mot de passe de l'enregistreur" } }
+      }
+    },
+    {
+      "id": "NVR-01", "kind": "detector", "name": "Enregistreur vidéo", "zone": "Local technique", "x": 30, "y": 70,
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
+      "category": "environment",
+      "source": { "type": "network", "host": { "$ask": "Adresse IP de l'enregistreur" }, "port": 80 }
+    },
+    {
+      "id": "I-ENTREE", "kind": "detector", "name": "Personne détectée à l'entrée", "zone": "Entrée", "x": 54, "y": 8,
+      "model": "dahua-xvr5104hs-i3", "qualification": "to_qualify",
+      "category": "intrusion",
+      "source": { "type": "dahua", "camera": "CAM-01", "channel": 1, "events": ["SmartMotionHuman"] }
+    },
+    {
+      "id": "F-01", "kind": "detector", "name": "Fumée séjour", "zone": "Séjour", "x": 35, "y": 40,
+      "model": "heiman-hs1sa-e", "qualification": "to_qualify",
+      "category": "fire", "heartbeatS": 180
+    },
+    {
+      "id": "F-02", "kind": "detector", "name": "Fumée couloir des chambres", "zone": "Couloir des chambres", "x": 65, "y": 38,
+      "model": "heiman-hs1sa-e", "qualification": "to_qualify",
+      "category": "fire", "heartbeatS": 180
+    },
+    {
+      "id": "GW-01", "kind": "detector", "name": "Passerelle GAMR (signe de vie)", "zone": "Local technique", "x": 36, "y": 70,
+      "model": "gamr-passerelle", "qualification": "to_qualify",
+      "category": "environment", "heartbeatS": 240
+    }
+  ],
+  "links": {
+    "F-01": ["CAM-02", "CAM-01"],
+    "F-02": ["CAM-03", "CAM-04"],
+    "I-ENTREE": ["CAM-01"]
+  },
+  "arming": [
+    { "zone": "Entrée", "schedule": [ { "days": [0, 1, 2, 3, 4, 5, 6], "from": "22:00", "to": "06:00" } ] }
+  ],
+  "risk": [
+    { "zone": "Séjour", "probability": 2, "defenses": ["extincteurs", "consignes"], "impacts": { "image": 2, "economy": 3, "human": 4 }, "notes": "Appareils électriques et multiprises : vérifier l'installation." },
+    { "zone": "Couloir des chambres", "probability": 1, "defenses": ["consignes"], "impacts": { "image": 2, "economy": 3, "human": 5 }, "notes": "Personnes endormies : l'alerte doit réveiller et faire évacuer." },
+    { "zone": "Entrée", "probability": 2, "defenses": [], "impacts": { "image": 2, "economy": 3, "human": 2 } }
+  ],
+  "recipients": [
+    { "channel": "whatsapp", "level": 1, "label": "Responsable du site", "address": { "$ask": "Numéro WhatsApp du responsable du site (+225...)" } },
+    { "channel": "email", "level": 1, "label": "Responsable du site", "address": { "$ask": "E-mail du responsable du site" } },
+    { "channel": "whatsapp", "level": 2, "label": "Second contact (gardien, voisin)", "address": { "$ask": "Numéro WhatsApp du second contact (+225...)" } }
+  ],
+  "gateway": {
+    "accounts": [ { "name": "gw1", "devices": ["GW-01", "F-*"] } ],
+    "modules": [
+      { "module": "heartbeat", "note": "deviceId GW-01, everyS 60" },
+      { "module": "zigbee", "note": "F-01 et F-02 de type smoke ; staleAfterS 7200 et heartbeatEveryS 60 (supervision 180 s dans le pack)" }
+    ]
+  }
+}

@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS recovery_code (
 -- Destinataires de notification saisis dans l'interface (ceux du .env restent en plus, en lecture seule).
 CREATE TABLE IF NOT EXISTS notification_recipient (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'webhook')),
+  channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'vonage', 'webhook')),
   address TEXT NOT NULL,
   level INTEGER NOT NULL CHECK (level IN (1, 2)),
   label TEXT NOT NULL DEFAULT '',
@@ -276,27 +276,31 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
 ];
 
 /**
- * Une contrainte CHECK ne se modifie pas en SQLite : la table des destinataires est recreee a l'identique, canal WhatsApp
- * en plus, puis ses lignes recopiees (identifiants conserves), en une transaction. Sans effet si c'est deja fait.
+ * Une contrainte CHECK ne se modifie pas en SQLite : la table des destinataires est recreee a l'identique, canaux WhatsApp
+ * et appel vocal (vonage) en plus, puis ses lignes recopiees (identifiants et zones conserves), en une transaction. Sans
+ * effet si c'est deja fait.
  */
 function migrateRecipientChannels(db: DatabaseSync): void {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_recipient'").get() as { sql: string } | undefined;
-  if (!row || row.sql.includes("'whatsapp'")) return;
+  if (!row || row.sql.includes("'vonage'")) return;
+  // Une base qui a deja la colonne des zones la garde : la table recreee la porte toujours.
+  const hasZones = (db.prepare('PRAGMA table_info(notification_recipient)').all() as { name: string }[]).some((c) => c.name === 'zones');
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(`CREATE TABLE notification_recipient_v2 (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'webhook')),
+      channel TEXT NOT NULL CHECK (channel IN ('email', 'telegram', 'whatsapp', 'vonage', 'webhook')),
       address TEXT NOT NULL,
       level INTEGER NOT NULL CHECK (level IN (1, 2)),
       label TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       created_by TEXT NOT NULL,
+      zones TEXT,
       UNIQUE (channel, address, level)
     );
-    INSERT INTO notification_recipient_v2 (id, channel, address, level, label, active, created_at, created_by)
-      SELECT id, channel, address, level, label, active, created_at, created_by FROM notification_recipient;
+    INSERT INTO notification_recipient_v2 (id, channel, address, level, label, active, created_at, created_by, zones)
+      SELECT id, channel, address, level, label, active, created_at, created_by, ${hasZones ? 'zones' : 'NULL'} FROM notification_recipient;
     DROP TABLE notification_recipient;
     ALTER TABLE notification_recipient_v2 RENAME TO notification_recipient;`);
     db.exec('COMMIT');
@@ -318,8 +322,8 @@ export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path, { timeout: 5000 });
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
-  // AVANT l'ajout des colonnes : la table des destinataires recreee ne garderait pas une colonne ajoutee juste avant (zones).
-  migrateRecipientChannels(db); // canal WhatsApp accepte pour les destinataires saisis dans l'interface
+  // AVANT l'ajout des colonnes : la table recreee porte deja la colonne des zones, que migrate() trouvera donc en place.
+  migrateRecipientChannels(db); // canaux WhatsApp et appel vocal acceptes pour les destinataires saisis dans l'interface
   migrate(db); // les donnees existantes sont conservees
   migrateFloors(db); // ancien plan unique -> premier etage ; equipements sans etage -> etage le plus bas
   migrateEvidence(db); // images d'incident : origine et empreinte scellee ; images en attente ; cles d'equipement

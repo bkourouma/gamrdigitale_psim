@@ -14,3 +14,5 @@ backups/
 *.pem
 gateway/config.json
 gateway/secrets/
+secrets/
+*.key
