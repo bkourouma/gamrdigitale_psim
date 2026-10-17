@@ -1592,6 +1592,53 @@ describe('routes HTTP : droits', () => {
     assert.match(admin.json[0].code, /^[a-z2-7]{10}$/);
   });
 
+  it('circuits : l\'operateur ne recoit aucun code d\'etiquette, l\'administrateur garde l\'acces aux codes des points', async () => {
+    const ids = makePoints(3);
+    makeRoute(ids);
+    const codes = ids.map((id) => env.patrols.getCheckpoint(id)?.code as string);
+    for (const path of ['/api/patrols/checkpoints', '/api/patrols/checkpoints?archived=1', '/api/patrols/routes', '/api/patrols/routes?archived=1']) {
+      const op = await call('GET', path, { role: 'operator' });
+      assert.equal(op.status, 200, path);
+      assert.ok(Array.isArray(op.json) && op.json.length > 0 || path.includes('archived'), path);
+      for (const item of op.json as Record<string, unknown>[]) assert.ok(!('code' in item), `${path} : cle code presente`);
+      for (const code of codes) assert.ok(!op.text.includes(code), `${path} : code dans le corps`);
+    }
+    const adminPoints = await call('GET', '/api/patrols/checkpoints', { role: 'admin' });
+    assert.deepEqual(adminPoints.json.map((p: { code: string }) => p.code), codes);
+  });
+
+  it('qr.svg et recode : 403 pour l\'operateur (code inchange), accessibles a l\'administrateur', async () => {
+    const [id] = makePoints(1);
+    const before = env.patrols.getCheckpoint(id)?.code;
+    const qr = `/api/patrols/checkpoints/${id}/qr.svg`;
+    const recode = `/api/patrols/checkpoints/${id}/recode`;
+    assert.equal((await call('GET', qr, { role: 'operator' })).status, 403);
+    assert.equal((await call('POST', recode, { role: 'operator' })).status, 403);
+    assert.equal(env.patrols.getCheckpoint(id)?.code, before);
+    assert.equal((await call('GET', qr, { role: 'admin' })).status, 200);
+    assert.equal((await call('POST', recode, { role: 'admin' })).status, 200);
+    assert.notEqual(env.patrols.getCheckpoint(id)?.code, before);
+  });
+
+  it('runs, main courante, positions : aucun code d\'etiquette dans le corps lu par l\'operateur', async () => {
+    const ids = makePoints(3);
+    makeRoute(ids);
+    tickAt(at(22, 0));
+    scanOf(ids[0], { phoneAt: at(22, 1) });
+    scanOf(ids[1], { phoneAt: at(22, 2) });
+    env.patrols.addLogbook('ali', 1, { clientId: 'log-codes-01', category: 'other', text: 'RAS', phoneAt: at(22, 3) });
+    tickAt(at(22, 10));
+    const codes = ids.map((id) => env.patrols.getCheckpoint(id)?.code as string);
+    const paths = [`/api/patrols/runs?from=${at(0, 0)}&to=${at(23, 0)}`, `/api/patrols/logbook?from=${at(0, 0)}&to=${at(23, 0)}`, '/api/patrols/positions'];
+    for (const path of paths) {
+      const op = await call('GET', path, { role: 'operator' });
+      assert.equal(op.status, 200, path);
+      for (const code of codes) assert.ok(!op.text.includes(code), `${path} : code dans le corps`);
+    }
+    const runs = await call('GET', paths[0], { role: 'operator' });
+    assert.ok(runs.text.includes('Parking'), 'les rondes contiennent bien des passages');
+  });
+
   it('journal, main courante, positions : admin + operator, jamais l\'agent ni un anonyme', async () => {
     const { entry } = env.patrols.addLogbook('ali', 1, { clientId: 'log-http-01', category: 'other', text: 'RAS', phoneAt: T0, photo: JPEG.toString('base64') });
     const paths = ['/api/patrols/runs', '/api/patrols/logbook', `/api/patrols/logbook/${entry.id}/photo`, '/api/patrols/positions'];

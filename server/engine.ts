@@ -94,6 +94,14 @@ export interface EngineOptions {
   /** Indice : un detecteur isole revenu a la normale en moins de `hintMs` -> « probable fausse alarme ». */
   hintMs?: number;
   /**
+   * Detecteurs VIRTUELS (SOS d'un agent ou d'un telephone, rondes manquees : voir agents.ts et patrols.ts). Ils ne sont pas des
+   * mesures physiques : il n'y a ni fausse alarme a ecarter, ni retour a la normale a attendre. Les regles anti-fausses alarmes
+   * (confirmation par voisin ou par persistance, indice « probable fausse alarme ») ne leur sont donc jamais appliquees. Sans cela
+   * `confirm` ferait repasser « non acquitte » (et renotifierait) un SOS que l'exploitation vient d'acquitter. Predicat paresseux :
+   * il est fourni avant que ces modules existent (voir main.ts). Une exception vaut « non virtuel » : une alarme n'est jamais retardee.
+   */
+  virtualDetector?: (detectorId: string) => boolean;
+  /**
    * Appele APRES publication d'un incident (ouverture, aggravation, confirmation). Ne peut ni retarder
    * ni faire echouer l'alarme : une exception est journalisee et ignoree.
    */
@@ -260,6 +268,16 @@ export function createEngine(
     return null;
   }
 
+  function isVirtual(detectorId: string): boolean {
+    if (!options.virtualDetector) return false;
+    try {
+      return options.virtualDetector(detectorId) === true;
+    } catch (err) {
+      console.error('[engine] virtualDetector :', err);
+      return false;
+    }
+  }
+
   function hasPersisted(detectorId: string, openedAt: number): boolean {
     if (persistMs <= 0) return false;
     const row = db.prepare('SELECT status, state_since FROM device WHERE id = ?').get(detectorId) as Row | undefined;
@@ -292,6 +310,7 @@ export function createEngine(
       .all() as Row[];
     for (const row of rows) {
       const detectorId = row.detector_id as string;
+      if (isVirtual(detectorId)) continue; // ni voisin ni persistance : voir `virtualDetector`
       const neighbor = corroboratingNeighbor(detectorId);
       if (neighbor) confirm(row.id as number, detectorId, `neighbor:${neighbor}`);
       else if (hasPersisted(detectorId, row.opened_at as number)) confirm(row.id as number, detectorId, 'persistence');
@@ -300,7 +319,7 @@ export function createEngine(
 
   /** Detecteur isole revenu a la normale tres vite : on SUGGERE une fausse alarme (l'operateur decide). `at` : heure reelle du retour. */
   function maybeHint(detectorId: string, at: number): void {
-    if (hintMs <= 0) return;
+    if (hintMs <= 0 || isVirtual(detectorId)) return; // un SOS ou une ronde manquee n'est jamais « probablement une fausse alarme »
     const incident = db
       .prepare("SELECT id, opened_at, hint FROM incident WHERE detector_id = ? AND status <> 'closed' AND confirmed_at IS NULL")
       .get(detectorId) as Row | undefined;
