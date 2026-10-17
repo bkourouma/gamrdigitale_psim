@@ -144,8 +144,10 @@ Le module `sia` accepte aussi sa propre forme `"keyEnv": "SIA_KEY_0457"` (nom de
 | `ups` | Onduleurs (coupure secteur, batterie) | [gateway/docs/ups.md](../gateway/docs/ups.md) |
 | `sia` | Centrales d'alarme intrusion/incendie (protocole SIA DC-09) | [gateway/docs/sia.md](../gateway/docs/sia.md) |
 | `lorawan` | Capteurs LoRaWAN via ChirpStack | [gateway/docs/lorawan.md](../gateway/docs/lorawan.md) |
+| `acces-dahua` | Contrôle d'accès Dahua : contrôleurs ASC et terminaux ASI (passages, état des portes, ouverture à distance) | [gateway/docs/acces-dahua.md](../gateway/docs/acces-dahua.md) |
+| `acces-zkteco` | Contrôle d'accès ZKTeco : centrales C3 / inBio et terminaux (protocole push, la passerelle écoute) | [gateway/docs/acces-zkteco.md](../gateway/docs/acces-zkteco.md) |
 
-Chaque page de module donne la configuration complète, les équipements testés (ou « à qualifier ») et le dépannage. Les six modules sont chargés et vérifiés ensemble par les essais (`gateway/test/modules-load.test.ts`), avec les exemples de leur page ; un essai de bout en bout (`gateway/test/e2e-module-psim.test.ts`) suit une coupure secteur lue sur un automate Modbus jusqu'à l'incident « Coupure secteur » ouvert par le moteur du PSIM.
+Chaque page de module donne la configuration complète, les équipements testés (ou « à qualifier ») et le dépannage. Les huit modules sont chargés et vérifiés ensemble par les essais (`gateway/test/modules-load.test.ts`), avec les exemples de leur page ; un essai de bout en bout (`gateway/test/e2e-module-psim.test.ts`) suit une coupure secteur lue sur un automate Modbus jusqu'à l'incident « Coupure secteur » ouvert par le moteur du PSIM.
 
 ### Ordre d'installation conseillé
 
@@ -156,7 +158,8 @@ Chaque page de module donne la configuration complète, les équipements testés
    2. `modbus` (contacts secs et 4-20 mA : alarmes techniques, cuves, groupe électrogène) ;
    3. `zigbee` (Zigbee2MQTT installé et appairé d'abord) ;
    4. `lorawan` (passerelle LoRaWAN et ChirpStack v4 en service d'abord) ;
-   5. `sia` en dernier : il **écoute sur le réseau** (port à ouvrir dans le pare-feu, uniquement depuis l'adresse de la centrale), et la centrale doit être programmée par son installateur (compte, clé AES, horodatage).
+   5. `sia` : il **écoute sur le réseau** (port à ouvrir dans le pare-feu, uniquement depuis l'adresse de la centrale), et la centrale doit être programmée par son installateur (compte, clé AES, horodatage) ;
+   6. le **contrôle d'accès**, après `sia` : `acces-dahua` (la passerelle appelle le contrôleur : compte dédié sur le contrôleur, réseau dédié) puis `acces-zkteco` (comme `sia`, il **écoute sur le réseau** et son protocole n'a ni chiffrement ni mot de passe : **réseau dédié, pare-feu et `allowFrom` obligatoires**). Déclarer d'abord les portes dans le PSIM (catégorie `access`) et ajouter leurs identifiants aux `detectors` du compte de la passerelle (voir « Contrôle d'accès » ci-dessous).
 4. **Service Windows** (`scripts\gateway-service.ps1 -Action Install`) une fois la configuration stable, puis `-Action Status`.
 5. Fiche de recette signée (`npm run commission -- sheet`).
 
@@ -184,11 +187,24 @@ D'après le *Catalogue des équipements* (version du 9 octobre 2026). « Tuya (P
 | Capteur de qualité de l'air, capteur acoustique (LoRa) | `lorawan` | Règles `mapping` sur les champs décodés par ChirpStack : à écrire et qualifier avec le capteur réel. |
 | Passerelle LoRaWAN (mât solaire ou intérieure) | `lorawan` | Via ChirpStack v4 (broker MQTT de ChirpStack). |
 | Bouton panique fixe ou portatif | `zigbee` (`panic`), `lorawan` (`milesight-ws101`, `bouton-sos`), `sia`, Tuya (PSIM) | Événement `panic` ou `sos`, jamais masqué par le désarmement. |
+| Contrôleurs d'accès, lecteurs de badge, serrures, barrières | `acces-dahua` ou `acces-zkteco` | Chaque porte = un détecteur PSIM de catégorie `access`. Le contrôleur décide, le PSIM supervise. Ouverture à distance par le canal de commande signé seulement. Voir « Contrôle d'accès » ci-dessous. |
 | Signe de vie de la passerelle elle-même | `heartbeat` | À mettre sur toute passerelle. |
 
-Hors passerelle : caméras, enregistreurs Dahua, supervision réseau (le PSIM les lit lui-même) ; contrôle d'accès, drones, lecture de plaques, balises GPS, pièges photo, radars : **à développer** (catalogue, chapitre 6).
+Hors passerelle : caméras, enregistreurs Dahua, supervision réseau (le PSIM les lit lui-même) . Drones, lecture de plaques, balises GPS, pièges photo, radars : **à développer** (catalogue, chapitre 6).
 
 **`heartbeat` — à mettre sur toute passerelle.** Il envoie un signe de vie (`heartbeat`) pour un équipement PSIM dédié (ex. `GW-01`, à déclarer dans le PSIM) toutes les `everyS` secondes. Si la passerelle s'arrête, perd le réseau ou que son poste s'éteint, le PSIM voit cet équipement passer **« Hors ligne »** (délai `PSIM_DETECTOR_TIMEOUT_S`, à régler à 3 ou 4 fois `everyS`) et prévient. C'est aussi le moyen le plus simple de **valider la mise en service** : sans aucun équipement branché, `GW-01` doit apparaître en ligne dans le PSIM.
+
+### Contrôle d'accès
+
+Les modules `acces-dahua` et `acces-zkteco` rapportent au PSIM ce que font les contrôleurs de portes ; contrat complet : [docs/CONTROLE-ACCES.md](CONTROLE-ACCES.md).
+
+- **Le contrôleur décide, le PSIM supervise.** L'ouverture par badge, code, empreinte ou visage se joue entièrement dans le contrôleur : si la passerelle ou le PSIM s'arrête, les portes continuent de fonctionner. Les modules ne créent, ne modifient ni ne suppriment aucun badge ni utilisateur, et ne lisent jamais de gabarit biométrique ni de code PIN.
+- **Une porte = un détecteur PSIM de catégorie `access`.** Dans la configuration du module, chaque porte du contrôleur (`doors`) est rattachée à l'identifiant d'un détecteur déclaré dans le PSIM (menu Équipements), par exemple `P-ENTREE`. Passages (acceptés **et** refusés), ouvertures, alarmes (porte forcée, sabotage), signe de vie et état hors ligne de la porte arrivent sur ce détecteur.
+- **Message de passage** : un message par passage, avec l'événement `badge_granted` ou `badge_denied` et un bloc `access` (contrôleur, identifiant d'événement, sens, numéro de badge, titulaire, méthode, résultat, motif, « différé »). Le format exact est décrit dans [docs/CONTROLE-ACCES.md](CONTROLE-ACCES.md) § 2.
+- **Passages manqués et curseur.** Après une coupure, le module relit la mémoire du contrôleur et rejoue les passages manqués (marqués « différés »). Le dernier passage traité est gardé dans un **curseur**, dans le dossier `stateDir` de chaque module (par défaut `gateway/data/acces`). Le contexte des modules n'expose pas encore `dataDir` : **si `dataDir` change, régler `stateDir` à la main**, sinon les curseurs restent à l'ancien endroit. Donner de préférence **un `stateDir` différent à chaque module** (par exemple `data/acces-dahua` et `data/acces-zkteco`) : le fichier de curseurs porte le même nom pour tous (les curseurs sont fusionnés à l'écriture, deux modules qui partageraient un dossier ne s'écraseraient pas, mais un dossier par module reste plus lisible). Le compte de service doit pouvoir écrire dans ce dossier.
+- **Comptes MQTT.** La liste `detectors` du compte de la passerelle (`PSIM_MQTT_GATEWAYS`, et `psim.detectors` dans la configuration de la passerelle) doit **inclure les identifiants des portes**, par exemple `"P-*"` si tous les détecteurs de portes commencent par `P-`. Sinon les messages sont refusés (voir le dépannage).
+- **Secrets des modules désactivés.** Un module avec `"enabled": false` voit quand même ses `{"$file": ...}` et `{"$env": ...}` résolus : créer le fichier de secret (ou retirer le bloc du module) avant `npm run gateway:check-config`.
+- **Ouverture à distance** : uniquement par le **canal de commande signé** du PSIM, pour les actionneurs déclarés dans `actuators`. L'accusé n'est donné qu'après la confirmation du contrôleur ; « verrouiller » remet la porte en mode normal et ne coupe jamais les badges.
 
 ## 5. Dépannage
 

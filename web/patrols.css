@@ -1,0 +1,294 @@
+/* =====================================================================================================================
+   Écran « Rondes » (patrols.js) : points de contrôle, circuits, journal et main courante.
+   Jetons et composants de base.css seulement : rien de neuf en couleur, en police ni en forme. Le plan et les pastilles
+   réutilisent les classes de surveillance.css (.plan-stage, .plan-sheet, .plan-pins, .pin) telles quelles. Toute mise en
+   forme passe par des classes (la politique de sécurité interdit le style en ligne). Préfixe pt- pour tout ce qui est à nous.
+   ===================================================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------ onglets et panneaux */
+.pt-tabs { display: flex; flex-wrap: wrap; width: fit-content; max-width: 100%; }
+.pt-tabs button { min-height: var(--control-h); padding: 0 var(--s4); }
+.pt-tabs:empty { display: none; }
+.pt-panel, .pt-content { display: grid; gap: 20px; align-content: start; min-width: 0; }
+.pt-status:empty { display: none; }
+.pt-status { min-width: 0; }
+.pt-loading { padding: var(--s3) 0; }
+.pt-count { font-size: var(--fs-sm); color: var(--ink-2); }
+.pt-panel h3 { font-size: var(--fs-md); }
+.pt-panel .form-error:empty { display: none; }
+.pt-check { min-height: var(--control-h-sm); }
+.pt-form { display: grid; gap: var(--s3); min-width: 0; }
+.pt-field { display: grid; gap: var(--s1); min-width: 0; }
+.pt-form select { min-width: 0; }
+.pt-form-foot { margin-top: var(--s2); }
+.pt-form-error { font-size: var(--fs-md); }
+
+/* ------------------------------------------------------------------------------------------------ points : plan et éditeur */
+/* Plan à gauche (colonne principale), éditeur et ajout à droite en grand écran ; une seule colonne en dessous. */
+.pt-points-layout { display: grid; gap: 20px; align-items: start; grid-template-columns: minmax(0, 1fr) 440px; }
+.pt-side { display: grid; gap: 20px; align-content: start; min-width: 0; }
+@media (max-width: 1099px) {
+  .pt-points-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 760px) and (max-width: 1099px) {
+  .pt-side { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+}
+.pt-floor-bar { margin-left: auto; min-width: 0; max-width: 100%; }
+.pt-floor-bar .segmented { flex-wrap: wrap; max-width: 100%; }
+.pt-floor-bar .floor-tab { min-height: var(--control-h); }
+@media (max-width: 560px) { .pt-floor-bar { margin-left: 0; width: 100%; } }
+.pt-help { max-width: 70ch; }
+.pt-plan-panel .plan-stage { min-width: 0; }
+/* Un nouveau point apparaît au centre du plan : le message de fond se range en haut pour ne pas passer sous lui. */
+.pt-plan-panel .plan-none { place-items: start center; }
+.pt-editor-body { display: grid; gap: var(--s4); min-width: 0; }
+.pt-editor-empty { min-width: 0; }
+.pt-facts { display: grid; gap: var(--s3); margin: 0; min-width: 0; }
+.pt-facts dt { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.pt-facts dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; min-width: 0; }
+.pt-code, .pt-addr { padding: 2px var(--s2); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--surface-2); font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+.pt-code { letter-spacing: 0.06em; font-weight: 700; }
+.pt-danger { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.pt-editor-body .btn, .pt-add-panel .btn, .pt-sheet-panel .btn { min-height: var(--control-h); }
+
+/* ------------------------------------------------------------------------------------------------ points : liste */
+.pt-table .pt-cell-name { overflow-wrap: anywhere; }
+.pt-table td[data-label='Zone'] { overflow-wrap: anywhere; }
+.pt-table .btn-sm { min-height: var(--control-h-sm); }
+@media (max-width: 1400px) { .pt-table .btn-sm { min-height: var(--control-h); } }
+
+/* ------------------------------------------------------------------------------------------------ planche d'étiquettes */
+.pt-sheet-grid { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); min-width: 0; }
+.pt-sheet-grid:empty { display: none; }
+.pt-label { display: grid; justify-items: center; align-content: start; gap: var(--s2); min-width: 0; padding: var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); text-align: center; break-inside: avoid; }
+/* Le QR garde un fond blanc : un code sur fond sombre (thème de nuit) ne se lit pas. */
+.pt-label-qrbox { display: grid; place-items: center; min-width: 140px; min-height: 140px; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); background: #ffffff; color: #10264a; }
+.pt-label-qr { width: 124px; height: 124px; }
+.pt-label-fail { max-width: 124px; font-size: var(--fs-sm); font-weight: 700; }
+.pt-label-name { max-width: 100%; font-size: var(--fs-lg); font-weight: 800; line-height: 1.2; color: var(--ink); overflow-wrap: anywhere; }
+.pt-label-zone { max-width: 100%; color: var(--ink-2); overflow-wrap: anywhere; }
+.pt-label-code { max-width: 100%; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.pt-label-code code { font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.08em; color: var(--ink); user-select: all; }
+.pt-label-hint { max-width: 100%; font-size: var(--fs-xs); color: var(--ink-2); }
+
+/* ------------------------------------------------------------------------------------------------ circuits : liste */
+.pt-routes { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.pt-routes[hidden] { display: none; }
+.pt-route { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4) var(--s5); border-radius: var(--r-md); box-shadow: none; }
+.pt-route-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.pt-route-name { color: var(--brand-ink); border-radius: var(--r-xs); overflow-wrap: anywhere; }
+.pt-route-head .pt-switch { margin-left: auto; }
+.pt-phrase { max-width: 72ch; font-size: var(--fs-lg); font-weight: 600; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.pt-route-meta { overflow-wrap: anywhere; }
+/* Circuit inactif : pointillé et fond calme (la forme dit l'état, avec l'icône et le mot « Inactif »). */
+.pt-route.is-inactive { border-style: dashed; border-color: var(--line-strong); background: var(--surface-2); }
+.pt-route.is-inactive .pt-phrase { color: var(--ink-2); font-weight: 400; }
+.pt-route-actions { margin-top: var(--s1); }
+.pt-route-actions .btn { min-height: var(--control-h); }
+
+/* Interrupteur actif / inactif : une vraie case (role=switch), sa piste, son icône et son mot. */
+.pt-switch { position: relative; display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--control-h); padding: 0 var(--s2); border-radius: var(--r-md); font-size: var(--fs-sm); font-weight: 700; cursor: pointer; }
+.pt-switch-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.pt-switch:has(.pt-switch-input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.pt-switch-track { position: relative; flex: none; width: 46px; height: 26px; border: 2px solid var(--ink-3); border-radius: var(--r-pill); background: var(--surface-2); transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.pt-switch-track i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink-2); transition: transform var(--t-fast) var(--ease-out), background-color var(--t-fast) ease; }
+.pt-switch-input:checked ~ .pt-switch-track { background: var(--brand); border-color: var(--brand); }
+.pt-switch-input:checked ~ .pt-switch-track i { transform: translateX(20px); background: var(--on-brand); }
+.pt-switch-input:disabled ~ * { opacity: 0.6; }
+.pt-switch-icon { display: inline-flex; color: var(--offline-ink); }
+.pt-switch-word { min-width: 4.5em; color: var(--offline-ink); }
+.pt-switch-input:checked ~ .pt-switch-icon, .pt-switch-input:checked ~ .pt-switch-word { color: var(--ok-ink); }
+
+/* ------------------------------------------------------------------------------------------------ circuits : formulaire */
+.pt-route-form-panel { scroll-margin-top: 84px; }
+.pt-route-form-panel h2 { border-radius: var(--r-xs); overflow-wrap: anywhere; }
+.pt-box { min-width: 0; gap: var(--s3); background: var(--surface); }
+.pt-box legend { padding: 0 var(--s2); font-size: var(--fs-md); font-weight: 800; color: var(--brand-ink); }
+.pt-box > .hint, .pt-box .hint { max-width: 70ch; }
+.pt-box h4 { margin-top: var(--s2); }
+.pt-route-form .btn { min-height: var(--control-h); }
+.pt-route-form .check { min-height: var(--control-h); }
+.pt-enable { align-items: flex-start; padding: var(--s1) 0; }
+.pt-enable span { padding-top: 2px; }
+
+/* Choix : une grande cible par option, l'option choisie est cernée ET cochée. */
+.pt-choices { display: flex; flex-wrap: wrap; gap: var(--s2); min-width: 0; }
+.pt-choice { display: flex; align-items: flex-start; gap: var(--s3); min-width: 0; min-height: var(--control-h); padding: var(--s2) var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); cursor: pointer; transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.pt-choice:hover { border-color: var(--brand); }
+.pt-choice:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.pt-choice:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.pt-choice input { margin-top: 2px; }
+.pt-choice-text { display: grid; gap: 2px; min-width: 0; }
+.pt-choice-label { font-weight: 700; color: var(--ink); }
+.pt-choice:has(input:checked) .hint { color: var(--ink); }
+
+/* Points et agents à cocher. */
+.pt-picks, .pt-agents { display: grid; gap: var(--s2); min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.pt-picks > .notice, .pt-agents > .notice, .pt-agents > .hint { grid-column: 1 / -1; }
+.pt-pick { display: flex; align-items: flex-start; gap: var(--s3); min-width: 0; min-height: var(--control-h); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); cursor: pointer; }
+.pt-pick:hover { border-color: var(--brand); }
+.pt-pick:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.pt-pick:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.pt-pick input { margin-top: 2px; }
+.pt-pick-text { display: grid; gap: 2px; min-width: 0; }
+.pt-pick-name { font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.pt-pick-note { font-size: var(--fs-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+
+/* Ordre de passage : la numérotation de la liste fait foi, chaque point a ses boutons. */
+.pt-order { display: grid; gap: var(--s2); margin: 0; padding-left: var(--s6); min-width: 0; }
+.pt-order::marker, .pt-order li::marker { font-weight: 800; color: var(--brand-ink); }
+.pt-order[hidden] { display: none; }
+.pt-order-item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); min-width: 0; padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.pt-order-item.is-missing { border-style: dashed; border-color: var(--warning-ink); }
+.pt-order-name { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.pt-order-zone { font-size: var(--fs-xs); color: var(--ink-2); }
+.pt-order-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+
+/* Plages horaires : jours en boutons bascule (une ligne de 7, même au téléphone), de / à, retrait. */
+.pt-slots { display: grid; gap: var(--s3); min-width: 0; margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
+.pt-slots:empty { display: none; }
+.pt-slot { display: grid; min-width: 0; }
+.pt-slot fieldset { gap: var(--s3); min-width: 0; background: var(--surface-2); }
+.pt-slot legend { color: var(--ink); }
+.pt-days { display: grid; grid-template-columns: repeat(7, minmax(34px, 1fr)); gap: 4px; max-width: 440px; }
+.pt-day { min-width: 0; padding: 0 2px; min-height: var(--control-h); }
+.pt-day[aria-pressed='true'] { --btn-bg: var(--brand); --btn-ink: var(--on-brand); --btn-line: var(--brand); }
+.pt-day[aria-pressed='true']:hover:not(:disabled) { --btn-bg: var(--brand-2); border-color: var(--brand-2); color: var(--on-brand); }
+.pt-hours { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+.pt-hours .field { flex: 1 1 130px; max-width: 190px; }
+.pt-remove { margin-left: auto; }
+.pt-slot-note { font-weight: 600; color: var(--ink); }
+.pt-slot-note:empty { display: none; }
+.pt-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+
+/* La phrase du circuit, sur du verre bleu ciel. */
+.pt-sentence { display: grid; gap: var(--s2); padding: var(--s4); border: 1px solid var(--tube); border-radius: var(--r-md); background: var(--sky); }
+.pt-sentence h3 { color: var(--brand-ink); }
+.pt-sentence-text { max-width: 72ch; font-size: var(--fs-lg); font-weight: 600; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------------------------------------------ journal : filtres */
+.pt-filter-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3) var(--s4); }
+.pt-filter-row .field { flex: 1 1 200px; max-width: 280px; }
+.pt-filter-period { display: grid; gap: var(--s1); }
+.pt-filter-period .label { font-size: var(--fs-sm); font-weight: 700; color: var(--ink); }
+.pt-period { flex-wrap: wrap; }
+.pt-period button { min-height: var(--control-h); }
+.pt-filter-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s1) var(--s4); }
+.pt-updated { font-variant-numeric: tabular-nums; }
+.pt-block-status:empty { display: none; }
+.pt-block-body { display: grid; gap: var(--s3); min-width: 0; }
+
+/* ------------------------------------------------------------------------------------------------ journal : rondes */
+.pt-runs .pt-when { font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pt-runs td { vertical-align: top; }
+.pt-runs .pill { white-space: nowrap; }
+.pt-progress { display: grid; gap: var(--s1); min-width: 0; }
+.pt-missed { display: flex; align-items: flex-start; gap: var(--s1); margin-top: var(--s1); font-weight: 600; color: var(--warning-ink); overflow-wrap: anywhere; }
+.pt-missed .icon { margin-top: 2px; }
+table.pt-runs tr.pt-run-detail > td { padding: var(--s3) var(--s4); background: var(--surface-2); }
+table.pt-runs tr.pt-run-detail:hover { background: transparent; }
+.pt-detail { display: grid; gap: var(--s3); min-width: 0; }
+.pt-scans { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.pt-scan { display: grid; gap: 2px; min-width: 0; padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.pt-scan-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.pt-scan-name { overflow-wrap: anywhere; }
+.pt-scan-meta { overflow-wrap: anywhere; }
+@media (max-width: 1400px) {
+  table.pt-runs tr.pt-run.is-open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+  table.adm-stack.pt-runs tr.pt-run-detail { display: block; margin-top: calc(-1 * var(--s3)); padding: 0; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 var(--r-md) var(--r-md); background: var(--surface-2); }
+  table.adm-stack.pt-runs tr.pt-run-detail > td { display: block; padding: var(--s3) var(--s4); border: 0; background: transparent; }
+  table.adm-stack.pt-runs .btn-sm { min-height: var(--control-h); }
+}
+
+/* Laptop de 1366 px : les tableaux du journal et des points gardent leurs colonnes (l'empilement d'admin.css, à 1400 px, ne
+   sert qu'en dessous de 1100 px) : une ronde par ligne se lit d'un coup d'œil, cinq lignes par carte non. */
+@media (min-width: 1101px) and (max-width: 1400px) {
+  table.adm-stack:is(.pt-runs, .pt-table) { display: table; }
+  table.adm-stack:is(.pt-runs, .pt-table) thead { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+  table.adm-stack:is(.pt-runs, .pt-table) tbody { display: table-row-group; }
+  table.adm-stack:is(.pt-runs, .pt-table) tr { display: table-row; padding: 0; border: 0; border-radius: 0; background: transparent; }
+  table.adm-stack:is(.pt-runs, .pt-table) tr.is-selected { background: var(--brand-soft); }
+  table.adm-stack:is(.pt-runs, .pt-table) td { display: table-cell; padding: 10px var(--s3); border-bottom: 1px solid var(--line); }
+  table.adm-stack:is(.pt-runs, .pt-table) td[data-label]::before { content: none; }
+  table.adm-stack:is(.pt-runs, .pt-table) td.adm-actions-cell { display: table-cell; width: 1%; padding-top: 10px; border-top: 0; }
+  table.adm-stack:is(.pt-runs, .pt-table) td.adm-actions-cell .actions { justify-content: flex-end; flex-wrap: nowrap; }
+  table.adm-stack.pt-runs tr.pt-run-detail { display: table-row; margin: 0; border: 0; border-radius: 0; background: transparent; }
+  table.adm-stack.pt-runs tr.pt-run-detail > td { display: table-cell; padding: var(--s3) var(--s4); background: var(--surface-2); }
+  table.adm-stack.pt-runs tr.pt-run.is-open > td { border-bottom-color: transparent; }
+  table.adm-stack:is(.pt-runs, .pt-table) .btn-sm { min-height: var(--control-h-sm); }
+}
+
+/* ------------------------------------------------------------------------------------------------ journal : main courante */
+.pt-entries { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.pt-entry { display: grid; gap: var(--s2); min-width: 0; padding: var(--s3) var(--s4); border-radius: var(--r-md); box-shadow: none; }
+.pt-entry-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.pt-entry-when { font-variant-numeric: tabular-nums; }
+.pt-entry-who { font-weight: 600; color: var(--ink-2); overflow-wrap: anywhere; }
+.pt-entry-text { max-width: 72ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pt-entry-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.pt-entry .tag { white-space: normal; max-width: 100%; }
+.pt-entry .btn-sm { min-height: var(--control-h); }
+.pt-photo { display: block; padding: 0; line-height: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface-2); overflow: hidden; cursor: zoom-in; }
+.pt-photo-img { width: 120px; height: 90px; object-fit: cover; }
+.pt-photo-fail { padding: var(--s2) var(--s3); border: 1px dashed var(--line-strong); border-radius: var(--r-sm); }
+.pt-incident-link { min-height: var(--control-h-sm); padding: 0 var(--s3); text-decoration: none; }
+.pt-incident-link:hover { text-decoration: underline; }
+
+/* ------------------------------------------------------------------------------------------------ petits écrans */
+@media (max-width: 760px) {
+  .pt-route-form-panel { scroll-margin-top: 140px; } /* barre du haut sur deux lignes */
+  .pt-route { padding: var(--s4); }
+  .pt-phrase, .pt-sentence-text { font-size: var(--fs-md); }
+  .pt-slots { grid-template-columns: minmax(0, 1fr); }
+  .pt-route-head .pt-switch { margin-left: 0; }
+  .pt-order { padding-left: var(--s5); }
+}
+@media (max-width: 480px) {
+  .pt-panel .panel-head, .pt-panel .panel-body { padding-left: var(--s4); padding-right: var(--s4); }
+  .pt-route-actions .btn, .pt-form-foot .btn { flex: 1 1 auto; }
+  .pt-filter-row .field { max-width: none; flex-basis: 100%; }
+  .pt-filter-row > .btn { flex: 1 1 100%; }
+  .pt-order-actions { width: 100%; }
+  .pt-order-actions .btn { flex: 1 1 auto; }
+  .pt-photo-img { width: 96px; height: 72px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pt-switch-track, .pt-switch-track i, .pt-choice { transition: none; }
+}
+@media (forced-colors: active) {
+  .pt-switch-track { border-color: CanvasText; }
+  .pt-switch-track i { background: CanvasText; }
+  .pt-switch-input:checked ~ .pt-switch-track { background: Highlight; border-color: Highlight; }
+  .pt-switch-input:checked ~ .pt-switch-track i { background: HighlightText; }
+  .pt-choice:has(input:checked), .pt-pick:has(input:checked) { border-color: Highlight; outline: 2px solid Highlight; }
+}
+
+/* ------------------------------------------------------------------------------------------------ impression de la planche */
+/* patrols.js pose pt-printing sur <body> le temps de l'impression : on n'imprime QUE la planche d'étiquettes (3 colonnes
+   de 63 mm sur A4, bordure fine pour découper, QR de 30 mm, encre noire sur fond blanc), jamais le cadre de l'application. */
+@page { margin: 10mm; } /* le format du papier reste celui choisi à l'impression ; 3 x 63 mm tiennent sur A4 */
+@media print {
+  body.pt-printing { display: block; height: auto; overflow: visible; background: #ffffff; color: #000000; }
+  body.pt-printing :is(.rail, .topbar, .tabbar, .toasts, #dialog, #lightbox, .scrim, #floor-announce, #login, .skip, .pt-tabs, .pt-no-print) { display: none !important; }
+  body.pt-printing .app, body.pt-printing .workspace, body.pt-printing .views, body.pt-printing .view-rondes { display: block; height: auto; margin: 0; padding: 0; overflow: visible; border-radius: 0; background: #ffffff; box-shadow: none; }
+  body.pt-printing .pt-panel:not(#pt-panel-points) { display: none !important; }
+  body.pt-printing #pt-panel-points, body.pt-printing #pt-panel-points .pt-content { display: block; }
+  body.pt-printing #pt-panel-points > .pt-status { display: none; }
+  body.pt-printing #pt-panel-points .pt-content > :not(.pt-sheet-panel) { display: none !important; }
+  body.pt-printing .pt-sheet-panel { border: 0; border-radius: 0; box-shadow: none; background: #ffffff; }
+  body.pt-printing .pt-sheet-panel .panel-body { display: block; padding: 0; }
+  body.pt-printing .pt-sheet-grid { display: grid; grid-template-columns: repeat(3, 63mm); gap: 0; justify-content: start; }
+  body.pt-printing .pt-label {
+    gap: 1.5mm; width: 63mm; padding: 3mm; border: 0.3mm solid #000000; border-radius: 0; background: #ffffff; color: #000000;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  body.pt-printing .pt-label-qrbox { min-width: 0; min-height: 0; padding: 0; border: 0; background: #ffffff; color: #000000; }
+  body.pt-printing .pt-label-qr { width: 30mm; height: 30mm; }
+  body.pt-printing .pt-label-fail { max-width: 30mm; font-size: 8pt; color: #000000; }
+  body.pt-printing .pt-label-name { font-size: 12pt; color: #000000; }
+  body.pt-printing .pt-label-zone { font-size: 9pt; color: #000000; }
+  body.pt-printing .pt-label-code { font-size: 8pt; color: #000000; }
+  body.pt-printing .pt-label-code code { font-size: 10pt; color: #000000; }
+  body.pt-printing .pt-label-hint { font-size: 7pt; color: #000000; }
+}

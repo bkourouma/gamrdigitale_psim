@@ -37,7 +37,7 @@ export const FAMILY_LABEL: Record<Family, string> = {
 export const STATUSES = ['qualified', 'to_qualify', 'rejected'] as const;
 export type Status = (typeof STATUSES)[number];
 export const CONNECTION_TYPES = ['existing', 'gateway', 'to_develop'] as const;
-export const GATEWAY_MODULES = ['zigbee', 'modbus', 'ups', 'sia', 'lorawan'] as const;
+export const GATEWAY_MODULES = ['zigbee', 'modbus', 'ups', 'sia', 'lorawan', 'acces-dahua', 'acces-zkteco'] as const;
 
 /**
  * Seuls modeles marques « qualified » SANS fichier de resultat : constats faits sur du materiel reel avant l'existence de

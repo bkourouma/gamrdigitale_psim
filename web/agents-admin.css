@@ -1,0 +1,84 @@
+/* =====================================================================================================================
+   Écran « Rondes », rubriques Agents et Téléphones (agents-admin.js). Jetons et composants de base.css et admin.css
+   seulement : rien de neuf en couleur, en police ni en forme. Les tableaux reprennent `table.adm-stack` (cartes à partir
+   de 1400 px) et l'éditeur déplié reprend `.adm-zone-editor`.
+   ===================================================================================================================== */
+
+/* Les deux panneaux d'une rubrique (liste, puis formulaire d'ajout) l'un sous l'autre. */
+.ag-stack { display: grid; gap: var(--s5); min-width: 0; }
+.ag-list { display: grid; gap: var(--s3); min-width: 0; }
+.ag-list > .empty .btn { margin-top: var(--s2); }
+.ag-refresh { align-items: center; justify-content: flex-end; gap: var(--s3); }
+.ag-updated { text-align: right; overflow-wrap: anywhere; }
+.ag-stack h3 { font-size: var(--fs-md); }
+
+/* Cellules : état + précision, verrou + bouton, zones. */
+.ag-service, .ag-state { display: grid; justify-items: start; gap: var(--s1); min-width: 0; }
+.ag-detail { font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.ag-lock { display: grid; justify-items: start; gap: var(--s2); min-width: 0; }
+.ag-lock .pill { white-space: normal; text-align: left; }
+.ag-table td { min-width: 0; }
+.ag-table td > .pill { justify-self: start; }
+.ag-table td.adm-who { min-width: 180px; }
+.ag-table .adm-who-sub { overflow-wrap: anywhere; }
+
+/* Actions : « Retirer » reste isolé à l'écart des gestes courants (comme dans l'écran des comptes). */
+.ag-table .adm-actions-cell .actions { flex-wrap: wrap; gap: var(--s2); }
+.ag-table td.adm-actions-cell { min-width: 15rem; }
+.ag-table .adm-actions-cell .actions > .btn-danger { margin-left: var(--s3); }
+
+/* Téléphone révoqué : barré et en pointillé, gardé dans la liste pour l'historique. */
+.ag-revoked .ag-phone-name { text-decoration: line-through; text-decoration-thickness: 2px; }
+
+/* Cibles de 44 px partout, sauf les boutons du tableau dense (36 px) tant qu'il reste un tableau. */
+.ag-editor .btn, .ag-media .btn, .ag-url-block .btn, .ag-refresh .btn { min-height: var(--control-h); }
+
+/* Éditeur d'un agent : la ligne dépliée s'étend sur toute la largeur. */
+.ag-editor { min-width: 0; }
+.ag-pin-field .adm-input-row > input { flex: 0 1 12ch; min-width: 8ch; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; letter-spacing: 0.12em; }
+.ag-pin-field .check { justify-self: start; }
+.ag-zones .hint { font-weight: 400; }
+.ag-zones .adm-zone-list { padding-left: var(--s5); }
+
+/* Fenêtre « Agent créé » : le code, une seule fois, bien lisible. */
+.ag-reveal { display: grid; gap: var(--s4); min-width: 0; }
+.ag-block { display: grid; gap: var(--s2); min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.ag-block h3 { margin: 0; font: 700 var(--fs-md) / 1.2 var(--font-ui); color: var(--brand-ink); overflow-wrap: anywhere; }
+.ag-pin { display: block; padding: var(--s4); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); color: var(--ink); font-size: var(--fs-3xl); font-weight: 800; letter-spacing: 0.3em; text-align: center; user-select: all; overflow-wrap: anywhere; }
+
+/* Fenêtre d'appairage : deux étapes, chacune avec son QR code. */
+.ag-pair-wrap { display: grid; gap: var(--s4); min-width: 0; }
+.ag-pair { display: grid; gap: var(--s4); min-width: 0; }
+.ag-step { display: grid; gap: var(--s3); min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.ag-step h3 { margin: 0; font: 700 var(--fs-md) / 1.2 var(--font-ui); color: var(--brand-ink); }
+.ag-step p { margin: 0; }
+.ag-step-body { display: grid; gap: var(--s3); min-width: 0; }
+.ag-media { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s4); min-width: 0; }
+/* Le QR code reste sur fond blanc dans les deux thèmes : un lecteur le lit mal sur un fond sombre. */
+.ag-qr { width: 176px; height: 176px; max-width: 100%; padding: var(--s2); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: #ffffff; }
+.ag-media .notice { flex: 1 1 18rem; min-width: 0; }
+.ag-url-block { display: grid; gap: var(--s2); min-width: 0; }
+.ag-url { display: block; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); overflow-wrap: anywhere; user-select: all; font-size: var(--fs-sm); }
+.ag-url:empty { display: none; }
+.ag-countdown { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ag-countdown:empty { display: none; }
+.ag-countdown.is-expired { color: var(--alarm-ink); }
+.ag-paired { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s4); border-radius: var(--r-md); background: var(--ok-soft); color: var(--ink); }
+.ag-paired > .icon { width: 28px; height: 28px; color: var(--ok-ink); flex: none; }
+.ag-paired strong { font-size: var(--fs-lg); }
+.ag-paired p { margin: var(--s1) 0 0; }
+
+@media (max-width: 1400px) {
+  /* Téléphone révoqué : plus aucune action, la carte n'a pas à garder une rangée vide. */
+  table.adm-stack td.ag-no-actions { display: none; }
+  .ag-table .btn { min-height: var(--control-h); } /* en carte, au doigt : 44 px */
+  .ag-table td.adm-actions-cell { min-width: 0; }
+  .ag-table .adm-actions-cell .actions > .btn-danger { margin-left: auto; }
+}
+
+@media (max-width: 560px) {
+  .ag-pin { font-size: var(--fs-2xl); letter-spacing: 0.2em; }
+  .ag-zones .adm-zone-list { padding-left: 0; }
+  .ag-refresh { justify-content: flex-start; }
+  .ag-updated { text-align: left; }
+}

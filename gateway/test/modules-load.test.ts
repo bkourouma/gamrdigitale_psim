@@ -1,9 +1,9 @@
 /**
- * Chargement des six modules livres (heartbeat, zigbee, modbus, ups, sia, lorawan) par le socle, avec les configurations
+ * Chargement des huit modules livres (heartbeat, zigbee, modbus, ups, sia, lorawan, acces-dahua, acces-zkteco) par le socle, avec les configurations
  * d'exemple de LEUR documentation (gateway/docs/<module>.md, gateway/config.example.json) :
  *  - import dynamique par le meme chemin que le runtime (moduleEntry + import), `create` exporte et validant ;
  *  - `npm run gateway:check-config` (main.ts --check) sur une configuration qui les reunit tous, contre le vrai broker du PSIM ;
- *  - secrets des modules par `{"$env": ...}` / `{"$file": ...}` (cle SIA, communaute SNMP, mots de passe des brokers) :
+ *  - secrets des modules par `{"$env": ...}` / `{"$file": ...}` (cle SIA, communaute SNMP, mots de passe des brokers et du controleur Dahua) :
  *    acceptes, et jamais recopies dans la sortie, le journal ou le fichier d'etat.
  */
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ import { startRuntime, STATUS_FILE } from '../src/runtime.ts';
 import { freePort, GW_PASSWORD, GW_USER, memoryLogger, psimBroker, ROOT, tempDir, waitFor, writeConfig } from './helpers.ts';
 import type { Received } from './helpers.ts';
 
-const MODULES = ['heartbeat', 'zigbee', 'modbus', 'ups', 'sia', 'lorawan'] as const;
+const MODULES = ['heartbeat', 'zigbee', 'modbus', 'ups', 'sia', 'lorawan', 'acces-dahua', 'acces-zkteco'] as const;
 type Name = (typeof MODULES)[number];
 
 /** Secrets d'essai : on verifie qu'ils n'apparaissent nulle part. */
@@ -27,7 +27,8 @@ const SIA_KEY_FILE = 'F0E1D2C3B4A5968778695A4B3C2D1E0F';
 const COMMUNITY = 'communaute-secrete-Xq7';
 const Z2M_PASSWORD = 'mot-de-passe-z2m-Kp4';
 const CHIRP_PASSWORD = 'mot-de-passe-chirpstack-Wm2';
-const SECRETS = [SIA_KEY_ENV, SIA_KEY_FILE, COMMUNITY, Z2M_PASSWORD, CHIRP_PASSWORD];
+const DAHUA_PASSWORD = 'mot-de-passe-dahua-Rt5';
+const SECRETS = [SIA_KEY_ENV, SIA_KEY_FILE, COMMUNITY, Z2M_PASSWORD, CHIRP_PASSWORD, DAHUA_PASSWORD];
 
 function docBlocks(name: string): Record<string, unknown>[] {
   const text = readFileSync(join(ROOT, 'gateway', 'docs', `${name}.md`), 'utf8');
@@ -41,6 +42,19 @@ function docBlocks(name: string): Record<string, unknown>[] {
     }
   }
   return out;
+}
+
+/**
+ * L'exemple de la page acces-dahua donne le mot de passe de chaque controleur par `{"$file": ...}` (le socle le remplace avant
+ * que le module ne voie sa configuration) : on verifie cette forme, puis on met un mot de passe d'essai en clair pour `create()`.
+ */
+function dahuaExample(block: Record<string, unknown>): Record<string, unknown> {
+  for (const c of block.controllers as Record<string, unknown>[]) {
+    const pw = c.password as { $file?: unknown } | undefined;
+    assert.equal(typeof pw?.$file, 'string', "le mot de passe de l'exemple gateway/docs/acces-dahua.md est donne par {\"$file\": ...}");
+    c.password = DAHUA_PASSWORD;
+  }
+  return block;
 }
 
 /** Configuration d'exemple de chaque module, telle que publiee dans sa documentation. */
@@ -60,6 +74,8 @@ function examples(): Record<Name, Record<string, unknown>> {
     ups: pick('ups', (b) => Array.isArray(b.ups)),
     sia: pick('sia', (b) => 'listen' in b && 'accounts' in b),
     lorawan: pick('lorawan', (b) => 'broker' in b && 'devices' in b),
+    'acces-dahua': dahuaExample(pick('acces-dahua', (b) => Array.isArray(b.controllers) && !('listen' in b))),
+    'acces-zkteco': pick('acces-zkteco', (b) => Array.isArray(b.controllers) && 'listen' in b),
   };
 }
 
@@ -103,7 +119,7 @@ describe('modules livres : chargement par le socle', () => {
     }
   });
 
-  it('gateway:check-config sur une configuration reunissant les six modules (secrets par $env / $file) : OK, aucun secret affiche', { timeout: 60_000 }, async () => {
+  it('gateway:check-config sur une configuration reunissant les huit modules (secrets par $env / $file) : OK, aucun secret affiche', { timeout: 60_000 }, async () => {
     const dir = tempDir(cleanup);
     const port = await freePort();
     const received: Received[] = [];
@@ -113,6 +129,8 @@ describe('modules livres : chargement par le socle', () => {
     writeFileSync(join(dir, 'secrets', 'psim.txt'), `${GW_PASSWORD}\r\n`);
     writeFileSync(join(dir, 'secrets', 'sia-0457.txt'), `${SIA_KEY_FILE}\n`);
     writeFileSync(join(dir, 'secrets', 'z2m.txt'), Z2M_PASSWORD);
+    writeFileSync(join(dir, 'secrets', 'dahua.txt'), `${DAHUA_PASSWORD}
+`);
 
     const ex = examples();
     (ex.zigbee.broker as Record<string, unknown>).password = { $file: 'secrets/z2m.txt' };
@@ -122,9 +140,10 @@ describe('modules livres : chargement par le socle', () => {
     const snmp = (ex.ups.ups as Record<string, unknown>[]).find((u) => u.transport === 'snmp');
     assert.ok(snmp, "l'exemple de gateway/docs/ups.md contient un onduleur SNMP");
     snmp.community = { $env: 'UPS_COMMUNITY' };
+    for (const c of ex['acces-dahua'].controllers as Record<string, unknown>[]) c.password = { $file: 'secrets/dahua.txt' };
 
     const file = writeConfig(dir, {
-      name: 'essai-six-modules',
+      name: 'essai-huit-modules',
       psim: { url: `mqtt://127.0.0.1:${port}`, username: GW_USER, passwordFile: 'secrets/psim.txt' },
       dataDir: 'data',
       log: { file: false },

@@ -12,7 +12,7 @@ import { CHANNEL, channelTag } from './notifications.js';
 import { timeEl } from './system.js';
 import { withReauth } from './reauth.js';
 
-const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur' };
+const ROLE_LABEL = { operator: 'Opérateur', admin: 'Administrateur', agent: 'Agent' };
 const ROLE_HINT = {
   operator: 'Surveille le site, traite les alarmes, arme ou désarme les zones, consulte les rapports et le journal.',
   admin: "Tout ce que fait l’opérateur, plus les réglages : équipements et plan, personnes prévenues, comptes et système.",
@@ -76,7 +76,9 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
     const me = getMe();
     const key = focusKeyIn(usersBox);
     // Votre compte d'abord : c'est celui qu'on cherche le plus souvent, et il a ses propres règles.
-    const sorted = [...list].sort((a, b) => (b.username === me.username) - (a.username === me.username));
+    // Les agents de terrain (rôle « agent ») se gèrent dans Rondes : ils n'ont pas leur place ici.
+    const shown = list.filter((u) => u.role !== 'agent');
+    const sorted = [...shown].sort((a, b) => (b.username === me.username) - (a.username === me.username));
     usersBox.replaceChildren(
       h(
         'div',
@@ -84,7 +86,7 @@ export function createUsersAdmin({ api, h, toast, dialogs, getMe, onRecipientsCh
         h(
           'table',
           { class: 'data adm-stack adm-users' },
-          h('caption', { class: 'sr-only', text: `${plural(list.length, 'compte')}` }),
+          h('caption', { class: 'sr-only', text: `${plural(shown.length, 'compte')}` }),
           h('thead', {}, h('tr', {}, th('Compte'), th('Rôle'), th('Double authentification'), th('Dernière connexion'), th('Actif'), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
           h('tbody', {}, ...sorted.map((u) => userRow(u, u.username === me.username))),
         ),

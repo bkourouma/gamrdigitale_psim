@@ -17,6 +17,8 @@ export interface Session {
   /** Version des identifiants au moment de la connexion : si elle change, la session n'est plus valable. */
   epoch: number;
   restricted: Restriction;
+  /** Session d'agent : telephone appaire sur lequel elle a ete ouverte (voir agents.ts). Absent ou null : session ordinaire. */
+  phoneId?: number | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -43,11 +45,12 @@ function forget(token: string): void {
 /** Session connue de la base mais pas de la memoire (le PSIM a redemarre depuis la connexion). */
 function loadStored(token: string): Session | null {
   if (!store || !/^[0-9a-f]{64}$/.test(token)) return null;
-  const row = store.prepare('SELECT username, role, expires, epoch, restricted FROM app_session WHERE token_hash = ?').get(tokenHash(token)) as
-    | { username: string; role: Role; expires: number; epoch: number; restricted: string | null }
+  const row = store.prepare('SELECT username, role, expires, epoch, restricted, phone_id FROM app_session WHERE token_hash = ?').get(tokenHash(token)) as
+    | { username: string; role: Role; expires: number; epoch: number; restricted: string | null; phone_id: number | null }
     | undefined;
   if (!row) return null;
   const session: Session = { username: row.username, role: row.role, expires: row.expires, epoch: row.epoch, restricted: (row.restricted as Restriction) ?? null };
+  if (row.phone_id !== null && row.phone_id !== undefined) session.phoneId = row.phone_id;
   sessions.set(token, session);
   return session;
 }
@@ -174,13 +177,26 @@ export function purgeExpired(now = Date.now()): void {
   }
 }
 
-export function createSession(username: string, role: Role, epoch: number, restricted: Restriction = null, now = Date.now()): string {
+/**
+ * `opts.ttlMs` : duree de la session (12 h par defaut) ; `opts.phoneId` : telephone appaire d'une session d'agent, relu apres
+ * un redemarrage et utilise pour fermer les sessions d'un telephone revoque (voir destroyPhoneSessions).
+ */
+export function createSession(
+  username: string,
+  role: Role,
+  epoch: number,
+  restricted: Restriction = null,
+  now = Date.now(),
+  opts: { ttlMs?: number; phoneId?: number | null } = {},
+): string {
   const token = randomBytes(32).toString('hex');
-  const session: Session = { username, role, expires: now + SESSION_TTL_MS, epoch, restricted };
+  const phoneId = opts.phoneId ?? null;
+  const session: Session = { username, role, expires: now + (opts.ttlMs ?? SESSION_TTL_MS), epoch, restricted };
+  if (phoneId !== null) session.phoneId = phoneId;
   sessions.set(token, session);
   store
-    ?.prepare('INSERT INTO app_session (token_hash, username, role, expires, epoch, restricted) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(tokenHash(token), username, role, session.expires, epoch, restricted);
+    ?.prepare('INSERT INTO app_session (token_hash, username, role, expires, epoch, restricted, phone_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(tokenHash(token), username, role, session.expires, epoch, restricted, phoneId);
   return token;
 }
 
@@ -220,6 +236,19 @@ export function destroyUserSessions(username: string): number {
     }
   }
   store?.prepare('DELETE FROM app_session WHERE username = ?').run(username);
+  return n;
+}
+
+/** Ferme toutes les sessions ouvertes sur un telephone d'agent (telephone revoque), en memoire et en base. Renvoie le nombre fermees en memoire. */
+export function destroyPhoneSessions(phoneId: number): number {
+  let n = 0;
+  for (const [token, s] of sessions) {
+    if (s.phoneId === phoneId) {
+      sessions.delete(token);
+      n++;
+    }
+  }
+  store?.prepare('DELETE FROM app_session WHERE phone_id = ?').run(phoneId);
   return n;
 }
 

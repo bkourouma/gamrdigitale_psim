@@ -1,4 +1,8 @@
-export type Role = 'operator' | 'admin';
+import type { Request, RequestHandler } from 'express';
+import type { Session } from './auth.ts';
+
+/** `agent` : compte d'un agent de terrain (application mobile) ; limite aux routes `/api/agent/*`, jamais de poste de garde. */
+export type Role = 'operator' | 'admin' | 'agent';
 export type DeviceKind = 'detector' | 'camera';
 /** Ce que surveille un detecteur. Les incidents, notifications et confirmations suivent le meme circuit pour toutes. */
 export type DeviceCategory = 'fire' | 'intrusion' | 'access' | 'environment' | 'energy' | 'people';
@@ -72,6 +76,11 @@ export interface Incident {
   receivedLateMs?: number | null;
   /** Evenement nomme a l'origine de l'alarme (voir EVENT_LABEL), ou null : etat ou mesure sans evenement. */
   event: string | null;
+  /**
+   * Precision en clair apportee par l'equipement avec son evenement (ex. « 3 points manques : Parking, ... »), 300 caracteres
+   * au plus ; `null` si le message n'en portait pas.
+   */
+  detail: string | null;
   /** Images des cameras liees prises au moment de l'incident (ordre chronologique). */
   snapshots: { id: number; cameraId: string; takenAt: number; reason: string }[];
 }
@@ -115,4 +124,63 @@ export interface Snapshot {
   arming: Record<string, boolean>;
   incidents: Incident[];
   audit: AuditEntry[];
+}
+
+// ---- Application des agents (voir docs/AGENTS-RONDES.md, section « API agent ») ----
+
+export interface AgentMe {
+  username: string;
+  displayName: string;
+  zones: string[];
+  shift: { id: number; startedAt: number; endsAt: number } | null;
+  position: { checkpointId: number; name: string; at: number } | null;
+}
+
+export interface AgentAlarm {
+  id: number;
+  severity: 'critical' | 'warning';
+  title: string;
+  detail: string;
+  deviceName: string;
+  zone: string;
+  floorName: string;
+  openedAt: number;
+  acknowledged: boolean;
+  acknowledgedBy: string | null;
+  hasSnapshot: boolean;
+  hasLive: boolean;
+  dispatch: { username: string; displayName: string; status: 'en_route' | 'on_site'; at: number }[];
+}
+
+export interface AgentRun {
+  id: number;
+  routeId: number;
+  name: string;
+  status: 'pending' | 'active' | 'done' | 'incomplete' | 'missed';
+  dueStart: number;
+  dueEnd: number;
+  ordered: boolean;
+  checkpoints: { id: number; name: string; zone: string; done: boolean; doneAt: number | null }[];
+}
+
+/**
+ * Ce que `api.ts` fournit aux modules qui montent leurs propres routes (`agents.mount`, `patrols.mount`) :
+ * les memes controles d'acces que le reste de l'API, sans que le module connaisse les details d'Express ou des sessions.
+ */
+export interface MountContext {
+  /** Session valide (cookie psim_session), ou null. */
+  sessionOf: (req: Request) => Session | null;
+  /** 401/403 comme le reste de l'API. */
+  adminOnly: RequestHandler;
+  /** Administrateur ou operateur. */
+  staff: RequestHandler;
+  /** Nom du compte (apres adminOnly / staff). */
+  actorOf: (req: Request) => string;
+  /** Role de la session (apres adminOnly / staff). */
+  roleOf: (req: Request) => Role;
+  /** `express.json({ limit })`. */
+  json: (limit: string) => RequestHandler;
+  cookieSecure: boolean;
+  /** Origine publique du PSIM (« https://hote:port ») pour les URL d'appairage et d'etiquette : PSIM_PUBLIC_URL, sinon la requete. */
+  originOf: (req: Request) => string;
 }
