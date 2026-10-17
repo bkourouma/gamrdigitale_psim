@@ -9,6 +9,7 @@
  */
 import { $, h, icon, api, toast, S, on, time } from './core.js';
 import { createDialogs, field, setBusy, copyButton } from './account.js';
+import { withReauth, reauthField } from './reauth.js';
 
 const TYPE_LABEL = { siren: 'Sirène', light: 'Projecteur', relay: 'Relais', lock: 'Serrure / gâche', gate: 'Portail / barrière', speaker: 'Haut-parleur' };
 const ACTION_LABEL = { on: 'Déclencher', off: 'Arrêter', pulse: 'Impulsion', unlock: 'Déverrouiller', lock: 'Verrouiller', open: 'Ouvrir', close: 'Fermer', stop: 'Arrêter', play: 'Diffuser un message' };
@@ -73,10 +74,15 @@ export function stateText(c) {
   return text;
 }
 
+/** Avertissement rouge : le retour a l'etat sur (verrouiller, arreter...) n'a pas ete confirme par l'equipement. */
+const unconfirmedWarning = (c) =>
+  c.returnUnconfirmed === true ? h('p', { class: 'notice is-alarm', role: 'alert', text: 'Retour à l’état sûr NON CONFIRMÉ : vérifier l’équipement sur place' }) : null;
+
 function commandLine(c) {
   return h(
     'li',
     { class: 'cmd-line' },
+    unconfirmedWarning(c),
     h('span', { class: `tag ${STATE_TAG[c.state] ?? ''}`, text: stateText(c) }),
     h('span', { text: ` ${ACTION_LABEL[c.action] ?? c.action}${c.durationS ? ` ${c.durationS} s` : ''} — ${nameOf(c.actuatorId)} — ${c.requestedBy}${c.auto ? ' (retour automatique)' : ''} — ${time(c.requestedAt)}` }),
     c.reason ? h('span', { class: 'muted', text: ` — « ${c.reason} »` }) : null,
@@ -158,6 +164,7 @@ function showStatus(a, cmdId, ctx) {
     if (!c) return;
     const running = (c.state === 'sent' || c.state === 'acked') && a.safeAction && c.action !== a.safeAction && !c.cancelledAt && (c.durationS === null || (c.offDueAt && !c.offCmdId));
     box.replaceChildren(...nodes(
+      unconfirmedWarning(c),
       h('p', {}, h('span', { class: `tag ${STATE_TAG[c.state] ?? ''}`, text: stateText(c) })),
       h('p', { class: 'muted', text: `Commande ${cmdId.slice(0, 8)} — ${ACTION_LABEL[c.action] ?? c.action}${c.durationS ? ` ${c.durationS} s` : ''} — demandée à ${time(c.requestedAt)}` }),
       c.offDueAt && !c.offCmdId ? h('p', { class: 'hint', text: `Retour automatique à « ${ACTION_LABEL[a.safeAction] ?? a.safeAction} » prévu à ${time(c.offDueAt)}.` }) : null,
@@ -291,6 +298,8 @@ function editActuator(existing) {
   const ack = h('input', { type: 'number', min: '1', max: '30', value: String(existing?.ackTimeoutS ?? 5) });
   const emergency = h('input', { type: 'checkbox', checked: existing?.emergencyExit ?? false });
   const active = h('input', { type: 'checkbox', checked: existing?.active ?? true });
+  // La boite de dialogue est unique : le mot de passe est demandé dans le formulaire pour ne pas perdre la saisie.
+  const reauth = reauthField(existing ? `modifier l’actionneur « ${existing.name} »` : 'créer un actionneur');
   const error = h('p', { class: 'form-error', role: 'alert' });
   const submit = h('button', { class: 'btn btn-primary', type: 'submit', text: existing ? 'Enregistrer' : 'Créer l’actionneur' });
   const form = h(
@@ -301,9 +310,14 @@ function editActuator(existing) {
       onsubmit: async (e) => {
         e.preventDefault();
         error.textContent = '';
+        if (!reauth.input.value) {
+          error.textContent = 'Saisissez le mot de passe de votre compte pour valider.';
+          reauth.input.focus();
+          return;
+        }
         setBusy(submit, true);
         try {
-          const body = { name: name.value.trim(), zone: zone.value.trim(), transport: transport.value, ackTimeoutS: Number(ack.value), emergencyExit: emergency.checked, active: active.checked };
+          const body = { reauth: reauth.input.value, name: name.value.trim(), zone: zone.value.trim(), transport: transport.value, ackTimeoutS: Number(ack.value), emergencyExit: emergency.checked, active: active.checked };
           const a = parseJson(actions.value, 'Actions');
           if (a !== undefined) body.actions = a;
           if (transport.value === 'http') {
@@ -319,8 +333,11 @@ function editActuator(existing) {
           }
           await loadActuatorsAdmin();
         } catch (err) {
+          // 403 (mot de passe incorrect), 429 (trop d'essais) : le formulaire et sa saisie restent en place.
           error.textContent = err.message;
+          reauth.input.value = '';
           setBusy(submit, false);
+          if (/mot de passe|essais/i.test(err.message)) reauth.input.focus();
         }
       },
     },
@@ -330,6 +347,7 @@ function editActuator(existing) {
     field(h, 'Valeur de l’en-tête secret (HTTP)', secret, 'Chiffrée, jamais réaffichée.'),
     h('label', { class: 'check' }, emergency, h('span', { text: 'Issue de secours (serrure) : jamais verrouillée par le PSIM' })),
     h('label', { class: 'check' }, active, h('span', { text: 'Actif' })),
+    reauth.el,
     error,
     h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: () => dialogs().close() }), submit),
   );
@@ -348,16 +366,17 @@ export async function loadActuatorsAdmin() {
   }
   const toggleLock = async () => {
     if (lock.locked) {
-      await api('/api/actuator-lock', { method: 'PUT', body: { locked: false } }).catch((e) => toast(e.message));
+      await withReauth('rétablir les commandes (fin du mode maintenance)', (reauth) => api('/api/actuator-lock', { method: 'PUT', body: { locked: false, reauth } })).catch((e) => toast(e.message));
       return loadActuatorsAdmin();
     }
     const reason = h('input', { type: 'text', maxlength: '200', 'data-autofocus': true });
+    const reauth = reauthField('verrouiller les commandes');
     const ok = await dialogs().confirm({
       heading: 'Verrouiller toutes les commandes',
       message: 'Plus aucune commande ne partira (mode maintenance), retours automatiques compris : les équipements s’arrêtent seuls à la fin de leur durée.',
-      details: field(h, 'Raison (obligatoire)', reason),
+      details: [field(h, 'Raison (obligatoire)', reason), reauth.el],
       confirmLabel: 'Verrouiller',
-      onConfirm: () => api('/api/actuator-lock', { method: 'PUT', body: { locked: true, reason: reason.value.trim() } }),
+      onConfirm: () => api('/api/actuator-lock', { method: 'PUT', body: { locked: true, reason: reason.value.trim(), reauth: reauth.input.value } }),
     });
     if (ok) loadActuatorsAdmin();
   };
@@ -384,8 +403,8 @@ export async function loadActuatorsAdmin() {
             const ok = await dialogs().confirm({ heading: 'Nouvelle clé de signature', message: `L’ancienne clé de « ${a.name} » cesse immédiatement : la passerelle devra recevoir la nouvelle.`, confirmLabel: 'Renouveler' });
             if (!ok) return;
             try {
-              const res = await api(`/api/actuators/${encodeURIComponent(a.id)}/key`, { method: 'POST' });
-              showKeyOnce(a.id, res.key);
+              const done = await withReauth(`renouveler la clé de « ${a.name} »`, (reauth) => api(`/api/actuators/${encodeURIComponent(a.id)}/key`, { method: 'POST', body: { reauth } }));
+              if (done) showKeyOnce(a.id, done.value.key);
             } catch (err) {
               toast(err.message);
             }
@@ -396,8 +415,10 @@ export async function loadActuatorsAdmin() {
           type: 'button',
           text: 'Supprimer',
           onclick: async () => {
-            const ok = await dialogs().confirm({ heading: 'Supprimer l’actionneur', message: `« ${a.name} » ne pourra plus être commandé. Son historique de commandes est conservé.`, confirmLabel: 'Supprimer', onConfirm: () => api(`/api/actuators/${encodeURIComponent(a.id)}`, { method: 'DELETE' }) });
-            if (ok) loadActuatorsAdmin();
+            const ok = await dialogs().confirm({ heading: 'Supprimer l’actionneur', message: `« ${a.name} » ne pourra plus être commandé. Son historique de commandes est conservé.`, confirmLabel: 'Supprimer' });
+            if (!ok) return;
+            const done = await withReauth(`supprimer l’actionneur « ${a.name} »`, (reauth) => api(`/api/actuators/${encodeURIComponent(a.id)}`, { method: 'DELETE', body: { reauth } })).catch((e) => void toast(e.message));
+            if (done) loadActuatorsAdmin();
           },
         }),
       ),

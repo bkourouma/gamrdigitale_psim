@@ -199,6 +199,8 @@ export const ACTION_LABEL = {
   commande_accuse_tardif: 'Accusé de commande tardif',
   commande_accuse_invalide: 'Accusé de commande invalide',
   commande_reauth_echec: 'Commande : mot de passe refusé',
+  reauth_echec: 'Mot de passe refusé (opération sensible)',
+  reauth_session_fermee: 'Sessions fermées (trop de mots de passe faux)',
   actionneur_cree: 'Actionneur ajouté',
   actionneur_modifie: 'Actionneur modifié',
   actionneur_supprime: 'Actionneur supprimé',

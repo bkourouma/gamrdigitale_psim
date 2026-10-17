@@ -122,20 +122,20 @@ describe('commandes des equipements (processus reel)', { timeout: 180_000 }, () 
   it("configuration reservee a l'administrateur, anti-CSRF, cle montree une fois, SSRF refuse", async () => {
     assert.equal((await api('GET', '/api/actuators', null)).status, 401);
     assert.equal((await api('POST', '/api/actuators', operator, { id: 'X', name: 'x', type: 'siren', transport: 'mqtt' })).status, 403);
-    const csrf = await api('POST', '/api/actuators', admin, { id: 'X', name: 'x', type: 'siren', transport: 'mqtt' }, { Origin: 'https://attaquant.example' });
+    const csrf = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'X', name: 'x', type: 'siren', transport: 'mqtt' }, { Origin: 'https://attaquant.example' });
     assert.equal(csrf.status, 403);
-    const created = await api('POST', '/api/actuators', admin, { id: 'SIR-01', name: 'Sirene hall', type: 'siren', transport: 'mqtt', actions: { on: { maxS: 60 } } });
+    const created = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'SIR-01', name: 'Sirene hall', type: 'siren', transport: 'mqtt', actions: { on: { maxS: 60 } } });
     assert.equal(created.status, 201);
     sirenKey = created.body.key;
     assert.match(sirenKey, /^[0-9a-f]{64}$/);
-    const gache = await api('POST', '/api/actuators', admin, { id: 'GACHE-1', name: 'Gache accueil', type: 'lock', transport: 'mqtt' });
+    const gache = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'GACHE-1', name: 'Gache accueil', type: 'lock', transport: 'mqtt' });
     assert.equal(gache.status, 201);
     gacheKey = gache.body.key;
     const list = await api('GET', '/api/actuators', operator);
     assert.equal(list.status, 200);
     assert.ok(!JSON.stringify(list.body).includes(sirenKey));
     assert.deepEqual(list.body.actuators.find((a: { id: string }) => a.id === 'SIR-01').allowed.sort(), ['off', 'on']);
-    const ssrf = await api('POST', '/api/actuators', admin, { id: 'H-1', name: 'h', type: 'light', transport: 'http', http: { requests: { on: { method: 'GET', url: 'http://169.254.169.254/latest/meta-data/' }, off: { method: 'GET', url: 'http://169.254.169.254/' } } } });
+    const ssrf = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'H-1', name: 'h', type: 'light', transport: 'http', http: { requests: { on: { method: 'GET', url: 'http://169.254.169.254/latest/meta-data/' }, off: { method: 'GET', url: 'http://169.254.169.254/' } } } });
     assert.equal(ssrf.status, 400);
     assert.equal((await api('PATCH', '/api/actuators/SIR-01', operator, { active: false })).status, 403);
     assert.equal((await api('DELETE', '/api/actuators/SIR-01', operator)).status, 403);
@@ -180,14 +180,15 @@ describe('commandes des equipements (processus reel)', { timeout: 180_000 }, () 
     for (const d of [21, 22, 23]) assert.equal((await command(operator, 'SIR-01', { action: 'on', params: { durationS: d }, confirm: true })).status, 201);
     assert.equal((await command(operator, 'SIR-01', { action: 'on', params: { durationS: 24 }, confirm: true })).status, 429);
     assert.equal((await api('PUT', '/api/actuator-lock', operator, { locked: true, reason: 'x' })).status, 403);
-    assert.equal((await api('PUT', '/api/actuator-lock', admin, { locked: true, reason: 'travaux sur la sirene' })).status, 200);
-    assert.equal((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status, 409);
-    assert.equal((await api('PUT', '/api/actuator-lock', admin, { locked: false })).status, 200);
+    assert.equal((await api('PUT', '/api/actuator-lock', admin, { locked: true, reason: 'travaux sur la sirene', reauth: ADMIN_PW })).status, 200);
+    assert.equal((await command(admin, 'SIR-01', { action: 'on', params: { durationS: 24 }, confirm: true })).status, 409, 'verrou : aucune mise en marche');
+    assert.equal((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status, 201, 'verrou : l action sure manuelle reste possible (arreter ne doit jamais etre impossible)');
+    assert.equal((await api('PUT', '/api/actuator-lock', admin, { locked: false, reauth: ADMIN_PW })).status, 200);
     assert.equal((await command(admin, 'SIR-01', { action: 'off', confirm: true })).status, 201);
   });
 
   it('redemarrage brutal : la commande en vol expire, rien n est renvoye', async () => {
-    assert.equal((await api('PATCH', '/api/actuators/SIR-01', admin, { ackTimeoutS: 30 })).status, 200);
+    assert.equal((await api('PATCH', '/api/actuators/SIR-01', admin, { ackTimeoutS: 30, reauth: ADMIN_PW })).status, 200);
     sim!.mode = 'silent';
     await wait(50);
     const r = await command(admin, 'SIR-01', { action: 'on', params: { durationS: 45 }, confirm: true });

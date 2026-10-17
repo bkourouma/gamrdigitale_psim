@@ -477,7 +477,7 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
     // Un second administrateur (mot de passe temporaire a changer a la premiere connexion).
     const TEMP = 'Mot-de-passe-temporaire-8';
     const NEXT = 'Mot-de-passe-solide-et-neuf-9';
-    assert.equal((await asAdmin('POST', '/api/users', { username: 'adjoint', role: 'admin', password: TEMP })).status, 201);
+    assert.equal((await asAdmin('POST', '/api/users', { username: 'adjoint', role: 'admin', password: TEMP, reauth: ADMIN_PW })).status, 201);
     const tempCookie = (await fetch(`${s.base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'adjoint', password: TEMP }) })).headers.getSetCookie()[0].split(';')[0];
     assert.equal((await call('POST', '/api/me/password', tempCookie, { current: TEMP, next: NEXT })).status, 200);
     const adjoint = await login(s.base, 'adjoint', NEXT);
