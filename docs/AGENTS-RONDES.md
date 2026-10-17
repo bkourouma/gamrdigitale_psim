@@ -237,6 +237,24 @@ Nouvelle entrée `ROUTES` « Rondes » (admin ; lecture pour operator du journal
 4. **Téléphones** : ajouter → QR d'appairage + QR « Installer le certificat » ; liste, révocation en un clic.
 5. **Journal** : rondes du jour et main courante (bouton « En faire un incident »).
 
+## Avenant 1 (chef, 17 octobre 2026, après le compte rendu de S3)
+
+1. **SOS sans session** : `POST /api/agent/sos` est accepté avec le seul cookie `psim_phone` valide. Corps :
+   `{ clientId, phoneAt, discreet, username? }`. Attribution : la session si elle existe ; sinon `username` s'il
+   s'agit du dernier agent connecté sur **ce** téléphone dans les 24 h ; sinon détecteur de secours
+   `A-phone-<phoneId>` (nom « Téléphone <label> »). Un SOS n'est jamais refusé pour un motif d'identité ; il n'est
+   refusé que sans `psim_phone` valide (401) ou corps invalide (400). Le contrôle de `phoneAt` ne s'applique pas
+   au SOS (on garde l'heure serveur et on note l'écart).
+2. **Envois d'un agent précédent sur un téléphone partagé** : rien n'est jamais jeté. Chaque élément de la file
+   (scan, main courante) porte le `username` de l'agent qui l'a produit. `POST /api/agent/scans` et
+   `POST /api/agent/logbook` acceptent un champ facultatif `username` : s'il diffère de la session, le serveur
+   l'accepte si cet agent a eu un service sur le **même** téléphone couvrant `phoneAt` (± 5 min), et l'enregistre à
+   son nom ; sinon 403 `Envoi d'un autre agent refusé` (rejet définitif côté file).
+3. **Codes d'erreur** : téléphone absent, inconnu ou révoqué → **401** `Téléphone non appairé` sur toutes les
+   routes `/api/agent/*` (dont `GET /api/agent/phone`) ; session absente ou expirée avec téléphone valide → **401**
+   `Session terminée` ; l'application distingue les deux par le message ou par `GET /api/agent/phone`.
+4. `deferred` est renvoyé en booléen JSON.
+
 ## Lot S4 (AG5, après fusion de S1)
 
 Pastilles des agents en service sur le plan du poste de garde (`/api/patrols/positions`, « il y a 4 min »),
