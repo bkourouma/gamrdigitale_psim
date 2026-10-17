@@ -36,6 +36,7 @@ const EVENT_ID = /^[A-Za-z0-9._:-]{1,40}$/;
 const ACCESS_METHODS: ReadonlySet<string> = new Set(['badge', 'code', 'fingerprint', 'face', 'exit_button', 'remote', 'unknown']);
 const ACCESS_REASONS: ReadonlySet<string> = new Set(['unknown_credential', 'expired', 'out_of_schedule', 'disabled', 'wrong_pin', 'antipassback', 'door_locked', 'other']);
 const ACCESS_KEYS = ['v', 'controllerId', 'eventId', 'direction', 'credential', 'holderName', 'holderRef', 'method', 'result', 'reason', 'deferred'];
+const DOOR_MODES: ReadonlySet<string> = new Set(['normal', 'always_open', 'always_closed']);
 const HOLDER_NAME_MAX = 64;
 const CREDENTIAL_MAX = 32;
 const HOLDER_REF_MAX = 32;
@@ -177,6 +178,13 @@ export function prepare(deviceId: unknown, msg: unknown, now: number, makeId: ()
     payload.msgId = makeId();
   }
 
+  // Mode de la porte (F19) : `doorMode` va avec l'evenement `door_mode`, et seulement avec lui.
+  if (m.doorMode !== undefined) {
+    if (typeof m.doorMode !== 'string' || !DOOR_MODES.has(m.doorMode)) return { ok: false, error: 'doorMode invalide (normal, always_open ou always_closed)' };
+    if (payload.event !== 'door_mode') return { ok: false, error: 'doorMode exige event = door_mode' };
+    payload.doorMode = m.doorMode;
+  } else if (payload.event === 'door_mode') return { ok: false, error: 'door_mode exige doorMode (normal, always_open ou always_closed)' };
+
   if (access !== undefined) {
     const expected = normalizeMsgId(`acc:${access.controllerId as string}:${access.eventId as string}`);
     if (m.ts === undefined) return { ok: false, error: 'un passage exige ts (heure du controleur)' };
@@ -189,7 +197,7 @@ export function prepare(deviceId: unknown, msg: unknown, now: number, makeId: ()
   }
 
   for (const key of Object.keys(m)) {
-    if (!['state', 'event', 'value', 'ts', 'msgId', 'access'].includes(key)) warnings.push(`champ « ${key.slice(0, 32)} » ignore (seuls state, event, value, ts, msgId, access sont transmis)`);
+    if (!['state', 'event', 'value', 'ts', 'msgId', 'access', 'doorMode'].includes(key)) warnings.push(`champ « ${key.slice(0, 32)} » ignore (seuls state, event, value, ts, msgId, access, doorMode sont transmis)`);
   }
 
   let bytes = Buffer.byteLength(JSON.stringify(payload));

@@ -19,6 +19,9 @@ import { buildSiteSummary, createPortalSender } from './portal.ts';
 import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { createAccess } from './access.ts';
+import type { AccessOptions } from './access.ts';
+import { createDoorArming } from './accessarming.ts';
+import type { DoorArming } from './accessarming.ts';
 import { createAccessApi } from './accessapi.ts';
 import { createHolders } from './accessholders.ts';
 import { createHoldersApi } from './accessholdersapi.ts';
@@ -193,7 +196,7 @@ let gatewayLink: GatewayLink | undefined;
 // Detecteurs virtuels (agents, circuits) : le moteur est cree avant `agents`, dont la reponse n'existe qu'ensuite.
 let virtualDetector: ((id: string) => boolean) | undefined;
 // Journal des acces (portes, passages) : cree AVANT le moteur qui l'appelle ; ses fermetures atteignent le moteur a l'usage, jamais a la creation.
-const access = createAccess({
+const accessOptions: AccessOptions = {
   db,
   key: secretKey,
   audit: (actor, action, ref) => engine.audit(actor, action, ref),
@@ -202,7 +205,10 @@ const access = createAccess({
   // Titulaires (phase 2) : rattachement des passages, et recalcul de ce que les controleurs doivent contenir quand les portes changent.
   resolveHolder: (credential, holderRef) => holders.resolve(credential, holderRef),
   onTopologyChange: () => accessSync.notify(),
-});
+  // L'armement est créé après le moteur et la gestion des titulaires.
+  doorArming: undefined as DoorArming | undefined,
+};
+const access = createAccess(accessOptions);
 // Titulaires, groupes, visiteurs et leur synchronisation vers les controleurs (voir docs/ACCES.md § 12). Le transport MQTT est le courtier plus bas.
 const holders = createHolders({ db, audit: (actor, action, ref) => engine.audit(actor, action, ref), retentionDays: () => access.settings().retentionDays });
 const accessSync = createSync({
@@ -247,6 +253,13 @@ gatewayLink = createGatewayLink({
   },
 });
 arming = createArming(db, (actor, action, ref) => engine.audit(actor, action, ref), Date.now, () => publish({ type: 'config' }));
+accessOptions.doorArming = createDoorArming({
+  db,
+  isArmed: (zone, at) => arming?.isArmed(zone, at) ?? true,
+  holders,
+  raise: (doorId, request) => engine.setStateBySupervisor(doorId, request.state, request.event, request.detail),
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+});
 const floors = createFloors({ db, dataDir, audit: (actor, action, ref) => engine.audit(actor, action, ref), publishConfig: () => publish({ type: 'config' }) });
 let snapshots: SnapshotService | undefined;
 let deviceImages: DeviceImages | undefined;
@@ -266,7 +279,7 @@ presence.purge();
 // Visages vus (reconnus / inconnus) par les cameras a reconnaissance faciale : alimentent les regles d'identite. Ni photo ni empreinte.
 const faceObs = createFaceObs({ db, retentionDays: 30 });
 faceObs.purge();
-const rules = createRules({ db, engine, presence, faces: faceObs, isArmed: (zone) => arming?.isArmed(zone) ?? true });
+const rules = createRules({ db, engine, presence, faces: faceObs, passages: access.passages, holders, isArmed: (zone) => arming?.isArmed(zone) ?? true });
 const dahua = createDahuaEvents({
   db,
   engine,

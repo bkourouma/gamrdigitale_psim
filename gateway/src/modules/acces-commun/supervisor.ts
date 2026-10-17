@@ -8,16 +8,19 @@
  *    chacune de ses portes (une seule fois), apres un court delai de grace ; aucun signe de vie pour un controleur injoignable ;
  *  - un message dont `emit` renvoie `false` n'est PAS considere comme emis : ni curseur, ni memoire d'`eventId`. La marque le
  *    retentera (F8) ;
- *  - un refus n'est JAMAIS une alarme a lui seul ; `badge_denied_repeated` (pre-alarme) vient du compteur de refus.
+ *  - un refus n'est JAMAIS une alarme a lui seul ; `badge_denied_repeated` (pre-alarme) vient du compteur de refus ;
+ *  - le mode de porte (F19, `door_mode`) est un signe de vie pour le PSIM : il n'est donc JAMAIS emis tant que le controleur
+ *    n'est pas en ligne (il attend le prochain `alive()`), et il est re-emis une fois a chaque retour en ligne.
  */
 import { DenialCounter } from './denials.ts';
 import type { CursorStore } from './cursor.ts';
 import { createLimitedLog } from './limitedlog.ts';
 import type { LimitedLog } from './limitedlog.ts';
 import { CONTROLLER_ID, cleanEventId, cleanText, doorEventMessage, passageMessage, validTs } from './messages.ts';
+import { cursorKey, validEpoch } from './epoch.ts';
 import { emitted } from './types.ts';
 import type { ControllerEventKind, DoorEventKind, Emitter, LogFn, PassageInput, PassageOutcome } from './types.ts';
-import type { DeviceMessage } from '../../module.ts';
+import type { DeviceMessage, DoorMode } from '../../module.ts';
 
 export interface Thresholds {
   /** Refus rapproches qui declenchent `badge_denied_repeated` (3 en 60 s). */
@@ -56,6 +59,12 @@ export interface SupervisorOptions {
   now: () => number;
   log: LogFn;
   cursors: CursorStore;
+  /**
+   * Epoque du controleur (entier >= 0, 0 par defaut ; voir epoch.ts). Les curseurs de recuperation sont ranges sous
+   * `cursorKey(controllerId, epoch)` (propriete `cursorKey`) ; les identifiants d'evenement restent a la charge de la marque
+   * (`epochEventId`). RangeError si invalide.
+   */
+  epoch?: number;
   thresholds?: PartialThresholds;
   /** Appelee une fois quand les portes viennent d'etre declarees hors ligne. Ne doit pas lever (si oui, c'est journalise). */
   onOffline?: (info: { controllerId: string; reason: string | null; since: number }) => void;
@@ -73,6 +82,8 @@ export interface DoorSnapshot {
   held: boolean;
   tamper: boolean;
   drift: boolean;
+  /** Dernier mode de porte connu (F19), `null` tant que la marque n'en a signale aucun. */
+  mode: DoorMode | null;
 }
 
 export interface SupervisorState {
@@ -109,6 +120,11 @@ interface DoorFlags {
   tamperTs: number;
   /** Derniere emission de `clock_drift` acceptee par le socle (heure de la passerelle). */
   driftSentAt: number | null;
+  /** Dernier mode de porte connu, et vrai si le socle a accepte son message depuis le dernier retour en ligne. */
+  mode: DoorMode | null;
+  modeSent: boolean;
+  /** Heure du message de mode en attente d'envoi. */
+  modeAt: number;
 }
 
 /** Evenement PSIM de chaque evenement d'etat (tous presents dans EVENTS de server/sources.ts). */
@@ -120,7 +136,9 @@ const PSIM_EVENT: Readonly<Record<DoorEventKind, string>> = {
   held_open_end: 'door_closed',
   tamper: 'tamper',
   tamper_end: 'restored',
+  duress: 'panic',
 };
+const DOOR_MODES: ReadonlySet<string> = new Set(['normal', 'always_open', 'always_closed']);
 
 const DEDUP_RING = 4096;
 const MAX_DOOR_NO = 65_535;
@@ -130,6 +148,10 @@ const nonNeg = (v: unknown, d: number): number => (typeof v === 'number' && Numb
 
 export class ControllerSupervisor {
   readonly controllerId: string;
+  /** Epoque du controleur (0 par defaut). */
+  readonly epoch: number;
+  /** Cle sous laquelle la marque lit le curseur de recuperation (F8) : `cursors.get(sup.cursorKey)`. */
+  readonly cursorKey: string;
   readonly thresholds: Thresholds;
   private readonly doors = new Map<number, DoorFlags>();
   private readonly emitFn: Emitter;
@@ -164,6 +186,10 @@ export class ControllerSupervisor {
       throw new RangeError("identifiant de controleur invalide (1 a 32 caracteres : lettres, chiffres, _ et -)");
     }
     this.controllerId = opts.controllerId;
+    const epoch = opts.epoch ?? 0;
+    if (!validEpoch(epoch)) throw new RangeError('epoque du controleur invalide (entier de 0 a 999999999999)');
+    this.epoch = epoch;
+    this.cursorKey = cursorKey(opts.controllerId, epoch);
     this.emitFn = opts.emit;
     this.now = opts.now;
     this.log = opts.log;
@@ -177,7 +203,7 @@ export class ControllerSupervisor {
       if (typeof detectorId !== 'string' || !CONTROLLER_ID.test(detectorId)) {
         throw new RangeError(`identifiant de detecteur invalide pour la porte ${doorNo} (1 a 32 caracteres : lettres, chiffres, _ et -)`);
       }
-      this.doors.set(doorNo, { detectorId, open: null, forced: false, held: false, tamper: false, drift: false, doorTs: 0, tamperTs: 0, driftSentAt: null });
+      this.doors.set(doorNo, { detectorId, open: null, forced: false, held: false, tamper: false, drift: false, doorTs: 0, tamperTs: 0, driftSentAt: null, mode: null, modeSent: false, modeAt: 0 });
     }
     if (this.doors.size === 0) throw new RangeError('au moins une porte est necessaire');
 
@@ -212,10 +238,12 @@ export class ControllerSupervisor {
     if (was === 'online') return;
     this.link = 'online';
     this.driftCheckPending = true; // a chaque reconnexion, la marque relit l'heure du controleur
+    this.rearmModes(t); // le dernier mode connu de chaque porte est re-emis une fois (voir sendModes)
     if (was === 'lost' && !first) {
       this.logLimited('back', 'info', `controleur ${this.controllerId} : liaison retablie avant la fin du delai de grace`);
       this.lostSince = null;
       this.lostReason = null;
+      this.sendModes();
       return;
     }
     const offlineFor = this.offlineAt === null ? 0 : Math.max(0, t - this.offlineAt);
@@ -224,6 +252,7 @@ export class ControllerSupervisor {
     this.offlineAt = null;
     this.offlineSent.clear();
     this.heartbeatAll(t);
+    this.sendModes();
     if (was === 'offline') {
       this.logLimited('online', 'info', `controleur ${this.controllerId} : de nouveau joignable`);
       this.callback(() => this.onOnline?.({ controllerId: this.controllerId, offlineForMs: offlineFor }));
@@ -252,7 +281,7 @@ export class ControllerSupervisor {
    *  1. controleur muet depuis plus de `silenceMs` => traite comme une coupure (offline apres la grace) ;
    *  2. coupure sans retour depuis `offlineGraceMs` => `offline` pour chaque porte (une fois) ;
    *  3. en ligne : un `heartbeat` par porte toutes les `heartbeatS` secondes ;
-   *  4. renvoi de ce que le socle avait refuse (`offline`, `badge_denied_repeated`, `clock_drift`) ;
+   *  4. renvoi de ce que le socle avait refuse (`offline`, `badge_denied_repeated`, `clock_drift`, `door_mode`) ;
    *  5. ecriture groupee des curseurs.
    */
   tick(): void {
@@ -280,6 +309,7 @@ export class ControllerSupervisor {
       if (t - this.lastHeartbeatAt >= this.thresholds.heartbeatS * 1000) this.heartbeatAll(t);
       if (this.drifting) this.emitDrift(t);
       for (const [doorNo, ts] of [...this.pendingRepeated]) this.sendRepeated(doorNo, ts);
+      this.sendModes(); // mode refuse par le socle : retente
     }
     this.cursors.tick();
   }
@@ -337,7 +367,7 @@ export class ControllerSupervisor {
   }
 
   private advanceCursor(p: PassageInput): void {
-    if (p.cursor !== undefined && p.cursor !== null) this.cursors.set(this.controllerId, p.cursor, p.ts);
+    if (p.cursor !== undefined && p.cursor !== null) this.cursors.set(this.cursorKey, p.cursor, p.ts);
   }
 
   private remember(eventId: string): void {
@@ -381,6 +411,8 @@ export class ControllerSupervisor {
       when = Math.trunc(this.now());
       this.logLimited('badts', 'warn', `controleur ${this.controllerId} : heure d'evenement invalide, heure de la passerelle utilisee`);
     }
+    // Contrainte : alarme `panic` sans fin ni etat memorise (elle ne change ni forcee, ni maintenue, ni sabotage, ni derive).
+    if (kind === 'duress') return this.sendState(door, doorNo, kind, PSIM_EVENT[kind], when, idPart);
     const applied = this.applyFlags(door, kind, when);
     // Fin de sabotage : jamais de retour a la normale sur une porte encore forcee, maintenue ouverte ou en derive d'horloge.
     if (kind === 'tamper_end' && (door.forced || door.held || door.drift)) return true;
@@ -399,6 +431,7 @@ export class ControllerSupervisor {
 
   /** Met a jour les etats memorises. Faux si l'evenement est plus ancien que le dernier changement connu (rien n'est modifie). */
   private applyFlags(door: DoorFlags, kind: DoorEventKind, ts: number): boolean {
+    if (kind === 'duress') return true; // jamais d'etat memorise
     if (kind === 'tamper' || kind === 'tamper_end') {
       if (ts < door.tamperTs) return false;
       door.tamperTs = ts;
@@ -433,16 +466,83 @@ export class ControllerSupervisor {
   }
 
   /** Fabrique et envoie un message d'etat ; une heure inutilisable (jamais en production) est journalisee et le message abandonne. */
-  private sendState(door: DoorFlags, doorNo: number, kind: string, psimEvent: string, ts: number, idPart?: string): boolean {
+  private sendState(door: DoorFlags, doorNo: number, kind: string, psimEvent: string, ts: number, idPart?: string, doorMode?: DoorMode): boolean {
     let msg: DeviceMessage;
     try {
       msg = doorEventMessage({ controllerId: this.controllerId, doorNo, kind, psimEvent, ts, idPart });
+      if (doorMode !== undefined) msg.doorMode = doorMode;
     } catch (err) {
       this.counts.ignored++;
       this.logLimited('badstate', 'error', `controleur ${this.controllerId} : message d'etat impossible (${err instanceof Error ? err.message : 'erreur'})`);
       return false;
     }
     return this.send(door.detectorId, msg);
+  }
+
+  // --- Mode de porte (F19) ----------------------------------------------------------------------------------------
+
+  /**
+   * Mode COURANT d'une porte (`normal`, `always_open`, `always_closed`), tel que le controleur le declare. A appeler a la
+   * connexion (lecture initiale) et a chaque changement ; sans `ts`, l'heure de la passerelle est utilisee (a preferer : c'est
+   * une lecture d'etat, pas un evenement a rejouer). Ne pas l'appeler avec un mode HISTORIQUE (recuperation F8) : le dernier
+   * appel fait foi.
+   *  - un mode identique au dernier mode emis n'est pas re-emis (aucun bruit) ;
+   *  - apres un retour en ligne (`alive()` apres `linkLost`/`offline`, ou premiere preuve de vie), le dernier mode connu de
+   *    chaque porte est re-emis une fois, sans que la marque ait a le relire ; si elle le relit et qu'il a change, le changement
+   *    part aussi ;
+   *  - `door_mode` etant un signe de vie pour le PSIM, il ne part JAMAIS tant que le controleur n'est pas en ligne : le mode est
+   *    garde et envoye au prochain `alive()` (jamais de porte " revenue en ligne " par un mode vieux de plusieurs minutes) ;
+   *  - un message que le socle refuse est retente par `tick()`.
+   * Vrai si le message est en file, deja emis, ou differe jusqu'au retour en ligne ; faux si le socle l'a refuse (le superviseur
+   * le retentera seul) ou si la porte / le mode est inconnu (ignore, journal limite). Aucun `heartbeat` n'est declenche.
+   */
+  doorMode(doorNo: number, mode: DoorMode, ts?: number): boolean {
+    const door = this.doors.get(doorNo);
+    if (!door) {
+      this.counts.ignored++;
+      this.logLimited(`door:${String(doorNo).slice(0, 12)}`, 'warn', `controleur ${this.controllerId} : mode pour une porte inconnue (${cleanText(doorNo, 12) ?? '?'}), ignore`);
+      return false;
+    }
+    if (typeof mode !== 'string' || !DOOR_MODES.has(mode)) {
+      this.counts.ignored++;
+      this.logLimited('badmode', 'warn', `controleur ${this.controllerId} : mode de porte inconnu, ignore`);
+      return false;
+    }
+    if (door.mode === mode && door.modeSent) return true; // doublon : rien a dire
+    if (door.mode !== mode) {
+      let when = Math.trunc(this.now());
+      if (ts !== undefined) {
+        if (validTs(ts)) when = ts;
+        else this.logLimited('badts', 'warn', `controleur ${this.controllerId} : heure d'evenement invalide, heure de la passerelle utilisee`);
+      }
+      door.mode = mode;
+      door.modeSent = false;
+      door.modeAt = when;
+    }
+    if (this.link !== 'online') return true; // differe : part au prochain alive()
+    return this.sendMode(door, doorNo);
+  }
+
+  /** Retour en ligne : le dernier mode connu de chaque porte doit repartir, avec l'heure du retour. */
+  private rearmModes(t: number): void {
+    for (const door of this.doors.values()) {
+      if (door.mode === null) continue;
+      door.modeSent = false;
+      door.modeAt = Math.trunc(t);
+    }
+  }
+
+  /** Envoie les modes pas encore emis (seulement en ligne). */
+  private sendModes(): void {
+    if (this.link !== 'online') return;
+    for (const [doorNo, door] of this.doors) if (door.mode !== null && !door.modeSent) this.sendMode(door, doorNo);
+  }
+
+  private sendMode(door: DoorFlags, doorNo: number): boolean {
+    if (door.mode === null) return true;
+    const ok = this.sendState(door, doorNo, 'mode', 'door_mode', door.modeAt, door.mode, door.mode);
+    if (ok) door.modeSent = true;
+    return ok;
   }
 
   // --- Horloge ----------------------------------------------------------------------------------------------------
@@ -576,7 +676,7 @@ export class ControllerSupervisor {
       lostReason: this.lostReason,
       drifting: this.drifting,
       lastDriftMs: this.lastDriftMs,
-      doors: [...this.doors].map(([doorNo, d]) => ({ doorNo, detectorId: d.detectorId, open: d.open, forced: d.forced, held: d.held, tamper: d.tamper, drift: d.drift })),
+      doors: [...this.doors].map(([doorNo, d]) => ({ doorNo, detectorId: d.detectorId, open: d.open, forced: d.forced, held: d.held, tamper: d.tamper, drift: d.drift, mode: d.mode })),
       emitted: this.counts.emitted,
       refused: this.counts.refused,
       ignored: this.counts.ignored,

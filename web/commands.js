@@ -13,7 +13,7 @@ import { withReauth, reauthField } from './reauth.js';
 import { evacuationButton } from './dooractions.js';
 
 const TYPE_LABEL = { siren: 'Sirène', light: 'Projecteur', relay: 'Relais', lock: 'Serrure / gâche', gate: 'Portail / barrière', speaker: 'Haut-parleur' };
-const ACTION_LABEL = { on: 'Déclencher', off: 'Arrêter', pulse: 'Impulsion', unlock: 'Déverrouiller', lock: 'Verrouiller', open: 'Ouvrir', close: 'Fermer', stop: 'Arrêter', play: 'Diffuser un message' };
+const ACTION_LABEL = { on: 'Déclencher', off: 'Arrêter', pulse: 'Impulsion', unlock: 'Déverrouiller', lock: 'Verrouiller', evacuate: 'Évacuation', open: 'Ouvrir', close: 'Fermer', stop: 'Arrêter', play: 'Diffuser un message' };
 const STATE_LABEL = {
   pending: 'En attente d’envoi',
   sent: 'Envoyée — accusé attendu',
@@ -391,7 +391,7 @@ function editActuator(existing) {
       },
     },
     h('div', { class: 'form-grid adm-grid' }, field(h, 'Identifiant', id, 'Lettres, chiffres, - et _ (32 au plus). Ne change plus.'), field(h, 'Nom', name), field(h, 'Type', type), field(h, 'Zone', zone), field(h, 'Transport', transport), field(h, 'Délai d’accusé (s)', ack)),
-    field(h, 'Actions (JSON, facultatif)', actions, 'Ex. {"on":{"maxS":60,"roles":["operator","admin"]}} — vide : actions du type avec leurs durées par défaut. « unbounded » : sans limite (administrateur, journalisé).'),
+    field(h, 'Actions (JSON, facultatif)', actions, 'Ex. {"on":{"maxS":60,"roles":["operator","admin"]}} — vide : actions du type avec leurs durées par défaut. « unbounded » : sans limite (administrateur, journalisé). Serrure : {"unlock":{"maxS":10},"evacuate":{"maxS":900}} — « evacuate » (réservée à l’administrateur, ajoutée seulement si vous la déclarez) sert à « Tout ouvrir » : ouverture longue puis reverrouillage automatique ; sans elle, « Tout ouvrir » se replie sur « unlock », borné par son maxS.'),
     field(h, 'Requêtes HTTP (JSON, transport HTTP)', http, 'Ex. {"requests":{"on":{"method":"GET","url":"http://192.168.1.50/relay/0?turn=on&timer={durationS}"},"off":{...}},"secretHeader":"Authorization"}'),
     field(h, 'Valeur de l’en-tête secret (HTTP)', secret, 'Chiffrée, jamais réaffichée.'),
     h('label', { class: 'check' }, emergency, h('span', { text: 'Issue de secours (serrure) : jamais verrouillée par le PSIM' })),

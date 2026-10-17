@@ -5,7 +5,8 @@
  *
  *  - ecrit `.env.production` avec des mots de passe ALEATOIRES (administrateur, operateur, MQTT) : ils ne sont JAMAIS
  *    affiches, ils sont dans ce fichier, dont l'acces est restreint a votre compte ;
- *  - genere un certificat HTTPS auto-signe pour les noms/adresses donnes (sauf --no-tls) ;
+ *  - genere un certificat HTTPS pour les noms/adresses donnes (sauf --no-tls), signe par une petite autorite locale
+ *    (data-prod/tls/ca.pem + ca-key.pem) : le telephone des agents n'installe qu'une fois le certificat de l'autorite ;
  *  - choisit un dossier de donnees SEPARE de celui du developpement (`data-prod` par defaut) ;
  *  - verifie le resultat avec le controle de demarrage de production.
  *
@@ -20,7 +21,7 @@ import { randomInt } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { validatePassword } from '../server/auth.ts';
-import { HOST_PATTERN, generateCert } from './lib/cert.ts';
+import { HOST_PATTERN, generateSiteCert } from './lib/cert.ts';
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; // sans caracteres ambigus (0 O 1 l I)
 
@@ -139,12 +140,16 @@ export async function main(args: string[], root = resolve(import.meta.dirname, '
   const backupDir = valueOf(args, '--backup-dir') ?? resolve(root, 'backups-prod');
 
   let tls: EnvOptions['tls'] = null;
+  let caKey: string | null = null;
   if (!noTls) {
     try {
       const names = hosts.length ? hosts : ['localhost'];
-      const cert = generateCert({ hosts: names, dir: resolve(dataAbs, 'tls') });
+      const cert = generateSiteCert({ hosts: names, dir: resolve(dataAbs, 'tls') });
       tls = { cert: cert.cert, key: cert.key };
-      console.log(`Certificat HTTPS auto-signe genere (825 jours) pour : ${cert.names.join(', ')}`);
+      caKey = cert.caKey;
+      console.log(`Certificat HTTPS genere (825 jours), signe par une autorite locale (10 ans) pour : ${cert.names.join(', ')}`);
+      console.log("  Les telephones des agents installent une seule fois le certificat de l'autorite (https://<adresse>/api/agent-cert).");
+      console.log('  ca-key.pem et key.pem sont secrets : ne les partagez pas, ne les sauvegardez pas avec les donnees partagees.');
     } catch (err) {
       console.error(`Certificat impossible : ${(err as Error).message} (utilisez --no-tls sur un poste local, ou fournissez votre certificat dans le fichier genere)`);
       return 1;
@@ -157,7 +162,7 @@ export async function main(args: string[], root = resolve(import.meta.dirname, '
     passwords: { admin: randomPassword('admin'), operator: randomPassword('operateur'), mqtt: randomPassword('psim') },
   });
   writeFileSync(out, env, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-  const restricted = restrictToCurrentUser(out) && (tls ? restrictToCurrentUser(tls.key) : true);
+  const restricted = restrictToCurrentUser(out) && (tls ? restrictToCurrentUser(tls.key) : true) && (caKey ? restrictToCurrentUser(caKey) : true);
   console.log(`\n${out} ecrit${restricted ? ', acces restreint a votre compte' : ' (ATTENTION : restreignez vous-meme son acces, il contient des mots de passe)'}.`);
   console.log('Les mots de passe (administrateur, operateur, MQTT) y sont ; ils ne sont pas affiches ici.');
 

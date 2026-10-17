@@ -9,7 +9,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, it } from 'node:test';
 import type { DesiredHolder, DesiredSchedule, DesiredState, RightsListener, RightsSource, SyncService, SyncTransport } from '../server/accessholderstypes.ts';
-import { createSync, HOLIDAYS_PER_MESSAGE, holderBody, MAX_MESSAGE_BYTES, migrateSync, retryDelayMs } from '../server/accesssync.ts';
+import { createSync, HOLIDAYS_PER_MESSAGE, holderBody, MAX_BODY_BYTES, MAX_MESSAGE_BYTES, migrateSync, retryDelayMs } from '../server/accesssync.ts';
 import { openDb } from '../server/db.ts';
 import { PsimError } from '../server/errors.ts';
 import { unseal } from '../server/secrets.ts';
@@ -487,8 +487,10 @@ describe('accuses', () => {
       JSON.stringify({ ...good, seq: 2 ** 60 }),
       JSON.stringify({ ...good, result: 'ok' }),
       JSON.stringify({ ...good, result: ['done'] }),
-      JSON.stringify({ ...good, code: 'full' }), // done avec un code
-      JSON.stringify({ ...good, result: 'refused', code: 'autre' }),
+      JSON.stringify({ ...good, result: 'refused', code: 'Autre' }), // hors du motif ^[a-z0-9_]{1,32}$
+      JSON.stringify({ ...good, result: 'refused', code: 'a-b' }),
+      JSON.stringify({ ...good, result: 'error', code: '' }),
+      JSON.stringify({ ...good, result: 'error', code: 'é' }),
       JSON.stringify({ ...good, result: 'refused', code: 'x'.repeat(33) }),
       JSON.stringify({ ...good, result: 'refused', code: 5 }),
       JSON.stringify({ ...good, ts: '12' }),
@@ -517,11 +519,11 @@ describe('accuses', () => {
     assert.deepEqual(sync.receiveAck('CTL-1', Buffer.from(JSON.stringify(good), 'utf8')), { accepted: true });
   });
 
-  it('un accuse « error » garde l\'operation en vol : meme attente que l\'absence d\'accuse', () => {
+  it('un accuse « error » tue l\'operation : plus aucun renvoi, puis NOUVEL opId et NOUVEAU seq a l\'echeance', () => {
     const p = pending()!;
     const n = sent.length;
     assert.deepEqual(answer(p, 'error', 'io'), { accepted: true });
-    assert.equal(sent.length, n, 'rien de nouveau');
+    assert.equal(sent.length, n, 'rien de nouveau tout de suite');
     advance(S);
     sync.tick();
     assert.equal(sent.filter((s) => s.c === 'CTL-1').length, 1, 'pas de renvoi avant l\'echeance, pas d\'operation suivante');
@@ -530,15 +532,53 @@ describe('accuses', () => {
     assert.equal(det.items[0].code, 'io');
     assert.match(det.items[0].message!, /Nouvel essai automatique/);
     assert.equal(det.lastProblem?.code, 'io');
-    advance(10 * S);
+    t = T0 + 10 * S - 1;
+    sync.tick();
+    assert.equal(sent.filter((s) => s.c === 'CTL-1').length, 1, 'echeance de 10 s conservee');
+    t = T0 + 10 * S;
     sync.tick();
     const again = lastSent()!;
-    assert.equal(again.msg.opId, p.msg.opId);
-    answered.delete(p.msg.opId);
+    assert.notEqual(again.msg.opId, p.msg.opId, 'nouvel opId');
+    assert.equal(again.msg.seq, p.msg.seq + 1, 'nouveau seq');
+    assert.equal(again.msg.ts, t);
+    assert.equal(again.body.scheduleRef, p.body.scheduleRef, 'corps reconstruit depuis l\'element (meme contenu ici)');
+    assert.ok(again.sigOk);
+    // L'ancienne operation est morte : son accuse (tardif ou en double) ne change rien.
+    const before = snapshot();
+    assert.deepEqual(sync.receiveAck('CTL-1', ackJson(keys.get('CTL-1')!, 'CTL-1', p.msg, 'done', null, t)), { accepted: false, reason: 'mismatch' });
+    assert.equal(snapshot(), before);
+    // Le nouvel accuse est accepte, le probleme disparait.
     assert.deepEqual(answer(again, 'done'), { accepted: true });
     det = sync.controller('CTL-1');
     assert.equal(det.lastProblem, null);
     assert.ok(!det.items.some((i) => i.code === 'io'));
+  });
+
+  it('un second accuse sur une operation deja morte (doublon) est ignore sans effet', () => {
+    const p = pending()!;
+    answer(p, 'error', 'io');
+    const before = snapshot();
+    assert.deepEqual(sync.receiveAck('CTL-1', ackJson(keys.get('CTL-1')!, 'CTL-1', p.msg, 'error', 'io', t + 5)), { accepted: false, reason: 'mismatch' });
+    assert.deepEqual(sync.receiveAck('CTL-1', ackJson(keys.get('CTL-1')!, 'CTL-1', p.msg, 'done', null, t + 5)), { accepted: false, reason: 'mismatch' });
+    assert.equal(snapshot(), before);
+  });
+
+  it('tout code de motif ^[a-z0-9_]{1,32}$ est accepte ; « done » ignore son code', () => {
+    const p = pending()!;
+    assert.deepEqual(answer(p, 'error', 'zk_busy_42'), { accepted: true });
+    assert.equal(sync.controller('CTL-1').items[0].code, 'zk_busy_42');
+    advance(10 * S);
+    sync.tick();
+    const q = pending()!;
+    assert.deepEqual(answer(q, 'done', 'io'), { accepted: true }, 'un code sur « done » est ignore, l\'accuse reste valable');
+    assert.equal(sync.controller('CTL-1').items.some((i) => i.ref === 'S1'), false, 'S1 est synchronisee');
+    assert.equal(sync.controller('CTL-1').lastProblem, null);
+    // 32 caracteres : accepte ; refused avec un code inconnu : phrase generique.
+    const r = pending()!;
+    assert.deepEqual(answer(r, 'refused', 'a'.repeat(32)), { accepted: true });
+    const item = sync.controller('CTL-1').items.find((i) => i.state === 'failed')!;
+    assert.equal(item.code, 'a'.repeat(32));
+    assert.equal(item.message, "Le contrôleur n'a pas appliqué ce changement. Cliquez sur Réessayer.");
   });
 });
 
@@ -775,7 +815,7 @@ describe('refus du controleur', () => {
   });
 
   it('not_supported et invalid : phrases claires', () => {
-    rights.set('CTL-1', { schedules: [schedule(1, { holidays: true })], holders: [holder(1), holder(2)] });
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: [holder(1, { name: 'N1' }), holder(2)] });
     sync.notify();
     sync.tick();
     answer(pending()!, 'refused', 'not_supported');
@@ -1322,7 +1362,6 @@ describe('taille des messages', () => {
     assert.equal(item.state, 'failed');
     assert.equal(item.code, 'invalid');
     assert.match(item.message!, /trop volumineux/);
-    assert.match(item.message!, /1 024 octets/);
     assert.equal(audits.filter((a) => a.action === 'access_sync_failed').length, 1);
     // Pas de nouvel essai tout seul.
     advance(5 * HOUR);
@@ -1633,5 +1672,359 @@ describe('journal des operations', () => {
     assert.deepEqual(Object.keys(row).sort(), ['at', 'confirmed', 'controller_id', 'id', 'kind', 'op', 'ref', 'result', 'seq']);
     assert.equal(row.result, 'done');
     assert.equal(row.ref, 'H900');
+  });
+});
+
+// ---- Accuse « error » : l'operation est morte, une NOUVELLE la remplace --------------------------------------------------------
+
+describe('accuse error : operation remplacee (nouveau seq, nouvel opId)', () => {
+  beforeEach(() => {
+    setup();
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: [holder(1), holder(2)] });
+    issue();
+  });
+
+  const at = (sec: number): void => {
+    t = T0 + sec * S;
+    sync.tick();
+  };
+  const logRows = (): any[] => db.prepare('SELECT * FROM access_sync_log WHERE controller_id = ? ORDER BY id').all('CTL-1') as any[];
+
+  it('attente 10-20-40-80-160 s sur les essais CUMULES de l\'element, echec visible apres 5 essais, retour a « synchronise »', () => {
+    sync.tick(); // essai 1 a 0 s
+    answer(pending()!, 'error', 'io');
+    for (const sec of [10, 30, 70, 150]) {
+      const n = sent.length;
+      at(sec - 1);
+      assert.equal(sent.length, n, `pas de renvoi 1 s avant ${sec} s`);
+      at(sec);
+      assert.equal(sent.length, n + 1, `nouvelle operation a ${sec} s`);
+      assert.equal(sync.controller('CTL-1').items[0].state, 'pending', 'pas encore d\'echec visible');
+      answer(pending()!, 'error', 'io');
+    }
+    assert.deepEqual(sent.map((s) => s.msg.seq), [1, 2, 3, 4, 5]);
+    assert.equal(new Set(sent.map((s) => s.msg.opId)).size, 5, 'un opId neuf a chaque fois');
+    assert.equal(sync.controller('CTL-1').items[0].attempts, 5);
+    // 5 essais cumules et l'echeance suivante arrive : l'echec devient visible, avec le code du dernier accuse, et les essais continuent.
+    at(310 - 1);
+    assert.equal(sent.length, 5);
+    assert.equal(sync.controller('CTL-1').items[0].state, 'pending');
+    at(310);
+    assert.equal(sent.length, 6);
+    assert.equal(sent[5].msg.seq, 6);
+    let det = sync.controller('CTL-1');
+    assert.equal(det.items[0].state, 'failed');
+    assert.equal(det.items[0].code, 'io');
+    assert.match(det.items[0].message!, /Nouvel essai automatique/);
+    assert.equal(det.items[0].attempts, 6);
+    assert.equal(audits.filter((a) => a.action === 'access_sync_failed').length, 1);
+    answer(pending()!, 'error', 'io');
+    // 6 essais : 320 s d'attente.
+    at(310 + 320 - 1);
+    assert.equal(sent.length, 6);
+    at(310 + 320);
+    assert.equal(sent.length, 7);
+    assert.equal(audits.filter((a) => a.action === 'access_sync_failed').length, 1, 'pas de nouvelle ligne de journal');
+    assert.deepEqual(answer(pending()!, 'done'), { accepted: true });
+    det = sync.controller('CTL-1');
+    assert.equal(det.lastProblem, null);
+    assert.ok(!det.items.some((i) => i.ref === 'S1'));
+    assert.equal(sync.status()[0].counts.failed, 0);
+  });
+
+  it('un accuse unreachable est traite comme tout accuse error : nouveau seq, nouvel opId (jamais le meme renvoye)', () => {
+    sync.tick();
+    const first = pending()!;
+    answer(first, 'error', 'unreachable');
+    assert.match(sync.controller('CTL-1').items[0].message!, /n'arrive pas à joindre le contrôleur/);
+    at(10);
+    const second = pending()!;
+    assert.equal(second.msg.seq, 2);
+    assert.notEqual(second.msg.opId, first.msg.opId);
+    assert.equal(sent.filter((s) => s.msg.opId === first.msg.opId).length, 1, 'l\'operation morte n\'est jamais republiee');
+  });
+
+  it('timeout et busy : phrases claires, nouvel essai automatique', () => {
+    sync.tick();
+    answer(pending()!, 'error', 'timeout');
+    let item = sync.controller('CTL-1').items[0];
+    assert.equal(item.state, 'pending');
+    assert.equal(item.code, 'timeout');
+    assert.equal(item.message, 'Le contrôleur a mis trop de temps à répondre : nouvel essai automatique.');
+    assert.equal(sync.controller('CTL-1').lastProblem?.message, item.message);
+    at(10);
+    answer(pending()!, 'error', 'busy');
+    item = sync.controller('CTL-1').items[0];
+    assert.equal(item.code, 'busy');
+    assert.equal(item.message, 'La passerelle a trop de changements en attente : nouvel essai automatique.');
+    at(30);
+    assert.equal(pending()!.msg.seq, 3);
+  });
+
+  it('un accuse error sans code est lu comme « io »', () => {
+    sync.tick();
+    answer(pending()!, 'error', null);
+    assert.equal(sync.controller('CTL-1').items[0].code, 'io');
+  });
+
+  it('refused reste definitif : liberation immediate, jamais de nouvelle operation', () => {
+    sync.tick();
+    answer(pending()!, 'refused', 'invalid');
+    const n = sent.length;
+    for (let i = 0; i < 5; i++) at(60 * 60 * (i + 1));
+    assert.ok(sent.slice(n).every((s) => s.body.type !== 'upsert_schedule'), 'S1 n\'est pas renvoyee');
+  });
+
+  it('le corps est reconstruit depuis l\'etat COURANT de l\'element a l\'echeance', () => {
+    sync.tick();
+    answer(pending()!, 'done'); // S1
+    const a = pending()!;
+    assert.equal(a.body.holderRef, 'H1');
+    assert.equal(a.body.name, 'NOM1 Prenom1');
+    answer(a, 'error', 'io');
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: [holder(1, { name: 'NOUVEAU NOM' }), holder(2)] });
+    sync.notify();
+    at(10);
+    const b = pending()!;
+    assert.equal(b.body.holderRef, 'H1');
+    assert.equal(b.body.name, 'NOUVEAU NOM');
+    assert.equal(b.msg.seq, a.msg.seq + 1);
+    assert.notEqual(b.msg.opId, a.msg.opId);
+    assert.equal(sync.controller('CTL-1').items.find((i) => i.ref === 'H1')!.attempts, 2, 'compteur de l\'element conserve');
+    answer(b, 'done');
+    drain();
+    assert.equal(sync.status()[0].state, 'ok');
+  });
+
+  it('plus rien a envoyer a l\'echeance (retour a l\'etat acquitte) : operation liberee sans envoi, la suivante part', () => {
+    sync.tick();
+    drain(); // tout est acquitte avec les noms d'origine
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: [holder(1, { name: 'TEMPORAIRE' }), holder(2)] });
+    sync.notify();
+    sync.tick();
+    const tmp = pending()!;
+    assert.equal(tmp.body.name, 'TEMPORAIRE');
+    answer(tmp, 'error', 'io');
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: [holder(1), holder(2, { name: 'AUTRE' })] }); // H1 revient a l'etat acquitte
+    sync.notify();
+    advance(10 * S);
+    sync.tick();
+    const next = pending()!;
+    assert.equal(next.body.holderRef, 'H2', 'H1 ne repart pas : l\'operation morte est liberee, H2 prend la suite');
+    assert.equal(next.msg.seq, tmp.msg.seq + 1);
+    assert.equal(sync.holderStatus('H1')[0].state, 'synced');
+    answer(next, 'done');
+    assert.equal(sync.status()[0].state, 'ok');
+    assert.equal(sync.controller('CTL-1').lastProblem, null);
+  });
+
+  it('jours feries par morceaux : le morceau en erreur est remplace par le meme morceau (replace conserve)', () => {
+    rights.set('CTL-1', { holidays: dates(60) });
+    sync.notify();
+    sync.tick();
+    answer(pending()!, 'done');
+    const second = pending()!;
+    assert.equal(second.body.replace, false);
+    answer(second, 'error', 'io');
+    at(10);
+    const again = pending()!;
+    assert.notEqual(again.msg.opId, second.msg.opId);
+    assert.equal(again.msg.seq, second.msg.seq + 1);
+    assert.equal(again.body.replace, false);
+    assert.deepEqual(again.body.dates, second.body.dates);
+    answer(again, 'done');
+    assert.equal(sync.status()[0].state, 'ok');
+  });
+
+  it('une suppression de titulaire reessayee ne compte qu\'UNE fois dans le journal (regle des 20 suppressions)', () => {
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: holders(1, 60) });
+    sync.notify();
+    syncAll();
+    rights.set('CTL-1', { schedules: [schedule(1)], holders: holders(21, 60) }); // 20 suppressions : la limite, pas de retenue
+    sync.notify();
+    sync.tick();
+    const deleteLines = (): any[] => logRows().filter((r) => r.op === 'delete');
+    for (let k = 1; k <= 4; k++) {
+      const p = pending()!;
+      assert.equal(p.body.type, 'delete_holder');
+      answer(p, 'error', 'io');
+      assert.equal(deleteLines().length, 1, `une seule ligne de journal apres ${k} accuse(s) error`);
+      advance(2 ** k * 5 * S); // 10, 20, 40, 80 s
+      sync.tick();
+      assert.equal(deleteLines().length, 1, 'la ligne est mise a jour, pas dupliquee');
+      assert.equal(deleteLines()[0].seq, lastSent()!.msg.seq, 'avec le seq de la nouvelle operation');
+      assert.equal(deleteLines()[0].result, null);
+    }
+    assert.equal(sync.status()[0].counts.blocked, 0);
+    drain();
+    assert.equal(deleteLines().length, 20);
+    assert.equal(sync.status()[0].counts.blocked, 0, 'aucune retenue a tort');
+    assert.equal(sync.status()[0].state, 'ok');
+    assert.equal(audits.filter((a) => a.action === 'access_sync_deletions_held').length, 0);
+  });
+
+  it('redemarrage du PSIM avec une operation morte : remplacee tout de suite, essais conserves, seq jamais en arriere', () => {
+    sync.start();
+    answer(pending()!, 'error', 'io'); // S1, essai 1
+    advance(S);
+    sync = build();
+    sync.start(); // op_next_at ramene a 0 : l'operation morte est remplacee a la premiere occasion
+    const resent = lastSent()!;
+    assert.equal(resent.msg.seq, 2);
+    assert.equal(resent.body.scheduleRef, 'S1');
+    assert.equal(sync.controller('CTL-1').items[0].attempts, 2);
+    answer(resent, 'done');
+    drain();
+    assert.equal(sync.status()[0].state, 'ok');
+  });
+
+  it('un renvoi sans accuse reste le MEME ordre (opId, seq, ts, corps) : seul l\'accuse error le remplace', () => {
+    sync.tick();
+    const first = pending()!;
+    at(10);
+    at(30);
+    const same = sent.filter((s) => s.msg.opId === first.msg.opId);
+    assert.equal(same.length, 3);
+    assert.ok(same.every((s) => s.msg.seq === first.msg.seq && s.msg.ts === first.msg.ts && s.msg.body === first.msg.body));
+    // L'accuse arrive apres plusieurs renvois : accepte, on avance.
+    assert.deepEqual(answer(first, 'done'), { accepted: true });
+    assert.equal(pending()!.msg.seq, 2);
+  });
+
+  it('retry() sur une operation morte : remplacee tout de suite avec le compteur remis a zero', () => {
+    sync.tick();
+    for (const sec of [0, 10, 30, 70, 150]) {
+      if (sec > 0) at(sec);
+      answer(pending()!, 'error', 'io');
+    }
+    at(310);
+    assert.equal(sync.controller('CTL-1').items[0].state, 'failed');
+    answer(pending()!, 'error', 'io');
+    assert.deepEqual(sync.retry('admin', 'CTL-1'), { requeued: 1 });
+    const fresh = pending()!;
+    assert.equal(fresh.msg.seq, 7);
+    assert.equal(sync.controller('CTL-1').items[0].attempts, 1);
+    assert.equal(sync.controller('CTL-1').items[0].state, 'pending');
+  });
+});
+
+// ---- Refus particuliers de la plage « fermee les jours feries » ---------------------------------------------------------------
+
+describe('plage « fermee les jours feries » refusee par le controleur', () => {
+  const MSG_H =
+    "Ce contrôleur ne sait pas encore appliquer « fermé les jours fériés » : retirez l'option de cette plage ou attendez la qualification.";
+
+  beforeEach(() => {
+    setup();
+    rights.set('CTL-1', {
+      schedules: [schedule(1, { holidays: true }), schedule(2)],
+      holders: [holder(1), holder(2, { doors: [{ doorNo: 1, scheduleRef: 'S2' }] }), holder(4, { doors: [{ doorNo: 1, scheduleRef: 'S2' }, { doorNo: 2, scheduleRef: 'S1' }] })],
+    });
+    issue();
+    sync.tick();
+  });
+
+  it('le message exact, distinct du refus generique ; une plage SANS jours feries garde la phrase generique', () => {
+    assert.equal(pending()!.body.scheduleRef, 'S1');
+    answer(pending()!, 'refused', 'not_supported');
+    let item = sync.controller('CTL-1').items.find((i) => i.ref === 'S1')!;
+    assert.equal(item.state, 'failed');
+    assert.equal(item.code, 'not_supported');
+    assert.equal(item.message, MSG_H);
+    assert.equal(sync.controller('CTL-1').lastProblem?.message, MSG_H);
+    assert.equal(sync.status()[0].hint, MSG_H);
+    // S2 (holidays:false) refusee not_supported : phrase generique.
+    answer(pending()!, 'refused', 'not_supported');
+    item = sync.controller('CTL-1').items.find((i) => i.ref === 'S2')!;
+    assert.equal(item.message, 'Ce contrôleur ne sait pas faire cette opération.');
+    assert.notEqual(item.message, MSG_H);
+  });
+
+  it('un autre refus (invalid) sur la plage jours feries garde la phrase de ce refus', () => {
+    answer(pending()!, 'refused', 'invalid');
+    assert.match(sync.controller('CTL-1').items.find((i) => i.ref === 'S1')!.message!, /a refusé ces données/);
+  });
+
+  it('les titulaires de cette plage refuses « invalid » disent que l\'horaire n\'a pas pu etre envoye ; les autres gardent la phrase generique', () => {
+    answer(pending()!, 'refused', 'not_supported'); // S1
+    answer(pending()!, 'done'); // S2
+    const phrase = "L'horaire de ce titulaire n'a pas pu être envoyé au contrôleur (voir l'état de la plage S1).";
+    const generic = 'Le contrôleur a refusé ces données (nom, horaires ou badges non acceptés). Corrigez la fiche puis cliquez sur Réessayer.';
+    const byRef: Record<string, string> = {};
+    for (let i = 0; i < 3; i++) {
+      const p = pending()!;
+      answer(p, 'refused', 'invalid');
+      byRef[p.body.holderRef] = sync.holderStatus(p.body.holderRef)[0].message!;
+    }
+    assert.equal(byRef.H1, phrase);
+    assert.equal(byRef.H2, generic, 'plage S2 saine');
+    assert.equal(byRef.H4, phrase, 'une de ses deux portes utilise S1');
+    assert.equal(sync.controller('CTL-1').items.find((i) => i.ref === 'H1')!.code, 'invalid');
+  });
+
+  it('si la plage n\'est pas en echec, un refus invalid reste generique (titulaire seul en cause)', () => {
+    answer(pending()!, 'done'); // S1 acceptee cette fois
+    answer(pending()!, 'done'); // S2
+    answer(pending()!, 'refused', 'invalid'); // H1
+    assert.match(sync.holderStatus('H1')[0].message!, /a refusé ces données/);
+  });
+});
+
+// ---- Taille du champ body ------------------------------------------------------------------------------------------------------
+
+describe('taille du champ body (800 octets)', () => {
+  beforeEach(() => {
+    setup();
+    issue();
+  });
+
+  it('MAX_BODY_BYTES vaut 800 et aucun message envoye ne depasse 800 octets de corps ni 1 024 de message', () => {
+    assert.equal(MAX_BODY_BYTES, 800);
+    rights.set('CTL-1', { holidays: dates(95), schedules: [schedule(1)], holders: holders(1, 20) });
+    sync.notify();
+    syncAll();
+    assert.ok(sent.length > 20);
+    for (const s of sent) {
+      assert.ok(Buffer.byteLength(s.msg.body, 'utf8') <= MAX_BODY_BYTES);
+      assert.ok(s.bytes <= MAX_MESSAGE_BYTES);
+    }
+  });
+
+  it('une plage de 14 fenetres (corps de plus de 800 octets) : echec « invalid » local, rien de publie, aucun seq consomme', () => {
+    const windows = Array.from({ length: 14 }, (_, i) => ({ days: [0, 1, 2, 3, 4, 5, 6], from: `0${i % 10}:00`, to: `1${i % 10}:30` }));
+    const body = JSON.stringify({ type: 'upsert_schedule', scheduleRef: 'S1', windows, holidays: false });
+    assert.ok(Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES, `gabarit trop petit (${Buffer.byteLength(body, 'utf8')})`);
+    rights.set('CTL-1', { schedules: [schedule(1, { windows }), schedule(2)] });
+    sync.notify();
+    sync.tick();
+    drain();
+    assert.deepEqual(refsOf(), ['S2'], 'S1 n\'est jamais publiee');
+    assert.deepEqual(sent.map((s) => s.msg.seq), [1], 'aucun seq consomme par l\'element refuse');
+    const item = sync.controller('CTL-1').items.find((i) => i.ref === 'S1')!;
+    assert.equal(item.state, 'failed');
+    assert.equal(item.code, 'invalid');
+    assert.match(item.message!, /trop volumineux/);
+  });
+});
+
+// ---- Base creee avant l'ajout de op_dead ---------------------------------------------------------------------------------------
+
+describe('migration de op_dead', () => {
+  it('ajoute la colonne a une base qui ne l\'a pas (sans rien perdre) ; idempotent', () => {
+    setup();
+    // Ancienne forme de la table (avant op_dead), avec une operation en vol a conserver.
+    db.exec('DROP TABLE access_sync_controller');
+    db.exec(`CREATE TABLE access_sync_controller (controller_id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL DEFAULT 0, last_ack_at INTEGER, problem_code TEXT,
+      problem_message TEXT, problem_at INTEGER, ack_invalid_at INTEGER, held_logged INTEGER NOT NULL DEFAULT 0, op_id TEXT, op_seq INTEGER, op_ts INTEGER, op_body TEXT,
+      op_kind TEXT, op_ref TEXT, op_op TEXT, op_hash TEXT, op_chunk INTEGER NOT NULL DEFAULT 0, op_last INTEGER NOT NULL DEFAULT 1, op_attempts INTEGER NOT NULL DEFAULT 0,
+      op_sent_at INTEGER, op_next_at INTEGER)`);
+    db.prepare("INSERT INTO access_sync_controller (controller_id, last_seq, op_id) VALUES ('CTL-1', 7, ?)").run('a'.repeat(32));
+    assert.equal((db.prepare('PRAGMA table_info(access_sync_controller)').all() as { name: string }[]).some((c) => c.name === 'op_dead'), false);
+    migrateSync(db);
+    migrateSync(db);
+    const col = (db.prepare('PRAGMA table_info(access_sync_controller)').all() as { name: string; dflt_value: string }[]).find((c) => c.name === 'op_dead')!;
+    assert.equal(col.dflt_value, '0');
+    const row = db.prepare('SELECT last_seq, op_id, op_dead FROM access_sync_controller').get() as { last_seq: number; op_id: string; op_dead: number };
+    assert.deepEqual({ ...row }, { last_seq: 7, op_id: 'a'.repeat(32), op_dead: 0 });
   });
 });

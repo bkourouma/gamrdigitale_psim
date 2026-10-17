@@ -79,8 +79,9 @@ interface DoorForm {
 interface View {
   show: (container: unknown, sub?: string) => Promise<void>;
   hide: () => void;
-  openDoor: (id: string) => void;
+  openDoor: (id: string, o?: { origin?: string }) => void;
   reset: () => void;
+  refresh: () => void;
 }
 interface Access {
   PAGE_SIZE: number;
@@ -93,7 +94,17 @@ interface Access {
   ID_PATTERN: RegExp;
   EXPORT_TRUNCATED_TEXT: string;
   JOURNAL_NOTE: string;
-  REMOTE_UNAVAILABLE_TEXT: string;
+  CONTROLLER_LONG: string;
+  LATE_LABEL: string;
+  LATE_HELP: string;
+  PERIOD_HINT: string;
+  SEARCH_HINT: string;
+  EXPORT_LABEL: string;
+  EXPORT_HELP: string;
+  REMOTE_FALLBACK_TEXT: string;
+  REMOTE_ADMIN_HINT: string;
+  DOOR_CARD_EVENT: string;
+  BACK_LABELS: Record<string, string>;
   UNDECLARED_TEXT: string;
   dayStart: (ts: number, offset?: number) => number;
   formatClock: (ts: unknown) => string;
@@ -116,6 +127,12 @@ interface Access {
   badgeLine: (p: unknown) => string;
   resultLabelOf: (p: unknown) => string;
   resultTone: (p: unknown) => string;
+  resultParts: (p: unknown) => { word: string; reason: string; full: string };
+  resultIcon: (p: unknown) => string;
+  explainController: (text: unknown) => { text: string; explained: boolean };
+  incidentForDoor: (door: unknown, incidents: unknown) => { id: number; status: string; detectorId: string } | null;
+  hiddenFilterCount: (f: Partial<Filters>) => number;
+  moreFiltersText: (n: number) => string;
   lastPassageSentence: (p: unknown, now: number) => string;
   kindLabel: (k: unknown) => string;
   brandLabel: (b: unknown) => string;
@@ -129,7 +146,6 @@ interface Access {
   PLAYBACK_BEFORE_S: number;
   PLAYBACK_AFTER_S: number;
   PLAYBACK_FAILED_TEXT: string;
-  remoteSlotText: (remote: unknown) => string;
   defaultFilters: (now: number) => Filters;
   hasNarrowingFilter: (f: Filters) => boolean;
   hasPersonalFilter: (f: Filters) => boolean;
@@ -166,6 +182,17 @@ interface Access {
   createAccessView: (deps: Record<string, unknown>) => View;
 }
 const A = (await import(pathToFileURL(join(WEB, 'access.js')).href)) as Access;
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const DB = (await import(pathToFileURL(join(WEB, 'doorbadges.js')).href)) as {
+  BADGE_GAP: number;
+  placeDoorBadges: (badges: (Rect & { id: string })[], obstacles?: (Rect & { owner?: string })[], bounds?: Rect | null, o?: { gap?: number; rows?: number }) => Map<string, { dx: number; dy: number }>;
+};
 
 /** 17 octobre 2026, 14:32:05, heure locale (les dates de l'écran sont locales). */
 const NOW = new Date(2026, 9, 17, 14, 32, 5).getTime();
@@ -221,7 +248,33 @@ describe('écran « Accès » : dates, heures et nombres', () => {
     assert.deepEqual(A.quickRange('yesterday', NOW), { from: '2026-10-16T00:00', to: '2026-10-16T23:59' });
     assert.deepEqual(A.quickRange('week', NOW), { from: '2026-10-11T00:00', to: '2026-10-17T23:59' });
     assert.equal(A.quickRange('mois', NOW), null);
-    assert.deepEqual(A.PRESETS.map((p) => p.label), ['Aujourd’hui', 'Hier', '7 derniers jours']);
+    assert.deepEqual(A.PRESETS.map((p) => p.label), ['Aujourd’hui', 'Dernières 24 h', 'Hier', '7 derniers jours']);
+  });
+
+  it('« Aujourd’hui » commence à minuit, « Dernières 24 h » englobe la ronde de nuit', () => {
+    const early = at(2026, 10, 17, 6, 40, 12); // le matin : la ronde de 23 h 30 est de la veille
+    assert.equal(A.quickRange('today', early)!.from, '2026-10-17T00:00', 'depuis 00:00');
+    assert.deepEqual(A.quickRange('last24', early), { from: '2026-10-16T06:40', to: '2026-10-17T06:40' });
+    const roundAt = at(2026, 10, 16, 23, 30);
+    const last24 = A.quickRange('last24', early)!;
+    const from = A.fromInputValue(last24.from)!;
+    const to = A.fromInputValue(last24.to)!;
+    assert.ok(roundAt >= from && roundAt <= to, 'la ronde de 23 h 30 est dans les dernières 24 h');
+    const today = A.quickRange('today', early)!;
+    assert.ok(roundAt < A.fromInputValue(today.from)!, 'et pas dans « Aujourd’hui »');
+    // la requête envoyée inclut la minute présente (le serveur exclut sa borne)
+    const q = new URLSearchParams(A.buildEventsQuery({ ...A.defaultFilters(early), ...last24 }));
+    assert.equal(q.get('to'), String(at(2026, 10, 17, 6, 41)));
+  });
+
+  it('« Dernières 24 h » reste enfoncé quelques minutes, puis se relâche ; une autre largeur ne la reconnaît pas', () => {
+    const last24 = A.quickRange('last24', NOW)!;
+    assert.equal(A.matchPreset(last24, NOW), 'last24');
+    assert.equal(A.matchPreset(last24, NOW + 3 * 60_000), 'last24', 'trois minutes plus tard : toujours reconnu');
+    assert.equal(A.matchPreset(last24, NOW + 30 * 60_000), null, 'une demi-heure plus tard : ce sont des dates saisies');
+    assert.equal(A.matchPreset({ from: last24.from, to: '2026-10-17T14:00' }, NOW), null, 'pas 24 h pile');
+    assert.equal(A.matchPreset({ from: '2026-10-18T14:32', to: '2026-10-19T14:32' }, NOW), null, 'dans le futur');
+    assert.equal(A.matchPreset({ from: '', to: '' }, NOW), null);
   });
 
   it('un raccourci reste « enfoncé » tant que les dates collent, et le suit au changement de jour', () => {
@@ -292,6 +345,22 @@ describe('écran « Accès » : libellés d’un passage', () => {
     assert.equal(A.resultLabelOf({ result: 'denied', resultLabel: '  ' }), 'Refusé');
     assert.equal(A.resultTone(granted), 'ok');
     assert.equal(A.resultTone(denied), 'warning');
+  });
+
+  it('résultat : pastille courte, raison à part, nom complet conservé ; icône de refus, jamais un cadenas', () => {
+    const unknown = { result: 'denied', resultLabel: 'Refusé — badge inconnu' };
+    assert.deepEqual(A.resultParts(unknown), { word: 'Refusé', reason: 'Badge inconnu', full: 'Refusé — badge inconnu' });
+    assert.deepEqual(A.resultParts(denied), { word: 'Refusé', reason: 'Badge expiré', full: 'Refusé — badge expiré' });
+    assert.deepEqual(A.resultParts(granted), { word: 'Accepté', reason: '', full: 'Accepté' });
+    assert.deepEqual(A.resultParts({ result: 'denied' }), { word: 'Refusé', reason: '', full: 'Refusé' });
+    assert.deepEqual(A.resultParts({ result: 'denied', resultLabel: 'Refusé — hors horaires — porte 2' }), { word: 'Refusé', reason: 'Hors horaires — porte 2', full: 'Refusé — hors horaires — porte 2' });
+    assert.equal(A.resultParts({ result: 'denied', resultLabel: '— badge inconnu' }).word, 'Refusé', 'libellé sans mot : le mot de secours');
+    assert.equal(A.resultParts(null).word, 'Refusé');
+    assert.equal(A.resultIcon(granted), 'state-ok');
+    assert.equal(A.resultIcon(denied), 'state-denied');
+    assert.notEqual(A.resultIcon(denied), 'lock');
+    const sprite = read('icons.svg');
+    assert.match(sprite, /<symbol[^>]*\bid="state-denied"/, 'le symbole de refus existe dans le sprite');
   });
 
   it('dernier passage d’une porte en une phrase', () => {
@@ -414,6 +483,16 @@ describe('écran « Accès » : filtres du journal et chaîne de requête', () =
     assert.equal(q.get('to'), String(at(2026, 10, 18, 0, 0)), '23:59 inclus = 00:00 du lendemain exclu');
   });
 
+  it('filtres cachés : le bouton « Plus de filtres » dit combien sont posés', () => {
+    assert.equal(A.hiddenFilterCount(base()), 0);
+    assert.equal(A.hiddenFilterCount(base({ holder: 'Konan' })), 1);
+    assert.equal(A.hiddenFilterCount(base({ holder: ' ' })), 0, 'des espaces ne filtrent rien');
+    assert.equal(A.hiddenFilterCount(base({ holder: 'Konan', credential: '00', late: true })), 3);
+    assert.equal(A.hiddenFilterCount(base({ door: 'P1', result: 'denied' })), 0, 'porte et résultat sont toujours visibles');
+    assert.equal(A.moreFiltersText(0), 'Plus de filtres');
+    assert.equal(A.moreFiltersText(2), 'Plus de filtres (2)');
+  });
+
   it('tous les filtres, dans un ordre stable', () => {
     const f = base({ from: '2026-10-11T08:00', to: '2026-10-17T18:30', door: 'P-ENTREE', holder: 'konan', credential: '0012', result: 'denied', late: true });
     const query = A.buildEventsQuery(f, { limit: 50, cursor: '1760000000000:98765', count: true });
@@ -445,19 +524,31 @@ describe('écran « Accès » : filtres du journal et chaîne de requête', () =
 
   it('ce qui empêche la recherche est dit en mots simples', () => {
     assert.deepEqual(A.filterProblems(A.defaultFilters(NOW)), []);
-    assert.deepEqual(A.filterProblems(base()), [], 'tout vide est permis');
+    // une date vide est refusée (chercher sans borne relirait tout le journal)
+    const both = A.filterProblems(base());
+    assert.equal(both.length, 1);
+    assert.equal(both[0].field, 'from');
+    assert.match(both[0].message, /dates de début et de fin sont vides/);
+    const noFrom = A.filterProblems(base({ to: '2026-10-17T18:00' }));
+    assert.deepEqual(noFrom.map((p) => p.field), ['from']);
+    assert.match(noFrom[0].message, /La date de début est vide ou incomplète : choisissez un jour et une heure\./);
+    const noTo = A.filterProblems(base({ from: '2026-10-17T08:00' }));
+    assert.deepEqual(noTo.map((p) => p.field), ['to']);
+    assert.match(noTo[0].message, /La date de fin est vide ou incomplète/);
+    assert.deepEqual(A.filterProblems(base({ from: '2026-10-17T08:00', to: '2026-10-17T18:00' })), [], 'deux dates : rien à dire');
     const reversed = A.filterProblems(base({ from: '2026-10-17T18:00', to: '2026-10-17T08:00' }));
     assert.equal(reversed.length, 1);
     assert.equal(reversed[0].field, 'from');
     assert.match(reversed[0].message, /début est après la date de fin/);
     assert.deepEqual(A.filterProblems(base({ from: '2026-10-17T08:00', to: '2026-10-17T08:00' })), [], 'une minute exactement est permise');
-    assert.equal(A.filterProblems(base({ from: 'x' }))[0].field, 'from');
-    assert.equal(A.filterProblems(base({ to: 'x' }))[0].field, 'to');
-    assert.equal(A.filterProblems(base({ holder: 'x'.repeat(65) }))[0].field, 'holder');
-    assert.equal(A.filterProblems(base({ credential: 'x'.repeat(33) }))[0].field, 'credential');
-    assert.equal(A.filterProblems(base({ door: 'a b' }))[0].field, 'door');
-    assert.equal(A.filterProblems(base({ result: 'zzz' }))[0].field, 'result');
-    assert.equal(A.filterProblems(base({ holder: 'x'.repeat(64), credential: 'y'.repeat(32) })).length, 0, 'les bornes exactes passent');
+    const dates = { from: '2026-10-17T08:00', to: '2026-10-17T18:00' };
+    assert.equal(A.filterProblems(base({ ...dates, from: 'x' }))[0].field, 'from');
+    assert.equal(A.filterProblems(base({ ...dates, to: 'x' }))[0].field, 'to');
+    assert.equal(A.filterProblems(base({ ...dates, holder: 'x'.repeat(65) }))[0].field, 'holder');
+    assert.equal(A.filterProblems(base({ ...dates, credential: 'x'.repeat(33) }))[0].field, 'credential');
+    assert.equal(A.filterProblems(base({ ...dates, door: 'a b' }))[0].field, 'door');
+    assert.equal(A.filterProblems(base({ ...dates, result: 'zzz' }))[0].field, 'result');
+    assert.equal(A.filterProblems(base({ ...dates, holder: 'x'.repeat(64), credential: 'y'.repeat(32) })).length, 0, 'les bornes exactes passent');
   });
 });
 
@@ -640,13 +731,43 @@ describe('écran « Accès » : tri et résumé des portes', () => {
     assert.match(A.STATE_HINT.offline, /alimentation et le réseau/);
   });
 
-  it('emplacement d’ouverture à distance : un texte sobre, jamais de bouton factice', () => {
-    assert.equal(A.REMOTE_UNAVAILABLE_TEXT, 'Ouverture à distance : pas encore disponible sur cette installation.');
-    assert.equal(A.remoteSlotText({ available: false, reason: 'Ouverture à distance : disponible avec le lot AC4' }), A.REMOTE_UNAVAILABLE_TEXT);
-    assert.equal(A.remoteSlotText({ available: false, reason: '' }), A.REMOTE_UNAVAILABLE_TEXT);
-    assert.equal(A.remoteSlotText(undefined), A.REMOTE_UNAVAILABLE_TEXT);
-    assert.equal(A.remoteSlotText({ available: false, reason: 'Cette porte n’a pas d’actionneur.' }), 'Cette porte n’a pas d’actionneur.');
-    assert.equal(A.remoteSlotText({ available: true }), 'Ouverture à distance disponible sur cette porte.');
+  it('texte du serveur : la première mention de « contrôleur » est expliquée, une seule fois', () => {
+    const offline = A.explainController('Le PSIM n’a plus de nouvelles de cette porte. Faites vérifier l’alimentation et le réseau du contrôleur.');
+    assert.equal(offline.text, 'Le PSIM n’a plus de nouvelles de cette porte. Faites vérifier l’alimentation et le réseau du boîtier de contrôle d’accès (contrôleur).');
+    assert.equal(offline.explained, true);
+    const fault = A.explainController('Faites vérifier le contrôleur et le lecteur, puis le contrôleur.');
+    assert.equal(fault.text, 'Faites vérifier le boîtier de contrôle d’accès (contrôleur) et le lecteur, puis le contrôleur.', 'seule la première mention');
+    assert.equal(A.explainController('Contrôleur muet.').text, 'Boîtier de contrôle d’accès (contrôleur) muet.', 'début de phrase : majuscule');
+    assert.deepEqual(A.explainController('La porte est fermée. Rien à faire.'), { text: 'La porte est fermée. Rien à faire.', explained: false });
+    assert.deepEqual(A.explainController('Le boîtier de contrôle d’accès (contrôleur) est muet.'), { text: 'Le boîtier de contrôle d’accès (contrôleur) est muet.', explained: false }, 'déjà expliqué');
+    assert.deepEqual(A.explainController(null), { text: '', explained: false });
+  });
+
+  it('carte d’ouverture à distance : texte de repli, nom de l’évènement du contrat', () => {
+    assert.equal(A.REMOTE_FALLBACK_TEXT, 'Ouverture à distance : aucune serrure ou barrière n’est reliée à cette porte.');
+    assert.equal(A.REMOTE_ADMIN_HINT + 'Déclaration.', 'Reliez-en une dans Déclaration.');
+    assert.equal(A.DOOR_CARD_EVENT, 'psim:door-card');
+  });
+
+  it('« Aller à l’alarme » : l’incident en cours d’une porte qui sonne, sinon rien', () => {
+    const incidents = new Map([
+      [1, { id: 1, detectorId: 'P1', status: 'closed', openedAt: 900 }],
+      [2, { id: 2, detectorId: 'P1', status: 'acked', openedAt: 1000 }],
+      [3, { id: 3, detectorId: 'P1', status: 'open', openedAt: 800 }],
+      [4, { id: 4, detectorId: 'P2', status: 'open', openedAt: 5000 }],
+    ]);
+    const forced = { detectorId: 'P1', state: 'forced', deviceStatus: 'alarm' };
+    assert.equal(A.incidentForDoor(forced, incidents)?.id, 3, 'le non acquitté d’abord');
+    assert.equal(A.incidentForDoor({ ...forced, state: 'held_open', deviceStatus: 'prealarm' }, incidents)?.id, 3);
+    assert.equal(A.incidentForDoor({ detectorId: 'P1', state: 'closed', deviceStatus: 'alarm' }, incidents)?.id, 3, 'détecteur en alarme, même porte fermée');
+    assert.equal(A.incidentForDoor({ detectorId: 'P1', state: 'closed', deviceStatus: 'prealarm' }, incidents)?.id, 3);
+    assert.equal(A.incidentForDoor({ detectorId: 'P1', state: 'closed', deviceStatus: 'normal' }, incidents), null, 'porte calme : pas de bouton');
+    assert.equal(A.incidentForDoor({ detectorId: 'P1', state: 'open', deviceStatus: 'normal' }, incidents), null);
+    assert.equal(A.incidentForDoor({ detectorId: 'P9', state: 'forced', deviceStatus: 'alarm' }, incidents), null, 'aucun incident pour ce détecteur');
+    assert.equal(A.incidentForDoor(forced, new Map([[1, { id: 1, detectorId: 'P1', status: 'closed' }]])), null, 'incident clos : rien à ouvrir');
+    assert.equal(A.incidentForDoor(forced, [{ id: 7, detectorId: 'P1', status: 'acked', openedAt: 1 }])?.id, 7, 'une liste convient aussi');
+    for (const bad of [null, undefined, {}, { state: 'forced' }]) assert.equal(A.incidentForDoor(bad, incidents), null);
+    for (const bad of [null, undefined, 'x', 3]) assert.equal(A.incidentForDoor(forced, bad), null);
   });
 });
 
@@ -739,7 +860,7 @@ describe('écran « Accès » : délai « maintenue ouverte », horloge, conserv
     assert.match(A.exportDoneText(1, false), /^1 passage exporté/);
     assert.match(A.exportDoneText(0, false), /aucun passage ne correspond/);
     assert.match(A.exportDoneText(Number.NaN, false), /Téléchargements/);
-    assert.equal(A.JOURNAL_NOTE, 'Les recherches par titulaire ou badge et les exports sont inscrits au journal.');
+    assert.equal(A.JOURNAL_NOTE, 'Les recherches par nom ou par badge et les exports sont notés dans le journal des actions du PSIM.');
   });
 });
 
@@ -912,6 +1033,103 @@ describe('écran « Accès » : armement des portes (F14), textes', () => {
   });
 });
 
+// ================================================================================================ pastilles de portes du plan
+
+describe('plan : placement des pastilles d’état des portes (doorbadges.js)', () => {
+  const badge = (id: string, x: number, y: number, w = 90, h = 25) => ({ id, x, y, w, h });
+  const moved = (b: Rect & { id: string }, m: Map<string, { dx: number; dy: number }>): Rect => ({ x: b.x + m.get(b.id)!.dx, y: b.y + m.get(b.id)!.dy, w: b.w, h: b.h });
+  const touch = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  const SHEET = { x: 0, y: 0, w: 254, h: 152 };
+
+  it('rien ne gêne : aucune pastille ne bouge', () => {
+    const badges = [badge('A', 10, 10), badge('B', 120, 10), badge('C', 10, 90)];
+    const out = DB.placeDoorBadges(badges, [], SHEET);
+    assert.deepEqual([...out.entries()], [['A', { dx: 0, dy: 0 }], ['B', { dx: 0, dy: 0 }], ['C', { dx: 0, dy: 0 }]]);
+  });
+
+  it('deux pastilles qui se recouvrent : la plus urgente (la première) reste, l’autre descend d’un rang, sans toucher la première', () => {
+    const a = badge('A', 50, 40);
+    const b = badge('B', 70, 45);
+    const out = DB.placeDoorBadges([a, b], [], { x: 0, y: 0, w: 400, h: 400 });
+    assert.deepEqual(out.get('A'), { dx: 0, dy: 0 }, 'la plus urgente garde sa place');
+    assert.ok(out.get('B')!.dy > 0 || out.get('B')!.dx !== 0, 'l’autre s’écarte');
+    assert.equal(touch(moved(a, out), moved(b, out)), false);
+    // l'ordre de priorité est celui de la liste : inversé, c'est B qui garde sa place
+    const flipped = DB.placeDoorBadges([b, a], [], { x: 0, y: 0, w: 400, h: 400 });
+    assert.deepEqual(flipped.get('B'), { dx: 0, dy: 0 });
+    assert.notDeepEqual(flipped.get('A'), { dx: 0, dy: 0 });
+  });
+
+  it('des portes serrées (cinq pastilles dans un petit plan, comme à 1024 px) : jamais deux pastilles l’une sur l’autre, toutes dans la largeur du plan', () => {
+    const badges = [badge('P-LIVRAISON', 0, 122, 86, 30), badge('P-BARRIERE', 96, 110, 128), badge('P-ENTREE', 0, 76, 87), badge('P-SERVEURS', 151, 113, 104), badge('P-ISSUE', 108, 155, 89)];
+    const out = DB.placeDoorBadges(badges, [], SHEET);
+    assert.equal(out.size, 5, 'chacune a un décalage');
+    const rects = badges.map((b) => moved(b, out));
+    for (let i = 0; i < rects.length; i++) {
+      assert.ok(rects[i].x >= SHEET.x - 0.5 && rects[i].x + rects[i].w <= SHEET.x + SHEET.w + 0.5, `${badges[i].id} reste dans la largeur du plan`);
+      for (let j = i + 1; j < rects.length; j++) assert.equal(touch(rects[i], rects[j]), false, `${badges[i].id} / ${badges[j].id} ne se recouvrent pas`);
+    }
+  });
+
+  it('jamais très loin de sa porte : au plus trois rangs et deux demi-largeurs', () => {
+    const badges = Array.from({ length: 6 }, (_, i) => badge(`D${i}`, 40 + i * 4, 40 + i * 2));
+    const out = DB.placeDoorBadges(badges, [], { x: 0, y: 0, w: 600, h: 600 });
+    for (const b of badges) {
+      const { dx, dy } = out.get(b.id)!;
+      assert.ok(Math.abs(dy) <= 3 * (b.h + DB.BADGE_GAP), `${b.id} : ${dy}`);
+      assert.ok(Math.abs(dx) <= 2 * Math.round(b.w * 0.5), `${b.id} : ${dx}`);
+    }
+  });
+
+  it('une pastille qui déborde à gauche ou à droite du plan est ramenée dedans', () => {
+    const out = DB.placeDoorBadges([badge('L', -30, 10), badge('R', 200, 60)], [], SHEET);
+    assert.equal(out.get('L')!.dx, 30);
+    assert.equal(out.get('R')!.dx, 254 - (200 + 90));
+    assert.equal(DB.placeDoorBadges([badge('X', 5, 5)], [], null).get('X')!.dx, 0, 'sans zone, pas de rabattement');
+  });
+
+  it('elle évite la forme d’un équipement voisin quand un rang plus bas suffit', () => {
+    const glyph = { x: 60, y: 42, w: 24, h: 24 };
+    const out = DB.placeDoorBadges([badge('A', 50, 40)], [glyph], { x: 0, y: 0, w: 400, h: 400 });
+    const rect = moved(badge('A', 50, 40), out);
+    assert.equal(touch(rect, glyph), false);
+    assert.ok(out.get('A')!.dy > 0 || out.get('A')!.dx !== 0);
+    // ses propres pièces (même propriétaire) ne comptent pas à la place naturelle
+    const own = DB.placeDoorBadges([badge('A', 50, 40)], [{ ...glyph, owner: 'A' }], { x: 0, y: 0, w: 400, h: 400 });
+    assert.deepEqual(own.get('A'), { dx: 0, dy: 0 });
+  });
+
+  it('près du bord bas du plan : elle passe au-dessus plutôt que de sortir du plan', () => {
+    const low = badge('B', 100, 140);
+    const out = DB.placeDoorBadges([low], [], SHEET);
+    assert.ok(out.get('B')!.dy < 0, `remontée : ${out.get('B')!.dy}`);
+    assert.ok(moved(low, out).y + low.h <= SHEET.h + 2);
+  });
+
+  it('données absurdes : aucune exception, les pastilles valides sont quand même placées', () => {
+    const out = DB.placeDoorBadges([null, { id: 3, x: 1, y: 1, w: 1, h: 1 }, badge('N', Number.NaN, 1), badge('OK', 1, 1)] as never, [null, { x: Number.NaN, y: 0, w: 1, h: 1 }, 'x'] as never, SHEET);
+    assert.deepEqual([...out.keys()], ['OK']);
+    assert.equal(DB.placeDoorBadges('x' as never, 'y' as never).size, 0);
+    assert.equal(DB.placeDoorBadges(undefined as never).size, 0);
+    assert.equal(DB.placeDoorBadges([], [], SHEET).size, 0);
+  });
+
+  it('un plan saturé : chacune garde un décalage fini, et le résultat est le même à chaque calcul', () => {
+    const badges = Array.from({ length: 14 }, (_, i) => badge(`S${i}`, 20 + (i % 2) * 5, 30 + i));
+    const tiny = { x: 0, y: 0, w: 130, h: 70 };
+    const first = DB.placeDoorBadges(badges, [], tiny);
+    const again = DB.placeDoorBadges(badges, [], tiny);
+    assert.equal(first.size, 14);
+    for (const v of first.values()) assert.ok(Number.isFinite(v.dx) && Number.isFinite(v.dy));
+    assert.deepEqual([...first.entries()], [...again.entries()]);
+  });
+
+  it('CSP et sobriété : module pur (aucun accès à la page), aucun HTML ni style construit', () => {
+    const js = read('doorbadges.js');
+    for (const pattern of [/\bdocument\b/, /\bwindow\b/, /innerHTML/, /\.style\b/, /\bimport\b/]) assert.ok(!pattern.test(js.replace(/\/\*[\s\S]*?\*\//g, '')), String(pattern));
+  });
+});
+
 // ================================================================================================ garde-fous sur les fichiers servis
 
 describe('écran « Accès » : fichiers servis', () => {
@@ -941,6 +1159,7 @@ describe('écran « Accès » : fichiers servis', () => {
 
   it('chaque classe `acc-` écrite dans le script a sa règle dans la feuille (sauf simples accroches)', () => {
     const hooks = new Set(['acc-retention', 'acc-pane', 'acc-privacy']);
+    assert.ok(!js.includes('acc-video-help'), 'la note « enregistrement ou direct » n’est plus écrite sous le tableau');
     const used = new Set<string>();
     for (const m of js.matchAll(/class:\s*'([^']*)'/g)) for (const c of m[1].split(/\s+/)) if (c.startsWith('acc-')) used.add(c);
     for (const m of js.matchAll(/classList\.add\('([^']*)'\)/g)) if (m[1].startsWith('acc-')) used.add(m[1]);
@@ -963,14 +1182,14 @@ describe('écran « Accès » : fichiers servis', () => {
 
   it('textes d’interface attendus (français courant)', () => {
     for (const text of [
-      'Seulement les passages reçus en différé',
-      'Exporter en CSV',
-      'Voir la vidéo',
+      'Seulement les passages reçus après coupure',
+      'Exporter (tableur)',
+      'Voir la vidéo du passage de',
       'Plus récents',
       'Plus anciens',
-      'Reçu en différé',
+      'Reçu après coupure',
       'Aucun passage sur cette période.',
-      'Les passages arrivent depuis les contrôleurs déclarés dans l’onglet Déclaration.',
+      'Les passages arrivent des boîtiers de contrôle d’accès déclarés dans l’onglet Déclaration.',
       'Aucun passage ne correspond à ces filtres.',
       'Pas de caméra liée',
       'Lier une caméra',
@@ -983,7 +1202,7 @@ describe('écran « Accès » : fichiers servis', () => {
       'Réessayer',
       'Conserver les passages pendant',
       'La suppression est automatique',
-      'Le contrôleur décide seul d’ouvrir la porte pour un badge',
+      'décide seul d’ouvrir la porte pour un badge',
       'data-slot',
       'remote-open',
     ]) {
@@ -1005,7 +1224,9 @@ describe('écran « Accès » : fichiers servis', () => {
     assert.match(html, /<link rel="stylesheet" href="access\.css">/);
     assert.match(html, /id="access-view"/);
     assert.match(app, /import \{ createAccessView \} from '\.\/access\.js';/);
-    assert.match(app, /createAccessView\(\{ api, h, toast, getMe: \(\) => S\.me, dialogs \}\)/);
+    assert.match(app, /createAccessView\(\{\s*api,\s*h,\s*toast,\s*getMe: \(\) => S\.me,\s*dialogs,[\s\S]*?goToAlarm:/);
+    assert.match(app, /goToPlan: \(\) => \{/);
+    assert.match(app, /accessView\.refresh\(\)/);
     assert.match(app, /accessView\.show\(/);
     assert.match(app, /accessView\.hide\(\)/);
     assert.match(app, /accessView\.openDoor\(/);
@@ -1323,6 +1544,10 @@ const fakeDocument = {
   dispatch(type: string, extra: Record<string, unknown> = {}) {
     for (const fn of docListeners.get(type) ?? []) fn({ type, preventDefault() {}, ...extra });
   },
+  dispatchEvent(event: { type: string }) {
+    for (const fn of docListeners.get(event.type) ?? []) fn(event as unknown as Record<string, unknown>);
+    return true;
+  },
   count: (type: string) => (docListeners.get(type) ?? []).length,
 };
 
@@ -1345,7 +1570,7 @@ g.cancelAnimationFrame = (id: number) => void rafActive.delete(id);
 g.matchMedia = () => ({ matches: false, addEventListener() {} });
 
 interface Core {
-  S: { doors: Map<string, Door>; devices: Map<string, Record<string, unknown>>; floors: unknown[] };
+  S: { doors: Map<string, Door>; devices: Map<string, Record<string, unknown>>; floors: unknown[]; incidents: Map<number, Record<string, unknown>> };
   on: (name: string, fn: (...a: unknown[]) => void) => void;
   emit: (name: string, ...a: unknown[]) => void;
 }
@@ -1357,6 +1582,9 @@ const flush = async (n = 6) => {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
 };
 const hrefOf = (el: FakeEl) => el.attrs.get('href') ?? '';
+/** Boutons « Vidéo » du journal : nom accessible « Voir la vidéo du passage de HH:MM ». */
+const videoButtons = (root: FakeEl) => root.findAll((e) => e.tagName === 'button' && (e.attrs.get('aria-label') ?? '').startsWith('Voir la vidéo du passage de'));
+const videoButton = (root: FakeEl) => videoButtons(root)[0] ?? null;
 /** Formulaire d'ajout ou de modification d'un contrôleur ou d'une porte (le réglage de conservation n'en est pas un). */
 const declForm = (root: FakeEl) => root.find((e) => e.tagName === 'form' && e.className.includes('acc-form') && e.attrs.has('aria-labelledby'));
 
@@ -1373,7 +1601,7 @@ interface Call {
 }
 
 /** Monte l'écran contre un faux serveur ; `routes` répond aux appels (le premier motif qui correspond). */
-function setup(opts: { admin?: boolean; routes?: Record<string, (call: Call) => unknown> } = {}) {
+function setup(opts: { admin?: boolean; routes?: Record<string, (call: Call) => unknown>; deps?: Record<string, unknown> } = {}) {
   const admin = opts.admin ?? true;
   const calls: Call[] = [];
   const toasts: string[] = [];
@@ -1450,7 +1678,7 @@ function setup(opts: { admin?: boolean; routes?: Record<string, (call: Call) => 
     for (const child of children.flat()) if (child) el.append(child);
     return el;
   };
-  const view = A.createAccessView({ api, h, toast: (m: string) => void toasts.push(m), getMe: () => ({ role: admin ? 'admin' : 'operator', username: admin ? 'admin' : 'garde' }), dialogs });
+  const view = A.createAccessView({ api, h, toast: (m: string) => void toasts.push(m), getMe: () => ({ role: admin ? 'admin' : 'operator', username: admin ? 'admin' : 'garde' }), dialogs, ...opts.deps });
   return { view, container, calls, toasts, dialogState, dialogBody, api };
 }
 
@@ -1458,6 +1686,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
   beforeEach(() => {
     core.S.doors = new Map();
     core.S.floors = [];
+    core.S.incidents = new Map();
     core.S.devices = new Map([
       ['CAM-1', { id: 'CAM-1', kind: 'camera', name: 'Caméra entrée', zone: 'Hall', streamKind: 'sim' }],
       ['P-ENTREE', { id: 'P-ENTREE', kind: 'detector', category: 'access', name: 'Entrée personnel', zone: 'Rez-de-chaussée' }],
@@ -1480,6 +1709,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     assert.deepEqual(tabs.map((t) => text(t)), ['Journal', 'Portes', 'Déclaration']);
     assert.equal(tabs[0].attrs.get('aria-selected'), 'true');
     assert.equal(tabs[1].attrs.get('aria-selected'), 'false');
+    assert.deepEqual(container.findAll((e) => e.tagName === 'th').map((e) => text(e)), ['Date et heure', 'Porte', 'Entrée / sortie', 'Titulaire', 'Moyen d’accès', 'Résultat', 'Vidéo'], 'en-têtes en français courant');
     assert.equal(tabs[0].tabIndex, 0, 'un seul onglet dans l’ordre de tabulation (flèches pour les autres)');
     assert.equal(tabs[1].tabIndex, -1);
 
@@ -1494,13 +1724,14 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     assert.match(body, /2 passages/);
     assert.match(body, /Titulaire 1/);
     assert.match(body, /Badge 001/);
-    assert.match(body, /Refusé — badge inconnu/, 'résultat du serveur, tel quel');
+    assert.match(body, /Refusé — badge inconnu/, 'résultat du serveur, tel quel (nom lu par les lecteurs d’écran)');
     assert.match(body, /Accepté/);
-    assert.match(body, /Reçu en différé/);
+    assert.match(body, /Reçu après coupure/);
+    assert.ok(!/différé/.test(body), 'plus de « différé » à l’écran');
     assert.match(body, /Titulaire inconnu/);
-    assert.match(body, /Les recherches par titulaire ou badge et les exports sont inscrits au journal\./);
+    assert.match(body, /Les recherches par nom ou par badge et les exports sont notés dans le journal des actions du PSIM\./);
     assert.match(body, /Les passages sont conservés 90 jours/, 'durée de conservation visible de tous');
-    const videos = container.findAll((e) => e.tagName === 'button' && text(e) === 'Voir la vidéo');
+    const videos = videoButtons(container);
     assert.equal(videos.length, 1, 'seulement pour la porte qui a une caméra liée');
     assert.match(body, /Pas de caméra liée/);
     assert.ok(byText(container, 'a', 'Lier une caméra'), 'l’administrateur peut lier une caméra');
@@ -1537,7 +1768,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     await view.show(container, '');
     await flush();
     assert.match(container.textContent, /Aucun passage sur cette période\./);
-    assert.match(container.textContent, /Les passages arrivent depuis les contrôleurs déclarés dans l’onglet Déclaration\./);
+    assert.match(container.textContent, /Les passages arrivent des boîtiers de contrôle d’accès déclarés dans l’onglet Déclaration\./);
     assert.ok(byText(container, 'button', 'Ouvrir la déclaration'));
     // un filtre posé change le message
     const door = container.find((e) => e.id === 'acc-late')!;
@@ -1678,7 +1909,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const { view, container, dialogState, calls } = setup();
     await view.show(container, '');
     await flush();
-    const open = byText(container, 'button', 'Voir la vidéo')!;
+    const open = videoButton(container)!;
     fakeDocument.active = open;
     open.click();
     assert.equal(dialogState.open, true, 'la fenêtre s’ouvre tout de suite');
@@ -1702,7 +1933,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
       const ctx = setup({ ...opts, routes: { ...REPLAYABLE, ...opts.routes } });
       await ctx.view.show(ctx.container, '');
       await flush();
-      byText(ctx.container, 'button', 'Voir la vidéo')!.click();
+      videoButton(ctx.container)!.click();
       await flush();
       return { ...ctx, content: ctx.dialogState.content as FakeEl };
     };
@@ -1763,7 +1994,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
       core.S.devices.set('CAM-2', { id: 'CAM-2', kind: 'camera', name: 'Caméra couloir', zone: 'Couloir', streamKind: 'sim' });
       await ctx.view.show(ctx.container, '');
       await flush();
-      byText(ctx.container, 'button', 'Voir la vidéo')!.click();
+      videoButton(ctx.container)!.click();
       await flush();
       const content = ctx.dialogState.content as FakeEl;
       const pickers = content.findAll((e) => e.tagName === 'button' && e.attrs.has('aria-pressed'));
@@ -1805,7 +2036,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
       const { view, container, dialogState } = setup({ routes: { 'GET /api/cameras/replayable': () => new Promise((r) => (release = r)) } });
       await view.show(container, '');
       await flush();
-      byText(container, 'button', 'Voir la vidéo')!.click();
+      videoButton(container)!.click();
       await flush();
       const content = dialogState.content as FakeEl;
       assert.match(content.textContent, /Recherche de l’enregistrement/);
@@ -1822,7 +2053,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
       const { view, container, dialogState } = setup({ routes: { 'GET /api/cameras/replayable': () => new Promise((r) => releases.push(r)) } });
       await view.show(container, '');
       await flush();
-      const open = byText(container, 'button', 'Voir la vidéo')!;
+      const open = videoButton(container)!;
       open.click();
       const first = dialogState.content as FakeEl;
       dialogState.onClose?.();
@@ -1864,7 +2095,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     await view.show(container, '');
     await flush();
     assert.equal(fakeDocument.count('keydown'), keydownBefore + 1);
-    byText(container, 'button', 'Voir la vidéo')!.click();
+    videoButton(container)!.click();
     await flush();
     assert.equal(dialogState.open, true);
     assert.equal(rafActive.size, 1);
@@ -1886,7 +2117,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const { view, container, dialogState, dialogBody } = setup();
     await view.show(container, '');
     await flush();
-    byText(container, 'button', 'Voir la vidéo')!.click();
+    videoButton(container)!.click();
     await flush();
     assert.equal(rafActive.size, 1);
     dialogBody.replaceChildren('Mon compte : mot de passe à changer'); // une autre fenêtre a pris la place sans fermer la nôtre
@@ -1965,7 +2196,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     view.hide();
   });
 
-  it('export CSV : mêmes filtres, téléchargement, message « limité à 100 000 lignes » si tronqué', async () => {
+  it('export (tableur) : mêmes filtres, téléchargement, message « limité à 100 000 lignes » si tronqué', async () => {
     const { view, container } = setup();
     await view.show(container, '');
     await flush();
@@ -1979,7 +2210,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
       return { ok: true, status: 200, headers: { get: (k: string) => ({ 'X-Export-Rows': '100000', 'X-Export-Truncated': truncated, 'Content-Disposition': 'attachment; filename="passages.csv"' })[k] ?? null }, blob: async () => new Blob(['a;b']) };
     };
     try {
-      const button = byText(container, 'button', 'Exporter en CSV')!;
+      const button = byText(container, 'button', 'Exporter (tableur)')!;
       button.click();
       await flush(10);
       assert.equal(urls.length, 1);
@@ -2005,7 +2236,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const realFetch = g.fetch;
     g.fetch = async () => ({ ok: false, status: 403, headers: { get: () => null }, json: async () => ({ error: 'Droits insuffisants' }) });
     try {
-      const button = byText(container, 'button', 'Exporter en CSV')!;
+      const button = byText(container, 'button', 'Exporter (tableur)')!;
       button.click();
       await flush(10);
       assert.match(container.textContent, /L’export n’a pas pu être fait : Droits insuffisants\./);
@@ -2032,7 +2263,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     assert.match(first.textContent, /Titulaire 1 — Accepté/, 'dernier passage : qui, résultat, quand');
     assert.match(list.childElements[2].textContent, /Aucun passage enregistré/);
     assert.match(container.textContent, /3 portes : 1 forcée, 1 hors ligne, 1 fermée/);
-    assert.ok(first.find((e) => e.tagName === 'button' && e.attrs.get('aria-label') === 'Fiche de la porte Entrée personnel'));
+    assert.ok(first.find((e) => e.tagName === 'button' && e.attrs.get('aria-label') === 'Détails de la porte Entrée personnel'));
     assert.equal(first.attrs.get('class')?.includes('tone-alarm'), true);
     view.hide();
   });
@@ -2101,7 +2332,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const { view, container } = setup();
     await view.show(container, 'portes');
     await flush();
-    const trigger = container.find((e) => e.tagName === 'button' && e.attrs.get('aria-label') === 'Fiche de la porte Entrée personnel')!;
+    const trigger = container.find((e) => e.tagName === 'button' && e.attrs.get('aria-label') === 'Détails de la porte Entrée personnel')!;
     fakeDocument.active = trigger;
     trigger.click();
     await flush();
@@ -2114,17 +2345,18 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     assert.match(t, /Regardez la caméra, puis traitez l’alarme\./);
     assert.match(t, /Contrôleur entrée/);
     assert.match(t, /n° 1 sur le contrôleur/);
-    assert.match(t, /Après 5 minutes porte ouverte/);
+    assert.match(t, /Alarme si la porte reste ouverte/);
+    assert.match(t, /Après 5 minutes d’ouverture/);
     assert.match(t, /Issue de secours/);
     assert.match(t, /10 derniers passages/);
     assert.match(t, /Titulaire 1/);
     assert.match(t, /Refusé — badge expiré/);
-    assert.match(t, /Reçu en différé/);
+    assert.match(t, /Reçu après coupure/);
     assert.match(t, /Image en direct de « Caméra entrée »\./);
     assert.equal(rafActive.size, 1, 'image en direct ouverte');
     const slot = fiche.querySelector('div[data-slot="remote-open"]')!;
     assert.ok(slot, 'emplacement réservé identifié');
-    assert.equal(text(slot), 'Ouverture à distance : pas encore disponible sur cette installation.');
+    assert.equal(text(slot), 'Ouverture à distance : aucune serrure ou barrière n’est reliée à cette porte.Reliez-en une dans Déclaration.', 'repli : administrateur');
     assert.equal(slot.findAll((e) => e.tagName === 'button').length, 0, 'aucun bouton d’ouverture factice');
     assert.equal(fakeLocation.hash, '#/acces/portes/P-ENTREE');
     // Échap ferme et rend le focus à l'origine
@@ -2239,7 +2471,8 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     await flush();
     view.hide();
 
-    const again = setup();
+    let backToPlan = 0;
+    const again = setup({ deps: { goToPlan: () => void backToPlan++ } });
     const p = again.view.show(again.container, '');
     again.view.openDoor('P-ENTREE');
     await p;
@@ -2247,8 +2480,10 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const fiche = again.container.find((e) => e.tagName === 'section' && e.attrs.get('aria-labelledby') === 'acc-fiche-title')!;
     assert.equal(fiche.hidden, false);
     assert.match(fiche.textContent, /Entrée personnel/);
-    // appel suivant, écran déjà prêt
+    // Échap : la fiche vient du plan, on y retourne
     fakeDocument.dispatch('keydown', { key: 'Escape' });
+    assert.equal(backToPlan, 1, 'retour au plan demandé');
+    // appel suivant, écran déjà prêt
     again.view.openDoor('P-STOCK');
     await flush();
     assert.match(fiche.textContent, /Stock/);
@@ -2676,6 +2911,582 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     const list = container.find((e) => e.attrs.get('aria-label') === 'Portes, les plus urgentes d’abord')!;
     assert.equal(list.childElements.length, 3, 'chaque porte une seule fois');
     view.hide();
+  });
+
+  describe('fiche : le retour ramène d’où l’on vient', () => {
+    const ficheOf = (container: FakeEl) => container.find((e) => e.tagName === 'section' && e.attrs.get('aria-labelledby') === 'acc-fiche-title')!;
+    const paneOf = (container: FakeEl, id: string) => container.find((e) => e.id === `acc-pane-${id}`)!;
+
+    it('depuis la liste des portes : « Retour aux portes », le focus rendu au bouton', async () => {
+      const { view, container } = setup();
+      await view.show(container, 'portes');
+      await flush();
+      const trigger = container.find((e) => e.tagName === 'button' && e.attrs.get('data-door-trigger') === 'P-ENTREE')!;
+      fakeDocument.active = trigger;
+      trigger.click();
+      await flush();
+      const back = byText(ficheOf(container), 'button', 'Retour aux portes')!;
+      assert.ok(back, 'bouton de retour aux portes');
+      back.click();
+      assert.equal(ficheOf(container).hidden, true);
+      assert.equal(paneOf(container, 'portes').hidden, false, 'la liste des portes revient');
+      assert.equal(fakeDocument.activeElement, trigger);
+      assert.equal(fakeLocation.hash, '#/acces/portes');
+      view.hide();
+    });
+
+    it('depuis le plan : « Retour au plan » ramène sur Surveillance (une seule fois), la fiche est rangée', async () => {
+      let toPlan = 0;
+      const { view, container } = setup({ deps: { goToPlan: () => void toPlan++ } });
+      await view.show(container, '');
+      await flush();
+      view.openDoor('P-ENTREE'); // l'évènement « open-door » du plan
+      await flush();
+      const fiche = ficheOf(container);
+      assert.equal(fiche.hidden, false);
+      const back = byText(fiche, 'button', 'Retour au plan')!;
+      assert.ok(back, 'bouton « Retour au plan »');
+      assert.equal(byText(fiche, 'button', 'Retour aux portes'), null);
+      back.click();
+      assert.equal(toPlan, 1, 'retour effectif sur Surveillance');
+      assert.equal(fiche.hidden, true, 'la fiche n’est pas laissée ouverte derrière');
+      view.hide();
+    });
+
+    it('depuis un passage du journal : « Retour au journal », filtres et liste gardés ; Échap fait de même', async () => {
+      const { view, container, calls } = setup();
+      await view.show(container, '');
+      await flush();
+      const link = container.find((e) => e.tagName === 'button' && e.className.includes('acc-door-link') && e.attrs.get('aria-label') === 'Détails de la porte Entrée personnel')!;
+      assert.ok(link, 'le nom de la porte, dans le journal, est un lien vers ses détails');
+      const lateBox = container.find((e) => e.id === 'acc-late')!;
+      lateBox.checked = true; // un filtre posé avant d'ouvrir la fiche
+      fakeDocument.active = link;
+      link.click();
+      await flush();
+      const fiche = ficheOf(container);
+      assert.equal(fiche.hidden, false);
+      assert.ok(byText(fiche, 'button', 'Retour au journal'), 'bouton « Retour au journal »');
+      assert.equal(paneOf(container, 'journal').hidden, true);
+      const events = calls.filter((c) => c.path.startsWith('/api/access/events?')).length;
+      byText(fiche, 'button', 'Retour au journal')!.click();
+      assert.equal(fiche.hidden, true);
+      assert.equal(paneOf(container, 'journal').hidden, false, 'le journal revient');
+      assert.equal(container.find((e) => e.id === 'acc-late')!.checked, true, 'le filtre est resté');
+      assert.equal(container.findAll((e) => e.tagName === 'tr' && e.attrs.has('data-passage')).length, 2, 'la liste est restée');
+      assert.equal(calls.filter((c) => c.path.startsWith('/api/access/events?')).length, events, 'rien n’est relu pour revenir');
+      assert.equal(fakeDocument.activeElement, link, 'le focus revient au lien');
+      assert.equal(fakeLocation.hash, '#/acces/journal');
+      // Échap, depuis le journal
+      link.click();
+      await flush();
+      assert.equal(ficheOf(container).hidden, false);
+      fakeDocument.dispatch('keydown', { key: 'Escape' });
+      assert.equal(ficheOf(container).hidden, true);
+      assert.equal(paneOf(container, 'journal').hidden, false);
+      view.hide();
+    });
+
+    it('le libellé suit chaque ouverture : le plan, puis la liste, puis le journal', async () => {
+      const { view, container } = setup({ deps: { goToPlan() {} } });
+      await view.show(container, '');
+      await flush();
+      const label = () => text(ficheOf(container).find((e) => e.tagName === 'button')!);
+      view.openDoor('P-ENTREE');
+      await flush();
+      assert.equal(label(), 'Retour au plan');
+      fakeDocument.dispatch('keydown', { key: 'Escape' });
+      view.hide();
+      await view.show(container, 'portes/P-ENTREE'); // adresse directe : on revient aux portes
+      await flush();
+      assert.equal(label(), 'Retour aux portes');
+      view.hide();
+    });
+
+    it('un opérateur voit les mêmes retours', async () => {
+      let toPlan = 0;
+      const { view, container } = setup({ admin: false, deps: { goToPlan: () => void toPlan++ } });
+      await view.show(container, '');
+      await flush();
+      view.openDoor('P-ENTREE');
+      await flush();
+      byText(ficheOf(container), 'button', 'Retour au plan')!.click();
+      assert.equal(toPlan, 1);
+      view.hide();
+    });
+  });
+
+  describe('fiche : « Aller à l’alarme »', () => {
+    const goButton = (root: FakeEl) => byText(root, 'button', 'Aller à l’alarme');
+    const incidentOf = (id: number, detectorId: string, status = 'open') => ({ id, detectorId, status, openedAt: NOW - 60_000, severity: 'critical' });
+
+    it('porte forcée avec un incident en cours : le bouton ouvre cet incident ; clos entre-temps : il le dit', async () => {
+      const opened: { id: number }[] = [];
+      const { view, container, toasts } = setup({ deps: { goToAlarm: (i: { id: number }) => void opened.push(i) } });
+      core.S.incidents = new Map([[5, incidentOf(5, 'P-ENTREE')]]);
+      await view.show(container, 'portes/P-ENTREE');
+      await flush();
+      const button = goButton(container)!;
+      assert.ok(button, 'bouton dans le bloc d’état');
+      assert.equal(button.attrs.get('aria-label'), 'Aller à l’alarme de la porte Entrée personnel');
+      const block = container.find((e) => e.className.includes('acc-fiche-state'))!;
+      assert.ok(block.contains(button), 'dans le bloc d’état, sous la phrase qui dit quoi faire');
+      button.click();
+      assert.deepEqual(opened.map((i) => i.id), [5], 'l’incident en cours de ce détecteur');
+      // l'alarme se clôt avant le clic suivant
+      core.S.incidents = new Map([[5, incidentOf(5, 'P-ENTREE', 'closed')]]);
+      button.click();
+      assert.equal(opened.length, 1, 'rien ne s’ouvre');
+      assert.deepEqual(toasts, ['Cette alarme n’est plus en cours.']);
+      assert.equal(goButton(container), null, 'le bouton disparaît');
+      view.hide();
+    });
+
+    it('sans incident en cours, ou porte calme : pas de bouton ; les changements d’alarme sont suivis (refresh)', async () => {
+      const { view, container } = setup({ deps: { goToAlarm() {} } });
+      await view.show(container, 'portes/P-ENTREE');
+      await flush();
+      assert.equal(goButton(container), null, 'forcée mais aucun incident : pas de bouton qui ne mène nulle part');
+      core.S.incidents = new Map([[8, incidentOf(8, 'P-ENTREE', 'acked')]]);
+      view.refresh();
+      assert.ok(goButton(container), 'un incident acquitté reste en cours');
+      core.S.incidents = new Map();
+      view.refresh();
+      assert.equal(goButton(container), null);
+      view.hide();
+      // une porte calme n'a pas de bouton, même avec un incident ouvert sur son détecteur
+      const calm = setup({ deps: { goToAlarm() {} } });
+      core.S.incidents = new Map([[9, incidentOf(9, 'P-ARRIERE')]]);
+      await calm.view.show(calm.container, 'portes/P-ARRIERE');
+      await flush();
+      assert.equal(goButton(calm.container), null);
+      calm.view.hide();
+    });
+
+    it('porte maintenue ouverte (préalarme) : le bouton est là aussi', async () => {
+      const held = { ...DOOR_CLOSED, state: 'held_open', stateLabel: 'Maintenue ouverte', stateHint: 'Quelqu’un retient la porte.', deviceStatus: 'prealarm' };
+      const { view, container } = setup({ routes: { 'GET /api/access/doors/': () => ({ door: held, lastPassages: [], cameras: [] }), 'GET /api/access/doors': () => [held] }, deps: { goToAlarm() {} } });
+      core.S.incidents = new Map([[3, incidentOf(3, 'P-ARRIERE')]]);
+      await view.show(container, 'portes/P-ARRIERE');
+      await flush();
+      assert.ok(goButton(container));
+      view.hide();
+    });
+  });
+
+  describe('fiche : carte « Ouverture à distance » (évènement psim:door-card)', () => {
+    type Card = { slot: FakeEl; door: { detectorId: string } };
+    const listen = () => {
+      const seen: Card[] = [];
+      const fn = (e: Record<string, unknown>) => void seen.push((e as unknown as { detail: Card }).detail);
+      fakeDocument.addEventListener('psim:door-card', fn);
+      return { seen, stop: () => fakeDocument.removeEventListener('psim:door-card', fn) };
+    };
+
+    it('après chaque rendu de la fiche : nom, emplacement `data-slot="remote-open"` et porte (DoorView)', async () => {
+      const { seen, stop } = listen();
+      try {
+        const { view, container } = setup();
+        await view.show(container, 'portes/P-ENTREE');
+        await flush();
+        assert.ok(seen.length >= 1, 'émis à l’ouverture');
+        const first = seen.at(-1)!;
+        assert.equal(first.door.detectorId, 'P-ENTREE');
+        assert.equal(first.slot.attrs.get('data-slot'), 'remote-open');
+        assert.ok(container.contains(first.slot), 'l’emplacement est celui de la fiche');
+        const count = seen.length;
+        core.emit('doors', []); // le temps réel redessine la fiche
+        assert.equal(seen.length, count + 1, 'ré-émis à chaque rendu');
+        assert.equal(seen.at(-1)!.slot, first.slot, 'toujours le même emplacement');
+        view.hide();
+      } finally {
+        stop();
+      }
+    });
+
+    it('aucun composant branché : texte de repli, et le lien « Déclaration » pour l’administrateur seulement', async () => {
+      const admin = setup();
+      await admin.view.show(admin.container, 'portes/P-ENTREE');
+      await flush();
+      const slot = admin.container.querySelector('div[data-slot="remote-open"]')!;
+      assert.equal(text(slot), 'Ouverture à distance : aucune serrure ou barrière n’est reliée à cette porte.Reliez-en une dans Déclaration.');
+      const link = byText(slot, 'a', 'Déclaration')!;
+      assert.equal(hrefOf(link), '#/acces/declaration');
+      admin.view.hide();
+      const operator = setup({ admin: false });
+      await operator.view.show(operator.container, 'portes/P-ENTREE');
+      await flush();
+      const slot2 = operator.container.querySelector('div[data-slot="remote-open"]')!;
+      assert.equal(text(slot2), 'Ouverture à distance : aucune serrure ou barrière n’est reliée à cette porte.');
+      assert.ok(!text(slot2).includes('Reliez-en'), 'pas de consigne d’administration pour un opérateur');
+      assert.ok(!text(slot2).includes('pas encore disponible'), 'l’ancien texte a disparu');
+      operator.view.hide();
+    });
+
+    it('un composant qui pose `dataset.filled` garde sa carte : le rendu ne la reconstruit pas, il ré-émet seulement', async () => {
+      let fills = 0;
+      const button = new FakeEl('button');
+      const component = (e: Record<string, unknown>) => {
+        const { slot } = (e as unknown as { detail: Card }).detail;
+        if (slot.dataset.filled === '1') return;
+        slot.replaceChildren(button);
+        slot.dataset.filled = '1';
+        fills++;
+      };
+      fakeDocument.addEventListener('psim:door-card', component);
+      const { seen, stop } = listen();
+      try {
+        const { view, container } = setup();
+        await view.show(container, 'portes/P-ENTREE');
+        await flush();
+        const slot = container.querySelector('div[data-slot="remote-open"]')!;
+        assert.equal(fills, 1);
+        assert.deepEqual(slot.childElements, [button], 'la carte du composant, sans texte de repli');
+        assert.ok(!text(slot).includes('aucune serrure'));
+        const count = seen.length;
+        core.emit('doors', []);
+        core.emit('doors', []);
+        await flush();
+        assert.deepEqual(slot.childElements, [button], 'jamais reconstruite par le rendu');
+        assert.ok(seen.length >= count + 2, 'mais l’évènement est ré-émis');
+        view.hide();
+      } finally {
+        fakeDocument.removeEventListener('psim:door-card', component);
+        stop();
+      }
+    });
+
+    it('chaque ouverture de fiche remet la carte à zéro : jamais les commandes d’une autre porte', async () => {
+      const { view, container } = setup();
+      await view.show(container, 'portes/P-ENTREE');
+      await flush();
+      const slot = container.querySelector('div[data-slot="remote-open"]')!;
+      const stale = new FakeEl('button');
+      slot.replaceChildren(stale); // un composant a rempli la carte de P-ENTREE
+      slot.dataset.filled = '1';
+      fakeDocument.dispatch('keydown', { key: 'Escape' });
+      view.openDoor('P-STOCK');
+      await flush();
+      assert.ok(!slot.contains(stale), 'la carte de l’autre porte a disparu');
+      assert.equal(slot.dataset.filled, undefined);
+      assert.match(text(slot), /aucune serrure ou barrière/);
+      assert.equal(slot.dataset.door, 'P-STOCK');
+      view.hide();
+    });
+  });
+
+  describe('journal : filtres repliables, dates et libellés', () => {
+    const detailsOf = (container: FakeEl) => container.find((e) => e.tagName === 'details' && e.className.includes('acc-more'))! as FakeEl & { open: boolean };
+    const summaryText = (container: FakeEl) => text(detailsOf(container).find((e) => e.tagName === 'summary')!);
+    const withPhone = async (body: () => Promise<void>) => {
+      const real = g.matchMedia;
+      g.matchMedia = (q: string) => ({ matches: /max-width:\s*600px/.test(q), addEventListener() {} });
+      try {
+        await body();
+      } finally {
+        g.matchMedia = real;
+      }
+    };
+
+    it('au-dessus de 600 px : « Plus de filtres » est ouvert ; période, porte et résultat ne sont jamais dedans', async () => {
+      const { view, container } = setup();
+      await view.show(container, '');
+      await flush();
+      const more = detailsOf(container);
+      assert.ok(more, 'bloc repliable natif (details/summary : clavier, Entrée, Espace)');
+      assert.equal(more.open, true);
+      assert.equal(summaryText(container), 'Plus de filtres');
+      for (const id of ['acc-from', 'acc-to', 'acc-door']) assert.ok(!more.contains(container.find((e) => e.id === id)), `${id} reste visible`);
+      for (const b of container.findAll((e) => e.tagName === 'button' && e.attrs.has('data-result'))) assert.ok(!more.contains(b), 'les boutons de résultat restent visibles');
+      assert.ok(!more.contains(container.find((e) => e.attrs.has('data-preset'))), 'les raccourcis de période restent visibles');
+      for (const id of ['acc-holder', 'acc-credential', 'acc-late']) assert.ok(more.contains(container.find((e) => e.id === id)), `${id} est dans le bloc`);
+      const hints = container.textContent.split('Appuyez sur Entrée ou sur Rechercher.').length - 1;
+      assert.equal(hints, 2, 'à côté de Titulaire et de Numéro de badge : ils attendent « Rechercher »');
+      assert.match(container.textContent, /Seulement les passages reçus après coupure/);
+      assert.match(container.textContent, /Passages récupérés dans la mémoire du boîtier de contrôle d’accès \(contrôleur\) après une coupure\./);
+      assert.match(container.textContent, /Heure affichée : celle de la porte\./);
+      assert.ok(!/Heures du contrôleur/.test(container.textContent));
+      view.hide();
+    });
+
+    it('téléphone : fermé par défaut ; un filtre actif caché est signalé (« Plus de filtres (2) ») ; un champ fautif le rouvre', async () => {
+      await withPhone(async () => {
+        const { view, container, calls } = setup();
+        await view.show(container, '');
+        await flush();
+        const more = detailsOf(container);
+        assert.equal(more.open, false);
+        assert.equal(summaryText(container), 'Plus de filtres');
+        const holder = container.find((e) => e.id === 'acc-holder')!;
+        holder.value = 'Konan';
+        holder.dispatch('input');
+        assert.equal(summaryText(container), 'Plus de filtres (1)', 'le filtre est signalé sur le bouton fermé');
+        const late = container.find((e) => e.id === 'acc-late')!;
+        late.checked = true;
+        late.dispatch('change');
+        await flush();
+        assert.equal(summaryText(container), 'Plus de filtres (2)');
+        assert.equal(new URLSearchParams(calls.filter((c) => c.path.startsWith('/api/access/events?')).at(-1)!.path.split('?')[1]).get('late'), '1', 'la case relance la recherche');
+        // un champ du bloc refusé : le bloc s'ouvre, le focus y va
+        holder.value = 'x'.repeat(65);
+        container.find((e) => e.tagName === 'form' && e.attrs.get('aria-label') === 'Filtres du journal des passages')!.dispatch('submit');
+        await flush();
+        assert.equal(more.open, true, 'le champ fautif n’est pas laissé caché');
+        assert.equal(holder.attrs.get('aria-invalid'), 'true');
+        assert.equal(fakeDocument.activeElement, holder);
+        // « Effacer les filtres » : le compteur retombe
+        byText(container, 'button', 'Effacer les filtres')!.click();
+        await flush();
+        assert.equal(summaryText(container), 'Plus de filtres');
+        view.hide();
+      });
+    });
+
+    it('une date modifiée relance la recherche (sans voler le focus) ; une date vide est refusée avec un message annoncé', async () => {
+      const { view, container, calls } = setup();
+      await view.show(container, '');
+      await flush();
+      const searches = () => calls.filter((c) => c.path.startsWith('/api/access/events?'));
+      const from = container.find((e) => e.id === 'acc-from')!;
+      const error = container.find((e) => e.tagName === 'p' && e.className.includes('form-error'))!;
+      assert.equal(error.attrs.get('role'), 'alert', 'message annoncé');
+      const before = searches().length;
+      from.value = '2026-10-16T22:00';
+      from.dispatch('change');
+      await flush();
+      assert.equal(searches().length, before + 1, 'la recherche repart sans appuyer sur « Rechercher »');
+      assert.equal(new URLSearchParams(searches().at(-1)!.path.split('?')[1]).get('from'), String(at(2026, 10, 16, 22, 0)));
+      // date vidée
+      fakeDocument.active = null;
+      from.value = '';
+      from.dispatch('change');
+      await flush();
+      assert.equal(searches().length, before + 1, 'aucune recherche sans borne');
+      assert.equal(text(error), 'La date de début est vide ou incomplète : choisissez un jour et une heure.');
+      assert.equal(from.attrs.get('aria-invalid'), 'true');
+      assert.notEqual(fakeDocument.activeElement, from, 'le focus n’est pas volé pendant la saisie');
+      // « Rechercher » refuse aussi, et mène au champ
+      container.find((e) => e.tagName === 'form' && e.attrs.get('aria-label') === 'Filtres du journal des passages')!.dispatch('submit');
+      assert.equal(searches().length, before + 1);
+      assert.equal(fakeDocument.activeElement, from);
+      // les deux vides : une phrase pour les deux
+      container.find((e) => e.id === 'acc-to')!.value = '';
+      container.find((e) => e.id === 'acc-to')!.dispatch('change');
+      assert.equal(text(error), 'Les dates de début et de fin sont vides : choisissez la période à chercher.');
+      // une date valide efface le message et relance
+      from.value = '2026-10-16T22:00';
+      container.find((e) => e.id === 'acc-to')!.value = '2026-10-17T08:00';
+      container.find((e) => e.id === 'acc-to')!.dispatch('change');
+      await flush();
+      assert.equal(text(error), '');
+      assert.equal(from.attrs.has('aria-invalid'), false);
+      assert.equal(searches().length, before + 2);
+      view.hide();
+    });
+
+    it('« Dernières 24 h » : de la minute d’il y a 24 heures à la minute présente, enfoncé après le clic', async () => {
+      const { view, container, calls } = setup();
+      await view.show(container, '');
+      await flush();
+      const button = container.find((e) => e.tagName === 'button' && e.attrs.get('data-preset') === 'last24')!;
+      assert.equal(text(button), 'Dernières 24 h');
+      assert.equal(container.findAll((e) => e.tagName === 'button' && e.attrs.has('data-preset')).map((b) => text(b)).join('|'), 'Aujourd’hui|Dernières 24 h|Hier|7 derniers jours');
+      button.click();
+      await flush();
+      const q = new URLSearchParams(calls.filter((c) => c.path.startsWith('/api/access/events?')).at(-1)!.path.split('?')[1]);
+      assert.equal(Number(q.get('to')) - Number(q.get('from')), 86_400_000 + 60_000, '24 h, plus la minute incluse');
+      assert.equal(button.attrs.get('aria-pressed'), 'true');
+      assert.equal(container.find((e) => e.attrs.get('data-preset') === 'today')!.attrs.get('aria-pressed'), 'false');
+      view.hide();
+    });
+  });
+
+  describe('journal : résultat, vidéo et mots du métier', () => {
+    it('refusé : pastille « Refusé » avec l’icône de refus, la raison à côté (hors de la pastille), nom complet pour les lecteurs d’écran', async () => {
+      const { view, container } = setup();
+      await view.show(container, '');
+      await flush();
+      const rows = container.findAll((e) => e.tagName === 'tr' && e.attrs.has('data-passage'));
+      const cell = rows[1].querySelector('td[data-label="Résultat"]')!;
+      assert.ok(cell.className.includes('acc-result'));
+      const pill = cell.find((e) => e.className.includes('pill'))!;
+      assert.equal(text(pill), 'Refusé', 'un mot court dans la pastille');
+      assert.equal(pill.attrs.get('aria-hidden'), 'true');
+      assert.equal(pill.find((e) => e.tagName === 'use')!.attrs.get('href'), 'icons.svg#state-denied', 'icône de refus, pas un cadenas');
+      assert.equal(cell.findAll((e) => e.tagName === 'use' && /#lock$/.test(e.attrs.get('href') ?? '')).length, 0);
+      const reason = cell.find((e) => e.className.includes('acc-reason'))!;
+      assert.equal(text(reason), 'Badge inconnu');
+      assert.ok(!pill.contains(reason), 'la raison est hors de la pastille');
+      assert.equal(cell.find((e) => e.className === 'sr-only')!.textContent, 'Refusé — badge inconnu', 'le nom accessible complet');
+      assert.match(text(cell), /Reçu après coupure/);
+      const ok = rows[0].querySelector('td[data-label="Résultat"]')!;
+      assert.equal(text(ok.find((e) => e.className.includes('pill'))!), 'Accepté');
+      assert.equal(ok.find((e) => e.className.includes('pill'))!.find((e) => e.tagName === 'use')!.attrs.get('href'), 'icons.svg#state-ok');
+      assert.equal(ok.find((e) => e.className.includes('acc-reason')), null, 'pas de raison pour un passage accepté');
+      view.hide();
+    });
+
+    it('« Voir la vidéo » : bouton discret (ghost, caméra, « Vidéo »), nom complet pour les lecteurs, plus de note sous le tableau', async () => {
+      const { view, container } = setup();
+      await view.show(container, '');
+      await flush();
+      const button = videoButton(container)!;
+      assert.ok(button.className.includes('btn-ghost'));
+      assert.equal(text(button), 'Vidéo');
+      assert.equal(button.find((e) => e.tagName === 'use')!.attrs.get('href'), 'icons.svg#camera');
+      assert.match(button.attrs.get('aria-label') ?? '', /^Voir la vidéo du passage de \d\d:\d\d$/);
+      assert.ok(!container.textContent.includes('montre l’enregistrement du passage'), 'la note est retirée du bas du tableau');
+      assert.ok(!/ou l’image en direct de la caméra, et la fenêtre le dit/.test(container.textContent));
+      view.hide();
+    });
+
+    it('vocabulaire : N° de personne, entrée / sortie, tableur, détails de la porte ; plus de « Réf. », « différé », « CSV » ni « Fiche »', async () => {
+      const { view, container } = setup();
+      await view.show(container, '');
+      await flush();
+      let t = container.textContent;
+      assert.match(t, /N° de personne 101/);
+      assert.match(t, /Entrée \/ sortie/);
+      assert.match(t, /Exporter \(tableur\)/);
+      assert.match(t, /Exporter \(tableur\) : fichier lisible dans Excel\./);
+      assert.equal(container.find((e) => e.tagName === 'button' && text(e) === 'Exporter (tableur)')!.attrs.get('title'), 'Fichier lisible dans Excel.');
+      for (const jargon of [/Réf\./, /différé/i, /\bCSV\b/, /Heures du contrôleur/, /Sens\b/]) assert.doesNotMatch(t, jargon, String(jargon));
+      view.hide();
+      await view.show(container, 'portes');
+      await flush();
+      t = container.textContent;
+      assert.match(t, /Détails de la porte/);
+      assert.doesNotMatch(t, /\bFiche\b/);
+      assert.match(t, /Alarme si la porte reste ouverte|Dernier passage/);
+      view.hide();
+    });
+
+    it('« contrôleur » est expliqué à sa première apparition visible de chaque écran', async () => {
+      const firstMention = (t: string) => {
+        const i = t.search(/contrôleur/i);
+        return i < 0 ? null : t.slice(0, i + 'contrôleur'.length + 1).toLowerCase();
+      };
+      const pane = (container: FakeEl, id: string) => container.find((e) => e.id === `acc-pane-${id}`)!;
+      const fiche = (container: FakeEl) => container.find((e) => e.tagName === 'section' && e.attrs.get('aria-labelledby') === 'acc-fiche-title')!;
+      const screens: [string, (c: FakeEl) => FakeEl][] = [
+        ['journal', (c) => pane(c, 'journal')],
+        ['portes', (c) => pane(c, 'portes')],
+        ['portes/P-ENTREE', fiche],
+        ['declaration', (c) => pane(c, 'declaration')],
+      ];
+      for (const [sub, area] of screens) {
+        const { view, container } = setup();
+        await view.show(container, sub);
+        await flush();
+        const mention = firstMention(text(area(container)));
+        assert.ok(mention, `« contrôleur » apparaît sur l’écran ${sub}`);
+        assert.ok(mention.endsWith(A.CONTROLLER_LONG), `${sub} : première apparition = « ${A.CONTROLLER_LONG} » (lu : …${mention.slice(-60)})`);
+        view.hide();
+      }
+    });
+
+    it('porte hors ligne : le texte du serveur, premier de la fiche, explique le contrôleur ; le libellé de la liste reste court', async () => {
+      const offline = { ...DOOR_OFFLINE, stateHint: 'Le PSIM n’a plus de nouvelles de cette porte. Faites vérifier l’alimentation et le réseau du contrôleur.' };
+      const { view, container } = setup({ routes: { 'GET /api/access/doors/': () => ({ door: offline, lastPassages: [], cameras: [] }), 'GET /api/access/doors': () => [offline] } });
+      await view.show(container, 'portes/P-STOCK');
+      await flush();
+      const fiche = container.find((e) => e.tagName === 'section' && e.attrs.get('aria-labelledby') === 'acc-fiche-title')!;
+      const t = text(fiche);
+      assert.ok(t.includes('réseau du boîtier de contrôle d’accès (contrôleur).'));
+      assert.ok(t.search(/contrôleur/i) === t.indexOf('contrôleur)'), 'la première mention est celle qui explique');
+      assert.ok(fiche.findAll((e) => e.tagName === 'dt').some((e) => text(e) === 'Contrôleur'), 'la liste dit « Contrôleur » ensuite');
+      view.hide();
+    });
+
+    it('le sous-titre de l’écran est court', () => {
+      assert.match(read('app.js'), /acces: \{ title: 'Accès', sub: 'Passages et portes' \}/);
+    });
+  });
+
+  describe('plan : pastilles d’état des portes', () => {
+    it('le mot court de « maintenue ouverte » est « Reste ouverte », partout (plan, légende)', () => {
+      assert.match(read('core.js'), /held_open: \{ label: 'Maintenue ouverte', short: 'Reste ouverte'/);
+      assert.match(read('index.html'), /<span>Reste ouverte<\/span><\/span>retenue ouverte/);
+      assert.ok(!/<span>Maintenue<\/span>/.test(read('index.html')));
+    });
+
+    it('le bouton du plan s’appelle « Détails de la porte »', () => {
+      const plan = read('plan.js');
+      assert.match(plan, /'aria-label': `Détails de la porte \$\{door\.name \|\| d\.name\}`/);
+      assert.match(plan, /icon\('door'\), 'Détails de la porte'/);
+      assert.ok(!/Fiche de la porte/.test(plan));
+    });
+
+    it('pastille plus grande : icône de 16 px, texte d’au moins --fs-sm, placement anti-recouvrement branché', () => {
+      const css = read('surveillance.css');
+      const rule = (selector: string) => new RegExp(`(?:^|\\n)${selector.replace(/[.[\]*+?^${}()|\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+      assert.match(rule('.pin-door'), /font-size: var\(--fs-sm\)/);
+      assert.match(rule('.pin-door .icon'), /width: 16px; height: 16px/);
+      assert.doesNotMatch(rule('.pin-door'), /--fs-xs|--ink-3/);
+      const plan = read('plan.js');
+      assert.match(plan, /import \{ placeDoorBadges \} from '\.\/doorbadges\.js'/);
+      assert.match(plan, /layoutDoorBadges\(\)/);
+      assert.ok(!/\.style\.(left|top)\s*=[^;]*pin-door/.test(plan));
+    });
+  });
+
+  describe('textes secondaires : taille et contraste', () => {
+    const luminance = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const base = read('base.css');
+    const tokens = (header: string) => {
+      const start = base.indexOf(header);
+      const block = base.slice(start, base.indexOf('}', start));
+      return Object.fromEntries([...block.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})/g)].map((m) => [m[1], m[2]]));
+    };
+    const themes = { jour: tokens(':root {'), nuit: tokens(":root[data-theme='night'] {") };
+
+    it('.acc-sub, libellés de carte (td[data-label]::before), noms de faits et .pin-door : au moins --fs-sm, jamais --ink-3', () => {
+      const css = read('access.css');
+      const bodies = (needle: string) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].includes(needle)).map((m) => m[2]);
+      for (const needle of ['.acc-sub {', '[data-label]::before', '.acc-facts > dt']) {
+        const found = (needle === '.acc-sub {' ? bodies('.acc-sub ') : bodies(needle)).filter((b) => /font-size|color:/.test(b));
+        assert.ok(found.length >= 1, needle);
+        for (const body of found) {
+          assert.match(body, /font-size: var\(--fs-sm\)/, `${needle} : taille`);
+          assert.match(body, /color: var\(--ink-2\)/, `${needle} : couleur`);
+          assert.doesNotMatch(body, /--ink-3|--fs-xs/);
+        }
+      }
+      const pin = /\.pin-door \{([^}]*)\}/.exec(read('surveillance.css'))![1];
+      assert.match(pin, /font-size: var\(--fs-sm\)/);
+      assert.doesNotMatch(pin, /--ink-3/);
+    });
+
+    it('--ink-2 passe 4,5:1 sur la feuille et les fonds de carte, de jour comme de nuit', () => {
+      for (const [name, t] of Object.entries(themes)) {
+        for (const bg of ['surface', 'surface-2', 'warning-soft', 'alarm-soft', 'offline-soft', 'info-soft']) {
+          assert.ok(t[bg] && t['ink-2'], `${name} : jetons ${bg}`);
+          assert.ok(contrast(t['ink-2'], t[bg]) >= 4.5, `${name} : --ink-2 sur --${bg} = ${contrast(t['ink-2'], t[bg]).toFixed(2)}`);
+        }
+      }
+    });
+
+    it('texte des pastilles de porte : 4,5:1 sur son fond, de jour comme de nuit', () => {
+      const pairs: [string, string][] = [['ink', 'surface'], ['ok-ink', 'surface'], ['info-ink', 'surface'], ['warning-ink', 'warning-soft'], ['alarm-ink', 'alarm-soft'], ['offline-ink', 'offline-soft']];
+      for (const [name, t] of Object.entries(themes)) {
+        for (const [fg, bg] of pairs) assert.ok(contrast(t[fg], t[bg]) >= 4.5, `${name} : --${fg} sur --${bg} = ${contrast(t[fg], t[bg]).toFixed(2)}`);
+      }
+    });
+
+    it('journal en cartes : le résultat passe en premier, à côté de l’heure', () => {
+      const css = read('access.css');
+      const container = css.slice(css.indexOf('@container acctable (max-width: 960px)'));
+      assert.match(container, /table\.acc-journal-table td\.acc-result \{ grid-column: 1; grid-row: 1;/);
+      assert.match(container, /table\.acc-journal-table td\.acc-when \{ grid-column: 2; grid-row: 1;/);
+      assert.match(container, /table\.acc-journal-table td\.acc-result::before \{ display: none; \}/, 'pas de libellé devant la pastille');
+    });
   });
 
   it('hrefs de l’écran : seulement des liens internes', async () => {

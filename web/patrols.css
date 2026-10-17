@@ -266,7 +266,7 @@ table.pt-runs tr.pt-run-detail:hover { background: transparent; }
 
 /* ------------------------------------------------------------------------------------------------ impression de la planche */
 /* patrols.js pose pt-printing sur <body> le temps de l'impression : on n'imprime QUE la planche d'étiquettes (3 colonnes
-   de 63 mm sur A4, bordure fine pour découper, QR de 30 mm, encre noire sur fond blanc), jamais le cadre de l'application. */
+   de 63 mm sur A4, bordure fine pour découper, QR de 35 mm (symbole d’au moins 3 cm, marge comprise : 1 module), encre noire sur fond blanc), jamais le cadre de l'application. */
 @page { margin: 10mm; } /* le format du papier reste celui choisi à l'impression ; 3 x 63 mm tiennent sur A4 */
 @media print {
   body.pt-printing { display: block; height: auto; overflow: visible; background: #ffffff; color: #000000; }
@@ -284,8 +284,8 @@ table.pt-runs tr.pt-run-detail:hover { background: transparent; }
     break-inside: avoid; page-break-inside: avoid;
   }
   body.pt-printing .pt-label-qrbox { min-width: 0; min-height: 0; padding: 0; border: 0; background: #ffffff; color: #000000; }
-  body.pt-printing .pt-label-qr { width: 30mm; height: 30mm; }
-  body.pt-printing .pt-label-fail { max-width: 30mm; font-size: 8pt; color: #000000; }
+  body.pt-printing .pt-label-qr { width: 35mm; height: 35mm; }
+  body.pt-printing .pt-label-fail { max-width: 35mm; font-size: 8pt; color: #000000; }
   body.pt-printing .pt-label-name { font-size: 12pt; color: #000000; }
   body.pt-printing .pt-label-zone { font-size: 9pt; color: #000000; }
   body.pt-printing .pt-label-code { font-size: 8pt; color: #000000; }

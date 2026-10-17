@@ -207,3 +207,34 @@ describe('champ access (passage a une porte)', () => {
     assert.ok(KNOWN_EVENTS.has('clock_drift'));
   });
 });
+
+describe('mode de la porte (door_mode, F19)', () => {
+  it('door_mode + doorMode valides sont transmis ; ts et msgId facultatifs', () => {
+    for (const doorMode of ['normal', 'always_open', 'always_closed']) {
+      const r = prepare('P-01', { event: 'door_mode', doorMode }, NOW, id);
+      assert.ok(r.ok, doorMode);
+      assert.deepEqual(r.payload, { event: 'door_mode', ts: NOW, msgId: 'genere-1', doorMode });
+      assert.deepEqual(r.warnings, []);
+    }
+  });
+
+  it('refuse un mode inconnu, un mode sans door_mode et door_mode sans mode', () => {
+    const cases: [unknown, RegExp][] = [
+      [{ event: 'door_mode', doorMode: 'ouverte' }, /doorMode invalide/],
+      [{ event: 'door_mode', doorMode: 3 }, /doorMode invalide/],
+      [{ event: 'door_mode' }, /door_mode exige doorMode/],
+      [{ event: 'heartbeat', doorMode: 'normal' }, /doorMode exige event = door_mode/],
+      [{ state: 'normal', doorMode: 'normal' }, /doorMode exige event = door_mode/],
+    ];
+    for (const [m, re] of cases) {
+      const r = prepare('P-01', m, NOW, id);
+      assert.equal(r.ok, false, JSON.stringify(m));
+      assert.match((r as { error: string }).error, re);
+    }
+  });
+
+  it('door_mode est un signe de vie connu du PSIM (alive), libelle « Mode de la porte »', () => {
+    assert.ok(KNOWN_EVENTS.has('door_mode'));
+    assert.equal(EVENTS.door_mode, 'alive');
+  });
+});

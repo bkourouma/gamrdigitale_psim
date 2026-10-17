@@ -28,10 +28,15 @@ export interface DriverOptions {
   /** Identifiant d'utilisateur transmis avec `openDoor` / `closeDoor` (facultatif). */
   remoteUserId?: number | null;
   log?: LogFn;
+  /**
+   * Appele APRES un changement de mode reussi (`holdOpen`, `restoreNormal`) avec le mode que le controleur vient de confirmer :
+   * le module en tire le mode de porte (F19) sans attendre la relecture periodique. Une exception est sans effet.
+   */
+  onMode?: (doorNo: number, mode: DoorMode) => void;
 }
 
 /** Erreur reseau / HTTP -> echec d'ordre avec un code court (`unreachable`, `timeout`, `refused_by_device`). */
-function failure(err: unknown): ActuatorFailure {
+export function failure(err: unknown): ActuatorFailure {
   if (err instanceof ActuatorFailure) return err;
   if (err instanceof DahuaAuthError) return new ActuatorFailure('refused_by_device', 'identifiants refuses par le controleur');
   if (err instanceof DahuaHttpError) {
@@ -46,6 +51,7 @@ export class DahuaDoorDriver implements DoorDriver {
   private readonly http: HttpGetter;
   private readonly remoteUserId: number | null;
   private readonly log: LogFn;
+  private readonly onMode: ((doorNo: number, mode: DoorMode) => void) | null;
   /** Dernier ordre en cours par porte : le suivant attend sa fin (reussie ou non). */
   private readonly chains = new Map<number, Promise<unknown>>();
 
@@ -53,6 +59,7 @@ export class DahuaDoorDriver implements DoorDriver {
     this.http = http;
     this.remoteUserId = opts.remoteUserId ?? null;
     this.log = opts.log ?? (() => undefined);
+    this.onMode = opts.onMode ?? null;
   }
 
   pulse(doorNo: number): Promise<void> {
@@ -112,8 +119,15 @@ export class DahuaDoorDriver implements DoorDriver {
     if (read.status !== 200) throw new ActuatorFailure('refused_by_device', `lecture de la configuration refusee (HTTP ${read.status})`);
     const current = parseDoorMode(read.body, index);
     if (current === null) throw new ActuatorFailure('refused_by_device', 'mode de la porte introuvable dans la configuration du controleur');
-    if (current === mode) return;
-    this.log('info', `porte ${doorNo} : mode ${current} -> ${mode}`);
-    await this.command(`/cgi-bin/configManager.cgi?action=setConfig&AccessControl[${index}].State=${mode}`);
+    if (current !== mode) {
+      this.log('info', `porte ${doorNo} : mode ${current} -> ${mode}`);
+      await this.command(`/cgi-bin/configManager.cgi?action=setConfig&AccessControl[${index}].State=${mode}`);
+    }
+    // Le controleur vient de confirmer ce mode (ecrit, ou deja le bon) : mode de porte (F19) a jour tout de suite.
+    try {
+      this.onMode?.(doorNo, mode);
+    } catch {
+      // un rappel defaillant ne change pas l'accuse de l'ordre
+    }
   }
 }

@@ -39,10 +39,10 @@ export function pulseDurationS(cfg) {
 }
 
 /** « Ouvrir N minutes » : possible seulement si l'action admet au moins une minute (maxS est en secondes). */
-export function minutesLimit(cfg) {
+export function minutesLimit(cfg, role = 'operator') {
   if (!cfg || typeof cfg.maxS !== 'number') return { ok: false, maxMinutes: 0, reason: 'Cet équipement ne permet pas d’ouverture temporisée.' };
   const maxMinutes = Math.floor(cfg.maxS / 60);
-  if (maxMinutes < 1) return { ok: false, maxMinutes: 0, reason: `Durée maximale de cet équipement : ${cfg.maxS} s, soit moins d’une minute. Utilisez l’ouverture par impulsion.` };
+  if (maxMinutes < 1) return { ok: false, maxMinutes: 0, reason: `Durée maximale de cet équipement : ${cfg.maxS} s, soit moins d’une minute : « Ouvrir N minutes » est indisponible. ${role === 'admin' ? 'Pour l’activer : relever maxS de l’action unlock dans le PSIM (Équipements, Actionneurs, Actions) ET dans la section actuators de la passerelle.' : 'Demandez à un administrateur.'} En attendant, utilisez l’ouverture par impulsion.` };
   return { ok: true, maxMinutes, reason: null };
 }
 
@@ -61,7 +61,7 @@ export const minutesLabel = (n) => `Ouvrir ${n} minute${n > 1 ? 's' : ''}`;
  * mode maintenance. Renvoie { state: 'unavailable' | 'not_allowed' | 'ready', message, blocked, notes, buttons, minutes }.
  * `blocked` (texte) desactive tous les boutons : maintenance, actionneur inactif, liaison coupee.
  */
-export function doorActionPlan({ door, remote, actuator, maintenance = false }) {
+export function doorActionPlan({ door, remote, actuator, maintenance = false, role = 'operator' }) {
   const plan = { state: 'ready', message: null, blocked: null, notes: [], buttons: [], minutes: null };
   if (!remote || remote.available !== true) {
     plan.state = 'unavailable';
@@ -87,7 +87,7 @@ export function doorActionPlan({ door, remote, actuator, maintenance = false }) 
     if (can('unlock')) {
       const cfg = actuator.actions.unlock;
       add('unlock_pulse', 'unlock', 'Ouvrir (impulsion)', { durationS: pulseDurationS(cfg) });
-      const limit = minutesLimit(cfg);
+      const limit = minutesLimit(cfg, role);
       plan.minutes = { ...limit, action: 'unlock', cfg, defaultMinutes: limit.ok ? Math.min(5, limit.maxMinutes) : null };
     }
     if (can('lock')) {
@@ -167,7 +167,30 @@ export function evacuationPayload({ reason, phrase, password }) {
 export function evacuationPreview(doors) {
   const list = Array.isArray(doors) ? doors : [];
   const ready = list.filter((d) => d.ready);
-  return { total: list.length, ready: ready.length, notReady: list.filter((d) => !d.ready), canGo: ready.length > 0 };
+  const full = ready.filter((d) => d.action === 'evacuate');
+  const brief = ready.filter((d) => d.action !== 'evacuate');
+  const timed = full.map((d) => d.maxDurationS).filter((n) => typeof n === 'number');
+  return { total: list.length, ready: ready.length, notReady: list.filter((d) => !d.ready), canGo: ready.length > 0, full: full.length, brief: brief.length, evacuationS: timed.length ? Math.max(...timed) : null, warned: list.filter((d) => d.warning).length };
+}
+
+const plural = (n, one, many) => (n > 1 ? many : one);
+const durationText = (s) => (s % 60 === 0 ? `${s / 60} minute${s / 60 > 1 ? 's' : ''}` : `${s} s`);
+
+/** Resume de l'apercu : combien de portes restent ouvertes toute l'evacuation, combien ne s'ouvrent que brievement. */
+export function evacuationSummary(preview) {
+  const parts = [];
+  if (preview.full > 0) {
+    const d = preview.evacuationS ? ` (${durationText(preview.evacuationS)} puis reverrouillage automatique)` : '';
+    parts.push(`${preview.full} porte${plural(preview.full, '', 's')} s’ouvri${plural(preview.full, 'ra', 'ront')} pour toute la durée d’évacuation${d}`);
+  }
+  if (preview.brief > 0) parts.push(`${preview.brief} ne s’ouvri${plural(preview.brief, 'ra', 'ront')} que brièvement`);
+  return parts.length ? `${parts.join(', ')}.` : 'Aucune porte ne recevra d’ordre.';
+}
+
+/** Phrase de la premiere confirmation : la duree reelle, pas une valeur supposee. */
+export function evacuationDurationText(preview) {
+  const lock = preview.evacuationS ? `les serrures restent ouvertes ${durationText(preview.evacuationS)} puis se reverrouillent seules` : 'la durée est fixée par chaque équipement';
+  return `Ce geste ouvre toutes les portes prêtes de la liste : ${lock} ; les portails et barrières restent ouverts jusqu’à leur fermeture sur place. Il est journalisé à votre nom.`;
 }
 
 /**
@@ -175,6 +198,12 @@ export function evacuationPreview(doors) {
  * `open` n'est vrai que pour un accuse (jamais pour « envoye »).
  */
 export function evacuationRowState(result, cmd) {
+  const state = rowState(result, cmd);
+  const warning = result?.warning ? String(result.warning) : null;
+  return { ...state, warning };
+}
+
+function rowState(result, cmd) {
   const err = result?.error ? String(result.error) : '';
   switch (result?.status) {
     case 'no_gateway': return { key: 'no_gateway', label: 'Sans passerelle', detail: err || 'Aucune passerelle n’écoute : rien n’a été envoyé. Ouvrir sur place.', open: false, final: true, tone: 'is-alarm' };
@@ -299,7 +328,7 @@ async function build(root, door, detail, opts, { core, cmds }) {
       return;
     }
   }
-  const plan = doorActionPlan({ door, remote, actuator, maintenance });
+  const plan = doorActionPlan({ door, remote, actuator, maintenance, role: core.S.me?.role });
   const mode = doorModeText(door);
 
   // ---- etat de la porte, mode, actionneur
@@ -482,7 +511,7 @@ async function startEvacuation({ core, cmds, account }) {
             { class: d.ready ? '' : 'is-notready' },
             h('td', {}, h('strong', { text: d.doorName })),
             h('td', { text: d.actuatorName ?? d.actuatorId }),
-            h('td', { text: `${cmds.actionLabel(d.action)}${d.maxDurationS ? ` (${d.maxDurationS} s au plus)` : ''}` }),
+            h('td', { text: `${cmds.actionLabel(d.action)}${d.maxDurationS ? ` (${d.maxDurationS} s au plus)` : ''}` }, d.warning ? h('p', { class: 'dooract-warn' }, h('span', { class: 'tag is-warning', text: 'Attention' }), h('span', { text: ` ${d.warning}` })) : null),
             h('td', {}, d.ready ? h('span', { class: 'tag is-ok', text: 'Prête' }) : h('span', { class: 'tag is-alarm' }, icon('state-alarm', 'icon-sm'), h('span', { text: `Non prête : ${d.problem ?? 'problème inconnu'}` }))),
           ),
         )),
@@ -493,23 +522,24 @@ async function startEvacuation({ core, cmds, account }) {
       h(
         'div',
         { class: 'dooract-evac-box' },
+        p.ready ? h('p', { class: 'notice is-warning', text: evacuationSummary(p) }) : null,
         h('p', { class: 'dialog-lead', text: p.total ? `${p.ready} porte${p.ready > 1 ? 's' : ''} sur ${p.total} ${p.ready > 1 ? 'seraient ouvertes' : 'serait ouverte'}. Rien n’est encore envoyé.` : 'Aucune porte n’est liée à un actionneur : il n’y a rien à ouvrir.' }),
         p.total ? table : null,
         p.notReady.length ? h('p', { class: 'notice is-alarm', role: 'alert', text: `${p.notReady.length} porte${p.notReady.length > 1 ? 's' : ''} ne ${p.notReady.length > 1 ? 'recevront' : 'recevra'} aucun ordre : à ouvrir sur place.` }) : null,
-        h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: close }), p.canGo ? h('button', { class: 'btn btn-danger', type: 'button', text: 'Continuer', onclick: showFirstConfirm }) : null),
+        h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: close }), p.canGo ? h('button', { class: 'btn btn-danger', type: 'button', text: 'Continuer', onclick: () => showFirstConfirm(p) }) : null),
       ),
     );
   }
 
   // 2. premiere confirmation
-  function showFirstConfirm() {
+  function showFirstConfirm(p) {
     dialogs.open(
       'Tout ouvrir : première confirmation',
       h(
         'div',
         { class: 'dooract-evac-box' },
         h('p', { class: 'notice is-alarm' }, h('strong', { text: EVACUATION_WARNING })),
-        h('p', { text: 'Ce geste ouvre toutes les portes prêtes de la liste, pour 5 minutes au plus chacune (limite de chaque équipement), et il est journalisé à votre nom.' }),
+        h('p', { text: evacuationDurationText(p) }),
         h('div', { class: 'actions dialog-actions' }, h('button', { class: 'btn', type: 'button', text: 'Annuler', onclick: close }), h('button', { class: 'btn btn-danger', type: 'button', text: 'J’ai compris, continuer', onclick: showSecondConfirm })),
       ),
     );
@@ -573,7 +603,7 @@ async function startEvacuation({ core, cmds, account }) {
           {},
           h('td', {}, h('strong', { text: r.doorName ?? r.doorId })),
           h('td', {}, h('span', { class: `tag ${s.tone}`, text: s.label })),
-          h('td', { text: `${s.detail}${r.durationS ? ` (${r.durationS} s demandées)` : ''}` }),
+          h('td', {}, h('span', { text: `${s.detail}${r.durationS ? ` (${r.durationS} s demandées)` : ''}` }), s.warning ? h('p', { class: 'dooract-warn' }, h('span', { class: 'tag is-warning', text: 'Attention' }), h('span', { text: ` ${s.warning}` })) : null),
         );
       }));
       const b = evacuationBilan(states);

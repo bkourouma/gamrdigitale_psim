@@ -7,6 +7,9 @@
  *    et sont RENVOYES tant que le serveur n'a pas repondu `OK` (comme la memoire hors ligne d'un vrai appareil) ;
  *  - interrogation `getrequest` a la demande, execution simulee des `CONTROL DEVICE` et envoi du resultat `devicecmd`
  *    (code configurable, ou silence) ;
+ *  - execution des `DATA UPDATE` / `DATA DELETE` recus (utilisateurs, droits, fuseaux, jours feries) : `Return=0`, un code d'erreur
+ *    forcable (`dataOverride`) ou « capacite pleine » (`capacity`) ; les droits d'un autre fuseau S'AJOUTENT a l'ancien (defaut connu
+ *    des micrologiciels), les champs interdits (mot de passe, gabarits) recus sont notes dans `forbiddenSeen` ;
  *  - coupures (`goOffline` / `goOnline`), horloge decalable, numero de serie modifiable ;
  *  - AUCUNE connexion hors de 127.0.0.1.
  */
@@ -69,6 +72,33 @@ export interface Executed {
   text: string;
 }
 
+/** Champs `Cle=valeur` d'une commande `DATA ...` (separes par des tabulations). */
+export type DataFields = Record<string, string>;
+
+/** Commande `DATA UPDATE|DELETE <table> champs`, decodee. */
+export interface DataCommand {
+  verb: 'UPDATE' | 'DELETE';
+  table: string;
+  fields: DataFields;
+}
+
+/** Decode une commande de donnees, ou `null` si ce n'en est pas une. */
+export function parseDataCommand(text: string): DataCommand | null {
+  const m = /^DATA (UPDATE|DELETE) ([A-Za-z0-9_]+) ?([^\r\n]*)$/.exec(text);
+  if (!m) return null;
+  const fields: DataFields = {};
+  for (const cell of (m[3] as string).split('\t')) {
+    const eq = cell.indexOf('=');
+    if (eq > 0) fields[cell.slice(0, eq)] = cell.slice(eq + 1);
+  }
+  return { verb: m[1] as 'UPDATE' | 'DELETE', table: m[2] as string, fields };
+}
+
+/** Code de retour de la « capacite pleine » du faux appareil (le vrai code est inconnu : a declarer dans `sync.fullCodes`). */
+export const FAKE_FULL_CODE = -2001;
+/** Champs qu'AUCUNE commande ne doit jamais porter (code PIN, gabarits biometriques, photos). */
+export const FORBIDDEN_DATA_FIELDS = /^(password|passwd|pin2|template|tmp|photo|face|fingerprint|biodata)/i;
+
 /** Heure locale `YYYY-MM-DD HH:MM:SS` d'un instant (ms), pour un appareil d'ecart `utcOffsetMin`. */
 export function deviceTimeText(ms: number, utcOffsetMin = 0): string {
   const d = new Date(ms + utcOffsetMin * 60_000);
@@ -102,6 +132,24 @@ export class FakeZk {
   readonly executed: Executed[] = [];
   /** Reponses du serveur aux envois de donnees (statut). */
   readonly postStatuses: number[] = [];
+
+  // --- Donnees ecrites par `DATA UPDATE / DELETE` (synchronisation des titulaires) -----------------------------------
+  /** Utilisateurs, par `Pin` : champs recus (fusionnes d'une mise a jour a l'autre, comme une base de donnees). */
+  readonly users = new Map<string, DataFields>();
+  /** Droits d'acces : cle `Pin|fuseau`. Une mise a jour d'un AUTRE fuseau s'ajoute a l'ancien (le defaut connu des micrologiciels). */
+  readonly authorizations = new Map<string, { pin: string; timezone: number; doors: number }>();
+  /** Fuseaux horaires, par numero. Le fuseau 1 existe d'origine (« toujours »). */
+  readonly timezones = new Map<number, DataFields>([[1, { TimezoneId: '1', preset: '1' }]]);
+  /** Jours feries, par date `AAAAMMJJ`. */
+  readonly holidays = new Map<string, DataFields>();
+  /** Toutes les commandes `DATA ...` executees, dans l'ordre. */
+  readonly dataLog: DataCommand[] = [];
+  /** Noms de champs interdits vus dans une commande (doit rester vide). */
+  readonly forbiddenSeen: string[] = [];
+  /** Capacites (nombre maximal d'utilisateurs, de fuseaux hors preset, de jours feries) ; au-dela : `FAKE_FULL_CODE`. */
+  capacity: { users?: number; timezones?: number; holidays?: number } = {};
+  /** Force le code de retour de certaines commandes de donnees (par exemple `-30`), `undefined` = comportement normal. */
+  dataOverride: ((cmd: DataCommand) => number | undefined) | null = null;
   private readonly port: number;
   private readonly now: () => number;
   private online = true;
@@ -261,9 +309,76 @@ export class FakeZk {
       commands.push(cmd);
       this.received.push(cmd);
       this.executed.push(cmd);
-      if (this.commandReply !== 'silent') await this.answer(cmd, this.commandReply === 'ok' ? 0 : this.commandReply);
+      // L'appareil execute (les donnees changent) puis repond ; en mode `silent` il execute mais le resultat n'arrive jamais.
+      const natural = this.execute(cmd.text);
+      if (this.commandReply !== 'silent') await this.answer(cmd, this.commandReply === 'ok' ? natural : this.commandReply);
     }
     return { reply, commands };
+  }
+
+  /** Execute une commande `DATA UPDATE|DELETE` sur les donnees du faux appareil. Rend le code `Return` (0 = succes). */
+  execute(text: string): number {
+    const cmd = parseDataCommand(text);
+    if (!cmd) return 0; // CONTROL DEVICE et autres : sans effet sur les donnees
+    this.dataLog.push(cmd);
+    for (const name of Object.keys(cmd.fields)) if (FORBIDDEN_DATA_FIELDS.test(name)) this.forbiddenSeen.push(name);
+    const forced = this.dataOverride?.(cmd);
+    if (forced !== undefined) return forced;
+    const f = cmd.fields;
+    switch (cmd.table) {
+      case 'user': {
+        const pin = f.Pin;
+        if (!pin) return -30;
+        if (cmd.verb === 'DELETE') {
+          this.users.delete(pin);
+          for (const [k, a] of [...this.authorizations]) if (a.pin === pin) this.authorizations.delete(k);
+          return 0;
+        }
+        const old = this.users.get(pin);
+        if (!old && this.capacity.users !== undefined && this.users.size >= this.capacity.users) return FAKE_FULL_CODE;
+        this.users.set(pin, { ...(old ?? {}), ...f });
+        return 0;
+      }
+      case 'userauthorize': {
+        const pin = f.Pin;
+        if (!pin) return -30;
+        if (cmd.verb === 'DELETE') {
+          for (const [k, a] of [...this.authorizations]) if (a.pin === pin) this.authorizations.delete(k);
+          return 0;
+        }
+        const tz = Number(f.AuthorizeTimezoneId);
+        const doors = Number(f.AuthorizeDoorId);
+        if (!Number.isInteger(tz) || !Number.isInteger(doors) || doors < 1 || doors > 15 || !this.timezones.has(tz)) return -30;
+        if (!this.users.has(pin)) return -30;
+        this.authorizations.set(`${pin}|${tz}`, { pin, timezone: tz, doors });
+        return 0;
+      }
+      case 'timezone': {
+        const id = Number(f.TimezoneId);
+        if (!Number.isInteger(id) || id < 1) return -30;
+        if (cmd.verb === 'DELETE') {
+          this.timezones.delete(id);
+          return 0;
+        }
+        const own = [...this.timezones.values()].filter((t) => t.preset === undefined).length;
+        if (!this.timezones.has(id) && this.capacity.timezones !== undefined && own >= this.capacity.timezones) return FAKE_FULL_CODE;
+        this.timezones.set(id, { ...f });
+        return 0;
+      }
+      case 'holiday': {
+        const date = f.Holiday;
+        if (!date || !/^\d{8}$/.test(date)) return -30;
+        if (cmd.verb === 'DELETE') {
+          this.holidays.delete(date);
+          return 0;
+        }
+        if (!this.holidays.has(date) && this.capacity.holidays !== undefined && this.holidays.size >= this.capacity.holidays) return FAKE_FULL_CODE;
+        this.holidays.set(date, { ...f });
+        return 0;
+      }
+      default:
+        return -1;
+    }
   }
 
   /** Resultat d'une commande (`devicecmd`), a la demande (reponse differee, tardive...). */

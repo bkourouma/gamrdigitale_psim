@@ -8,6 +8,7 @@
 .acc-root { display: grid; gap: var(--s4); min-width: 0; align-content: start; }
 .acc-root h3 { font-size: var(--fs-md); }
 .acc-spacer { flex: 1 1 auto; }
+.acc-export-help { justify-self: end; margin: 0; text-align: right; }
 
 /* Onglets : même forme que les boutons groupés, cibles de 44 px pour le doigt et le poste de garde. */
 .acc-tabs { justify-self: start; max-width: 100%; flex-wrap: wrap; }
@@ -29,6 +30,7 @@
 
 /* ------------------------------------------------------------------------------------------------ journal : filtres */
 .acc-filters { display: grid; gap: var(--s4); }
+.acc-filters .form-error:empty { display: none; }
 .acc-filter-group { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3) var(--s4) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
 .acc-filter-group > h3 { color: var(--ink-2); font-size: var(--fs-sm); }
 .acc-presets { justify-self: start; flex-wrap: wrap; max-width: 100%; }
@@ -36,6 +38,15 @@
 .acc-fields { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); align-items: start; min-width: 0; }
 .acc-fields > * { min-width: 0; }
 .acc-fields-inline { align-items: end; }
+/* « Plus de filtres » : un <details> natif (Tab, Entrée, Espace). Fermé par défaut sur téléphone (access.js). */
+.acc-more { display: grid; gap: var(--s3); min-width: 0; }
+.acc-more-summary { display: flex; align-items: center; gap: var(--s2); min-height: var(--control-h); padding: 0 var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); color: var(--ink); font-weight: 700; cursor: pointer; list-style: none; width: fit-content; max-width: 100%; }
+.acc-more-summary::-webkit-details-marker { display: none; }
+.acc-more-summary:hover { border-color: var(--ink-2); }
+.acc-more-summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.acc-more-chevron { width: 18px; height: 18px; flex: none; transition: rotate var(--t-fast) var(--ease-out); }
+.acc-more[open] > .acc-more-summary .acc-more-chevron { rotate: 90deg; }
+.acc-more-body { display: grid; gap: var(--s3); min-width: 0; padding: var(--s3) var(--s4) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
 .acc-fields-inline .segmented { justify-self: start; flex-wrap: wrap; max-width: 100%; }
 .acc-fields-inline .segmented button { min-height: var(--control-h); }
 .acc-check { display: grid; gap: var(--s1); }
@@ -54,14 +65,13 @@
 .acc-range, .acc-loaded-at { font-size: var(--fs-sm); color: var(--ink-2); }
 .acc-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); }
 .acc-page-text { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
-.acc-video-help { display: flex; align-items: flex-start; gap: var(--s2); }
-.acc-video-help .icon { margin-top: 2px; color: var(--ink-3); }
 
 /* Tableaux : cellules à deux lignes (valeur, précision), liens et libellés de carte. */
 .acc-tablewrap { container-type: inline-size; container-name: acctable; }
 .acc-stack td { vertical-align: top; }
 .acc-cell-stack { display: grid; justify-items: start; gap: var(--s1); min-width: 0; max-width: 100%; }
-.acc-sub { display: block; font-size: var(--fs-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+.acc-sub { display: block; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.acc-reason { font-weight: 600; }
 .acc-when { white-space: nowrap; }
 .acc-when time { display: grid; gap: 1px; }
 .acc-who strong { display: block; overflow-wrap: anywhere; }
@@ -69,6 +79,12 @@
 .acc-stack .tag, .acc-stack .pill { white-space: normal; max-width: 100%; }
 .acc-video-cell { min-width: 9rem; }
 .acc-link { font-size: var(--fs-sm); font-weight: 600; }
+/* Nom de la porte, dans le journal : un lien (bouton) vers les détails de la porte. */
+.acc-door-link { padding: 0; border: 0; background: none; color: var(--brand-ink); font: inherit; text-align: left; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; overflow-wrap: anywhere; }
+.acc-door-link:hover { text-decoration-thickness: 2px; }
+.acc-door-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+.acc-result .acc-cell-stack { gap: 2px; }
+.acc-alarm-go { justify-self: start; min-height: var(--control-h); }
 .acc-actions-cell { width: 1%; }
 .acc-actions-cell .actions { flex-wrap: nowrap; justify-content: flex-end; }
 .acc-actions-cell .actions .btn { white-space: nowrap; }
@@ -82,7 +98,7 @@
   table.acc-journal-table tr, table.acc-decl-table tr { display: grid; gap: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
   table.acc-journal-table tbody tr:hover, table.acc-decl-table tbody tr:hover { background: var(--surface); }
   table.acc-journal-table td, table.acc-decl-table td { display: grid; grid-template-columns: minmax(96px, 36%) minmax(0, 1fr); gap: var(--s2); align-items: start; padding: 0; border: 0; white-space: normal; text-align: left; }
-  table.acc-journal-table td[data-label]::before, table.acc-decl-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+  table.acc-journal-table td[data-label]::before, table.acc-decl-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
   table.acc-journal-table td.acc-when, table.acc-decl-table td.acc-who { grid-template-columns: minmax(0, 1fr); }
   table.acc-journal-table td.acc-when::before, table.acc-decl-table td.acc-who::before { display: none; }
   table.acc-decl-table td.acc-actions-cell { display: block; width: auto; padding-top: var(--s2); border-top: 1px solid var(--line); }
@@ -92,23 +108,40 @@
   table.acc-journal-table td.acc-video-cell { min-width: 0; }
   /* En carte, les boutons se touchent au doigt : 44 px. */
   table.acc-journal-table .btn-sm, table.acc-decl-table .btn-sm { min-height: var(--control-h); }
+
+  /* Journal en cartes : le résultat passe en premier, à côté de l'heure ; le reste est resserré. */
+  table.acc-journal-table tr { grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s4); row-gap: var(--s1); padding: var(--s2) var(--s3); }
+  table.acc-journal-table td { grid-column: 1 / -1; grid-template-columns: minmax(84px, 30%) minmax(0, 1fr); gap: var(--s2); }
+  table.acc-journal-table td.acc-result { grid-column: 1; grid-row: 1; grid-template-columns: minmax(0, 1fr); align-items: start; }
+  table.acc-journal-table td.acc-result::before { display: none; }
+  table.acc-journal-table td.acc-when { grid-column: 2; grid-row: 1; justify-self: end; text-align: right; }
+  table.acc-journal-table td.acc-when time { justify-items: end; }
+  table.acc-journal-table td.acc-video-cell { grid-template-columns: minmax(0, 1fr); padding-top: var(--s1); justify-items: start; }
+  table.acc-journal-table td.acc-video-cell::before { display: none; }
+  table.acc-journal-table .acc-door-link { min-height: var(--control-h); display: inline-flex; align-items: center; }
 }
-/* Entre 560 et 960 px : la carte du journal se range sur deux colonnes (libellé au-dessus de la valeur) : quatre lignes au lieu de neuf. */
+/* Entre 560 et 960 px : la carte du journal se range sur deux colonnes (libellé au-dessus de la valeur). */
 @container acctable (min-width: 560px) and (max-width: 960px) {
-  table.acc-journal-table tr { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s5); row-gap: var(--s3); }
-  table.acc-journal-table td { grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start; }
-  table.acc-journal-table td.acc-when { grid-column: 1 / -1; }
+  table.acc-journal-table tr { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s5); row-gap: var(--s2); }
+  table.acc-journal-table td { grid-column: auto; grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start; }
+  table.acc-journal-table td.acc-result { grid-column: 1; grid-row: 1; }
+  table.acc-journal-table td.acc-when { grid-column: 2; grid-row: 1; }
+  table.acc-journal-table .acc-door-link { min-height: 28px; }
 }
+/* Dix derniers passages de la fiche : mêmes cartes, mêmes règles (résultat d'abord, à côté de l'heure). */
 @container acctable (max-width: 640px) {
   table.acc-mini-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   table.acc-mini-table, table.acc-mini-table tbody { display: block; }
   table.acc-mini-table tbody { display: grid; gap: var(--s3); }
-  table.acc-mini-table tr { display: grid; gap: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+  table.acc-mini-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s4); row-gap: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
   table.acc-mini-table tbody tr:hover { background: var(--surface); }
-  table.acc-mini-table td { display: grid; grid-template-columns: minmax(96px, 36%) minmax(0, 1fr); gap: var(--s2); align-items: start; padding: 0; border: 0; white-space: normal; }
-  table.acc-mini-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
-  table.acc-mini-table td.acc-when { grid-template-columns: minmax(0, 1fr); }
+  table.acc-mini-table td { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(84px, 30%) minmax(0, 1fr); gap: var(--s2); align-items: start; padding: 0; border: 0; white-space: normal; }
+  table.acc-mini-table td[data-label]::before { content: attr(data-label); font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+  table.acc-mini-table td.acc-result { grid-column: 1; grid-row: 1; grid-template-columns: minmax(0, 1fr); }
+  table.acc-mini-table td.acc-result::before { display: none; }
+  table.acc-mini-table td.acc-when { grid-column: 2; grid-row: 1; grid-template-columns: minmax(0, 1fr); justify-self: end; text-align: right; }
   table.acc-mini-table td.acc-when::before { display: none; }
+  table.acc-mini-table td.acc-when time { justify-items: end; }
 }
 
 /* ------------------------------------------------------------------------------------------------ portes */
@@ -133,7 +166,7 @@
 
 /* Faits : libellé en petit, valeur dessous (carte) ou côte à côte (fiche). */
 .acc-facts { display: grid; gap: var(--s2); margin: 0; min-width: 0; }
-.acc-facts > dt { font-size: var(--fs-xs); font-weight: 700; color: var(--ink-3); }
+.acc-facts > dt { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
 .acc-facts > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .acc-facts > dt:not(:first-child) { margin-top: var(--s1); }
 .acc-facts-wide { grid-template-columns: minmax(0, 1fr); }
@@ -199,6 +232,9 @@
 /* Téléphone : toutes les commandes restent des cibles de 44 px, les boutons d'une rangée se partagent la largeur. */
 @container (max-width: 520px) {
   .acc-filters .actions .btn, .acc-pager .btn { flex: 1 1 auto; min-height: var(--control-h); }
+  /* Rechercher et Exporter prennent la ligne ; Effacer et Actualiser se partagent la leur (quatre lignes pleines, c'était long). */
+  .acc-filters .actions .btn-primary, .acc-filters .actions .btn:not(.btn-ghost) { flex-basis: 100%; }
+  .acc-export-help { justify-self: start; text-align: left; }
   .acc-spacer { display: none; }
   .acc-door .actions .btn { flex: 1 1 auto; }
   .acc-tabs { width: 100%; }

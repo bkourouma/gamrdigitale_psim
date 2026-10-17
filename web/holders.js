@@ -394,9 +394,9 @@ export function createHoldersView({ api, h, icon, toast, dialogs, getMe }) {
       // badges
       const badgeItems = d.badges.map((b) => {
         const actions = [];
-        if (admin && b.state === 'active') {
+        if (b.state === 'active') {
           actions.push(button('Désactiver le badge', { ic: 'lock', cls: 'btn btn-sm btn-danger', label: `Désactiver le badge ${b.number}`, onClick: () => deactivateBadge(b, d) }));
-          actions.push(button('Rendre le badge', { ic: 'check', cls: 'btn btn-sm', label: `Rendre le badge ${b.number}`, onClick: () => changeBadge(b, d, 'returned') }));
+          if (admin) actions.push(button('Rendre le badge', { ic: 'check', cls: 'btn btn-sm', label: `Rendre le badge ${b.number}`, onClick: () => changeBadge(b, d, 'returned') }));
         } else if (admin && (b.state === 'disabled' || b.state === 'lost')) {
           actions.push(button('Réactiver le badge', { ic: 'unlock', cls: 'btn btn-sm', label: `Réactiver le badge ${b.number}`, onClick: () => changeBadge(b, d, 'active') }));
           actions.push(button('Rendre le badge', { ic: 'check', cls: 'btn btn-sm', label: `Rendre le badge ${b.number}`, onClick: () => changeBadge(b, d, 'returned') }));

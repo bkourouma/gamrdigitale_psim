@@ -38,7 +38,12 @@ export interface DeviceMessage {
   msgId?: string;
   /** Passage a une porte (controle d'acces) : voir AccessPassage. Exige `ts` et `msgId` `acc:<controllerId>:<eventId>`. */
   access?: AccessPassage;
+  /** Mode de la porte (F19), avec `event: 'door_mode'` : `normal` (les badges fonctionnent), `always_open` ou `always_closed`. */
+  doorMode?: DoorMode;
 }
+
+/** Mode de fonctionnement d'une porte dans son controleur (docs/CONTROLE-ACCES.md, § 2). */
+export type DoorMode = 'normal' | 'always_open' | 'always_closed';
 
 export interface MqttLink {
   subscribe(topic: string, onMessage: (topic: string, payload: Buffer) => void): Promise<void>;
@@ -59,6 +64,52 @@ export interface ActuatorOutcome {
 }
 export type ActuatorHandler = (req: ActuatorRequest) => Promise<ActuatorOutcome>;
 
+// --- Synchronisation des titulaires PSIM -> controleur (docs/CONTROLE-ACCES.md, par. 7) -----------------------------------
+
+/** Plage horaire hebdomadaire : meme forme que `Window` de server/arming.ts (jours 0 = dimanche a 6, `HH:MM`, peut passer minuit). */
+export interface SyncWindow {
+  days: number[];
+  from: string;
+  to: string;
+}
+
+/** Porte accessible a un titulaire, avec son horaire (`null` = toutes les heures). */
+export interface SyncHolderDoor {
+  doorNo: number;
+  scheduleRef: string | null;
+}
+
+export type UpsertHolderBody = {
+  type: 'upsert_holder';
+  /** `H<id>`. */
+  holderRef: string;
+  name: string;
+  active: boolean;
+  /** Debut et fin de validite (ms depuis 1970) ou `null` (sans limite). */
+  validFrom: number | null;
+  validTo: number | null;
+  /** Numeros de badge, 4 au plus. */
+  credentials: string[];
+  doors: SyncHolderDoor[];
+};
+
+/** Corps d'un ordre de synchronisation (champ `body` du message, JSON). Jamais de code PIN, de gabarit ni de photo. */
+export type AccessSyncBody =
+  | UpsertHolderBody
+  | { type: 'delete_holder'; holderRef: string }
+  | { type: 'upsert_schedule'; scheduleRef: string; windows: SyncWindow[]; holidays: boolean }
+  | { type: 'delete_schedule'; scheduleRef: string }
+  | { type: 'set_holidays'; dates: string[]; replace: boolean };
+
+/**
+ * Ordre transmis par le socle au module : `opId` et `seq` (signature et anti-rejeu deja verifies par le socle) plus le corps,
+ * tel que le PSIM l'a signe (le module le valide lui-meme : `parseSyncBody` de acces-commun).
+ */
+export type AccessSyncOp = { opId: string; seq: number } & AccessSyncBody;
+
+/** Rend `done`, `refused` (`not_supported`, `invalid`, `full`) ou `error` (`io`, `unreachable`, `timeout`...). Doit etre idempotent. */
+export type AccessSyncHandler = (op: AccessSyncOp) => Promise<ActuatorOutcome>;
+
 export interface ModuleContext {
   /** Envoie un message pour l'equipement PSIM `deviceId`. Ne leve jamais ; le socle met en file et renvoie. */
   emit(deviceId: string, msg: DeviceMessage): void;
@@ -67,6 +118,17 @@ export interface ModuleContext {
   log(level: 'info' | 'warn' | 'error', text: string): void;
   /** Le module pilote l'actionneur `actuatorId` declare dans la configuration de la passerelle. */
   onActuator(actuatorId: string, handler: ActuatorHandler): void;
+  /**
+   * Le module recoit les ordres de synchronisation des titulaires du controleur `controllerId` (topic
+   * `psim/access/<controllerId>/sync`), signes avec `opts.key` (cle de synchronisation du controleur : 64 hexadecimaux
+   * minuscules, lue dans la configuration du module, jamais journalisee). Le socle verifie signature et `seq`, n'execute qu'une
+   * operation a la fois par controleur et accuse ; le gestionnaire ne fait qu'ecrire dans le controleur.
+   *
+   * LEVE (le module doit attraper : `registerAccessSync` de acces-commun le fait) si : l'identifiant est invalide
+   * (`^[A-Za-z0-9_-]{1,32}$`), la cle est invalide, le gestionnaire n'est pas une fonction, le controleur est deja enregistre
+   * (par ce module ou par un autre), ou l'instance du module est arretee. Le gestionnaire est retire a l'arret du module.
+   */
+  onAccessSync(controllerId: string, handler: AccessSyncHandler, opts: { key: string }): void;
   /** Section de configuration propre au module. */
   config: Record<string, unknown>;
   now(): number;

@@ -9,7 +9,14 @@
  *    temps `StartTime` / `EndTime`, `count`, `condition.CardNo`, reponse `totalCount=`, `found=`, `records[i].Cle=` ;
  *  - `global.cgi?action=getCurrentTime` (horloge decalable, heure LOCALE) ;
  *  - `accessControl.cgi` : `openDoor`, `closeDoor`, `getDoorStatus` ;
- *  - `configManager.cgi` : `getConfig` / `setConfig` de `AccessControl[i].State` (le reste de la configuration est conserve).
+ *  - `configManager.cgi` : `getConfig` / `setConfig` de `AccessControl[i].State` (le reste de la configuration est conserve) ;
+ *  - SYNCHRONISATION DES TITULAIRES : `recordUpdater.cgi` (insert / update / remove / clear / get) et `recordFinder.cgi?action=find` pour
+ *    `name=AccessControlCard` (cartes, `condition.UserID` / `condition.CardNo`) et `name=AccessControlHoliday` (jours feries) ;
+ *    `setConfig` / `getConfig` de `AccessTimeSchedule[i].Name` et `.TimeSchedule[jour][segment]` (128 plages de 7 x 4 segments).
+ *    Tout est GARDE (`cards`, `schedules`, `holidays`) pour que l'essai verifie l'ETAT FINAL ; `forbidden` recense toute donnee
+ *    interdite recue (mot de passe, gabarit, photo, visage) et `forbiddenPaths` tout appel vers `FaceInfoManager.cgi` / `AccessUser.cgi`.
+ *    Pannes : `syncBehavior` (par famille : cartes, plages, jours feries) = ok | full | refuse | error200 | garbage | unsupported | hang | http500 | cut,
+ *    `cardCapacity`, `ignoreFindConditions`, `cutNextSync(n)`.
  * Les formats suivent les documents Dahua cites dans gateway/src/modules/acces-dahua/protocol.ts ; ce qui est une hypothese du
  * module (A QUALIFIER) l'est ici aussi.
  *
@@ -62,6 +69,45 @@ export interface AccessInput {
 }
 
 export type CommandBehavior = 'ok' | 'error' | 'hang' | 'empty' | 'http500';
+
+/** Comportement du faux controleur pour une famille de la synchronisation (ecritures ; `unsupported`, `hang`, `http500`, `cut` valent aussi pour les lectures). */
+export type SyncBehavior = 'ok' | 'full' | 'refuse' | 'error200' | 'garbage' | 'unsupported' | 'hang' | 'http500' | 'cut';
+export type SyncFamily = 'cards' | 'schedules' | 'holidays';
+
+/** Fiche carte (`AccessControlCard`) telle que le controleur la garde. */
+export interface FakeCard {
+  RecNo: number;
+  CardNo: string;
+  CardName: string;
+  UserID: string;
+  CardStatus: number;
+  CardType: number;
+  Doors: number[];
+  TimeSections: number[];
+  ValidDateStart: string | null;
+  ValidDateEnd: string | null;
+  IsValid: boolean | null;
+  /** Code PIN pose dans le controleur (par l'essai) : il ne doit JAMAIS etre touche ni relu par le module. */
+  Password?: string;
+}
+
+export interface FakeHoliday {
+  RecNo: number;
+  HolidayNo: string;
+  StartTime: string;
+  EndTime: string;
+  Enable: boolean;
+  Doors: number[];
+}
+
+export interface FakeSchedule {
+  Name: string;
+  /** TimeSchedule[jour 0 = dimanche][segment 0 a 3] = « <actif> hh:mm:ss-hh:mm:ss ». */
+  TimeSchedule: string[][];
+}
+
+/** Nombre de plages horaires du faux controleur (indices 0 a 127, comme le SDK Dahua). */
+export const FAKE_SCHEDULE_COUNT = 128;
 
 export interface FakeDahuaOptions {
   username?: string;
@@ -118,6 +164,9 @@ export class FakeDahua {
   private doorStatusOn: boolean;
   private pageCap: number;
   private nextRecNo = 1;
+  private nextCardRecNo = 1;
+  private nextHolidayRecNo = 1;
+  private cutSync = 0;
   private readonly boundary = 'myboundary';
 
   readonly records: FakeRecord[] = [];
@@ -133,6 +182,21 @@ export class FakeDahua {
   readonly doorStates: string[];
   /** Autres cles de configuration par porte : elles ne doivent JAMAIS etre modifiees par le module. */
   readonly otherConfig: Record<string, string>[];
+  /** Synchronisation des titulaires : etat du controleur. */
+  readonly cards: FakeCard[] = [];
+  readonly holidays: FakeHoliday[] = [];
+  readonly schedules = new Map<number, FakeSchedule>();
+  /** Noms de parametres interdits recus (mot de passe, gabarit, photo, visage, empreinte). */
+  readonly forbidden: string[] = [];
+  /** Chemins interdits appeles (`FaceInfoManager.cgi`, `AccessUser.cgi`). */
+  readonly forbiddenPaths: string[] = [];
+  syncBehavior: Record<SyncFamily, SyncBehavior> = { cards: 'ok', schedules: 'ok', holidays: 'ok' };
+  /** Nombre maximal de fiches carte (`null` = illimite) : au-dela, l'insertion repond « No Space ». */
+  cardCapacity: number | null = null;
+  /** Vrai : le controleur ignore `condition.*` et rend TOUTES les fiches (certains firmwares). */
+  ignoreFindConditions = false;
+  /** Code HTTP force pour `getConfig&name=AccessControl` (lecture du mode des portes) ; `null` = normal. */
+  configReadStatus: number | null = null;
 
   /** Connexions TCP acceptees, flux ouverts (attach), defis 401 envoyes, authentifications reussies, refusees. */
   connections = 0;
@@ -395,9 +459,19 @@ export class FakeDahua {
     const action = q.action ?? '';
     if (path === '/cgi-bin/eventManager.cgi' && action === 'attach') return this.attach(res);
     if (path === '/cgi-bin/global.cgi' && action === 'getCurrentTime') return this.text(res, 200, `result=${this.localTime(this.deviceNow())}\r\n`);
+    if (/\/(FaceInfoManager|AccessUser)\.cgi$/i.test(path)) {
+      this.forbiddenPaths.push(req.url ?? path);
+      return this.text(res, 404, 'Not Found');
+    }
+    for (const key of url.searchParams.keys()) if (/pass(word)?$|^pwd$|^pin|template|photo|face|finger/i.test(key.replace(/\[\d+\]/g, ''))) this.forbidden.push(key);
+    if (path === '/cgi-bin/recordFinder.cgi' && action === 'find' && (q.name === 'AccessControlCard' || q.name === 'AccessControlHoliday')) {
+      if (this.syncGate(res, req, q.name === 'AccessControlCard' ? 'cards' : 'holidays', false)) return;
+      return this.findSync(res, q);
+    }
+    if (path === '/cgi-bin/recordUpdater.cgi') return this.recordUpdater(req, res, action, q);
     if (path === '/cgi-bin/recordFinder.cgi' && action === 'find') return this.find(res, q);
     if (path === '/cgi-bin/accessControl.cgi') return this.accessControl(res, action, q);
-    if (path === '/cgi-bin/configManager.cgi') return this.config(res, action, url, q);
+    if (path === '/cgi-bin/configManager.cgi') return this.config(res, action, url, q, req);
     this.text(res, 404, 'Not Found');
   }
 
@@ -459,9 +533,236 @@ export class FakeDahua {
     }
   }
 
-  private config(res: ServerResponse, action: string, url: URL, q: Record<string, string>): void {
+  // --- Synchronisation des titulaires -------------------------------------------------------------------------------------------
+
+  /** Pilotage de pannes ; rend vrai si la requete a deja ete traitee (panne simulee), faux si elle doit l'etre normalement. */
+  private syncGate(res: ServerResponse, req: IncomingMessage, family: SyncFamily, write: boolean): boolean {
+    if (this.cutSync > 0) {
+      this.cutSync--;
+      req.socket.destroy();
+      return true;
+    }
+    switch (this.syncBehavior[family]) {
+      case 'unsupported':
+        this.text(res, 404, 'Not Found');
+        return true;
+      case 'hang':
+        return true;
+      case 'http500':
+        this.text(res, 500, 'Error');
+        return true;
+      case 'cut':
+        req.socket.destroy();
+        return true;
+      case 'error200': // HTTP 200 mais corps « Error » (le succes ne se lit que dans le corps)
+        if (write) {
+          this.text(res, 200, 'Error\r\nBad Request!');
+          return true;
+        }
+        return false;
+      case 'garbage':
+        if (write) {
+          this.text(res, 200, '<html>pas une reponse Dahua</html>');
+          return true;
+        }
+        return false;
+      case 'refuse':
+        if (write) {
+          this.text(res, 400, 'Error\r\nBad Request!');
+          return true;
+        }
+        return false;
+      case 'full':
+        if (write) {
+          this.text(res, 400, 'Error\r\nNo Space!');
+          return true;
+        }
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  /** Les `n` prochaines requetes de synchronisation coupent la connexion sans repondre (coupure reseau en cours d'operation). */
+  cutNextSync(n: number): void {
+    this.cutSync = n;
+  }
+
+  /** Pose une fiche dans le controleur (installateur : carte, PIN, type...). */
+  addCard(card: Partial<FakeCard> & { CardNo: string; UserID: string }): FakeCard {
+    const full: FakeCard = {
+      RecNo: this.nextCardRecNo++,
+      CardName: '',
+      CardStatus: 0,
+      CardType: 0,
+      Doors: [0],
+      TimeSections: [255],
+      ValidDateStart: null,
+      ValidDateEnd: null,
+      IsValid: null,
+      ...card,
+    };
+    this.cards.push(full);
+    return full;
+  }
+
+  cardsOf(userId: string): FakeCard[] {
+    return this.cards.filter((c) => c.UserID === userId);
+  }
+
+  private findSync(res: ServerResponse, q: Record<string, string>): void {
+    this.recordFinds++;
+    const lines: string[] = [];
+    if (q.name === 'AccessControlHoliday') {
+      lines.push(`totalCount=${this.holidays.length}`, `found=${this.holidays.length}`);
+      this.holidays.forEach((h, i) => {
+        lines.push(`records[${i}].RecNo=${h.RecNo}`, `records[${i}].HolidayNo=${h.HolidayNo}`, `records[${i}].StartTime=${h.StartTime}`, `records[${i}].EndTime=${h.EndTime}`, `records[${i}].Enable=${h.Enable}`);
+        h.Doors.forEach((d, k) => lines.push(`records[${i}].Doors[${k}]=${d}`));
+      });
+      return this.text(res, 200, `${lines.join('\r\n')}\r\n`);
+    }
+    const user = this.ignoreFindConditions ? undefined : q['condition.UserID'];
+    const card = this.ignoreFindConditions ? undefined : q['condition.CardNo'];
+    const found = this.cards.filter((c) => (user === undefined || c.UserID === user) && (card === undefined || c.CardNo.toLowerCase() === card.toLowerCase()));
+    lines.push(`totalCount=${found.length}`, `found=${found.length}`);
+    found.forEach((c, i) => {
+      lines.push(`records[${i}].RecNo=${c.RecNo}`, `records[${i}].CardNo=${c.CardNo}`, `records[${i}].CardName=${c.CardName}`, `records[${i}].UserID=${c.UserID}`);
+      lines.push(`records[${i}].CardStatus=${c.CardStatus}`, `records[${i}].CardType=${c.CardType}`);
+      if (c.ValidDateStart !== null) lines.push(`records[${i}].ValidDateStart=${c.ValidDateStart}`);
+      if (c.ValidDateEnd !== null) lines.push(`records[${i}].ValidDateEnd=${c.ValidDateEnd}`);
+      if (c.IsValid !== null) lines.push(`records[${i}].IsValid=${c.IsValid}`);
+      if (c.Password !== undefined) lines.push(`records[${i}].Password=${c.Password}`); // un vrai controleur peut le rendre : le module ne doit pas le garder
+      c.Doors.forEach((d, k) => lines.push(`records[${i}].Doors[${k}]=${d}`));
+      c.TimeSections.forEach((d, k) => lines.push(`records[${i}].TimeSections[${k}]=${d}`));
+    });
+    this.text(res, 200, `${lines.join('\r\n')}\r\n`);
+  }
+
+  private indexed(q: Record<string, string>, key: string): number[] {
+    const out: Array<[number, number]> = [];
+    for (const [k, v] of Object.entries(q)) {
+      const m = new RegExp(`^${key}\\[(\\d+)\\]$`).exec(k);
+      if (m) out.push([Number(m[1]), Number(v)]);
+    }
+    return out.sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  }
+
+  private recordUpdater(req: IncomingMessage, res: ServerResponse, action: string, q: Record<string, string>): void {
+    const family: SyncFamily | null = q.name === 'AccessControlCard' ? 'cards' : q.name === 'AccessControlHoliday' ? 'holidays' : null;
+    if (family === null) return this.text(res, 404, 'Not Found');
+    if (this.syncGate(res, req, family, true)) return;
+    const recNo = q.recno === undefined ? null : Number(q.recno);
+    if (action === 'clear') {
+      if (family === 'cards') this.cards.length = 0;
+      else this.holidays.length = 0;
+      return this.text(res, 200, 'OK\r\n');
+    }
+    if (action === 'remove' || action === 'get' || action === 'update') {
+      const list: Array<{ RecNo: number }> = family === 'cards' ? this.cards : this.holidays;
+      const i = list.findIndex((r) => r.RecNo === recNo);
+      if (i < 0) return this.text(res, 400, 'Error\r\nBad Request!');
+      if (action === 'remove') {
+        list.splice(i, 1);
+        return this.text(res, 200, 'OK\r\n');
+      }
+      if (action === 'get') return this.text(res, 200, `record.RecNo=${recNo}\r\n`);
+      return family === 'cards' ? this.applyCard(res, this.cards[i]!, q) : this.applyHoliday(res, this.holidays[i]!, q);
+    }
+    if (action !== 'insert') return this.text(res, 400, 'Error\r\nBad Request!');
+    if (family === 'holidays') {
+      if (!q.HolidayNo || !q.StartTime || !q.EndTime) return this.text(res, 400, 'Error\r\nBad Request!');
+      const h: FakeHoliday = { RecNo: this.nextHolidayRecNo++, HolidayNo: '', StartTime: '', EndTime: '', Enable: true, Doors: [] };
+      this.holidays.push(h);
+      this.applyHoliday(null, h, q);
+      return this.text(res, 200, `RecNo=${h.RecNo}\r\n`);
+    }
+    if (!q.CardNo || !q.UserID || q.CardName === undefined) return this.text(res, 400, 'Error\r\nBad Request!');
+    if (this.cards.some((c) => c.CardNo.toLowerCase() === q.CardNo!.toLowerCase())) return this.text(res, 400, 'Error\r\nCard Exist!');
+    if (this.cardCapacity !== null && this.cards.length >= this.cardCapacity) return this.text(res, 400, 'Error\r\nNo Space!');
+    const card: FakeCard = { RecNo: this.nextCardRecNo++, CardNo: '', CardName: '', UserID: '', CardStatus: 0, CardType: 0, Doors: [], TimeSections: [], ValidDateStart: null, ValidDateEnd: null, IsValid: null };
+    this.cards.push(card);
+    this.applyCard(null, card, q);
+    this.text(res, 200, `RecNo=${card.RecNo}\r\n`);
+  }
+
+  /** Applique les champs recus a une fiche ; seuls les champs ENVOYES changent (comme un vrai controleur : le PIN reste). */
+  private applyCard(res: ServerResponse | null, card: FakeCard, q: Record<string, string>): void {
+    if (q.CardNo !== undefined) card.CardNo = q.CardNo;
+    if (q.CardName !== undefined) card.CardName = q.CardName;
+    if (q.UserID !== undefined) card.UserID = q.UserID;
+    if (q.CardStatus !== undefined) card.CardStatus = Number(q.CardStatus);
+    if (q.CardType !== undefined) card.CardType = Number(q.CardType);
+    if (q.ValidDateStart !== undefined) card.ValidDateStart = q.ValidDateStart;
+    if (q.ValidDateEnd !== undefined) card.ValidDateEnd = q.ValidDateEnd;
+    if (q.IsValid !== undefined) card.IsValid = q.IsValid === 'true';
+    const doors = this.indexed(q, 'Doors');
+    if (doors.length > 0) {
+      card.Doors = doors;
+      card.TimeSections = this.indexed(q, 'TimeSections');
+    }
+    if (q.Password !== undefined) card.Password = q.Password; // un module fautif l'enverrait : `forbidden` le signale
+    if (res) this.text(res, 200, 'OK\r\n');
+  }
+
+  private applyHoliday(res: ServerResponse | null, h: FakeHoliday, q: Record<string, string>): void {
+    if (q.HolidayNo !== undefined) h.HolidayNo = q.HolidayNo;
+    if (q.StartTime !== undefined) h.StartTime = q.StartTime;
+    if (q.EndTime !== undefined) h.EndTime = q.EndTime;
+    if (q.Enable !== undefined) h.Enable = q.Enable === 'true';
+    const doors = this.indexed(q, 'Doors');
+    if (doors.length > 0) h.Doors = doors;
+    if (res) this.text(res, 200, 'OK\r\n');
+  }
+
+  /** `setConfig` des plages horaires : tout ou rien (une cle inconnue ou hors limites refuse toute la requete). */
+  private setSchedules(res: ServerResponse, req: IncomingMessage, params: Record<string, string>): void {
+    if (this.syncGate(res, req, 'schedules', true)) return;
+    const staged = new Map<number, FakeSchedule>();
+    const get = (i: number): FakeSchedule => {
+      let s = staged.get(i);
+      if (!s) {
+        const cur = this.schedules.get(i);
+        s = cur ? { Name: cur.Name, TimeSchedule: cur.TimeSchedule.map((d) => [...d]) } : { Name: '', TimeSchedule: Array.from({ length: 7 }, () => Array.from({ length: 4 }, () => '0 00:00:00-00:00:00')) };
+        staged.set(i, s);
+      }
+      return s;
+    };
+    for (const [k, v] of Object.entries(params)) {
+      const name = /^AccessTimeSchedule\[(\d+)\]\.Name$/.exec(k);
+      const seg = /^AccessTimeSchedule\[(\d+)\]\.TimeSchedule\[(\d)\]\[(\d)\]$/.exec(k);
+      const found = name ?? seg;
+      if (!found || Number(found[1]) >= FAKE_SCHEDULE_COUNT) return this.text(res, 400, 'Error\r\nBad Request!');
+      const idx = Number(found[1]);
+      if (name) get(idx).Name = v;
+      else {
+        const d = Number(seg![2]);
+        const s = Number(seg![3]);
+        if (d > 6 || s > 3 || !/^[01] \d\d:\d\d:\d\d-\d\d:\d\d:\d\d$/.test(v)) return this.text(res, 400, 'Error\r\nBad Request!');
+        get(idx).TimeSchedule[d]![s] = v;
+      }
+    }
+    for (const [i, s] of staged) this.schedules.set(i, s);
+    this.text(res, 200, 'OK\r\n');
+  }
+
+  private config(res: ServerResponse, action: string, url: URL, q: Record<string, string>, req: IncomingMessage): void {
+    if (action === 'getConfig' && q.name === 'AccessTimeSchedule') {
+      if (this.syncGate(res, req, 'schedules', false)) return;
+      const lines: string[] = [];
+      for (const [i, s] of [...this.schedules].sort((a, b) => a[0] - b[0])) {
+        lines.push(`table.AccessTimeSchedule[${i}].Name=${s.Name}`);
+        s.TimeSchedule.forEach((d, di) => d.forEach((seg, si) => lines.push(`table.AccessTimeSchedule[${i}].TimeSchedule[${di}][${si}]=${seg}`)));
+      }
+      return this.text(res, 200, `${lines.join('\r\n')}\r\n`);
+    }
+    if (action === 'setConfig' && [...url.searchParams.keys()].some((k) => k.startsWith('AccessTimeSchedule['))) {
+      const params: Record<string, string> = {};
+      for (const [k, v] of url.searchParams.entries()) if (k !== 'action') params[k] = v;
+      return this.setSchedules(res, req, params);
+    }
     if (action === 'getConfig') {
       if (q.name !== 'AccessControl') return this.text(res, 404, 'Not Found');
+      if (this.configReadStatus !== null) return this.text(res, this.configReadStatus, 'Error');
       const lines: string[] = [];
       for (let i = 0; i < this.doorCount; i++) {
         lines.push(`table.AccessControl[${i}].State=${this.modes[i]}`);

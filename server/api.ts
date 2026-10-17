@@ -1099,7 +1099,7 @@ export function createApp(deps: ApiDeps) {
   deps.actuators?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role, reauth });
   deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
   deps.access?.mount(app, { anyUser, adminOnly, actorOf });
-  deps.holders?.mount(app, { anyUser, adminOnly, actorOf, reauth });
+  deps.holders?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role, reauth });
 
   // ---- Application des agents et rondes (voir docs/AGENTS-RONDES.md) --------------------------
 

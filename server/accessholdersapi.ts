@@ -21,7 +21,8 @@ import type {
  * `PsimError` que le gestionnaire d'erreurs d'`api.ts` traduit en `{"error": ...}`. Ce module ne fait que : garde de role,
  * lecture du corps (JSON borne, image ou CSV bruts), identifiants d'URL, re-authentification, codes HTTP et en-tetes.
  *
- * Roles : consulter, creer un visiteur et mettre fin a sa visite = tout utilisateur connecte ; le reste = administrateur.
+ * Roles : consulter, gerer les visiteurs et desactiver un badge perdu = operateur ou administrateur ; les autres
+ * changements de droits, dont la reactivation d'un badge, sont reserves a l'administrateur.
  * Emission de cle de synchronisation et confirmation de suppressions en masse : mot de passe du compte (champ `reauth` du
  * corps, retire avant d'aller plus loin : jamais journalise, jamais transmis au service).
  */
@@ -41,6 +42,7 @@ export interface HoldersApiGuards {
   anyUser: RequestHandler;
   adminOnly: RequestHandler;
   actorOf: (req: Request) => string;
+  roleOf: (req: Request) => string;
   /** Re-authentification fournie par l'application (branche acces-ac0) ; absente : equivalent local identique. */
   reauth?: (what: string) => RequestHandler;
 }
@@ -107,7 +109,7 @@ export function createHoldersApi(deps: HoldersApiDeps): HoldersApi {
 
   function mount(app: Express, guards: HoldersApiGuards): void {
     // Noms lus tels quels par l'auto-test des routes (test/e2e-attack.test.ts) : chaque route porte `anyUser` ou `adminOnly`.
-    const { anyUser, adminOnly, actorOf } = guards;
+    const { anyUser, adminOnly, actorOf, roleOf } = guards;
     const json = express.json({ limit: '10kb' });
     const jsonGroups = express.json({ limit: '64kb' });
     const jsonHolidays = express.json({ limit: '60kb' });
@@ -199,9 +201,15 @@ export function createHoldersApi(deps: HoldersApiDeps): HoldersApi {
       const id = numId(req, 'Titulaire');
       res.status(201).json(holders.addBadge(actorOf(req), id, objectBody(req).number));
     });
-    app.patch('/api/access/badges/:id', adminOnly, json, (req, res) => {
+    app.patch('/api/access/badges/:id', anyUser, json, (req, res) => {
       const id = numId(req, 'Badge');
-      res.json(holders.setBadgeState(actorOf(req), id, objectBody(req).state));
+      const state = objectBody(req).state;
+      const role = roleOf(req);
+      if (role !== 'admin' && role !== 'operator') throw new PsimError(403, 'Droits insuffisants');
+      if (role === 'operator' && state !== 'disabled' && state !== 'lost') {
+        throw new PsimError(403, 'Seul un administrateur peut reactiver ou rendre un badge');
+      }
+      res.json(holders.setBadgeState(actorOf(req), id, state));
     });
     app.delete('/api/access/badges/:id', adminOnly, (req, res) => {
       holders.removeBadge(actorOf(req), numId(req, 'Badge'));

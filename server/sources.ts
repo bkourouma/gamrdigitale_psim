@@ -113,6 +113,8 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   badge_granted: 'alive',
   badge_denied: 'alive',
   door_opened: 'alive',
+  // mode de la porte (F19) : information, jamais un changement d'etat
+  door_mode: 'alive',
 };
 
 /**
@@ -172,6 +174,7 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   badge_granted: 'Badge accepté',
   badge_denied: 'Badge refusé',
   door_opened: 'Porte ouverte',
+  door_mode: 'Mode de la porte',
 };
 
 /** Motif d'un evenement ; l'evenement lui-meme s'il est inconnu (donnees anciennes), `null` si aucun. */

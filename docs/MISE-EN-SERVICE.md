@@ -32,7 +32,7 @@ Les contrôles de `npm run commission` sont en lecture seule et n'envoient **auc
 2. Choisir **tous les mots de passe** (administrateur, opérateur, MQTT) : 12 caractères minimum, jamais ceux de démonstration.
 3. Pour une exploitation réelle, mettre `PSIM_ENV=production` : le PSIM **refuse de démarrer** si la configuration est dangereuse. Vérifier d'abord : `npm run check-config`. En production, le PSIM crée un **site vide** (jamais de détecteurs de démonstration).
 4. `PSIM_SIM_ENABLED=0` et `PSIM_DEMO_LOGIN=0` (le simulateur et les comptes cliquables n'ont rien à faire en exploitation).
-5. HTTPS : `npm run make-cert -- <nom-du-serveur> <adresse-IP>` puis `PSIM_TLS_CERT` / `PSIM_TLS_KEY`, ou un proxy HTTPS (`PSIM_TRUST_PROXY=1`). Un certificat auto-signé chiffre bien, mais chaque poste affichera un avertissement tant qu'il ne l'a pas installé comme autorité de confiance.
+5. HTTPS : `npm run make-cert -- <nom-du-serveur> <adresse-IP>` puis `PSIM_TLS_CERT` / `PSIM_TLS_KEY`, ou un proxy HTTPS (`PSIM_TRUST_PROXY=1`). La commande crée une petite autorité locale (`ca.pem`, valable 10 ans) qui signe le certificat du serveur : chaque poste ou téléphone installe **une seule fois** le certificat de l'autorité (`/api/agent-cert`), et les renouvellements (`--force`) ne demandent plus rien. Ancien mode, certificat unique : `--autosigne`. Avant l'essai des agents sur un téléphone : `npm run check-agents` (voir `docs/ESSAI-AGENTS-KOUROUMA.md`).
 6. Démarrer une première fois (`npm start`, ou `npm run supervise`) pour créer la base, puis lancer : `npm run commission`.
 
 **Critère de passage** : aucun « ECHEC » dans le bilan, et chaque « ATTENTION » est soit corrigée, soit acceptée par écrit.

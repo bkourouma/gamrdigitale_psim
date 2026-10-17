@@ -201,14 +201,20 @@ describe('controle d acces AC4 : ouverture a distance, issues de secours, mode d
     const off = (await door('P-3')).remote;
     assert.equal(off.available, false);
     assert.match(off.reason, /désactivé/);
-    // Un administrateur supprime l'actionneur lie : la fiche le dit.
+    // Un actionneur relie a une porte ne se supprime pas ; delie, la fiche le dit.
     const tmp = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'TMP-1', name: 'Temporaire', type: 'lock', transport: 'mqtt' });
     assert.equal(tmp.status, 201);
     assert.equal((await api('POST', '/api/access/controllers', admin, { id: 'CTL-3', name: 'Controleur temporaire', brand: 'dahua' })).status, 201);
     assert.equal((await api('POST', '/api/devices', admin, { id: 'P-6', kind: 'detector', name: 'Porte P-6', zone: 'Rez-de-chaussee', category: 'access' })).status, 201);
     assert.equal((await api('POST', '/api/access/doors', admin, { detectorId: 'P-6', controllerId: 'CTL-3', doorNo: 1, actuatorId: 'TMP-1' })).status, 201);
+    // Suppression refusee tant que la porte y est reliee (409, avec le nom de la porte) ; permise une fois la porte deliee.
+    const refused = await api('DELETE', '/api/actuators/TMP-1', admin, { reauth: ADMIN_PW });
+    assert.equal(refused.status, 409);
+    assert.match(refused.text, /P-6/);
+    assert.equal((await door('P-6')).remote.available, true);
+    assert.equal((await api('PUT', '/api/access/doors/P-6', admin, { actuatorId: null })).status, 200);
     assert.equal((await api('DELETE', '/api/actuators/TMP-1', admin, { reauth: ADMIN_PW })).status, 200);
-    assert.equal((await door('P-6')).remote.reason, "L'actionneur lié n'existe plus");
+    assert.equal((await door('P-6')).remote.reason, "Aucun actionneur n'est lié à cette porte");
     assert.equal((await api('DELETE', '/api/access/doors/P-6', admin)).status, 204);
   });
 
@@ -297,14 +303,33 @@ describe('controle d acces AC4 : ouverture a distance, issues de secours, mode d
       for (const id of ACTUATORS) assert.equal((await history(id)).length, 0, `${id} : rien n'a ete envoye`);
     });
 
+    it("evacuate reservee a l'administrateur : un operateur recoit 403 par le chemin HTTP (rien n'est cree), roles operator refuses a la configuration", async () => {
+      const body = (password: string) => ({ action: 'evacuate', params: { durationS: 60 }, confirm: true, reason: 'tentative operateur', password });
+      assert.equal((await api('POST', '/api/actuators/LOCK-1/commands', operator, body(OPERATOR_PW))).status, 403);
+      assert.equal((await api('POST', '/api/actuators/GATE-1/commands', operator, { ...body(OPERATOR_PW), params: {} })).status, 403);
+      assert.equal((await api('POST', '/api/actuators/ISSUE-1/commands', operator, body(OPERATOR_PW))).status, 403);
+      for (const id of ['LOCK-1', 'GATE-1', 'ISSUE-1']) assert.equal((await history(id)).length, 0, `${id} : aucune commande`);
+      // L'administrateur ne peut pas ouvrir l'action a l'operateur (400), meme avec un mot de passe valide.
+      const widen = await api('PATCH', '/api/actuators/LOCK-1', admin, { reauth: ADMIN_PW, actions: { unlock: { maxS: 10 }, evacuate: { maxS: 900, roles: ['operator', 'admin'] } } });
+      assert.equal(widen.status, 400, widen.text);
+      const only = await api('PATCH', '/api/actuators/LOCK-1', admin, { reauth: ADMIN_PW, actions: { unlock: { maxS: 10 }, evacuate: { maxS: 900, roles: ['operator'] } } });
+      assert.equal(only.status, 400, only.text);
+      assert.equal((await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'LOCK-X', name: 'x', type: 'lock', transport: 'mqtt', actions: { evacuate: { maxS: 3601 } } })).status, 400, 'plafond 3600 s');
+      assert.equal((await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'GATE-X', name: 'x', type: 'gate', transport: 'mqtt', actions: { evacuate: { maxS: 5 } } })).status, 400, 'portail : sans duree');
+    });
+
     it('apercu : portes liees, pret ou probleme (liaison coupee, actionneur desactive), aucun secret', async () => {
       const r = await api('GET', '/api/access/evacuation', admin);
       assert.equal(r.status, 200);
       const by = Object.fromEntries((r.body.doors as any[]).map((d) => [d.doorId, d]));
       assert.deepEqual(Object.keys(by).sort(), ['P-1', 'P-2', 'P-3', 'P-4', 'P-5']);
-      assert.equal(by['P-1'].action, 'unlock');
-      assert.equal(by['P-4'].action, 'open');
-      assert.equal(by['P-1'].maxDurationS, 10);
+      // Actionneurs crees avec les actions par defaut : « evacuate » (serrure : 15 min ; portail : sans duree), aucun repli.
+      assert.equal(by['P-1'].action, 'evacuate');
+      assert.equal(by['P-4'].action, 'evacuate');
+      assert.equal(by['P-5'].action, 'evacuate');
+      assert.equal(by['P-1'].maxDurationS, 900);
+      assert.equal(by['P-4'].maxDurationS, null);
+      for (const id of ['P-1', 'P-2', 'P-3', 'P-4', 'P-5']) assert.equal(by[id].warning, null, `${id} : pas d'avertissement de repli`);
       for (const id of ['P-1', 'P-2', 'P-4', 'P-5']) assert.equal(by[id].ready, false, `${id} : aucune passerelle encore a l'ecoute`);
       assert.match(by['P-1'].problem, /passerelle/);
       assert.match(by['P-3'].problem, /désactivé/);
@@ -349,7 +374,11 @@ describe('controle d acces AC4 : ouverture a distance, issues de secours, mode d
       for (const id of ['P-1', 'P-4', 'P-5']) {
         assert.equal(by[id].status, 'sent', id);
         assert.match(by[id].cmdId, /^[0-9a-f]{32}$/);
-        assert.equal(by[id].durationS, 8);
+        assert.equal(by[id].action, 'evacuate', id);
+        assert.equal(by[id].warning, null);
+        // Serrures : duree demandee (8 s) ; portail : ouvert sans duree.
+        if (id === 'P-4') assert.ok(!Object.hasOwn(by[id], 'durationS'));
+        else assert.equal(by[id].durationS, 8);
       }
       assert.equal(by['P-2'].status, 'no_gateway');
       assert.equal(by['P-3'].status, 'refused');
@@ -365,10 +394,12 @@ describe('controle d acces AC4 : ouverture a distance, issues de secours, mode d
         assert.match(c.reason, /^Tout ouvrir \(lot [0-9a-f]{8}\) : Exercice d'evacuation/);
       }
       assert.equal(lock1.received.length, 1);
-      assert.equal(lock1.received[0].action, 'unlock');
+      assert.equal(lock1.received[0].action, 'evacuate');
       assert.equal(lock1.received[0].params.durationS, 8);
-      assert.equal(gate.received[0].action, 'open');
-      assert.equal(issue.received[0].action, 'unlock', 'l\'issue de secours est deverrouillee, jamais verrouillee');
+      assert.equal(gate.received[0].action, 'evacuate');
+      assert.deepEqual(gate.received[0].params, {}, 'portail : ouvert sans duree');
+      assert.equal(issue.received[0].action, 'evacuate', "l'issue de secours est ouverte, jamais verrouillee");
+      assert.equal(issue.received[0].params.durationS, 8);
       assert.equal((await history('LOCK-2')).length, 0);
       assert.equal((await history('LOCK-3')).length, 0);
       // Journal : l'evacuation precede les commandes, le bilan les suit ; la chaine est intacte.

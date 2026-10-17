@@ -73,6 +73,7 @@ export const EVENT_LABEL = {
   badge_granted: 'Badge accepté',
   badge_denied: 'Badge refusé',
   door_opened: 'Porte ouverte',
+  door_mode: 'Mode de la porte',
 };
 
 /** Motif d'un incident (« Gaz détecté ») ; chaîne vide si l'équipement n'a envoyé qu'un état ou une mesure. */

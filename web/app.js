@@ -129,7 +129,32 @@ const patrolsView = createPatrolsView({
 });
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
-const accessView = createAccessView({ api, h, toast, getMe: () => S.me, dialogs });
+const accessView = createAccessView({
+  api,
+  h,
+  toast,
+  getMe: () => S.me,
+  dialogs,
+  // « Aller à l'alarme » (détails d'une porte) : le même chemin qu'une nouvelle alarme (écran, étage, caméras, fiche en haut).
+  goToAlarm: (incident) => {
+    S.focusIncidentId = incident.id;
+    S.manualCams = [];
+    go('surveillance');
+    followAlarm(incident);
+    showAlarmSheet();
+    renderPlan();
+    renderWall();
+    renderIncidents();
+    renderAdmin();
+    updateAlarmState();
+  },
+  // « Retour au plan » (détails d'une porte ouverts depuis le plan) : Surveillance, le plan en vue, le focus sur le bouton de la porte.
+  goToPlan: () => {
+    go('surveillance');
+    planPanel.scrollIntoView?.({ block: 'start' });
+    $('plan-door-action').querySelector('button')?.focus({ preventScroll: true });
+  },
+});
 
 // Session perdue : l'écran de connexion. S'il est déjà affiché, un minuteur oublié ne doit pas l'effacer (mot de passe
 // tapé, étape du code de double authentification en cours).
@@ -175,7 +200,7 @@ const ROUTES = {
   surveillance: { title: 'Surveillance', sub: 'Plan du site, alarmes en cours et caméras' },
   alarmes: { title: 'Alarmes', sub: 'Alarmes en cours et clôturées récemment' },
   cameras: { title: 'Caméras', sub: 'Choisissez les caméras à afficher sur le mur' },
-  acces: { title: 'Accès', sub: 'Passages, état des portes et déclaration du contrôle d’accès' },
+  acces: { title: 'Accès', sub: 'Passages et portes' },
   armement: { title: 'Armement', sub: "Zones d'intrusion : armement, désarmement et planning" },
   risques: { title: 'Risques', sub: "Indice de sécurité GAMR par zone et priorités d'action" },
   rapports: { title: 'Rapports', sub: 'Rapports imprimables, exports et envoi automatique' },
@@ -465,6 +490,7 @@ function applySnapshot(snap) {
   S.manualCams = S.manualCams.filter((id) => S.devices.has(id));
   renderAll(true);
   refreshDoors(); // l'état des portes suit celui des détecteurs (nouvelle connexion, configuration changée)
+  accessView.refresh();
 }
 
 function onIncident(incident) {
@@ -484,6 +510,7 @@ function onIncident(incident) {
   renderIncidents();
   renderAdmin(); // les libellés d'édition (« Remplacer le plan de ... ») suivent l'étage affiché
   updateAlarmState();
+  accessView.refresh(); // la fiche d'une porte ouverte redit si son alarme est encore en cours
 }
 
 function onMessage(msg) {

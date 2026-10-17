@@ -102,12 +102,35 @@ describe("gestionnaire d'actionneur des modules d'acces", () => {
     assert.deepEqual(await h(req('unlock')), { result: 'error', code: 'error' });
   });
 
-  it("registerActuator : appelle onActuator s'il existe, sinon renvoie faux (AC0 pas encore fusionne)", () => {
+  it('registerActuator : appelle onActuator du socle et renvoie vrai', () => {
     const seen: string[] = [];
-    const base = {} as ModuleContext;
-    assert.equal(registerActuator(base, 'A-1', async () => ({ result: 'done' })), false);
-    const withHook = { onActuator: (id: string) => void seen.push(id) } as unknown as ModuleContext;
-    assert.equal(registerActuator(withHook, 'A-1', async () => ({ result: 'done' })), true);
+    const ctx = { onActuator: (id: string) => void seen.push(id), log: () => undefined } as unknown as ModuleContext;
+    assert.equal(registerActuator(ctx, 'A-1', async () => ({ result: 'done' })), true);
     assert.deepEqual(seen, ['A-1']);
+  });
+
+  it("registerActuator : actionneur non declare dans « actuators » (le socle leve) = journal clair, faux, jamais d'exception", () => {
+    const logs: { level: string; text: string }[] = [];
+    const ctx = {
+      onActuator: () => {
+        throw new Error('actionneur « A-9 » non declare dans la section « actuators » de la configuration de la passerelle');
+      },
+      log: (level: string, text: string) => void logs.push({ level, text }),
+    } as unknown as ModuleContext;
+    assert.equal(registerActuator(ctx, 'A-9', async () => ({ result: 'done' })), false);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0]!.level, 'warn');
+    assert.match(logs[0]!.text, /A-9/);
+    assert.match(logs[0]!.text, /non declare dans la section « actuators »/);
+    assert.match(logs[0]!.text, /ouverture a distance indisponible/);
+  });
+
+  it('registerActuator : une erreur inattendue ou un journal defaillant ne remontent pas', () => {
+    const throwing = (): never => {
+      throw 'texte brut';
+    };
+    assert.equal(registerActuator({ onActuator: throwing, log: throwing } as unknown as ModuleContext, 'A-1', async () => ({ result: 'done' })), false);
+    // contexte sans onActuator (essai mal forme) : faux, sans exception
+    assert.equal(registerActuator({ log: () => undefined } as unknown as ModuleContext, 'A-1', async () => ({ result: 'done' })), false);
   });
 });

@@ -34,6 +34,18 @@ interface Entry {
   reject: (err: ActuatorFailure) => void;
 }
 
+/**
+ * Refus d'une commande par l'appareil (`Return` different de 0). Meme code que l'ancien refus (`refused_by_device`, vu par les
+ * ordres d'ouverture), mais le code de retour de l'appareil est conserve pour la synchronisation des titulaires.
+ */
+export class DeviceRefusal extends ActuatorFailure {
+  readonly returnCode: number;
+  constructor(returnCode: number) {
+    super('refused_by_device', `commande refusee par l'appareil (code ${returnCode})`);
+    this.returnCode = returnCode;
+  }
+}
+
 export class DeviceCommands {
   private readonly opts: CommandsOptions;
   private readonly queue: Entry[] = [];
@@ -90,7 +102,7 @@ export class DeviceCommands {
     const [entry] = this.queue.splice(i, 1);
     if (!entry) return false;
     if (code === 0) entry.resolve();
-    else entry.reject(new ActuatorFailure('refused_by_device', `commande refusee par l'appareil (code ${code})`));
+    else entry.reject(new DeviceRefusal(code));
     return true;
   }
 
