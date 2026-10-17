@@ -2435,6 +2435,198 @@
       ],
       "history": [],
       "notes": "Éprouvé avec de faux serveurs seulement : à essayer avec un vrai compte et un vrai destinataire."
+    },
+    {
+      "id": "generic-acces-dahua-asc",
+      "family": "acces",
+      "manufacturer": "Dahua",
+      "model": "Contrôleur d'accès Dahua série ASC (1 à 4 portes)",
+      "kind": "generic",
+      "aliases": [
+        "Dahua ASC",
+        "Controleur Dahua ASC"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "acces-dahua",
+        "detail": "Module « acces-dahua » de la passerelle (flux d'événements HTTP du contrôleur) ; module en cours de développement."
+      },
+      "fiche": "controle-acces",
+      "profile": "controleur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucun modèle précis, aucune version de firmware, aucun essai sur matériel réel.",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/acces-commun.test.ts",
+        "gateway/test/acces-actuator.test.ts",
+        "gateway/test/acces-dahua.test.ts",
+        "gateway/test/e2e-acces-dahua.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée générique : créer une entrée par modèle (référence exacte relevée sur l'étiquette) avant tout pack. Les fichiers d'essais de la passerelle seront ajoutés ici quand ils existeront."
+    },
+    {
+      "id": "generic-acces-dahua-asi",
+      "family": "acces",
+      "manufacturer": "Dahua",
+      "model": "Terminal de contrôle d'accès Dahua série ASI",
+      "kind": "generic",
+      "aliases": [
+        "Dahua ASI",
+        "Terminal Dahua ASI"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "acces-dahua",
+        "detail": "Module « acces-dahua » de la passerelle (flux d'événements HTTP du terminal) ; module en cours de développement."
+      },
+      "fiche": "controle-acces",
+      "profile": "terminal",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucun modèle précis, aucune version de firmware, aucun essai sur matériel réel. Les fonctions biométriques (visage, empreinte) ne sont pas couvertes.",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/acces-commun.test.ts",
+        "gateway/test/acces-actuator.test.ts",
+        "gateway/test/acces-dahua.test.ts",
+        "gateway/test/e2e-acces-dahua.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée générique : créer une entrée par modèle. Les gabarits biométriques restent dans le terminal (PRD, exigence non fonctionnelle 5)."
+    },
+    {
+      "id": "generic-acces-lecteur-badge",
+      "family": "acces",
+      "manufacturer": "Générique",
+      "model": "Lecteur de badge MIFARE chiffré (Wiegand ou OSDP)",
+      "kind": "generic",
+      "aliases": [],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Passe par le contrôleur d'accès (module de passerelle de la marque du contrôleur) ; pas de module propre."
+      },
+      "fiche": "controle-acces",
+      "profile": "lecteur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucune référence de lecteur, aucun essai. Les lecteurs EM 125 kHz seuls sont exclus (clonables).",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": "Qualifié via le contrôleur auquel il est raccordé (PRD, section 10)."
+    },
+    {
+      "id": "generic-acces-serrure-securite-positive",
+      "family": "acces",
+      "manufacturer": "Générique",
+      "model": "Serrure, ventouse ou gâche à sécurité positive",
+      "kind": "generic",
+      "aliases": [
+        "Ventouse",
+        "Gâche électrique"
+      ],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Passe par le contrôleur d'accès (module de passerelle de la marque du contrôleur) ; pas de module propre."
+      },
+      "fiche": "controle-acces",
+      "profile": "serrure",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucune référence de serrure, aucun essai. Une serrure à sécurité négative n'est pas admise sur une issue de secours.",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": "Recette décisive : coupure de courant, porte libre (PRD, section 10)."
+    },
+    {
+      "id": "generic-acces-barriere-portail",
+      "family": "acces",
+      "manufacturer": "Générique",
+      "model": "Barrière ou portail commandé par le contrôleur",
+      "kind": "generic",
+      "aliases": [
+        "Barrière levante",
+        "Portail motorisé"
+      ],
+      "connection": {
+        "type": "to_develop",
+        "module": null,
+        "detail": "Passe par le contrôleur d'accès (module de passerelle de la marque du contrôleur) ; pas de module propre."
+      },
+      "fiche": "controle-acces",
+      "profile": "barriere",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucune référence de barrière ou de portail, aucun essai. La sécurité de fermeture n'est établie par aucun essai.",
+      "last_trial": null,
+      "simulated_tests": [],
+      "history": [],
+      "notes": "Recette : commande, boucle de détection, cellules, sécurité de fermeture (PRD, section 10). Traité comme une porte (même modèle)."
+    },
+    {
+      "id": "generic-acces-zkteco-controleur",
+      "family": "acces",
+      "manufacturer": "ZKTeco",
+      "model": "Contrôleur d'accès ZKTeco C3 / inBio (protocole push)",
+      "kind": "generic",
+      "aliases": [
+        "ZKTeco C3",
+        "ZKTeco inBio",
+        "Controleur ZKTeco"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "acces-zkteco",
+        "detail": "Module « acces-zkteco » de la passerelle (protocole « push » iclock/ADMS du constructeur) ; module en cours de développement."
+      },
+      "fiche": "controle-acces",
+      "profile": "controleur",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucun modèle précis (C3 ou inBio), aucune version de firmware, aucun essai sur matériel réel.",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/acces-commun.test.ts",
+        "gateway/test/acces-actuator.test.ts",
+        "gateway/test/acces-zkteco.test.ts",
+        "gateway/test/e2e-acces-zkteco.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée générique : les références exactes (C3, inBio) sont à relever sur le matériel et à confirmer sur le site du constructeur avant de créer une entrée par modèle."
+    },
+    {
+      "id": "generic-acces-zkteco-terminal",
+      "family": "acces",
+      "manufacturer": "ZKTeco",
+      "model": "Terminal ZKTeco (protocole push)",
+      "kind": "generic",
+      "aliases": [
+        "Terminal ZKTeco"
+      ],
+      "connection": {
+        "type": "gateway",
+        "module": "acces-zkteco",
+        "detail": "Module « acces-zkteco » de la passerelle (protocole « push » iclock/ADMS du constructeur) ; module en cours de développement."
+      },
+      "fiche": "controle-acces",
+      "profile": "terminal",
+      "status": "to_qualify",
+      "scope": "Rien n'est validé sur matériel réel. Aucun modèle précis n'est désigné : à qualifier modèle par modèle.",
+      "not_covered": "Aucun modèle précis, aucune version de firmware, aucun essai sur matériel réel. Les fonctions biométriques ne sont pas couvertes.",
+      "last_trial": null,
+      "simulated_tests": [
+        "gateway/test/acces-commun.test.ts",
+        "gateway/test/acces-actuator.test.ts",
+        "gateway/test/acces-zkteco.test.ts",
+        "gateway/test/e2e-acces-zkteco.test.ts"
+      ],
+      "history": [],
+      "notes": "Entrée générique : créer une entrée par modèle. Les gabarits biométriques restent dans le terminal."
     }
   ]
 }

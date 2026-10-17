@@ -38,6 +38,7 @@ describe('configuration de la passerelle', () => {
     assert.equal(c.dataDir, join(dir, 'data'));
     assert.deepEqual(c.queue, { maxMessages: 10_000, maxBytes: 20 * 1024 * 1024 });
     assert.equal(c.modules[0].label, 'probe');
+    assert.deepEqual(c.actuators, [], 'section actuators facultative');
     assert.doesNotMatch(c.psim.passwordSource, /Mot-de-passe/);
   });
 

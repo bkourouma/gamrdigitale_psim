@@ -19,6 +19,8 @@
   <link rel="stylesheet" href="keys.css">
   <link rel="stylesheet" href="rules.css">
   <link rel="stylesheet" href="access.css">
+  <link rel="stylesheet" href="patrols.css">
+  <link rel="stylesheet" href="agents-admin.css">
 </head>
 <body>
   <a class="skip" href="#main" hidden>Aller au contenu</a>
@@ -87,6 +89,7 @@
         <a class="nav-item" href="#/risques" data-view="risques"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg><span>Risques</span></a>
         <a class="nav-item" href="#/rapports" data-view="rapports"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg><span>Rapports</span></a>
         <a class="nav-item" href="#/journal" data-view="journal"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg><span>Journal</span></a>
+        <a class="nav-item" href="#/rondes" data-view="rondes"><svg class="icon" aria-hidden="true"><use href="icons.svg#pin"/></svg><span>Rondes</span></a>
         <div id="nav-admin" class="nav-group" role="group" aria-labelledby="nav-admin-title" hidden>
           <p id="nav-admin-title" class="nav-group-title">Administration</p>
           <a class="nav-item" href="#/equipements" data-view="equipements"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg><span>Équipements et plan</span></a>
@@ -456,6 +459,13 @@
               <div id="inventory-empty" class="empty" hidden></div>
             </div>
           </section>
+
+          <section class="panel equip-actuators" aria-labelledby="actuators-title">
+            <div class="panel-head">
+              <h2 id="actuators-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#bolt"/></svg>Commandes des équipements</h2>
+            </div>
+            <div id="actuators-admin" class="panel-body"></div>
+          </section>
         </section>
 
         <!-- ================================================================================ Personnes prévenues -->
@@ -517,13 +527,23 @@
           </section>
         </section>
 
+        <!-- ================================================================================ Rondes -->
+        <section class="view view-rondes" id="view-rondes" aria-labelledby="view-title" hidden>
+          <div id="pt-tabs" class="segmented pt-tabs" role="tablist" aria-label="Rubriques des rondes"></div>
+          <section id="pt-panel-points" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-points" tabindex="-1" hidden></section>
+          <section id="pt-panel-routes" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-routes" tabindex="-1" hidden></section>
+          <section id="pt-panel-agents" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-agents" tabindex="-1" hidden></section>
+          <section id="pt-panel-phones" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-phones" tabindex="-1" hidden></section>
+          <section id="pt-panel-journal" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-journal" tabindex="-1" hidden></section>
+        </section>
+
         <!-- ================================================================================ Utilisateurs -->
         <section class="view view-utilisateurs is-narrow" id="view-utilisateurs" aria-labelledby="view-title" hidden>
           <section class="panel" aria-labelledby="users-title">
             <div class="panel-head"><h2 id="users-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg>Comptes</h2></div>
             <div class="panel-body">
               <div id="users-list" class="users-list"><p class="muted">Chargement…</p></div>
-              <p class="panel-note"><strong>Opérateur :</strong> surveille le site, traite les alarmes, arme ou désarme les zones, consulte les rapports et le journal. <strong>Administrateur :</strong> tout cela, plus les réglages (équipements et plan, personnes prévenues, comptes, système).</p>
+              <p class="panel-note"><strong>Opérateur :</strong> surveille le site, traite les alarmes, arme ou désarme les zones, consulte les rapports et le journal. <strong>Administrateur :</strong> tout cela, plus les réglages (équipements et plan, personnes prévenues, comptes, système). Les agents de terrain (rôle Agent) ne sont pas listés ici : ils se gèrent dans <a href="#/rondes/agents">Rondes, onglet Agents</a>.</p>
             </div>
           </section>
           <section class="panel" aria-labelledby="users-create-title">

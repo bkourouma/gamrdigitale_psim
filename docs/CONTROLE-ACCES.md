@@ -28,6 +28,19 @@ superviseurs.
 9. Marque prioritaire : **Dahua** (AC1), puis **ZKTeco** (AC6). Les deux sont développées avec un faux contrôleur ;
    aucune n'est « qualifiée » sans essai sur matériel réel (registre `qualification/`).
 
+**Décisions de l'utilisateur (17 octobre 2026, PRD § 15)** : phase 2 (titulaires, groupes, visiteurs, synchronisation)
+**maintenant** ; phase 3 : **règles d'accès maintenant** (F15), corrélation badge + visage (F16) **plus tard** (attend la
+caméra à reconnaissance faciale) ; pilote matériel : **contrôleur Dahua à la Résidence KOUROUMA** ; conservation du
+journal : **3 mois** (90 jours, réglable) ; AC0 en premier (décision du chef).
+
+**Décisions du chef (vague 1)** : écarts des superviseurs validés — colonnes `held_since`, `held_escalated_at`,
+`forced_at`, `holder_key`, table `access_setting`, passage sur porte non déclarée conservé, recherches nominatives
+journalisées une fois par minute (page 1), export plafonné à 100 000 lignes ; canal de commande : champ `reauth`
+(mot de passe redemandé) pour comptes et actionneurs, action sûre du portail = `stop`, HTTP interdit pour serrure,
+portail et actionneur « sensible », `onActuator` obligatoire dans `ModuleContext`. Le code PIN des titulaires n'est
+**pas** géré par le PSIM dans cette version (il reste dans le contrôleur) : aucun secret dans les messages de
+synchronisation.
+
 ## 2. Message de passage (passerelle → PSIM)
 
 Événements d'état de porte (déjà connus de `server/sources.ts`, sauf `clock_drift`, ajouté par le lot AC1) :
@@ -42,6 +55,13 @@ superviseurs.
 | Contrôleur injoignable | `{"state":"offline"}` pour chacune de ses portes (jamais « fermée » à tort) |
 | Horloge du contrôleur à plus de 2 min | `{"event":"clock_drift"}` (défaut, libellé « Horloge de l'équipement déréglée ») |
 | Signe de vie, contrôleur joignable | `{"event":"heartbeat"}` par porte, toutes les 60 s par défaut |
+| Contrainte (code ou doigt « sous menace ») | `{"event":"panic"}` (alarme toujours active), Dahua `Duress` comme ZKTeco |
+| Mode de porte (F19, ajout vague 2) | `{"event":"door_mode","doorMode":"normal"\|"always_open"\|"always_closed"}` à la connexion et à chaque changement ; `door_mode` = signe de vie (`alive`) |
+
+**Changement de contrôleur** (remplacement, mémoire effacée : les n° d'enregistrement repartent de zéro) : la
+configuration du module porte une `epoch` (entier, 0 par défaut) que l'installateur augmente ; si `epoch > 0`,
+`eventId` = `<epoch>.<n° d'enregistrement>` et le curseur de récupération repart de zéro. Au premier démarrage, la
+récupération F8 rejoue au plus les dernières 24 h de la mémoire du contrôleur.
 
 **Passage** (badge, code, empreinte, visage, bouton de sortie, ouverture à distance) : un message par passage,
 `event` = `badge_granted` si accepté, `badge_denied` sinon, quelle que soit la méthode :
@@ -130,9 +150,12 @@ du portail) ; toute recherche par titulaire ou badge et tout export CSV sont jou
 | 1 | Canal de commande | AC0 | `acces-ac0` (part de `commandes-actionneurs`, fusionne `main`) |
 | 1 | Passerelle accès | AC1 + AC6 | `acces-passerelle` |
 | 1 | Journal et écran | AC2 + AC3 | `acces-journal` |
-| 2 | (après fusion des trois) | AC4 ouverture à distance + essai bout en bout réel | à définir |
-| 2 | (si validé par l'utilisateur) | AC5 titulaires, groupes, visiteurs, synchronisation, F14, F19, F20, F27, F28 | à définir |
-| 3 | (si validé par l'utilisateur) | AC7 règles d'accès, badge + visage | à définir |
+| 2 | Titulaires (PSIM) | AC5 : titulaires, badges, groupes, horaires, jours fériés, visiteurs, import CSV, état de synchronisation, droits F26, rattachement `holder_id` des passages | `acces-titulaires` (part de `acces-journal`) |
+| 2 | Rapports et portail | F27 rapport périodique, F28 portail (sans noms ni badges) | `acces-rapports` (part de `acces-journal`) |
+| 2 | Passerelle accès (suite) | Socle et modules : synchronisation § 7, mode de porte F19, nettoyage `onActuator` | `acces-passerelle` (après fusion vague 1) |
+| 2 | Ouverture à distance | AC4 : F17, F18, F20 « Tout ouvrir », lien porte ↔ actionneur, essai bout en bout réel | après fusion vague 1 |
+| 3 | Règles d'accès | F15 dans le moteur de règles, F14 armement des portes | après AC5 |
+| — | Plus tard | F16 badge + visage (attend la caméra) | — |
 
 Fichiers **partagés entre branches** (modifications minimales et additives, le code neuf va dans des fichiers neufs ;
 le chef résout les conflits à la fusion) :
@@ -164,3 +187,48 @@ chef les met de côté puis les réapplique à chaque fusion.
   3034, 3044-3046, 4301-4302. Navigateur intégré partagé : toujours cibler son propre `tabId`.
 - Compte rendu au chef : fait, commits, tests (chiffres), écarts au contrat, points ouverts, **questions métier** (le chef
   les pose à l'utilisateur ; ne pas bloquer dessus : prendre l'hypothèse la plus prudente et la signaler).
+
+## 7. Synchronisation des titulaires PSIM → contrôleurs (phase 2)
+
+Le PSIM est la référence des titulaires (F21-F24) ; il pousse vers chaque contrôleur, par sa passerelle, une opération
+à la fois, et garde l'état par contrôleur.
+
+**Transport** : MQTT, topic `psim/access/<controllerId>/sync` (PSIM → passerelle, QoS 1, jamais `retain`), accusé sur
+`psim/access/<controllerId>/sync-ack`. Le compte MQTT d'une passerelle n'a droit qu'aux topics des contrôleurs qui lui
+sont rattachés (`access_controller.gateway_id`). Message ≤ 1 024 octets.
+
+```json
+{"v":1,"opId":"<32 hex>","seq":42,"ts":1760000000000,"body":"{\"type\":\"upsert_holder\",...}","sig":"<64 hex>"}
+{"v":1,"opId":"<32 hex>","seq":42,"result":"done","code":null,"ts":1760000000400,"sig":"<64 hex>"}
+```
+
+- Signature HMAC-SHA256 avec la **clé de synchronisation du contrôleur** (32 octets, montrée une seule fois à sa
+  création dans le PSIM, recopiée dans la configuration du module) ; comparaison en temps constant, signature fausse
+  ignorée sans accusé.
+- Chaîne canonique de l'ordre : `psim-sync-v1|<controllerId>|<opId>|<seq>|<ts>|<sha256 hex de body>` ; de l'accusé :
+  `psim-sync-ack-v1|<controllerId>|<opId>|<seq>|<result>|<code>|<ts>`.
+- Anti-rejeu : `seq` strictement croissant par contrôleur, dernier `seq` appliqué persisté par la passerelle ; un `seq`
+  déjà appliqué n'est pas réexécuté (réémettre son accusé est permis). Pas de délai d'expiration : l'ordre et `seq`
+  suffisent, la synchronisation n'est pas urgente comme une commande.
+- Le PSIM n'envoie l'opération suivante qu'après l'accusé (ou l'échéance de 10 s → nouvel essai avec attente
+  croissante, jusqu'à 1 h ; état « échec » visible au-delà de 5 essais). `result` : `done` | `refused` (code
+  `not_supported`, `invalid`, `full`) | `error` (code `io`, `unreachable`).
+
+**Corps (`body`, JSON)** :
+
+| `type` | Champs |
+|---|---|
+| `upsert_holder` | `holderRef` (`H<id>`), `name` (≤ 64), `active`, `validFrom`, `validTo` (ms ou `null`), `credentials` (numéros, ≤ 4), `doors` (`[{doorNo, scheduleRef}]`, ≤ 4) |
+| `delete_holder` | `holderRef` |
+| `upsert_schedule` | `scheduleRef` (`S<id>`), `windows` (format `Window` de `server/arming.ts`), `holidays` (booléen : fermé les jours fériés) |
+| `delete_schedule` | `scheduleRef` |
+| `set_holidays` | `dates` (`AAAA-MM-JJ`, ≤ 40 par message ; plusieurs messages si besoin, le premier avec `replace: true`) |
+
+Jamais de code PIN, de gabarit biométrique ni de photo dans un message. Un badge visiteur est un titulaire avec `validTo`
+(le contrôleur l'expire seul ; le PSIM le retire aussi à l'échéance). Le PSIM ne supprime jamais plus de 20 titulaires
+d'un contrôleur sans confirmation explicite de l'administrateur (F24).
+
+**Côté passerelle** (lot « Passerelle accès (suite) ») : le socle vérifie (signature, `seq`) et appelle le module par
+`ctx.onAccessSync(controllerId, handler)`, `handler(op) → Promise<ActuatorOutcome>` ; le module traduit vers son
+contrôleur (Dahua `recordUpdater.cgi` / `AccessTimeSchedule`, ZKTeco `DATA UPDATE` via `getrequest`) et tient la
+correspondance `scheduleRef` → numéro de plage du contrôleur.

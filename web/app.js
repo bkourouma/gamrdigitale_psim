@@ -6,7 +6,9 @@
  * concerné ; le son continue tant qu'un incident n'est pas acquitté ; les écrans ne sont jamais détruits, seulement
  * masqués (un formulaire commencé est retrouvé intact) ; un compte restreint ne voit que « Mon compte ».
  */
-import { createAccountUi, createDialogs } from './account.js';
+import { createAccountUi, createDialogs, field, setBusy, markInvalid, clearInvalid, copyButton, uid } from './account.js';
+import { createAgentsAdmin } from './agents-admin.js';
+import { createPatrolsView } from './patrols.js';
 import { createArmingView } from './arming.js';
 import { createThermometer, levelOf } from './gauge.js';
 import { createReportsView } from './reports.js';
@@ -15,7 +17,7 @@ import { createUsersAdmin } from './users.js';
 import { createKeysAdmin } from './keys.js';
 import { createRulesView } from './rules.js';
 import { createAccessView } from './access.js';
-import { $, h, icon, api, toast, S, on, go, loadDoors, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
+import { $, h, icon, api, toast, S, on, emit, go, loadDoors, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
 import { renderIncidents, tickIncidents, ariaTable } from './incidents.js';
@@ -23,6 +25,7 @@ import { renderJournal } from './journal.js';
 import { loadSystem } from './system.js';
 import { initNotifications, loadNotifStatus } from './notifications.js';
 import { renderAdmin } from './equipment.js';
+import { loadActuatorsAdmin } from './commands.js';
 
 // ---------------------------------------------------------------- thème (Jour, Nuit, Automatique)
 
@@ -69,6 +72,10 @@ const logout = async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});
   if ($('login').hidden) showLogin(); // une session déjà perdue a affiché la connexion (401) : on ne la réinitialise pas deux fois
 };
+/** Zones connues des équipements (détecteurs et caméras), sans doublon. */
+function knownZones() {
+  return [...new Set([...S.devices.values()].filter((d) => (d.kind === 'detector' || d.kind === 'camera') && d.zone).map((d) => d.zone))];
+}
 const refreshMe = async () => {
   S.me = await api('/api/me');
 };
@@ -101,6 +108,21 @@ const rulesView = createRulesView({
   dialogs,
   getMe: () => S.me,
   getDevices: () => devicesOf('camera').map((d) => ({ id: d.id, name: d.name, zone: d.zone || '' })),
+});
+// Rondes : points de contrôle, circuits, agents de terrain, téléphones et main courante (un seul écran, plusieurs onglets).
+const ui = { field, setBusy, markInvalid, clearInvalid, copyButton, uid };
+const agentsAdmin = createAgentsAdmin({ api, h, icon, toast, dialogs, ui, getMe: () => S.me, getZones: knownZones });
+const patrolsView = createPatrolsView({
+  api,
+  h,
+  icon,
+  toast,
+  dialogs,
+  ui,
+  getMe: () => S.me,
+  getFloors: () => S.floors,
+  getZones: knownZones,
+  agents: agentsAdmin,
 });
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
@@ -155,6 +177,7 @@ const ROUTES = {
   risques: { title: 'Risques', sub: "Indice de sécurité GAMR par zone et priorités d'action" },
   rapports: { title: 'Rapports', sub: 'Rapports imprimables, exports et envoi automatique' },
   journal: { title: 'Journal', sub: 'Toutes les actions, des personnes et du système' },
+  rondes: { title: 'Rondes', sub: 'Points de contrôle, circuits, agents de terrain, téléphones et main courante' },
   equipements: { title: 'Équipements et plan', sub: 'Placer, régler et ajouter les détecteurs et les caméras', admin: true },
   notifications: { title: 'Personnes prévenues', sub: "Qui reçoit les alarmes hors de l'écran, et par quel canal", admin: true },
   regles: { title: 'Règles', sub: "Prévenir quand quelqu'un est vu par une caméra : où, quand et à quelle condition", admin: true },
@@ -202,6 +225,9 @@ function leave(view) {
     keysAdmin.hide();
   } else if (view === 'regles') {
     rulesView.hide(); // le brouillon reste : l'écran est masqué, pas détruit
+  } else if (view === 'rondes') {
+    patrolsView.hide();
+    agentsAdmin.hide();
   } else if (view === 'risques') {
     riskView.hide();
     loadRailGauge(); // une évaluation vient peut-être de changer l'indice
@@ -216,6 +242,7 @@ function enter(view) {
     $('equip-plan-slot').append(planPanel);
     renderPlan();
     renderAdmin();
+    loadActuatorsAdmin(); // commandes des equipements (sirenes, relais, gaches...)
   } else if (view === 'cameras') {
     $('cameras-video-slot').append(videoPanel);
     renderWall();
@@ -238,6 +265,8 @@ function enter(view) {
     keysAdmin.show();
   } else if (view === 'regles') {
     rulesView.show(); // relit la liste ; un formulaire commencé n'est jamais remplacé
+  } else if (view === 'rondes') {
+    patrolsView.show(); // onglet choisi par l'adresse #/rondes/<rubrique>
   } else if (view === 'systeme') {
     loadSystem();
   } else if (view === 'simulateur') {
@@ -283,7 +312,15 @@ function route(requested) {
 
 setRouter(route);
 // Seules les adresses « #/écran » sont des routes (le lien d'évitement « #main » n'en est pas une).
-window.addEventListener('hashchange', () => (location.hash === '' || location.hash.startsWith('#/')) && route(viewFromHash()));
+window.addEventListener('hashchange', () => {
+  if (location.hash !== '' && !location.hash.startsWith('#/')) return;
+  // Déjà sur Rondes et lien vers une autre rubrique (#/rondes/agents) : route() ne fait rien, on change d'onglet ici.
+  if (S.view === 'rondes' && location.hash.startsWith('#/rondes')) {
+    patrolsView.show();
+    return;
+  }
+  route(viewFromHash());
+});
 document.querySelector('.skip').addEventListener('click', (e) => {
   e.preventDefault();
   $('main').focus();
@@ -393,6 +430,7 @@ function applySnapshot(snap) {
   for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
+  patrolsView.refresh(); // étages arrivés après l'ouverture de l'écran Rondes
   rulesView.refreshChoices(); // caméras ajoutées, renommées ou retirées pendant la saisie d'une règle
   S.arming = snap.arming ?? {};
   armingView.load(); // état détaillé des zones d'intrusion (planning, dérogations)
@@ -464,6 +502,13 @@ function onMessage(msg) {
       S.audit.unshift(msg.entry);
       S.audit.length = Math.min(S.audit.length, 100);
       renderJournal();
+      break;
+    case 'command': // etat d'une commande d'equipement (commands.js)
+      emit('command', msg.command);
+      break;
+    case 'actuators':
+      emit('actuators');
+      if (S.view === 'equipements') loadActuatorsAdmin();
       break;
   }
 }
@@ -569,6 +614,8 @@ function clearAccountTraces() {
   $('nav-count-systeme').hidden = true;
   for (const id of ['users-list', 'notif-status', 'sys-status', 'gw-list', 'keys-list']) $(id).replaceChildren(h('p', { class: 'muted', text: 'Chargement…' }));
   for (const id of ['recipients-box', 'notif-results', 'sys-warnings']) $(id).replaceChildren();
+  patrolsView.reset();
+  agentsAdmin.reset();
   rulesView.reset(); // liste et brouillon de règle du compte précédent
   const editor = $('device-editor');
   editor.replaceChildren();
@@ -626,6 +673,11 @@ $('login-form').addEventListener('submit', async (e) => {
 });
 
 function showApp() {
+  // Un agent de terrain n'a rien à faire dans l'interface du poste de garde (le serveur lui refuse tout) : son application l'attend.
+  if (S.me?.role === 'agent') {
+    location.replace('/agent/');
+    return;
+  }
   $('login').hidden = true;
   document.querySelector('.skip').hidden = Boolean(S.me.restricted); // compte restreint : seule la fenêtre Mon compte
   if (S.me.restricted) {

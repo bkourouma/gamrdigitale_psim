@@ -288,3 +288,35 @@ Base de 900 000 passages (10 000 par jour sur 90 jours, 20 portes, 500 badges) ;
   - **écart d'horloge** : l'heure demandée est celle du **contrôleur** (`atDevice`) ; un contrôleur ou un enregistreur mal réglé
     décale l'extrait (écart de plus de 2 minutes déjà signalé comme défaut, § 6).
 - **Sabotage** : l'alarme `tamper` passe par l'incident habituel ; l'état affiché de la porte ne le montre pas séparément.
+
+## 10. Rapports et portail (F27, F28)
+
+Lot « Rapports et portail » (branche `acces-rapports`). Règle commune : **aucun nom de titulaire, numéro de badge, `holderRef`, identifiant ou adresse de contrôleur** ne sort du journal des passages vers un rapport ou vers le portail ; seulement des comptes et des noms de portes (le nom du détecteur). Il n'y a pas d'option nominative dans cette version.
+
+### 10.1 Rapport périodique : section « Contrôle d'accès » (F27)
+
+Le rapport d'incidents (écran imprimable `/api/reports/incidents`, pièce jointe HTML autonome et courriel hebdomadaire ou mensuel, texte et HTML) comporte, pour un site qui a au moins une porte déclarée, une section « Contrôle d'accès ». Elle est **absente** pour un site sans porte et quand le rapport est filtré sur une autre catégorie que « accès » : le rapport d'un site sans porte est identique à avant. Calcul en lecture seule dans `server/accessreport.ts`.
+
+- chiffres clés : portes déclarées, passages, accordés, refusés, passages reçus en différé ;
+- incidents d'accès par porte et par type (porte forcée, maintenue ouverte, refus répétés, sabotage, autre), d'après `incident.event` ;
+- portes les plus en défaut ou hors ligne : durée cumulée, disponibilité, nombre de coupures, plus longue coupure ; le temps non surveillé (PSIM arrêté) est indiqué à part, jamais compté comme panne ;
+- refus par porte et par motif ; les passages d'une porte retirée sont regroupés sous « Porte retirée » (ses incidents et pannes, eux, ne sont plus rapportés) ;
+- si la période commence avant la durée de conservation du journal, une note prévient que les chiffres de passages et de refus peuvent être incomplets.
+
+Les requêtes sont agrégées en SQL (filtre sur l'heure du contrôleur, comme le journal). Le CSV joint reste le CSV des incidents existant.
+
+### 10.2 Portail (F28)
+
+Le PSIM ajoute à son résumé un bloc **facultatif** `access` (le format reste `v: 1`), seulement si le site a une porte déclarée (`server/accessportal.ts`, qui ne lit ni `access_event` ni `access_controller`) :
+
+```
+access: { doors, states: { offline, fault, forced, heldOpen, open, closed, unknown },
+          availability: { upS, downS, unmonitoredS, pct },     // portes, fenêtre de 35 jours
+          incidents: { total, forced, heldOpen, repeatedDenials, tamper, other, openNow, byDay: [{ day, n }] } }
+```
+
+Le portail le valide champ par champ (bloc mal formé : résumé refusé en 400 ; champ inconnu : ignoré, jamais stocké) et affiche une carte « Contrôle d'accès » dans la Synthèse du site (absente sans porte, « Non transmis » si le site a des détecteurs d'accès mais aucun bloc), et, dans les groupes, le nombre de portes hors ligne ou en défaut (les sites muets à part, dans « À vérifier »). Périmètre et comptes limités à des groupes inchangés. Détails et lecture des chiffres : `docs/PORTAIL.md`.
+
+**Compatibilité** (essai croisé réel avec le code de `dc21510`, dans les deux sens) : un portail ancien ignore le bloc ; un PSIM ancien n'en envoie pas et le portail récent le dit « non transmis ». Ordre de mise à jour inchangé : le portail avant les PSIM.
+
+**Preuve de confidentialité** : `test/portal-access-privacy.test.ts` fouille le corps de `buildSiteSummary`, le corps réellement envoyé par `createPortalSender`, les réponses du portail pour cinq rôles et toutes les tables du portail, à la recherche du nom, du badge, de la `holderRef`, de l'identifiant et de l'hôte du contrôleur ; `test/e2e-portal-access.test.ts` le refait avec un vrai PSIM et un vrai portail, octets échangés enregistrés.

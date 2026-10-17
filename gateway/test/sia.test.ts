@@ -134,6 +134,7 @@ function fakeContext(): Fake {
     log(level, text) {
       f.logs.push({ level, text });
     },
+    onActuator() {},
     config: {},
     now: () => Date.now() + f.clock.offset,
   };

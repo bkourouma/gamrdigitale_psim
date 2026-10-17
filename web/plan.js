@@ -201,6 +201,8 @@ export function renderPlan() {
     }),
   );
   if (focusedId) $('plan-pins').querySelector(`[data-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+  renderAgentPins();
+  watchAgents();
 
   // Traits détecteur -> caméras associées (détecteur sélectionné ou en incident), sur l'étage affiché seulement.
   const svg = $('plan-links');
@@ -373,6 +375,87 @@ function onPinClick(id) {
   renderPlan();
   render.wall();
   render.admin();
+}
+
+// ---------------------------------------------------------------- agents en service (lot S4, F22)
+// Pastilles posées sur le plan à la dernière position connue (dernier point de contrôle scanné). Elles ne sont ni des
+// équipements ni sélectionnables : aucun glisser, aucun clavier, aucun effet sur la sélection, le mur ou les traits.
+
+/** Durée écoulée en texte court : « à l'instant », « il y a 4 min », « il y a 2 h », « il y a 3 j ». */
+export function agoText(at, now = Date.now()) {
+  const min = Math.floor(Math.max(0, now - at) / 60000);
+  if (min < 1) return 'à l’instant';
+  if (min < 60) return `il y a ${min} min`;
+  const hours = Math.floor(min / 60);
+  return hours < 48 ? `il y a ${hours} h` : `il y a ${Math.floor(hours / 24)} j`;
+}
+
+const AGENT_REFRESH_MS = 15_000;
+const agents = { list: [], timer: 0, stopped: false, seq: 0, floor: null };
+
+const canSeeAgents = () => S.me?.role === 'admin' || S.me?.role === 'operator';
+
+/** Pastille d'un agent : texte d'origine utilisateur, posé uniquement par h() (textContent). */
+function agentPin(a) {
+  const ago = agoText(a.at);
+  const who = a.displayName || a.username;
+  const label = `Agent ${who}, dernier point : ${a.name}, ${ago}`;
+  const pin = h(
+    'div',
+    { class: 'agent-pin', role: 'img', title: label, 'aria-label': label },
+    h('span', { class: 'agent-glyph' }, icon('user')),
+    h('span', { class: 'agent-label' }, h('strong', { text: who }), h('span', { text: ago })),
+  );
+  pin.style.left = `${clamp(Number(a.x), 0, 100)}%`;
+  pin.style.top = `${clamp(Number(a.y), 0, 100)}%`;
+  const side = a.x > 80 ? 'lbl-left' : a.x < 20 ? 'lbl-right' : a.y > 84 ? 'lbl-top' : '';
+  if (side) pin.classList.add(side);
+  return pin;
+}
+
+/** Redessine les pastilles d'agents de l'étage affiché (celles des équipements ne sont pas touchées). */
+function renderAgentPins() {
+  const box = $('plan-pins');
+  if (!box) return;
+  for (const old of box.querySelectorAll('.agent-pin')) old.remove();
+  if (S.dragging || agents.stopped || !canSeeAgents() || !S.floorId) return;
+  for (const a of agents.list) if (a.floorId === S.floorId) box.append(agentPin(a));
+}
+
+/** Le plan est-il à l'écran (onglet visible, panneau non masqué, étage à plat) ? */
+const planVisible = () => !document.hidden && $('plan-pins')?.offsetParent != null;
+
+async function refreshAgents() {
+  if (agents.stopped || !canSeeAgents() || !planVisible()) return;
+  const seq = ++agents.seq;
+  try {
+    const list = await api('/api/patrols/positions');
+    if (seq !== agents.seq) return;
+    agents.list = Array.isArray(list)
+      ? list.filter((a) => a && Number.isInteger(a.floorId) && Number.isFinite(Number(a.x)) && Number.isFinite(Number(a.y)) && Number.isFinite(Number(a.at)))
+      : [];
+  } catch (err) {
+    // 404 : pas d'application des agents côté serveur ; 403 : rôle sans accès. Plus de tentative. Autre erreur (réseau) :
+    // silence, les dernières positions restent affichées et leur âge continue de vieillir.
+    if (/404|403/.test(String(err?.message))) {
+      agents.stopped = true;
+      agents.list = [];
+    }
+  }
+  renderAgentPins();
+}
+
+/** Appelé à chaque dessin du plan : lance le minuteur (une fois) et interroge aussitôt quand l'étage affiché change. */
+function watchAgents() {
+  if (agents.stopped || !canSeeAgents()) return;
+  if (!agents.timer) {
+    agents.timer = setInterval(() => refreshAgents(), AGENT_REFRESH_MS); // sans effet plan masqué ou onglet caché
+    document.addEventListener('visibilitychange', () => !document.hidden && refreshAgents());
+  }
+  if (S.floorId !== agents.floor) {
+    agents.floor = S.floorId;
+    refreshAgents();
+  }
 }
 
 render.plan = renderPlan;

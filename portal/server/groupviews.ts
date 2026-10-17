@@ -56,6 +56,12 @@ export interface GroupStats {
     openUnverified: number;
     last30: IncidentStats;
   };
+  /**
+   * Controle d'acces (F28), comptes seulement. `sites`, `doors`, `offline`, `fault` : sites qui repondent et qui transmettent
+   * leurs portes. `unverifiedDown` : portes hors ligne ou en defaut d'apres le DERNIER etat connu de sites muets (a verifier,
+   * comptees a part, comme les incidents).
+   */
+  access: { sites: number; doors: number; offline: number; fault: number; unverifiedDown: number };
   risk: {
     scoredSites: number;
     /** Sites sans indice (zones non evaluees, ou indice non transmis). */
@@ -97,6 +103,9 @@ export function statsOf(facts: Fact[], now: number): GroupStats {
     }
   const openUnverified = facts.filter((f) => f.card.status.level === 'unreachable').reduce((n, f) => n + openOf(f).length, 0);
 
+  const doorSites = reachable.filter((f) => f.summary?.access);
+  const doorsDownOf = (f: Fact) => (f.summary?.access?.states.offline ?? 0) + (f.summary?.access?.states.fault ?? 0);
+
   const since = now - 30 * DAY_MS;
   const incidents30 = facts.flatMap((f) => f.incidents.filter((r) => r.opened_at >= since));
 
@@ -117,6 +126,13 @@ export function statsOf(facts: Fact[], now: number): GroupStats {
     availability30: { pct: avail.pct, downS: avail.downS, unmonitoredS: avail.unmonitoredS, measuredSites: measured },
     devicesDown: reachable.reduce((n, f) => n + f.card.devicesDown, 0),
     incidents: { open, openCritical, openByCategory, openUnverified, last30: incidentStats(incidents30) },
+    access: {
+      sites: doorSites.length,
+      doors: doorSites.reduce((n, f) => n + f.summary!.access!.doors, 0),
+      offline: doorSites.reduce((n, f) => n + f.summary!.access!.states.offline, 0),
+      fault: doorSites.reduce((n, f) => n + f.summary!.access!.states.fault, 0),
+      unverifiedDown: facts.filter((f) => f.card.status.level === 'unreachable').reduce((n, f) => n + doorsDownOf(f), 0),
+    },
     risk: {
       scoredSites: scored.length,
       unscoredSites: facts.length - scored.length,

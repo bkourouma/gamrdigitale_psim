@@ -399,7 +399,7 @@ legend { padding: 0 var(--s1); font-size: var(--fs-sm); font-weight: 700; color:
 .notice { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--info-soft); color: var(--ink); font-size: var(--fs-sm); }
 .notice > .icon { color: var(--info-ink); margin-top: 1px; }
 .notice.is-warning { background: var(--warning-soft); } .notice.is-warning > .icon { color: var(--warning-ink); }
-.notice.is-alarm { background: var(--alarm-soft); } .notice.is-alarm > .icon { color: var(--alarm-ink); }
+.notice.is-alarm { background: var(--alarm-soft); } .notice.is-alarm:not(:has(> .icon)) { color: var(--alarm-ink); font-weight: 600; } .notice.is-alarm > .icon { color: var(--alarm-ink); }
 .notice.is-ok { background: var(--ok-soft); } .notice.is-ok > .icon { color: var(--ok-ink); }
 
 /* ------------------------------------------------------------------------------------------------ tableaux */

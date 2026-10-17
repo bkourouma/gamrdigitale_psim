@@ -17,8 +17,8 @@ const CONTEXT: AssistantContext = {
   ],
   zones: ['Exterieur', 'Batiment A', 'Batiment B'],
   lists: [
-    { id: 'grp-1', name: 'Famille' },
-    { id: 'grp-2', name: 'Visiteurs' },
+    { cameraId: 'cam-hall', cameraName: 'Hall principal', id: 'grp-1', name: 'Famille' },
+    { cameraId: 'cam-hall', cameraName: 'Hall principal', id: 'grp-2', name: 'Visiteurs' },
   ],
 };
 
@@ -254,7 +254,7 @@ describe('assistant de regles : proposition', () => {
     const p = await a.propose('Prévenez-moi quand un inconnu entre dans le hall');
     assert.equal(p.kind, 'rule');
     const invite = calls[0]!.body.system[0].text as string;
-    for (const needle of ['"anyone"', '"list"', '"unknown"', '"person"', 'listId', 'listName', 'identifiant EXACT', 'N\'invente JAMAIS', 'aucune base de visages', 'warning', 'peut se tromper', 'simple signalement']) {
+    for (const needle of ['"anyone"', '"list"', '"unknown"', '"person"', 'listId', 'listName', 'cameraId', 'MÊME ligne', 'Ne mélange jamais', 'sur plusieurs caméras', 'N\'invente JAMAIS', 'aucune base de visages', 'warning', 'peut se tromper', 'simple signalement']) {
       assert.ok(invite.includes(needle), needle);
     }
     // plus de refus automatique des demandes sur les visages ; les autres refus restent
@@ -267,12 +267,15 @@ describe('assistant de regles : proposition', () => {
     const withLists = assistant([model(refusedOut('Non.'))]);
     await withLists.a.propose('x');
     const ctx = withLists.calls[0]!.body.system[1].text as string;
-    assert.match(ctx, /Listes de visages \(identifiant : nom\) :\n- grp-1 : Famille\n- grp-2 : Visiteurs/);
+    assert.match(
+      ctx,
+      /Listes de visages \(une par ligne : caméra, identifiant de la liste, nom\) :\n- camera cam-hall \(« Hall principal »\) : liste grp-1 : Famille\n- camera cam-hall \(« Hall principal »\) : liste grp-2 : Visiteurs/,
+    );
 
     for (const lists of [undefined, []]) {
       const { a, calls } = assistant([model(refusedOut('Non.'))], { context: () => ({ ...CONTEXT, lists }) });
       await a.propose('x');
-      assert.match(calls[0]!.body.system[1].text, /Listes de visages \(identifiant : nom\) :\n\(aucune\)$/);
+      assert.match(calls[0]!.body.system[1].text, /Listes de visages \(une par ligne : caméra, identifiant de la liste, nom\) :\n\(aucune\)$/);
     }
 
     // jamais d'image, d'adresse ni d'empreinte dans ce qui part
@@ -281,11 +284,11 @@ describe('assistant de regles : proposition', () => {
   });
 
   it('les noms de liste du contexte ne peuvent pas ajouter de lignes a l\'invite', async () => {
-    const ctx: AssistantContext = { ...CONTEXT, lists: [{ id: 'g1', name: 'Famille\n- fake : Liste fantome' }] };
+    const ctx: AssistantContext = { ...CONTEXT, lists: [{ cameraId: 'cam-hall', cameraName: 'Hall\n- fake : Camera fantome', id: 'g1', name: 'Famille\n- fake : Liste fantome' }] };
     const { a, calls } = assistant([model(refusedOut('Non.'))], { context: () => ctx });
     await a.propose('x');
     const text = calls[0]!.body.system[1].text as string;
-    assert.equal(text.split('\n').filter((l: string) => l.startsWith('- g1')).length, 1);
+    assert.equal(text.split('\n').filter((l: string) => l.startsWith('- camera cam-hall')).length, 1);
     assert.ok(!text.split('\n').some((l: string) => l.startsWith('- fake')));
   });
 
@@ -369,7 +372,7 @@ describe('assistant de regles : nouvel essai', () => {
 });
 
 describe('assistant de regles : regles d\'identite', () => {
-  const FAMILLE = { type: 'list', listId: 'grp-1', listName: 'Famille' };
+  const FAMILLE = { type: 'list', cameraId: 'cam-hall', listId: 'grp-1', listName: 'Famille' };
 
   it('une liste connue (identifiant ET nom) passe, en signalement', async () => {
     const { a, calls } = assistant([model(ruleOut(variant(FAMILLE), 'Famille a la cour'))]);
@@ -380,11 +383,11 @@ describe('assistant de regles : regles d\'identite', () => {
   });
 
   it('une liste inconnue => nouvel essai qui explique, puis succes ou repli', async () => {
-    const inconnue = variant({ type: 'list', listId: 'grp-9', listName: 'Cambrioleurs' });
+    const inconnue = variant({ type: 'list', cameraId: 'cam-hall', listId: 'grp-9', listName: 'Cambrioleurs' });
     const ok = assistant([model(ruleOut(inconnue)), model(ruleOut(variant(FAMILLE)))]);
     assert.equal((await ok.a.propose('x')).kind, 'rule');
     assert.equal(ok.calls.length, 2);
-    assert.match(lastUser(ok.calls[1]!), /la liste « Cambrioleurs » n'existe pas dans le contexte fourni ; utilise l'identifiant exact d'une liste fournie, ou pose une question/);
+    assert.match(lastUser(ok.calls[1]!), /la liste « Cambrioleurs » \(identifiant grp-9\) n'existe pas sur la caméra cam-hall dans le contexte fourni ; reprends le cameraId, le listId et le listName EXACTS d'une même ligne/);
 
     const twice = assistant([model(ruleOut(inconnue))]);
     const p = await twice.a.propose('x');
@@ -392,11 +395,87 @@ describe('assistant de regles : regles d\'identite', () => {
     assert.equal(twice.calls.length, 2);
 
     // identifiant connu mais nom different, ou l'inverse : meme sort
-    for (const who of [{ type: 'list', listId: 'grp-1', listName: 'Visiteurs' }, { type: 'list', listId: 'grp-2', listName: 'Famille' }]) {
+    for (const who of [{ ...FAMILLE, listName: 'Visiteurs' }, { ...FAMILLE, listId: 'grp-2' }]) {
       const mismatch = assistant([model(ruleOut(variant(who))), model(questionOut('Quelle liste ?'))]);
       assert.deepEqual(await mismatch.a.propose('x'), { kind: 'question', question: 'Quelle liste ?' });
       assert.equal(mismatch.calls.length, 2);
     }
+  });
+
+  it('deux appareils avec chacun une liste « 1 » : le bon couple (cameraId, listId) passe, la mauvaise camera est rejetee', async () => {
+    const deux = (): AssistantContext => ({
+      ...CONTEXT,
+      lists: [
+        { cameraId: 'cam-hall', cameraName: 'Hall principal', id: '1', name: 'Famille' },
+        { cameraId: 'cam-cour', cameraName: 'Cour arriere', id: '1', name: 'Livreurs' },
+      ],
+    });
+    for (const who of [
+      { type: 'list', cameraId: 'cam-hall', listId: '1', listName: 'Famille' },
+      { type: 'list', cameraId: 'cam-cour', listId: '1', listName: 'Livreurs' },
+    ]) {
+      const ok = assistant([model(ruleOut(variant(who)))], { context: deux });
+      const p = await ok.a.propose('x');
+      assert.equal(p.kind, 'rule');
+      assert.deepEqual(p.kind === 'rule' && p.spec.who, who);
+      assert.equal(ok.calls.length, 1);
+    }
+    // la liste « 1 / Famille » existe, mais sur l'AUTRE camera : rejetee, essai unique, puis repli ou succes
+    const melange = { type: 'list', cameraId: 'cam-cour', listId: '1', listName: 'Famille' };
+    const twice = assistant([model(ruleOut(variant(melange)))], { context: deux });
+    assert.equal((await twice.a.propose('x')).kind, 'refused');
+    assert.equal(twice.calls.length, 2);
+    assert.match(lastUser(twice.calls[1]!), /la liste « Famille » \(identifiant 1\) n'existe pas sur la caméra cam-cour/);
+    const rattrape = assistant([model(ruleOut(variant(melange))), model(ruleOut(variant({ ...melange, cameraId: 'cam-hall' })))], { context: deux });
+    assert.equal((await rattrape.a.propose('x')).kind, 'rule');
+    assert.equal(rattrape.calls.length, 2);
+    // camera sans cette liste dans le contexte : meme sort
+    const absente = assistant([model(ruleOut(variant({ ...melange, cameraId: 'cam-depot', listName: 'Livreurs' })))], { context: deux });
+    assert.equal((await absente.a.propose('x')).kind, 'refused');
+    assert.equal(absente.calls.length, 2);
+  });
+
+  it("le repere d'appareil opaque figure sur les cameras et les listes ; l'invite l'explique ; sans repere, rendu inchange", async () => {
+    const avec = (): AssistantContext => ({
+      cameras: [
+        { id: 'cam-hall', name: 'Hall principal', zone: 'Batiment A', device: 'appareil 1' },
+        { id: 'cam-cour', name: 'Cour arriere', zone: 'Exterieur', device: 'appareil 2' },
+        { id: 'cam-depot', name: 'Depot', zone: 'Batiment B' },
+      ],
+      zones: ['Batiment A', 'Exterieur', 'Batiment B'],
+      lists: [{ cameraId: 'cam-hall', cameraName: 'Hall principal', device: 'appareil 1', id: '1', name: 'Famille' }],
+    });
+    const r = assistant([model(refusedOut('Non.'))], { context: avec });
+    await r.a.propose('x');
+    const invite = r.calls[0]!.body.system[0].text as string;
+    const ctx = r.calls[0]!.body.system[1].text as string;
+    assert.match(ctx, /- cam-hall : Hall principal \(zone Batiment A\) \(appareil 1\)\n/);
+    assert.match(ctx, /- cam-cour : Cour arriere \(zone Exterieur\) \(appareil 2\)\n/);
+    assert.match(ctx, /- cam-depot : Depot \(zone Batiment B\)\n/); // sans repere : comme avant
+    assert.match(ctx, /- camera cam-hall \(« Hall principal », appareil 1\) : liste 1 : Famille/);
+    for (const needle of ['appareil N', 'AU MOINS UNE caméra du même appareil', 'MÊME enregistreur', 'pose une question']) assert.ok(invite.includes(needle), needle);
+
+    // sans repere nulle part : rendu identique a l'existant
+    const sans = assistant([model(refusedOut('Non.'))]);
+    await sans.a.propose('x');
+    const c2 = sans.calls[0]!.body.system[1].text as string;
+    assert.ok(!c2.includes('appareil'));
+    assert.match(c2, /- camera cam-hall \(« Hall principal »\) : liste grp-1 : Famille/);
+
+    // le repere ne peut pas ajouter de lignes
+    const piege = assistant([model(refusedOut('Non.'))], { context: () => ({ ...avec(), cameras: [{ id: 'c', name: 'n', zone: 'z', device: 'appareil 1\n- fake : x' }] }) });
+    await piege.a.propose('x');
+    assert.ok(!(piege.calls[0]!.body.system[1].text as string).split('\n').some((l: string) => l.startsWith('- fake')));
+  });
+
+  it('person : la camera doit etre une camera du contexte (sinon essai unique), le reste revient a validate', async () => {
+    const ok = assistant([model(ruleOut(variant({ type: 'person', cameraId: 'cam-hall', personId: 'p-7', personName: 'Awa' })))]);
+    assert.equal((await ok.a.propose('x')).kind, 'rule');
+    assert.equal(ok.calls.length, 1);
+    const ko = assistant([model(ruleOut(variant({ type: 'person', cameraId: 'cam-fantome', personId: 'p-7', personName: 'Awa' })))]);
+    assert.equal((await ko.a.propose('x')).kind, 'refused');
+    assert.equal(ko.calls.length, 2);
+    assert.match(lastUser(ko.calls[1]!), /la caméra cam-fantome de la personne n'existe pas/);
   });
 
   it('sans aucune liste dans le contexte, toute liste proposee est refusee puis repli ; la question est acceptee', async () => {
@@ -410,7 +489,7 @@ describe('assistant de regles : regles d\'identite', () => {
 
   it('le contexte est lu une seule fois par proposition (meme avec nouvel essai)', async () => {
     let reads = 0;
-    const { a } = assistant([model(ruleOut(variant({ type: 'list', listId: 'x', listName: 'y' }))), model(ruleOut(SPEC_COUR))], {
+    const { a } = assistant([model(ruleOut(variant({ type: 'list', cameraId: 'cam-hall', listId: 'x', listName: 'y' }))), model(ruleOut(SPEC_COUR))], {
       context: () => {
         reads += 1;
         return CONTEXT;
@@ -449,10 +528,10 @@ describe('assistant de regles : regles d\'identite', () => {
     assert.ok(p.kind === 'rule' && p.summary.length > 10);
 
     // une liste du contexte, un inconnu : acceptes par la vraie validation, avec les phrases françaises du serveur
-    const famille = assistant([model(ruleOut(variant({ type: 'list', listId: 'grp-1', listName: 'Famille' }, { then: { severity: 'warning' } })))], real);
+    const famille = assistant([model(ruleOut(variant(FAMILLE, { then: { severity: 'warning' } })))], real);
     const pf = await famille.a.propose('Prévenez-moi quand la famille arrive');
     assert.equal(pf.kind, 'rule');
-    assert.ok(pf.kind === 'rule' && pf.summary.includes('si une personne de la liste « Famille » est reconnue'), pf.kind === 'rule' ? pf.summary : '');
+    assert.ok(pf.kind === 'rule' && pf.summary.includes('une personne de la liste « Famille »') && pf.summary.includes('est reconnue'), pf.kind === 'rule' ? pf.summary : '');
     assert.equal(famille.calls.length, 1);
     const inconnu = assistant([model(ruleOut(variant({ type: 'unknown' }, { then: { severity: 'warning' } })))], real);
     const pi = await inconnu.a.propose('Un inconnu dans la cour');
@@ -683,6 +762,20 @@ function check(schema: any, value: unknown, path = '$'): string[] {
   return errs;
 }
 
+describe('RULE_SPEC_JSON_SCHEMA : cameraId', () => {
+  it('list et person exigent cameraId (schema exporte et schema envoye)', () => {
+    for (const schema of [RULE_SPEC_JSON_SCHEMA, strictSchema(RULE_SPEC_JSON_SCHEMA)] as any[]) {
+      const variants = schema.properties.who.anyOf as any[];
+      for (const type of ['list', 'person']) {
+        const v = variants.find((x) => x.properties.type.enum[0] === type);
+        assert.ok(v.required.includes('cameraId'), type);
+        assert.equal(v.properties.cameraId.type, 'string');
+      }
+    }
+    assert.equal((RULE_SPEC_JSON_SCHEMA as any).properties.who.anyOf[1].properties.cameraId.minLength, 1);
+  });
+});
+
 describe('RULE_SPEC_JSON_SCHEMA', () => {
   const valides: RuleSpec[] = [
     { who: { type: 'anyone' }, where: { cameras: ['cam-cour'] }, when: { type: 'always' }, trigger: { type: 'appears' }, then: { severity: 'warning' }, cooldownMinutes: 10 },
@@ -696,8 +789,8 @@ describe('RULE_SPEC_JSON_SCHEMA', () => {
     },
     { who: { type: 'anyone' }, where: { zones: ['Batiment B'] }, when: { type: 'armed' }, trigger: { type: 'stays', minutes: 1440 }, then: { severity: 'critical' }, cooldownMinutes: 1440 },
     SPEC_COUR,
-    variant({ type: 'list', listId: 'grp-1', listName: 'Famille' }),
-    variant({ type: 'person', personId: 'p-7', personName: 'Awa' }),
+    variant({ type: 'list', cameraId: 'cam-hall', listId: 'grp-1', listName: 'Famille' }),
+    variant({ type: 'person', cameraId: 'cam-hall', personId: 'p-7', personName: 'Awa' }),
     variant({ type: 'unknown' }),
   ];
 
@@ -709,15 +802,19 @@ describe('RULE_SPEC_JSON_SCHEMA', () => {
     const base = valides[0]!;
     const whos: [string, unknown][] = [
       ['type inconnu', { type: 'robot' }],
-      ['list sans listName', { type: 'list', listId: 'g' }],
-      ['list sans listId', { type: 'list', listName: 'n' }],
-      ['list avec personId', { type: 'list', listId: 'g', listName: 'n', personId: 'p' }],
-      ['list listId vide', { type: 'list', listId: '', listName: 'n' }],
-      ['person sans nom', { type: 'person', personId: 'p' }],
-      ['person avec listId', { type: 'person', personId: 'p', personName: 'n', listId: 'g' }],
+      ['list sans listName', { type: 'list', cameraId: 'c', listId: 'g' }],
+      ['list sans listId', { type: 'list', cameraId: 'c', listName: 'n' }],
+      ['list sans cameraId', { type: 'list', listId: 'g', listName: 'n' }],
+      ['list cameraId vide', { type: 'list', cameraId: '', listId: 'g', listName: 'n' }],
+      ['list avec personId', { type: 'list', cameraId: 'c', listId: 'g', listName: 'n', personId: 'p' }],
+      ['list listId vide', { type: 'list', cameraId: 'c', listId: '', listName: 'n' }],
+      ['person sans nom', { type: 'person', cameraId: 'c', personId: 'p' }],
+      ['person sans cameraId', { type: 'person', personId: 'p', personName: 'n' }],
+      ['person cameraId vide', { type: 'person', cameraId: '', personId: 'p', personName: 'n' }],
+      ['person avec listId', { type: 'person', cameraId: 'c', personId: 'p', personName: 'n', listId: 'g' }],
       ['unknown avec champ en trop', { type: 'unknown', listId: 'g' }],
       ['anyone avec champ en trop', { type: 'anyone', listId: 'g' }],
-      ['sans type', { listId: 'g', listName: 'n' }],
+      ['sans type', { cameraId: 'c', listId: 'g', listName: 'n' }],
       ['pas un objet', 'anyone'],
     ];
     for (const [nom, who] of whos) assert.notDeepEqual(check(RULE_SPEC_JSON_SCHEMA, { ...base, who }), [], nom);
@@ -727,8 +824,8 @@ describe('RULE_SPEC_JSON_SCHEMA', () => {
     const strict: any = strictSchema(RULE_SPEC_JSON_SCHEMA);
     const variants = strict.properties.who.anyOf as any[];
     assert.deepEqual(variants.map((v) => v.properties.type.enum[0]), ['anyone', 'list', 'person', 'unknown']);
-    assert.deepEqual(variants[1].required, ['type', 'listId', 'listName']);
-    assert.deepEqual(variants[2].required, ['type', 'personId', 'personName']);
+    assert.deepEqual(variants[1].required, ['type', 'cameraId', 'listId', 'listName']);
+    assert.deepEqual(variants[2].required, ['type', 'cameraId', 'personId', 'personName']);
     for (const v of variants) assert.equal(v.additionalProperties, false);
     assert.deepEqual(boundKeywords(strict), []);
   });

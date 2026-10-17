@@ -35,6 +35,7 @@ function harness(config: Record<string, unknown>, opts: { failSubscribeAt?: numb
       return link;
     },
     log: (level, text) => void logs.push({ level, text }),
+    onActuator: () => undefined,
     config,
     now: () => clock,
   };

@@ -10,14 +10,19 @@
  *
  * Ce qui part (jamais plus) : equipements (nom, zone, etage, etat), disponibilite et periodes d'arret, incidents sans
  * leurs commentaires ni les noms des operateurs, nombre de notifications, indice de securite GAMR (du site et par zone,
- * sans les notes ni le nom de l'evaluateur). Jamais : identifiants ou adresses des cameras, images, comptes, journal,
- * destinataires de notification.
+ * sans les notes ni le nom de l'evaluateur), si le site a des portes un AGREGAT anonyme du controle d'acces (nombre
+ * de portes, etat du moment, disponibilite, comptes d'incidents : voir accessportal.ts), et, si l'application des agents existe,
+ * des COMPTEURS de rondes et de SOS par semaine (jamais un nom d'agent, de circuit ou de point de controle, jamais une position).
+ * Jamais : identifiants ou adresses des cameras, images, comptes, journal, destinataires de notification, ni rien de nominatif
+ * du controle d'acces (titulaires, badges, identifiants ou adresses de controleurs, passages).
  *
  * Authentification : signature HMAC-SHA256 du corps avec une cle propre a ce site (en-tetes X-Psim-*). La cle ne circule
  * jamais ; l'horodatage signe limite le rejeu. Un echec d'envoi ne gene jamais le PSIM : il est compte et reessaye.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { buildAccessSummary } from './accessportal.ts';
+import type { AccessSummary } from './accessportal.ts';
 import { availabilityOf, blindPeriods, combine, loadIntervals, outagesOf } from './history.ts';
 import type { Availability, BlindPeriod, Outage } from './history.ts';
 
@@ -91,6 +96,35 @@ export interface SiteSummary {
     /** Indice du site, un point par jour local (le plus ancien d'abord). */
     history: { day: string; index: number }[];
   };
+  /**
+   * Controle d'acces (F28) : agregat anonyme (voir accessportal.ts). Absent quand le site n'a aucune porte declaree, ou quand
+   * le PSIM est plus ancien : le portail ne montre alors pas de carte « Controle d'acces » (ou la dit « non transmise »).
+   */
+  access?: AccessSummary;
+  /**
+   * Rondes de securite et SOS par semaine (application des agents, F25). Absent quand ce PSIM n'a pas l'application des
+   * agents (aucun circuit, aucune ronde dans la fenetre) ou quand le calcul echoue : le portail n'invente alors rien.
+   * Uniquement des compteurs : aucun nom d'agent, de circuit ou de point, aucune position.
+   */
+  patrols?: PatrolsSummary;
+}
+
+/** Compteurs de rondes d'une periode ; `ratePct` = effectuees / echues (effectuees + incompletes + ratees), `null` sans ronde echue. */
+export interface PatrolCounts {
+  /** Rondes prevues sur la periode (toutes, y compris celles pas encore echues : en attente ou en cours). */
+  planned: number;
+  done: number;
+  incomplete: number;
+  missed: number;
+  ratePct: number | null;
+  /** Appels de detresse (SOS) ouverts sur la periode. */
+  sos: number;
+}
+
+export interface PatrolsSummary {
+  /** Semaines calendaires locales du site (lundi au dimanche), la plus ancienne d'abord ; la premiere et la derniere peuvent etre partielles. */
+  weeks: (PatrolCounts & { weekStart: string })[];
+  totals: PatrolCounts;
 }
 
 /** Ce que la gestion des risques fournit (voir risk.ts, `overview`) ; seule une partie en est envoyee. */
@@ -111,6 +145,15 @@ export interface SummaryOptions {
 }
 
 const MAX_RISK_ZONES = 200;
+
+/** L'agregat d'acces ; un calcul en echec ne doit jamais empecher l'envoi de l'etat du site. */
+function accessPart(db: DatabaseSync, now: number, from: number, intervals: ReturnType<typeof loadIntervals>): AccessSummary | undefined {
+  try {
+    return buildAccessSummary(db, { now, from, intervals });
+  } catch {
+    return undefined;
+  }
+}
 
 function riskPart(build: (() => RiskInput) | undefined, fromDay: string): SiteSummary['risk'] {
   if (!build) return undefined;
@@ -133,6 +176,93 @@ function riskPart(build: (() => RiskInput) | undefined, fromDay: string): SiteSu
 const pad = (n: number) => String(n).padStart(2, '0');
 const dayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
+/** Au plus ce nombre de semaines (les plus recentes) : une fenetre tres longue ne gonfle pas le resume. */
+export const MAX_PATROL_WEEKS = 60;
+
+/** Lundi (00:00, heure locale) de la semaine qui contient `t`. */
+const mondayOf = (t: number): Date => {
+  const d = new Date(t);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+};
+
+const hasTable = (db: DatabaseSync, name: string): boolean => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+
+/** Taux de rondes effectuees parmi celles echues, en pourcentage entier ; `null` si aucune n'est echue. */
+const ratePct = (done: number, incomplete: number, missed: number): number | null => {
+  const due = done + incomplete + missed;
+  return due === 0 ? null : Math.round((done / due) * 100);
+};
+
+interface Tally {
+  planned: number;
+  done: number;
+  incomplete: number;
+  missed: number;
+  sos: number;
+}
+const emptyTally = (): Tally => ({ planned: 0, done: 0, incomplete: 0, missed: 0, sos: 0 });
+const withRate = (c: Tally): PatrolCounts => ({ planned: c.planned, done: c.done, incomplete: c.incomplete, missed: c.missed, ratePct: ratePct(c.done, c.incomplete, c.missed), sos: c.sos });
+
+/**
+ * Rondes et SOS par semaine locale, sur la fenetre [from, to]. Les rondes sont classees par leur heure de debut prevue
+ * (`due_start`), les SOS par leur ouverture. Aucune requete ne lit un nom, un code ou une position : seuls des statuts et
+ * des dates sortent de la base. `undefined` si ce PSIM n'a pas l'application des agents, ou si le calcul echoue (jamais
+ * d'exception : le resume doit partir, comme pour `riskPart`).
+ */
+function patrolsPart(db: DatabaseSync, from: number, to: number): PatrolsSummary | undefined {
+  try {
+    if (!hasTable(db, 'patrol_route') || !hasTable(db, 'patrol_run')) return undefined;
+    const runs = db.prepare('SELECT due_start, status FROM patrol_run WHERE due_start >= ? AND due_start <= ?').all(from, to) as { due_start: number; status: string }[];
+    const routes = (db.prepare('SELECT COUNT(*) AS n FROM patrol_route').get() as { n: number }).n;
+    // Application des agents « presente » : au moins un circuit (meme archive) ou une ronde dans la fenetre.
+    if (routes === 0 && runs.length === 0) return undefined;
+    const sosTimes = (db.prepare("SELECT opened_at FROM incident WHERE event = 'sos' AND opened_at >= ? AND opened_at <= ?").all(from, to) as { opened_at: number }[]).map((r) => r.opened_at);
+
+    // Les semaines de la fenetre, la plus ancienne d'abord (au plus MAX_PATROL_WEEKS, les plus recentes). Le pas de 7 jours
+    // passe par le constructeur Date local : un changement d'heure ne decale pas le lundi.
+    const starts: Date[] = [];
+    for (let m = mondayOf(from); m.getTime() <= to; m = new Date(m.getFullYear(), m.getMonth(), m.getDate() + 7)) starts.push(m);
+    const kept = starts.slice(-MAX_PATROL_WEEKS);
+    const byWeek = new Map(kept.map((d) => [dayKey(d), emptyTally()]));
+    const totals = emptyTally();
+    const bucket = (t: number) => byWeek.get(dayKey(mondayOf(t)));
+
+    for (const r of runs) {
+      const w = bucket(r.due_start);
+      if (!w) continue; // semaine au-dela du plafond
+      for (const c of [w, totals]) {
+        c.planned++;
+        if (r.status === 'done') c.done++;
+        else if (r.status === 'incomplete') c.incomplete++;
+        else if (r.status === 'missed') c.missed++;
+        // 'pending' et 'active' : prevues, pas encore echues (hors taux).
+      }
+    }
+    for (const t of sosTimes) {
+      const w = bucket(t);
+      if (!w) continue;
+      w.sos++;
+      totals.sos++;
+    }
+    return { weeks: kept.map((d) => ({ weekStart: dayKey(d), ...withRate(byWeek.get(dayKey(d))!) })), totals: withRate(totals) };
+  } catch {
+    // Un calcul de rondes en echec ne doit jamais empecher l'envoi de l'etat du site : le resume part sans rondes.
+    return undefined;
+  }
+}
+
+/** Identifiants des detecteurs virtuels d'agents (vide sans l'application des agents). */
+function agentDetectorIds(db: DatabaseSync): Set<string> {
+  const ids = new Set<string>();
+  try {
+    for (const r of db.prepare("SELECT 'A-' || username AS id FROM agent_profile").all() as { id: string }[]) ids.add(r.id);
+    for (const r of db.prepare("SELECT 'A-phone-' || id AS id FROM agent_phone").all() as { id: string }[]) ids.add(r.id);
+  } catch {
+    // tables absentes : pas d'agents sur ce PSIM
+  }
+  return ids;
+}
+
 export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): SiteSummary {
   const now = options.now ?? Date.now();
   const windowDays = options.windowDays ?? 35;
@@ -154,7 +284,10 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
     ).map((r) => [r.device_id, r]),
   );
   const networkIds = new Set((db.prepare('SELECT device_id FROM network_target').all() as { device_id: string }[]).map((r) => r.device_id));
-  const devices = rows.map((r) => {
+  // Detecteurs virtuels des agents (`A-<identifiant>`, `A-phone-<n>`) : leur nom est celui d'une personne et leur zone sa
+  // derniere position. Ils ne partent JAMAIS vers le portail : ni dans les equipements, ni sous leur nom dans les incidents.
+  const agentIds = agentDetectorIds(db);
+  const devices = rows.filter((r) => !agentIds.has(r.id as string)).map((r) => {
     const cam = r.kind === 'camera' || networkIds.has(r.id as string) ? measuredCameras.get(r.id as string) : undefined;
     return {
       id: r.id as string,
@@ -209,20 +342,23 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
          WHERE i.opened_at >= ? OR i.status <> 'closed' ORDER BY i.opened_at DESC LIMIT ?`,
       )
       .all(from, MAX_INCIDENTS) as Record<string, unknown>[]
-  ).map((r) => ({
-    id: r.id as number,
-    deviceId: r.detector_id as string,
-    deviceName: r.name as string,
-    zone: r.zone as string,
-    category: (r.category as string | null) ?? 'fire',
-    severity: r.severity as string,
-    status: r.status as string,
-    qualification: (r.qualification as string | null) ?? null,
-    openedAt: r.opened_at as number,
-    ackedAt: (r.acked_at as number | null) ?? null,
-    closedAt: (r.closed_at as number | null) ?? null,
-    confirmedAt: (r.confirmed_at as number | null) ?? null,
-  }));
+  ).map((r) => {
+    const person = agentIds.has(r.detector_id as string);
+    return {
+      id: r.id as number,
+      deviceId: person ? 'agent' : (r.detector_id as string),
+      deviceName: person ? 'Agent en service' : (r.name as string),
+      zone: person ? '' : (r.zone as string),
+      category: (r.category as string | null) ?? 'fire',
+      severity: r.severity as string,
+      status: r.status as string,
+      qualification: (r.qualification as string | null) ?? null,
+      openedAt: r.opened_at as number,
+      ackedAt: (r.acked_at as number | null) ?? null,
+      closedAt: (r.closed_at as number | null) ?? null,
+      confirmedAt: (r.confirmed_at as number | null) ?? null,
+    };
+  });
 
   const notif = (status: string) =>
     (db.prepare("SELECT COUNT(*) AS n FROM notification_log WHERE channel <> 'round' AND status = ? AND created_at >= ?").get(status, from) as { n: number }).n;
@@ -242,6 +378,8 @@ export function buildSiteSummary(db: DatabaseSync, options: SummaryOptions): Sit
     incidents,
     notifications: { sent: notif('sent'), failed: notif('failed') },
     risk: riskPart(options.risk, dayKey(new Date(from))),
+    access: accessPart(db, now, from, intervals),
+    patrols: patrolsPart(db, from, now),
   };
 }
 
