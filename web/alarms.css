@@ -274,3 +274,7 @@
 @media (max-width: 1024px) {
   .incident .btn-sm, .alarms-table .btn-sm, .closed-table .btn-sm { min-height: var(--control-h); }
 }
+
+/* Agents en déplacement vers l'incident */
+.inc-dispatch-list { margin: 4px 0 0; padding: 0; list-style: none; font-size: var(--fs-sm); color: var(--ink-2); }
+.inc-dispatch-item.is-on_site { color: var(--ink); font-weight: 600; }
