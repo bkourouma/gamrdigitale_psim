@@ -451,3 +451,22 @@ garde, liste « en cours » avec temps restant et dernier passage), **Groupes et
 (administrateur), **Synchronisation** (état par contrôleur). L'opérateur ne voit ni les boutons d'écriture (hors visiteurs) ni l'import. Le bouton « Désactiver le
 badge » dit ce qui va se passer (« Le badge 0012345 de KONAN Yao sera retiré de 2 contrôleurs ; un passage sera refusé dans les secondes qui suivent. ») et demande
 confirmation. Un état « en attente » ou « échec » dit la raison et quoi faire. Aucune couleur seule : mot et icône.
+
+### 11.7 Câblage MQTT, mise en service, limites connues
+
+- **Droits MQTT** (`server/mqtt.ts`) : le compte d'une passerelle ne peut s'abonner qu'au topic `psim/access/<id>/sync` **exact** des contrôleurs dont
+  `access_controller.gateway_id` est égal à **son nom de compte MQTT**, et ne publie que sur leur `sync-ack`. Le rattachement est relu en base à chaque
+  autorisation et à chaque remise : réaffecter un contrôleur coupe aussitôt l'ancienne passerelle, y compris pour les messages en file d'une session
+  persistante. Le compte principal (outil de recette) n'a aucun droit sur ces topics ; les accusés ne sont remis à personne. Test : `test/garde-mqtt-sync.test.ts`.
+- **Mise en service d'un site** : déclarer le contrôleur avec sa passerelle (`gatewayId` = nom du compte MQTT de la passerelle), déclarer ses portes, créer les plages
+  et les groupes, importer ou saisir les titulaires, puis **Synchronisation -> Activer** : la clé s'affiche une seule fois, à recopier dans la configuration du module de
+  la passerelle. Les titulaires partent alors un par un, l'écran montre l'avancement.
+- **Passerelles en `clean: true`** : aedes ne borne pas la file d'une session persistante absente ; le moteur n'envoie qu'une opération à la fois (messages ≤ 1 Ko, attente
+  jusqu'à 1 h), la croissance est donc très lente, mais les passerelles devraient se connecter en `clean: true`.
+- **À la charge du module de passerelle** : accepter `set_holidays` avec `dates: []` (liste vidée après un envoi), traiter `seq` comme au § 7 du contrat, et se souvenir que
+  `seq` repart de 1 si le PSIM perd son état de synchronisation (suppression puis recréation d'un contrôleur, restauration d'une ancienne sauvegarde) : dans ce cas,
+  remettre à zéro le dernier `seq` appliqué de la passerelle en même temps qu'on renouvelle la clé.
+- **Ce que le PSIM ne fait pas** : il ne lit pas le contenu du contrôleur (un titulaire créé directement sur le contrôleur n'est ni vu ni supprimé) ; il ne gère ni code PIN
+  ni empreinte ni visage ; si une plage est refusée par le contrôleur, les titulaires qui l'utilisent sont quand même envoyés (le contrôleur les refusera, l'écran montre l'échec).
+- **Hypothèses prudentes** : un opérateur ne peut pas désactiver un badge (administrateur seulement) ; une suppression automatique de visiteurs échus compte dans la limite
+  de 20 suppressions (au-delà, confirmation) ; les journaux ne contiennent que des identifiants (`H12`, `B5`), pas de noms.
