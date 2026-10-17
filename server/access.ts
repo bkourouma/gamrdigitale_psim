@@ -289,6 +289,11 @@ export interface AccessOptions {
    * Absent : aucun rattachement (`holder_id` reste NULL). Une erreur est ignoree (le passage est garde).
    */
   resolveHolder?: (credential: string | null, holderRef: string | null) => { id: number; name: string } | null;
+  /**
+   * Appele apres toute declaration, modification ou retrait d'un controleur ou d'une porte : le contenu attendu des controleurs
+   * (titulaires, phase 2) en depend. Une erreur est ignoree.
+   */
+  onTopologyChange?: () => void;
 }
 
 export interface AccessService extends AccessHook {
@@ -616,6 +621,14 @@ export function createAccess(opts: AccessOptions): AccessService {
   function retentionDays(): number {
     const stored = Number(getSetting('retention_days'));
     return Number.isInteger(stored) && stored >= MIN_RETENTION_DAYS && stored <= MAX_RETENTION_DAYS ? stored : defaultDays;
+  }
+
+  function topologyChanged(): void {
+    try {
+      opts.onTopologyChange?.();
+    } catch {
+      // la synchronisation des titulaires ne doit jamais empecher de declarer une porte
+    }
   }
 
   // ---- Point d'accroche du moteur ------------------------------------------------------------------------------------------
@@ -1181,6 +1194,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       'INSERT INTO access_controller (id, name, brand, model, host, gateway_id, credentials_sealed, created_at, created_by, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(id, name, brand, model ?? null, host ?? null, gatewayId ?? null, sealed, t, actor, t, actor);
     audit(actor, 'access_controller_created', { details: clip(`${id} : ${name} (${brand})${sealed ? ', identifiants enregistres' : ''}`) });
+    topologyChanged();
     return controller(id);
   }
 
@@ -1217,6 +1231,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     if (current.doorCount > 0) throw new PsimError(409, `Ce controleur a encore ${current.doorCount} porte(s) declaree(s) : les retirer d'abord`);
     sql('DELETE FROM access_controller WHERE id = ?').run(id);
     audit(actor, 'access_controller_deleted', { details: clip(`${id} : ${current.name}`) });
+    topologyChanged();
   }
 
   // ---- Declaration des portes ------------------------------------------------------------------------------------------------------
@@ -1280,6 +1295,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     sql(
       'INSERT INTO access_door (detector_id, controller_id, door_no, kind, emergency_exit, held_alarm_after_s, actuator_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(detectorId, f.controllerId, f.doorNo, f.kind ?? 'door', f.emergencyExit ? 1 : 0, f.heldAlarmAfterS ?? DEFAULT_HELD_ALARM_S, f.actuatorId ?? null);
+    topologyChanged();
     audit(actor, 'access_door_declared', { deviceId: detectorId, details: clip(`porte n°${f.doorNo} du controleur ${f.controllerId}${f.emergencyExit ? ', issue de secours' : ''}`) });
     return doorView(detectorId) as DoorView;
   }
@@ -1303,6 +1319,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       controllerId, doorNo, f.kind ?? current.kind, (f.emergencyExit ?? current.emergency_exit === 1) ? 1 : 0, f.heldAlarmAfterS ?? current.held_alarm_after_s,
       f.actuatorId === undefined ? current.actuator_id : f.actuatorId, id,
     );
+    topologyChanged();
     audit(actor, 'access_door_updated', { deviceId: id, details: clip(changed.length > 0 ? changed.join(', ') : 'aucun changement') });
     return doorView(id) as DoorView;
   }
@@ -1310,6 +1327,7 @@ export function createAccess(opts: AccessOptions): AccessService {
   function removeDoor(actor: string, id: string): void {
     const r = typeof id === 'string' && ID_PATTERN.test(id) ? sql('DELETE FROM access_door WHERE detector_id = ?').run(id) : null;
     if (!r || Number(r.changes) === 0) throw new PsimError(404, 'Porte introuvable');
+    topologyChanged();
     audit(actor, 'access_door_removed', { deviceId: id, details: "declaration retiree ; l'historique des passages est conserve jusqu'a la purge" });
   }
 

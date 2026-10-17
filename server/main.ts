@@ -20,6 +20,10 @@ import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { createAccess } from './access.ts';
 import { createAccessApi } from './accessapi.ts';
+import { createHolders } from './accessholders.ts';
+import { createHoldersApi } from './accessholdersapi.ts';
+import { runImport } from './accessimport.ts';
+import { createSync } from './accesssync.ts';
 import { createGatewayLink } from './gatewaylink.ts';
 import type { GatewayLink } from './gatewaylink.ts';
 import { acquireLock } from './lock.ts';
@@ -192,7 +196,20 @@ const access = createAccess({
   audit: (actor, action, ref) => engine.audit(actor, action, ref),
   setDeviceState: (id, state, event) => engine.setStateBySupervisor(id, state, event),
   retentionDays: config.accessRetentionDays,
+  // Titulaires (phase 2) : rattachement des passages, et recalcul de ce que les controleurs doivent contenir quand les portes changent.
+  resolveHolder: (credential, holderRef) => holders.resolve(credential, holderRef),
+  onTopologyChange: () => accessSync.notify(),
 });
+// Titulaires, groupes, visiteurs et leur synchronisation vers les controleurs (voir docs/ACCES.md § 11). Le transport MQTT est le courtier plus bas.
+const holders = createHolders({ db, audit: (actor, action, ref) => engine.audit(actor, action, ref), retentionDays: () => access.settings().retentionDays });
+const accessSync = createSync({
+  db,
+  key: secretKey,
+  audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  rights: holders,
+  transport: { publish: (controllerId, payload) => broker.publishSync(controllerId, payload) },
+});
+holders.subscribe((controllerIds) => accessSync.notify(controllerIds));
 const engine = createEngine(db, publish, Date.now, {
   access,
   isArmed: (zone) => arming?.isArmed(zone) ?? true,
@@ -413,6 +430,9 @@ const broker = await startBroker(engine, {
   gateways: config.mqttGateways,
   onGateway: (user, connected, client) => gatewayLink?.connection(user, connected, client),
   onActuatorAck: (id, payload) => actuators.handleAck(id, payload),
+  // Synchronisation des titulaires : un compte de passerelle n'a droit qu'aux controleurs qui lui sont rattaches (access_controller.gateway_id = compte).
+  controllerOwned: (gatewayUser, controllerId) => db.prepare('SELECT 1 AS ok FROM access_controller WHERE id = ? AND gateway_id = ?').get(controllerId, gatewayUser) !== undefined,
+  onAccessSyncAck: (controllerId, payload) => accessSync.receiveAck(controllerId, payload),
   onGatewayMessage: (user) => gatewayLink?.message(user),
 }).catch((err) => {
   console.error(`[psim] broker MQTT impossible a demarrer (${config.mqttHost}:${config.mqttPort}) : ${err.message}`);
@@ -420,6 +440,7 @@ const broker = await startBroker(engine, {
   process.exit(1);
 });
 
+accessSync.start(); // reprend l'operation en vol et recalcule ce que chaque controleur doit contenir
 actuators.attachMqtt({ listeners: (id) => broker.actuatorListeners(id), publishCommand: (id, payload) => broker.publishCommand(id, payload) });
 
 const system = createSystemStatus({
@@ -600,6 +621,13 @@ const app = createApp({
   actuators,
   proofs,
   access: createAccessApi(access),
+  holders: createHoldersApi({
+    holders,
+    sync: accessSync,
+    runImport: (bytes, actor, dryRun) => runImport(bytes, { holders, actor, audit: (a, action, ref) => engine.audit(a, action, ref), dryRun }),
+    db,
+    audit: (actor, action, ref) => engine.audit(actor, action, ref),
+  }),
   agents,
   patrols,
   publicUrl: notify.publicUrl,
@@ -682,6 +710,8 @@ const tickTimer = setInterval(() => {
     patrols.tick(); // rondes : debuts de plage, echeances, rondes incompletes ou ratees
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
     access.tick(); // portes maintenues ouvertes -> alarme ; purge du journal des passages
+    holders.tick(); // fin automatique des visites
+    accessSync.tick(); // renvois et operation suivante de la synchronisation des titulaires
     actuators.tick(); // commandes sans accuse, retours automatiques a l'etat sur
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;
