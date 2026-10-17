@@ -11,6 +11,11 @@
  * configure a `psim/actuators/<id>/command` (topic exact, QoS 0, jamais de joker) ; chaque ordre recu est remis au pilote avec
  * l'identifiant du TOPIC. Les accuses partent par `publishNow` : QoS 1, immediats, JAMAIS dans la file disque (un ordre ou un
  * accuse en retard n'a aucune valeur, et rejouer un accuse apres une coupure serait trompeur).
+ *
+ * Synchronisation des titulaires (docs/CONTROLE-ACCES.md, par. 7) : abonnement DYNAMIQUE, un par controleur enregistre par un
+ * module (`watchSync` / `unwatchSync`), au topic EXACT `psim/access/<id>/sync` en QoS 1 (jamais de joker), applique tout de
+ * suite si la liaison est etablie et de nouveau a chaque (re)connexion. Message « retain » ignore ; l'identifiant du controleur
+ * est celui du TOPIC, jamais une valeur du message. Les accuses (`.../sync-ack`) partent par `publishNow`, comme ceux des commandes.
  */
 import mqtt from 'mqtt';
 import type { MqttClient } from 'mqtt';
@@ -35,6 +40,8 @@ export interface PsimLinkOptions {
   rejectAfter?: number;
   /** Ordres d'actionneurs : identifiants dont on s'abonne aux ordres (a chaque connexion) et fonction qui les recoit. */
   actuators?: { ids: readonly string[]; onCommand: (actuatorId: string, payload: Buffer) => void };
+  /** Synchronisation des titulaires : fonction qui recoit les ordres des controleurs suivis par `watchSync`. */
+  accessSync?: { onSync: (controllerId: string, payload: Buffer) => void };
 }
 
 export interface PsimLink {
@@ -47,6 +54,15 @@ export interface PsimLink {
    * faux si la liaison est coupee ou si l'accuse de reception n'est pas venu : le message est alors perdu, volontairement.
    */
   publishNow(topic: string, payload: string, timeoutMs?: number): Promise<boolean>;
+  /**
+   * Suit les ordres de synchronisation du controleur `controllerId` (`^[A-Za-z0-9_-]{1,32}$`, sinon leve) : abonnement QoS 1 a
+   * `psim/access/<id>/sync`, tout de suite si la liaison est etablie, et a chaque (re)connexion. Sans effet si deja suivi.
+   */
+  watchSync(controllerId: string): void;
+  /** Cesse de suivre ce controleur (desabonnement immediat si la liaison est etablie). Sans effet s'il n'etait pas suivi. */
+  unwatchSync(controllerId: string): void;
+  /** Controleurs suivis (essais, statut). */
+  watchedSync(): string[];
   /** Arret : laisse au plus `flushMs` pour vider la file si le PSIM est joignable. */
   stop(flushMs?: number): Promise<void>;
 }
@@ -54,6 +70,9 @@ export interface PsimLink {
 /** Une coupure qui survient moins de QUICK_CLOSE_MS apres l'envoi est attribuee au message (refus du broker). */
 const QUICK_CLOSE_MS = 3000;
 const COMMAND_TOPIC = /^psim\/actuators\/([A-Za-z0-9_-]{1,32})\/command$/;
+const SYNC_TOPIC = /^psim\/access\/([A-Za-z0-9_-]{1,32})\/sync$/;
+const SYNC_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const syncTopic = (id: string) => `psim/access/${id}/sync`;
 
 export function createPsimLink(opts: PsimLinkOptions): PsimLink {
   const log = opts.log;
@@ -62,6 +81,8 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
   const rejectAfter = opts.rejectAfter ?? 5;
   const where = redactUrl(opts.url);
   const commandIds = new Set(opts.actuators?.ids ?? []);
+  /** Controleurs dont on suit les ordres de synchronisation. */
+  const syncIds = new Set<string>();
 
   let client: MqttClient | null = null;
   let isConnected = false;
@@ -119,17 +140,30 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
       failuresInRow = 0;
       log.log('info', `connecte au PSIM (${where}) ; ${opts.queue.stats().pending} message(s) a envoyer`);
       subscribeActuators(c);
+      for (const id of syncIds) subscribeSync(c, id);
       void pump();
     });
     c.on('message', (topic, payload, packet) => {
-      if (client !== c || !opts.actuators) return;
+      if (client !== c) return;
+      // Un ordre « conserve » par le broker est perime (commande, M7) ou rejouable (synchronisation) : jamais lu.
+      if (packet?.retain) return;
       const m = COMMAND_TOPIC.exec(topic);
-      // Seul un topic EXACT de la configuration est ecoute ; un ordre « conserve » est perime par nature (M7).
-      if (!m || !commandIds.has(m[1]) || packet?.retain) return;
-      try {
-        opts.actuators.onCommand(m[1], payload);
-      } catch (err) {
-        log.log('error', `ordre d'actionneur : erreur interne (${(err as Error).message})`);
+      // Seul un topic EXACT de la configuration est ecoute.
+      if (m && opts.actuators && commandIds.has(m[1])) {
+        try {
+          opts.actuators.onCommand(m[1], payload);
+        } catch (err) {
+          log.log('error', `ordre d'actionneur : erreur interne (${(err as Error).message})`);
+        }
+        return;
+      }
+      const s = SYNC_TOPIC.exec(topic);
+      if (s && opts.accessSync && syncIds.has(s[1])) {
+        try {
+          opts.accessSync.onSync(s[1], payload);
+        } catch (err) {
+          log.log('error', `ordre de synchronisation : erreur interne (${(err as Error).message})`);
+        }
       }
     });
     c.on('error', (err) => {
@@ -163,6 +197,19 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
         if (err && client === c && isConnected) log.log('warn', `abonnement aux ordres de l'actionneur ${id} impossible (${err.message})`);
       });
     }
+  }
+
+  /** Abonnement exact, QoS 1 ; SUBACK 128 = compte de passerelle non autorise pour ce controleur. */
+  function subscribeSync(c: MqttClient, id: string): void {
+    c.subscribe(syncTopic(id), { qos: 1 }, (err, granted) => {
+      // Comme pour les actionneurs : sur un refus, c'est l'erreur qui porte le SUBACK.
+      const code = (err as { packet?: { granted?: number[] } } | null)?.packet?.granted?.[0] ?? granted?.[0]?.qos;
+      if (code === 128) {
+        log.log('error', `controleur ${id} non autorise pour ce compte (voir la liste des controleurs d'acces de PSIM_MQTT_GATEWAYS) : la synchronisation de ses titulaires ne sera pas recue`);
+        return;
+      }
+      if (err && client === c && isConnected) log.log('warn', `abonnement a la synchronisation du controleur ${id} impossible (${err.message})`);
+    });
   }
 
   function publishOne(c: MqttClient, entry: QueueEntry): Promise<void> {
@@ -253,6 +300,25 @@ export function createPsimLink(opts: PsimLinkOptions): PsimLink {
         }
       });
     },
+    watchSync(controllerId) {
+      if (typeof controllerId !== 'string' || !SYNC_ID.test(controllerId)) throw new Error('identifiant de controleur invalide (lettres, chiffres, _ et -, 32 au plus)');
+      if (syncIds.has(controllerId)) return;
+      syncIds.add(controllerId);
+      const c = client;
+      if (c && isConnected) subscribeSync(c, controllerId);
+    },
+    unwatchSync(controllerId) {
+      if (!syncIds.delete(controllerId)) return;
+      const c = client;
+      if (c && isConnected) {
+        try {
+          c.unsubscribe(syncTopic(controllerId), () => undefined);
+        } catch {
+          // liaison en train de se fermer : la prochaine connexion ne s'abonnera plus
+        }
+      }
+    },
+    watchedSync: () => [...syncIds],
     async stop(flushMs = 3000) {
       if (isConnected && opts.queue.peek() && flushMs > 0) {
         await new Promise<void>((resolve) => {

@@ -91,20 +91,25 @@ function safe(v: unknown): string {
 // ---------------------------------------------------------------------------------------------------------------------
 describe('acces-sync : registerAccessSync', () => {
   const handler: AccessSyncHandler = async () => ({ result: 'done' });
+  const KEY = 'ab'.repeat(32);
 
-  it("appelle ctx.onAccessSync(controllerId, handler) s'il existe et rend vrai", () => {
-    const calls: Array<[string, AccessSyncHandler]> = [];
-    const ctx = { onAccessSync: (id: string, h: AccessSyncHandler) => void calls.push([id, h]) } as unknown as ModuleContext;
-    assert.equal(registerAccessSync(ctx, 'CTL-1', handler), true);
-    assert.deepEqual(calls, [['CTL-1', handler]]);
+  it("appelle ctx.onAccessSync(controllerId, handler, { key }) et rend vrai", () => {
+    const calls: unknown[][] = [];
+    const ctx = { onAccessSync: (...args: unknown[]) => void calls.push(args), log: () => undefined } as unknown as ModuleContext;
+    assert.equal(registerAccessSync(ctx, 'CTL-1', handler, KEY), true);
+    assert.deepEqual(calls, [['CTL-1', handler, { key: KEY }]]);
   });
 
-  it("rend faux sans exception quand le socle n'offre pas onAccessSync (ou quand il n'est pas une fonction)", () => {
-    assert.equal(registerAccessSync({} as ModuleContext, 'CTL-1', handler), false);
-    assert.equal(registerAccessSync({ onAccessSync: 'non' } as unknown as ModuleContext, 'CTL-1', handler), false);
-    assert.equal(registerAccessSync({ onAccessSync: null } as unknown as ModuleContext, 'CTL-1', handler), false);
-    assert.equal(registerAccessSync(undefined as unknown as ModuleContext, 'CTL-1', handler), false);
-    assert.equal(registerAccessSync(null as unknown as ModuleContext, 'CTL-1', handler), false);
+  it("rend faux sans exception quand le contexte n'offre pas onAccessSync (ou quand il n'est pas une fonction)", () => {
+    assert.equal(registerAccessSync({} as ModuleContext, 'CTL-1', handler, KEY), false);
+    assert.equal(registerAccessSync({ onAccessSync: 'non' } as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    assert.equal(registerAccessSync({ onAccessSync: null } as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    assert.equal(registerAccessSync(undefined as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    assert.equal(registerAccessSync(null as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    const logs: string[] = [];
+    assert.equal(registerAccessSync({ log: (l: string, t: string) => void logs.push(`${l} ${t}`) } as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, /^info controleur CTL-1 : synchronisation des titulaires indisponible/);
   });
 
   it('conserve le this du contexte', () => {
@@ -115,8 +120,32 @@ describe('acces-sync : registerAccessSync', () => {
         seen = this;
       },
     };
-    registerAccessSync(ctx as unknown as ModuleContext, 'CTL-1', handler);
+    registerAccessSync(ctx as unknown as ModuleContext, 'CTL-1', handler, KEY);
     assert.equal(seen, ctx);
+  });
+
+  it('le socle leve (cle invalide, controleur deja pris...) : faux, avertissement clair, jamais la cle, jamais d\'exception', () => {
+    const logs: { level: string; text: string }[] = [];
+    const ctx = {
+      onAccessSync: () => {
+        throw new Error('controleur « CTL-1 » deja enregistre par le module « acces-zkteco »');
+      },
+      log: (level: string, text: string) => void logs.push({ level, text }),
+    } as unknown as ModuleContext;
+    assert.equal(registerAccessSync(ctx, 'CTL-1', handler, KEY), false);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0]!.level, 'warn');
+    assert.match(logs[0]!.text, /controleur CTL-1 : synchronisation des titulaires non enregistree, surveillance des portes seule \(controleur « CTL-1 » deja enregistre/);
+    assert.equal(logs[0]!.text.includes(KEY), false);
+    // Journal qui leve, erreur qui n'est pas une Error, identifiant hostile : toujours faux, jamais d'exception.
+    const throwing = (): never => {
+      throw 'texte brut';
+    };
+    assert.equal(registerAccessSync({ onAccessSync: throwing, log: throwing } as unknown as ModuleContext, 'CTL-1', handler, KEY), false);
+    const seen: string[] = [];
+    const hostile = { onAccessSync: throwing, log: (_l: string, t: string) => void seen.push(t) } as unknown as ModuleContext;
+    assert.equal(registerAccessSync(hostile, `X${String.fromCharCode(10)}Y`.repeat(30), handler, KEY), false);
+    assert.equal(/\p{Cc}/u.test(seen[0]!), false, 'aucun caractere de controle dans le journal');
   });
 });
 

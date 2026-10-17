@@ -41,6 +41,7 @@ function makeCtx(clock?: { t: number }) {
     },
     log: (level, text) => void logs.push({ level, text }),
     onActuator: () => undefined,
+    onAccessSync: () => undefined,
     config: {},
     now: () => (clock ? clock.t : Date.now()),
   };

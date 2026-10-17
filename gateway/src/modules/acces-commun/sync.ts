@@ -2,7 +2,8 @@
  * Synchronisation des titulaires PSIM -> controleur, COTE MODULE (docs/CONTROLE-ACCES.md, par. 7). Le socle de la passerelle
  * verifie la signature et le `seq` d'un ordre puis appelle le gestionnaire enregistre par le module (`registerAccessSync`) ;
  * ce fichier fournit :
- *  - les types de l'ordre (copies, identiques, de ce que gateway/src/module.ts portera a terme) ;
+ *  - les types de l'ordre (definis dans gateway/src/module.ts, contrat du socle, et reexportes ici pour les marques) ;
+ *  - `registerAccessSync` : declaration TOLERANTE aupres du socle (une erreur ne coupe jamais la remontee des passages) ;
  *  - `parseSyncBody` : validation STRICTE d'une entree hostile (jamais d'exception) ;
  *  - `makeSyncHandler` : le gestionnaire COMMUN a toutes les marques. Chaque marque ne fournit que `SyncDriver` (comment ecrire un
  *    titulaire, une plage horaire, des jours feries dans SON controleur) ; la validation, la serialisation, l'attribution des
@@ -17,7 +18,7 @@
  *  - une methode du pilote ne se resout que si le CONTROLEUR a confirme ; elle doit etre bornee dans le temps par la marque
  *    (delai d'attente de sa liaison) : le gestionnaire n'a pas de minuterie et une promesse jamais resolue bloquerait la file.
  */
-import type { ModuleContext } from '../../module.ts';
+import type { AccessSyncBody, AccessSyncHandler, AccessSyncOp, ModuleContext, SyncHolderDoor, SyncWindow, UpsertHolderBody } from '../../module.ts';
 import { ActuatorFailure } from './actuator.ts';
 import type { ActuatorOutcome } from './actuator.ts';
 import { createLimitedLog } from './limitedlog.ts';
@@ -26,59 +27,42 @@ import { SCHEDULE_REF } from './slots.ts';
 import type { SlotMap } from './slots.ts';
 import type { LogFn } from './types.ts';
 
-// --- Types de l'ordre (docs/CONTROLE-ACCES.md, par. 7) -------------------------------------------------------------------
+// --- Types de l'ordre (docs/CONTROLE-ACCES.md, par. 7) : contrat du socle, gateway/src/module.ts ----------------------------
 
-/** Plage horaire hebdomadaire : meme forme que `Window` de server/arming.ts (jours 0 = dimanche a 6, `HH:MM`, peut passer minuit). */
-export interface SyncWindow {
-  days: number[];
-  from: string;
-  to: string;
-}
+export type { AccessSyncBody, AccessSyncHandler, AccessSyncOp, SyncHolderDoor, SyncWindow, UpsertHolderBody };
 
-/** Porte accessible a un titulaire, avec son horaire (`null` = toutes les heures). */
-export interface SyncHolderDoor {
-  doorNo: number;
-  scheduleRef: string | null;
-}
-
-export type UpsertHolderBody = {
-  type: 'upsert_holder';
-  /** `H<id>`. */
-  holderRef: string;
-  name: string;
-  active: boolean;
-  /** Debut et fin de validite (ms depuis 1970) ou `null` (sans limite). */
-  validFrom: number | null;
-  validTo: number | null;
-  /** Numeros de badge, 4 au plus. */
-  credentials: string[];
-  doors: SyncHolderDoor[];
-};
-
-export type AccessSyncBody =
-  | UpsertHolderBody
-  | { type: 'delete_holder'; holderRef: string }
-  | { type: 'upsert_schedule'; scheduleRef: string; windows: SyncWindow[]; holidays: boolean }
-  | { type: 'delete_schedule'; scheduleRef: string }
-  | { type: 'set_holidays'; dates: string[]; replace: boolean };
-
-/** Ordre transmis par le socle au module : `opId` et `seq` (deja verifies par le socle) plus le corps. */
-export type AccessSyncOp = { opId: string; seq: number } & AccessSyncBody;
-
-/** Rend `refused` (`not_supported`, `invalid`, `full`), `error` (`io`, `unreachable`, `timeout`...) ou `done`. */
-export type AccessSyncHandler = (op: AccessSyncOp) => Promise<ActuatorOutcome>;
-
-type WithAccessSync = ModuleContext & { onAccessSync?: (controllerId: string, handler: AccessSyncHandler) => void };
+/** Texte court pour le journal, sans caractere de controle (le socle assainit aussi, mais un contexte d'essai non). */
+const shortText = (v: unknown, max: number): string => String(v).replace(/\p{Cc}/gu, '?').slice(0, max);
 
 /**
- * Declare le gestionnaire aupres du socle. Tant que le socle n'offre pas `ctx.onAccessSync`, renvoie faux : le module continue
- * de surveiller ses portes, sans synchronisation des titulaires.
+ * Declare le gestionnaire du controleur `controllerId` aupres du socle, avec sa cle de synchronisation (`syncKey` de la
+ * configuration du module). Le socle LEVE quand la declaration est impossible (identifiant ou cle invalide, controleur deja pris,
+ * module arrete) : une erreur de la SYNCHRONISATION ne doit JAMAIS couper la remontee des passages. L'erreur est donc attrapee et
+ * journalisee clairement (`warn`), et le module continue sans synchronisation pour ce controleur. Renvoie vrai si le gestionnaire
+ * est enregistre. La cle n'apparait jamais dans le journal (le socle ne la met pas non plus dans ses messages d'erreur).
  */
-export function registerAccessSync(ctx: ModuleContext, controllerId: string, handler: AccessSyncHandler): boolean {
-  const c = ctx as WithAccessSync | null | undefined;
-  if (typeof c?.onAccessSync !== 'function') return false;
-  c.onAccessSync(controllerId, handler);
-  return true;
+export function registerAccessSync(ctx: ModuleContext, controllerId: string, handler: AccessSyncHandler, key: string): boolean {
+  const id = shortText(controllerId, 40);
+  const say = (level: 'info' | 'warn', text: string): void => {
+    try {
+      ctx.log(level, text);
+    } catch {
+      // un journal defaillant ne doit pas faire echouer le module
+    }
+  };
+  try {
+    if (typeof ctx?.onAccessSync !== 'function') {
+      // Contexte sans synchronisation (essai, socle ancien) : rien a enregistrer, le module surveille ses portes normalement.
+      say('info', `controleur ${id} : synchronisation des titulaires indisponible, le socle de cette passerelle n'a pas de canal de synchronisation des titulaires (surveillance des portes seule)`);
+      return false;
+    }
+    ctx.onAccessSync(controllerId, handler, { key });
+    return true;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : 'erreur inconnue';
+    say('warn', `controleur ${id} : synchronisation des titulaires non enregistree, surveillance des portes seule (${shortText(why, 200)})`);
+    return false;
+  }
 }
 
 // --- Validation -----------------------------------------------------------------------------------------------------------

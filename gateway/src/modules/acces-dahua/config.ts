@@ -6,6 +6,7 @@
  *     "controllers": [ { "id": "CTL-1", "host": "192.168.10.20", "port": 80, "username": "psim",
  *                        "password": {"$file":"secrets/ctl1.txt"}, "utcOffsetMin": 0,
  *                        "epoch": 0,                 // optionnel (entier >= 0, 0) : voir ci-dessous
+ *                        "syncKey": {"$file":"secrets/ctl1-sync.txt"},   // optionnel : voir ci-dessous
  *                        "doors": { "1": "P-ENTREE", "2": "P-SALLE-SERVEUR" },
  *                        "actuators": { "ACT-ENTREE": { "door": 1, "type": "lock" } } } ],
  *     "thresholds": { "deniedCount": 3, "deniedWindowS": 60, "heartbeatS": 60, "clockDriftMs": 120000,
@@ -17,6 +18,9 @@
  * `epoch` (par controleur) : a AUGMENTER quand le controleur est remplace (sa memoire est vide : les n° d'enregistrement repartent
  * de zero). Si epoch > 0, `eventId` = "<epoque>.<n° d'enregistrement>" et le curseur de recuperation (F8) est celui de l'epoque :
  * il repart de zero (premier demarrage : au plus les dernieres 24 h de la memoire sont rejouees).
+ * `syncKey` (par controleur, facultatif) : cle de synchronisation des titulaires du controleur (64 hexadecimaux minuscules,
+ * montree une seule fois par le PSIM a la creation du controleur), de preference par {"$file": ...} ou {"$env": ...}. Absente :
+ * le controleur est surveille normalement mais ne recoit pas les titulaires du PSIM. Jamais journalisee ni reprise dans une erreur.
  * `schedules.min` / `schedules.max` : plage de numeros de `AccessTimeSchedule` que le module peut attribuer aux horaires du PSIM.
  * Defaut 1 a 127 : le controleur en offre 128 (indices 0 a 127, SDK Dahua) et le numero 0 reste celui d'usine ; 255 est reserve
  * (« toutes les heures »). A QUALIFIER sur materiel. Valeurs : entiers, 0 <= min <= max <= 254.
@@ -52,6 +56,8 @@ export interface ControllerConfig {
   remoteUserId: number | null;
   /** Epoque du controleur (entier >= 0, 0 par defaut) : a augmenter quand le controleur est remplace. */
   epoch: number;
+  /** Cle de synchronisation des titulaires (64 hexadecimaux minuscules) ou null (synchronisation inactive). Ne jamais journaliser. */
+  syncKey: string | null;
 }
 
 export interface Thresholds {
@@ -106,7 +112,9 @@ const HOST_RE = /^[A-Za-z0-9._:-]{1,253}$/;
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const TOP_KEYS = new Set(['stateDir', 'controllers', 'thresholds', 'schedules', 'reconnect']);
-const CONTROLLER_KEYS = new Set(['id', 'host', 'port', 'username', 'password', 'utcOffsetMin', 'doors', 'actuators', 'doorBase', 'remoteUserId', 'epoch']);
+const CONTROLLER_KEYS = new Set(['id', 'host', 'port', 'username', 'password', 'utcOffsetMin', 'doors', 'actuators', 'doorBase', 'remoteUserId', 'epoch', 'syncKey']);
+/** Cle de synchronisation des titulaires : 32 octets en hexadecimal minuscule. */
+const SYNC_KEY_RE = /^[0-9a-f]{64}$/;
 const THRESHOLD_BOUNDS: Record<keyof Thresholds, [number, number]> = {
   deniedCount: [1, 100],
   deniedWindowS: [1, 86_400],
@@ -248,6 +256,13 @@ export function parseConfig(config: Record<string, unknown>): DahuaAccessConfig 
         else epoch = raw.epoch;
       }
 
+      // Jamais la valeur dans le message : c'est peut-etre une cle presque juste.
+      let syncKey: string | null = null;
+      if (raw.syncKey !== undefined) {
+        if (typeof raw.syncKey !== 'string' || !SYNC_KEY_RE.test(raw.syncKey)) err(where, '« syncKey » doit etre la cle de synchronisation du controleur donnee par le PSIM : 64 caracteres hexadecimaux minuscules (0-9, a-f), de preference {"$file": "secrets/fichier.txt"} ou {"$env": "NOM"}');
+        else syncKey = raw.syncKey;
+      }
+
       let remoteUserId: number | null = null;
       if (raw.remoteUserId !== undefined) {
         if (typeof raw.remoteUserId !== 'number' || !Number.isInteger(raw.remoteUserId) || raw.remoteUserId < 0 || raw.remoteUserId > 99_999_999) err(where, '« remoteUserId » doit etre un entier positif ou nul');
@@ -311,7 +326,7 @@ export function parseConfig(config: Record<string, unknown>): DahuaAccessConfig 
       }
 
       if (errors.length === before && typeof id === 'string' && typeof host === 'string' && typeof username === 'string' && typeof password === 'string') {
-        controllers.push({ id, host, port, username, password, utcOffsetMin, doors, actuators, doorBase, remoteUserId, epoch });
+        controllers.push({ id, host, port, username, password, utcOffsetMin, doors, actuators, doorBase, remoteUserId, epoch, syncKey });
       }
     });
   }

@@ -41,6 +41,8 @@ import type { AccessInput, FakeDahuaOptions } from './fake-dahua.ts';
 import { ROOT, sleep, tempDir, waitFor } from './helpers.ts';
 
 const T0 = Date.UTC(2026, 9, 17, 10, 0, 0);
+/** Cle de synchronisation des titulaires du controleur d'essai (sans elle, le module n'enregistre pas la synchronisation). */
+const SYNC_KEY = 'd4'.repeat(32);
 /** Caractere d'ecriture inversee (U+202E), ecrit par son code pour eviter toute transformation par les outils. */
 const RLO = String.fromCodePoint(0x202e);
 const cleanup: (() => unknown)[] = [];
@@ -874,6 +876,7 @@ function configFor(fake: FakeDahua, stateDir: string, o: BootOptions = {}): Reco
         password: fake.password,
         doors: { '1': 'P-ENTREE', '2': 'P-SALLE' },
         actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' }, 'ACT-BARRIERE': { door: 2, type: 'gate' } },
+        syncKey: SYNC_KEY,
         ...o.controller,
       },
     ],
@@ -2252,7 +2255,7 @@ describe('acces-dahua : module et synchronisation des titulaires', () => {
   it('le module declare un gestionnaire par controleur ; les plages attribuees survivent a un redemarrage', async () => {
     const fake1 = await startFake({ now: () => T0 });
     const fake2 = await startFake({ now: () => T0 });
-    const second = { id: 'CTL-2', host: fake2.host, port: fake2.port, username: fake2.username, password: fake2.password, doors: { '1': 'P-AUTRE' } };
+    const second = { id: 'CTL-2', host: fake2.host, port: fake2.port, username: fake2.username, password: fake2.password, doors: { '1': 'P-AUTRE' }, syncKey: SYNC_KEY };
     const base = configFor(fake1, '');
     const controllers = [...(base.controllers as Record<string, unknown>[]), second];
     const stateDir = tempDir(cleanup);
@@ -2313,6 +2316,69 @@ describe('acces-dahua : module et synchronisation des titulaires', () => {
     assert.ok(line, h.logs.join('\n'));
     assert.match(line, /^warn /);
     assert.match(line, /controleur inconnu du socle/);
+  });
+});
+
+describe('acces-dahua : cle de synchronisation (syncKey)', () => {
+  const withController = (extra: Record<string, unknown>) => ({ controllers: [{ ...baseController(), ...extra }] });
+
+  it('absente par defaut (null) ; 64 hexadecimaux minuscules acceptes ; propre a chaque controleur', () => {
+    assert.equal(parseConfig(withController({})).controllers[0]!.syncKey, null);
+    assert.equal(parseConfig(withController({ syncKey: SYNC_KEY })).controllers[0]!.syncKey, SYNC_KEY);
+    const cfg = parseConfig({ controllers: [{ ...baseController(), syncKey: SYNC_KEY }, { ...baseController(), id: 'CTL-2', doors: { '1': 'Z1' }, actuators: {} }] });
+    assert.deepEqual(cfg.controllers.map((c) => c.syncKey), [SYNC_KEY, null]);
+  });
+
+  const nearly = `${SYNC_KEY.slice(0, 63)}g`;
+  for (const bad of [SYNC_KEY.toUpperCase(), SYNC_KEY.slice(1), `${SYNC_KEY}0`, nearly, ` ${SYNC_KEY.slice(1)}`, `${SYNC_KEY.slice(1)}${String.fromCharCode(10)}`, '', 5, null, true, {}, []]) {
+    it(`syncKey refusee, sans jamais afficher la valeur : ${typeof bad === 'string' ? `texte de ${bad.length} caracteres` : JSON.stringify(bad)}`, () => {
+      let message = '';
+      try {
+        parseConfig(withController({ syncKey: bad }));
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      assert.match(message, /controleur « CTL-1 » : « syncKey » doit etre la cle de synchronisation du controleur donnee par le PSIM : 64 caracteres hexadecimaux minuscules/);
+      if (typeof bad === 'string' && bad.length >= 8) assert.equal(message.includes(bad.trim().slice(0, 16)), false, message);
+      assert.equal(message.includes('d4d4d4d4'), false, message);
+    });
+  }
+
+  it('sans syncKey : une ligne d\'information, aucun enregistrement aupres du socle, les passages remontent', async () => {
+    const handlers = new Map<string, AccessSyncHandler>();
+    const h = await boot({ accessSync: handlers, controller: { syncKey: undefined } });
+    await online(h);
+    await settled(h);
+    h.fake.emitAccess({ recNo: 1 });
+    await waitFor(() => accessMsgs(h).length === 1, 5000, 'passage');
+    assert.equal(handlers.size, 0);
+    const lines = h.logs.filter((l) => /synchronisation des titulaires/.test(l));
+    assert.deepEqual(lines, ['info synchronisation des titulaires inactive pour CTL-1 (pas de syncKey)']);
+  });
+
+  it('avec syncKey : le socle recoit (controleur, gestionnaire, { key }) ; la cle n\'est jamais journalisee', async () => {
+    const fake = await startFake({ now: () => T0 });
+    const calls: unknown[][] = [];
+    const logs: string[] = [];
+    const ctx = {
+      emit: () => true,
+      openMqtt: async () => {
+        throw new Error('non utilise');
+      },
+      log: (level: string, text: string) => void logs.push(`${level} ${text}`),
+      config: {},
+      now: () => T0,
+      onActuator: () => undefined,
+      onAccessSync: (...args: unknown[]) => void calls.push(args),
+    } as unknown as ModuleContext;
+    const mod = createModule(configFor(fake, tempDir(cleanup)), { tickMs: null });
+    cleanup.push(() => mod.stop());
+    await mod.start(ctx);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]![0], 'CTL-1');
+    assert.equal(typeof calls[0]![1], 'function');
+    assert.deepEqual(calls[0]![2], { key: SYNC_KEY });
+    assert.equal(logs.join('\n').includes(SYNC_KEY), false);
   });
 });
 

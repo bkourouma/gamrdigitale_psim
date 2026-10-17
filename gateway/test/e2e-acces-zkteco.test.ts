@@ -281,6 +281,6 @@ describe('bout en bout : appareil ZKTeco -> module -> socle -> broker du PSIM ->
     await w.dev.push({ event: 0, card: CARD, pin: '101', door: 1 });
     await waitFor(() => accessMsgs(w).length === 1, 15_000, 'passage recu');
     assert.equal(w.rt.status().modules[0]?.state, 'running');
-    assert.ok(w.logger.has(/canal de synchronisation des titulaires|synchronisation des titulaires non enregistree/), w.logger.lines.map((l) => l.text).join('\n'));
+    assert.ok(w.logger.has(/canal de synchronisation des titulaires|synchronisation des titulaires non enregistree|synchronisation des titulaires inactive/), w.logger.lines.map((l) => l.text).join('\n'));
   });
 });

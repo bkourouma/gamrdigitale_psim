@@ -385,10 +385,14 @@ export function create(config: Record<string, unknown>): ZktecoModule {
 
   /**
    * Declare le gestionnaire de synchronisation de l'appareil aupres du socle. Une centrale (`controller`) recoit les titulaires par
-   * `DATA UPDATE` (sync.ts) ; un terminal repond toujours « non pris en charge ». Un socle sans `onAccessSync` (ou qui refuse
-   * l'enregistrement) ne coupe jamais la remontee des passages : le module journalise et continue.
+   * `DATA UPDATE` (sync.ts) ; un terminal repond toujours « non pris en charge ». Sans `syncKey`, rien n'est enregistre (une ligne
+   * d'information) ; un socle qui refuse l'enregistrement ne coupe jamais la remontee des passages : le module journalise et continue.
    */
   function registerSync(c: ModuleContext, cc: ControllerConfig, cmds: DeviceCommands): void {
+    if (cc.syncKey === null) {
+      log('info', `synchronisation des titulaires inactive pour ${cc.id} (pas de syncKey)`);
+      return;
+    }
     let handler: AccessSyncHandler = NOT_SUPPORTED;
     if (cc.kind === 'controller' && slots && holidays) {
       const driver = createZktecoSyncDriver({
@@ -404,9 +408,8 @@ export function create(config: Record<string, unknown>): ZktecoModule {
       handler = makeSyncHandler(cc.id, driver, { slots, now: c.now, log: (level, text) => log(level, text) });
     }
     try {
-      if (!registerAccessSync(c, cc.id, handler)) {
-        log('info', `controleur ${cc.id} : cette passerelle n'a pas de canal de synchronisation des titulaires (surveillance des portes seule)`);
-      }
+      // `registerAccessSync` journalise lui-meme un refus du socle et rend faux : le module continue de surveiller.
+      registerAccessSync(c, cc.id, handler, cc.syncKey);
     } catch (err) {
       log('warn', `controleur ${cc.id} : synchronisation des titulaires non enregistree, surveillance des portes seule (${(err instanceof Error ? err.message : 'erreur').slice(0, 200)})`);
     }

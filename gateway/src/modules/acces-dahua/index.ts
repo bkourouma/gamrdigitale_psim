@@ -5,7 +5,7 @@
  * etat des portes (ouverte, fermee, forcee, maintenue ouverte), sabotage du boitier, signes de vie, hors ligne, derive d'horloge,
  * refus repetes, contrainte (`panic`), mode de chaque porte (F19) ; recuperation des passages manques pendant une coupure (F8,
  * avec epoque en cas de remplacement du controleur) ; ouverture a distance par le canal de commande signe (actionneurs `lock` /
- * `gate`) ; synchronisation des titulaires PSIM -> controleur (docs/CONTROLE-ACCES.md, par. 7) quand le socle la propose.
+ * `gate`) ; synchronisation des titulaires PSIM -> controleur (docs/CONTROLE-ACCES.md, par. 7) pour chaque controleur qui a une `syncKey`.
  * Voir docs/CONTROLE-ACCES.md et gateway/docs/acces-dahua.md.
  *
  * Le controleur decide TOUJOURS de l'ouverture d'une porte par badge : ce module ne fait que lire et rapporter.
@@ -107,15 +107,18 @@ export class AccesDahuaModule implements GatewayModule {
     log('info', `${this.controllers.length} controleur(s) d'acces Dahua suivi(s)`);
   }
 
-  /** Synchronisation des titulaires : un gestionnaire par controleur, si le socle de la passerelle la propose. */
+  /** Synchronisation des titulaires : un gestionnaire par controleur qui a une `syncKey`. */
   private registerSync(ctx: ModuleContext, controller: AccessController, slots: SlotMap, log: (level: 'info' | 'warn' | 'error', text: string) => void): void {
     const cfg = this.config.controllers.find((c) => c.id === controller.id);
     if (!cfg) return;
+    if (cfg.syncKey === null) {
+      log('info', `synchronisation des titulaires inactive pour ${controller.id} (pas de syncKey)`);
+      return;
+    }
     const driver = new DahuaSyncDriver({ http: controller.http, doors: cfg.doors, utcOffsetMin: cfg.utcOffsetMin, now: () => ctx.now(), log });
     try {
-      if (!registerAccessSync(ctx, controller.id, makeSyncHandler(controller.id, driver, { slots, now: () => ctx.now(), log }))) {
-        log('info', `controleur ${controller.id} : synchronisation des titulaires indisponible (le socle de la passerelle ne la propose pas), surveillance seule`);
-      }
+      // `registerAccessSync` journalise lui-meme un refus du socle et rend faux : le module continue de surveiller.
+      registerAccessSync(ctx, controller.id, makeSyncHandler(controller.id, driver, { slots, now: () => ctx.now(), log }), cfg.syncKey);
     } catch (err) {
       // Une erreur de declaration de la synchronisation ne doit jamais couper la remontee des passages.
       log('warn', `controleur ${controller.id} : synchronisation des titulaires non enregistree (${(err instanceof Error ? err.message : 'erreur').slice(0, 160)})`);

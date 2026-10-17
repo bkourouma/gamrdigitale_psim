@@ -9,19 +9,25 @@
  *  - Actionneurs (section `actuators`) : le pilote de commandes (actuators.ts) recoit les ordres signes du PSIM par la liaison
  *    PSIM et les remet au gestionnaire que le module a enregistre par `ctx.onActuator`. A l'arret, le pilote ramene au repos,
  *    une fois et au mieux, les actionneurs dont un retour automatique est programme, AVANT d'arreter les modules.
+ *  - Synchronisation des titulaires (docs/CONTROLE-ACCES.md, par. 7) : le pilote de accesssync.ts recoit les ordres signes du
+ *    PSIM pour chaque controleur qu'un module a enregistre par `ctx.onAccessSync` (cle fournie par le module : aucune section
+ *    de configuration de la passerelle), et les remet a son gestionnaire. A l'arret ou au redemarrage d'un module, son
+ *    gestionnaire est retire mais l'abonnement et la cle restent : un ordre recu entre-temps est accuse « unreachable ».
  *  - Un fichier d'etat (status.json) est reecrit toutes les 10 s : le superviseur s'en sert pour detecter un blocage.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createActuatorPilot } from './actuators.ts';
+import { SYNC_CONTROLLER_ID, createAccessSyncPilot } from './accesssync.ts';
+import type { AccessSyncPilot, AccessSyncStats } from './accesssync.ts';
+import { KEY_HEX, createActuatorPilot } from './actuators.ts';
 import type { ActuatorPilot, ActuatorStats, Scheduler } from './actuators.ts';
 import { MODULES_DIR, moduleEntry, redactUrl } from './config.ts';
 import type { GatewayConfig, ModuleSpec } from './config.ts';
 import { clean } from './log.ts';
 import type { Level, Logger } from './log.ts';
-import type { ActuatorHandler, DeviceMessage, GatewayModule, ModuleContext, ModuleFactory, MqttLink } from './module.ts';
+import type { AccessSyncHandler, ActuatorHandler, DeviceMessage, GatewayModule, ModuleContext, ModuleFactory, MqttLink } from './module.ts';
 import { openMqtt } from './mqttlink.ts';
 import { createPsimLink } from './psimlink.ts';
 import type { PsimLink } from './psimlink.ts';
@@ -44,6 +50,8 @@ export interface RuntimeOptions {
   rejectAfter?: number;
   /** Essais : delais et planificateur du pilote de commandes. */
   actuators?: { handlerTimeoutMs?: number; restRetryMs?: number; restRetries?: number; schedule?: Scheduler };
+  /** Essais : delais et planificateur du pilote de synchronisation des titulaires. */
+  accessSync?: { handlerTimeoutMs?: number; stopWaitMs?: number; schedule?: Scheduler };
 }
 
 export type ModuleState = 'starting' | 'running' | 'retrying' | 'stopping' | 'stopped';
@@ -66,6 +74,8 @@ export interface GatewayStatus {
   modules: ModuleStatus[];
   /** Pilote de commandes : absent si aucun actionneur n'est configure. */
   actuators?: ActuatorStats & { pendingRests: number };
+  /** Synchronisation des titulaires (controleurs enregistres, operations, rejets). */
+  accessSync: AccessSyncStats;
 }
 
 export interface GatewayRuntime {
@@ -76,6 +86,8 @@ export interface GatewayRuntime {
   queue: DiskQueue;
   /** Pilote de commandes d'actionneurs ; null si la section `actuators` est vide. */
   actuators: ActuatorPilot | null;
+  /** Pilote de synchronisation des titulaires (toujours present : les controleurs sont declares par les modules). */
+  accessSync: AccessSyncPilot;
   stop(): Promise<void>;
 }
 
@@ -83,6 +95,8 @@ export const STATUS_FILE = 'status.json';
 export const LOCK_FILE = 'gateway.lock';
 /** Memoire anti-rejeu des ordres d'actionneurs (dans le dossier de donnees). */
 export const ACTUATORS_STATE_FILE = 'actuators-state.json';
+/** Dernier numero de sequence de synchronisation par controleur (dans le dossier de donnees). */
+export const ACCESS_SYNC_STATE_FILE = 'access-sync-state.json';
 
 function alive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -145,6 +159,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
   const queue = new DiskQueue(config.dataDir, { ...config.queue, log: logger });
   let link: PsimLink;
   let pilot: ActuatorPilot | null = null;
+  let syncPilot: AccessSyncPilot | null = null;
   try {
     queue.open();
     if (config.actuators.length > 0) {
@@ -159,6 +174,16 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
         ...opts.actuators,
       });
     }
+    syncPilot = createAccessSyncPilot({
+      log: logger,
+      now,
+      stateFile: join(config.dataDir, ACCESS_SYNC_STATE_FILE),
+      // Meme regle que les commandes : un accuse part tout de suite (5 s au plus) ou il est perdu ; le PSIM renverra l'operation
+      // et recevra l'accuse reemis.
+      publishAck: (controllerId, payload) => link.publishNow(`psim/access/${controllerId}/sync-ack`, payload, 5000),
+      ...opts.accessSync,
+    });
+    const syncRef = syncPilot;
     const pilotRef = pilot;
     link = createPsimLink({
       url: config.psim.url,
@@ -172,13 +197,16 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       publishTimeoutMs: opts.publishTimeoutMs,
       rejectAfter: opts.rejectAfter,
       ...(pilotRef ? { actuators: { ids: pilotRef.ids(), onCommand: (id: string, payload: Buffer) => void pilotRef.handleMessage(id, payload) } } : {}),
+      accessSync: { onSync: (id: string, payload: Buffer) => void syncRef.handleMessage(id, payload) },
     });
   } catch (err) {
     void pilot?.stop();
+    void syncPilot?.stop();
     queue.close();
     releaseLock();
     throw err;
   }
+  const sync: AccessSyncPilot = syncPilot;
 
   /** Arret demande : plus de nouvel essai de demarrage. */
   let stopped = false;
@@ -231,6 +259,8 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     links: Set<MqttLink>;
     /** Retraits des gestionnaires d'actionneurs enregistres par l'instance vivante. */
     actuatorOffs: Map<string, () => void>;
+    /** Retraits des gestionnaires de synchronisation enregistres par l'instance vivante. */
+    syncOffs: Map<string, () => void>;
     ctxAlive: { value: boolean };
     timer: NodeJS.Timeout | null;
     delay: number;
@@ -243,6 +273,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     instance: null,
     links: new Set(),
     actuatorOffs: new Map(),
+    syncOffs: new Map(),
     ctxAlive: { value: false },
     timer: null,
     delay: config.moduleRetry.minMs,
@@ -251,6 +282,8 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
 
   /** Actionneur -> instance de module qui le pilote (une seule instance vivante a la fois). */
   const actuatorOwner = new Map<string, Slot>();
+  /** Controleur d'acces -> instance de module qui le synchronise. */
+  const syncOwner = new Map<string, Slot>();
 
   async function loadFactory(name: string): Promise<ModuleFactory> {
     const file = moduleEntry(name, modulesDir);
@@ -300,6 +333,21 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
         slot.actuatorOffs.set(spec.id, pilot.register(spec.id, handler));
         actuatorOwner.set(spec.id, slot);
       },
+      onAccessSync: (controllerId: string, handler: AccessSyncHandler, o: { key: string }) => {
+        // Toute erreur ici remonte au module (`registerAccessSync` l'attrape : la remontee des passages continue). Jamais la cle
+        // dans un message.
+        if (!alive.value) throw new Error('module arrete');
+        if (typeof controllerId !== 'string' || !SYNC_CONTROLLER_ID.test(controllerId)) throw new Error(`identifiant de controleur « ${clean(String(controllerId), 40)} » invalide (lettres, chiffres, _ et -, 32 au plus)`);
+        const key = (o as { key?: unknown } | null | undefined)?.key;
+        if (typeof key !== 'string' || !KEY_HEX.test(key)) throw new Error(`controleur « ${controllerId} » : cle de synchronisation invalide (syncKey : 64 hexadecimaux minuscules)`);
+        if (typeof handler !== 'function') throw new Error(`onAccessSync(« ${controllerId} ») : un gestionnaire (fonction) est attendu`);
+        const owner = syncOwner.get(controllerId);
+        if (owner) throw new Error(`controleur « ${controllerId} » deja enregistre pour la synchronisation par ${owner === slot ? 'ce module' : `le module « ${owner.spec.label} »`}`);
+        slot.syncOffs.set(controllerId, sync.register(controllerId, key, handler));
+        syncOwner.set(controllerId, slot);
+        // Abonnement garde a l'arret du module : un ordre recu pendant un redemarrage est accuse « unreachable ».
+        link.watchSync(controllerId);
+      },
       config: structuredClone(slot.spec.config),
       now,
     };
@@ -323,6 +371,11 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       actuatorOwner.delete(id);
     }
     slot.actuatorOffs.clear();
+    for (const [id, off] of slot.syncOffs) {
+      off();
+      syncOwner.delete(id);
+    }
+    slot.syncOffs.clear();
     const links = [...slot.links];
     slot.links.clear();
     await Promise.all(links.map((l) => l.close().catch(() => undefined)));
@@ -369,6 +422,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
       queue: queue.stats(),
       modules: slots.map((s) => ({ ...s.status })),
       ...(pilot ? { actuators: { ...pilot.stats(), pendingRests: pilot.pendingRests().length } } : {}),
+      accessSync: sync.stats(),
     };
   }
 
@@ -396,6 +450,7 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
     status,
     queue,
     actuators: pilot,
+    accessSync: sync,
     stop() {
       stopping ??= (async () => {
         logger.log('info', 'arret de la passerelle...');
@@ -411,6 +466,12 @@ export async function startRuntime(opts: RuntimeOptions): Promise<GatewayRuntime
           } catch (err) {
             logger.log('error', `arret du pilote de commandes : ${errText(err)}`);
           }
+        }
+        // Synchronisation : plus aucun ordre accepte ; les operations en cours ont quelques secondes pour finir et accuser.
+        try {
+          await sync.stop();
+        } catch (err) {
+          logger.log('error', `arret de la synchronisation des titulaires : ${errText(err)}`);
         }
         await Promise.all(
           slots.map(async (slot) => {

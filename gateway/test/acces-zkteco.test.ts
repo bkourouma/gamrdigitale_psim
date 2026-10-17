@@ -52,16 +52,19 @@ const CARD = '12345678';
 const PIN = '101';
 const SERIAL_C = 'CJDK123456789';
 const SERIAL_T = 'TERM00000001';
+/** Cle de synchronisation des titulaires des appareils d'essai (sans elle, le module n'enregistre pas la synchronisation). */
+const SYNC_KEY = 'c3'.repeat(32);
 
 const controllerCfg = {
   id: 'CTL-2',
+  syncKey: SYNC_KEY,
   serial: SERIAL_C,
   kind: 'controller',
   utcOffsetMin: 0,
   doors: { '1': 'P-ENTREE', '2': 'P-ARRIERE' },
   actuators: { 'ACT-ENTREE': { door: 1, type: 'lock' }, 'GATE-ARRIERE': { door: 2, type: 'gate', pulseS: 8 } },
 };
-const terminalCfg = { id: 'TERM-1', serial: SERIAL_T, kind: 'terminal', utcOffsetMin: 0, doors: { '1': 'P-POINTEUSE' } };
+const terminalCfg = { id: 'TERM-1', serial: SERIAL_T, kind: 'terminal', utcOffsetMin: 0, doors: { '1': 'P-POINTEUSE' }, syncKey: SYNC_KEY };
 
 const baseConfig = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   listen: { host: '127.0.0.1', port: 0 },
@@ -2622,6 +2625,75 @@ describe('acces-zkteco : synchronisation des titulaires', () => {
     bad({ sync: { fullCodes: Array.from({ length: 17 }, (_, i) => -i - 1) } }, /sync\.fullCodes/);
     bad({ sync: { sendName: true } }, /cle inconnue/);
     bad({ sync: 3 }, /sync doit etre un objet/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Cle de synchronisation (syncKey)
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('acces-zkteco : cle de synchronisation (syncKey)', () => {
+  const withKey = (syncKey: unknown) => baseConfig({ controllers: [{ ...controllerCfg, syncKey }, terminalCfg] });
+
+  it('absente = null ; 64 hexadecimaux minuscules acceptes ; propre a chaque appareil', () => {
+    const { syncKey: _k, ...noKey } = controllerCfg;
+    const c = parseConfig(baseConfig({ controllers: [noKey, terminalCfg] }));
+    assert.deepEqual(c.controllers.map((x) => x.syncKey), [null, SYNC_KEY]);
+    assert.equal(parseConfig(withKey(undefined)).controllers[0]?.syncKey, null);
+    assert.equal(parseConfig(withKey('0f'.repeat(32))).controllers[0]?.syncKey, '0f'.repeat(32));
+  });
+
+  it('refusee (validation stricte), sans jamais afficher la valeur', () => {
+    const nearly = `${SYNC_KEY.slice(0, 63)}z`;
+    for (const bad of [SYNC_KEY.toUpperCase(), SYNC_KEY.slice(2), `${SYNC_KEY}00`, nearly, `${SYNC_KEY.slice(1)} `, '', 5, null, true, {}, []]) {
+      let message = '';
+      try {
+        parseConfig(withKey(bad));
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      assert.match(message, /controllers\[0\]\.syncKey doit etre la cle de synchronisation du controleur donnee par le PSIM : 64 caracteres hexadecimaux minuscules/, String(bad));
+      assert.equal(message.includes('c3c3c3c3'), false, message);
+    }
+  });
+
+  it('sans syncKey : une ligne d\'information par appareil, aucun enregistrement aupres du socle, les passages remontent', async () => {
+    const { syncKey: _k, ...noKey } = controllerCfg;
+    const { syncKey: _t, ...noKeyT } = terminalCfg;
+    const h = await boot({ controllers: [noKey, noKeyT] });
+    assert.equal(h.syncHandlers.size, 0);
+    const lines = h.logs.filter((l) => /synchronisation des titulaires/.test(l.text));
+    assert.deepEqual(
+      lines.map((l) => [l.level, l.text]),
+      [
+        ['info', 'synchronisation des titulaires inactive pour CTL-2 (pas de syncKey)'],
+        ['info', 'synchronisation des titulaires inactive pour TERM-1 (pas de syncKey)'],
+      ],
+    );
+    const d = h.dev();
+    await d.handshake();
+    await d.push({ event: 0, card: CARD, door: 1 });
+    assert.equal(passages(h).length, 1);
+  });
+
+  it('avec syncKey : le socle recoit (controleur, gestionnaire, { key }) ; la cle n\'est jamais journalisee', async () => {
+    const calls: unknown[][] = [];
+    const logs: string[] = [];
+    const ctx = {
+      emit: () => true,
+      log: (_l: string, t: string) => logs.push(t),
+      now: () => T0,
+      onActuator: () => undefined,
+      onAccessSync: (...args: unknown[]) => void calls.push(args),
+    } as unknown as ModuleContext;
+    const mod = create(baseConfig({ stateDir: tempDir() }));
+    cleanups.push(() => mod.stop());
+    await mod.start(ctx);
+    assert.deepEqual(calls.map((c) => [c[0], typeof c[1], c[2]]), [
+      ['CTL-2', 'function', { key: SYNC_KEY }],
+      ['TERM-1', 'function', { key: SYNC_KEY }],
+    ]);
+    assert.equal(logs.join('\n').includes(SYNC_KEY), false);
   });
 });
 

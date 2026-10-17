@@ -306,13 +306,13 @@ describe('bout en bout : controleur Dahua -> module -> socle -> broker du PSIM -
     assert.equal(c.getBroker()?.actuatorListeners('ACT-ENTREE'), 0);
   });
 
-  it('passerelle sans synchronisation des titulaires (socle actuel) : le module demarre, le dit une fois, et les passages remontent', { timeout: 60_000 }, async () => {
+  it('controleur sans syncKey : le module demarre, le dit une fois, et les passages remontent', { timeout: 60_000 }, async () => {
     const c = await setup();
     await ready(c);
     c.fake.emitAccess({ recNo: 6001, door: 0 });
     await waitFor(() => c.passages().length === 1, 15_000, 'passage recu');
     assert.equal(c.rt.status().modules[0]?.state, 'running');
-    const lines = c.logger.lines.filter((l) => /synchronisation des titulaires indisponible/.test(l.text));
+    const lines = c.logger.lines.filter((l) => /synchronisation des titulaires inactive pour CTL-1 \(pas de syncKey\)/.test(l.text));
     assert.equal(lines.length, 1, c.logger.lines.map((l) => l.text).join('\n'));
     assert.match(lines[0]!.text, /CTL-1/);
   });

@@ -6,7 +6,10 @@
  *   stateDir      dossier d'etat (curseurs F8, plages horaires attribuees, jours feries ecrits) ; defaut <gateway>/data/acces
  *   listen        { host, port, allowAnyInterface? } : interface d'ecoute du serveur PUSH (aucune valeur par defaut)
  *   allowFrom     adresses IPv4 / plages autorisees a se connecter
- *   controllers[] { id, serial, kind?, utcOffsetMin?, doors, actuators?, epoch? }
+ *   controllers[] { id, serial, kind?, utcOffsetMin?, doors, actuators?, epoch?, syncKey? }
+ *                   syncKey : cle de synchronisation des titulaires du controleur (64 hexadecimaux minuscules, donnee une seule
+ *                   fois par le PSIM), de preference par {"$file": ...} ou {"$env": ...} ; absente = pas de synchronisation des
+ *                   titulaires pour ce controleur (surveillance normale). Jamais journalisee ni reprise dans une erreur.
  *                   epoch : entier >= 0 (defaut 0). A augmenter quand le controleur est REMPLACE (memoire effacee, numeros
  *                   d'enregistrement repartis de zero) : si epoch > 0, l'identifiant d'evenement devient "<epoque>.<numero>" et le
  *                   curseur de recuperation (estampille de la poignee de main) repart de zero.
@@ -52,6 +55,8 @@ export interface ControllerConfig {
   actuators: ActuatorConfig[];
   /** Epoque du controleur (0 par defaut) : voir l'en-tete de ce fichier. */
   epoch: number;
+  /** Cle de synchronisation des titulaires ou null (synchronisation inactive). Ne jamais journaliser. */
+  syncKey: string | null;
 }
 
 export interface TimezoneConfig {
@@ -196,7 +201,7 @@ function readController(raw: unknown, index: number, e: Errors): ControllerConfi
     e.add(`${where} doit etre un objet`);
     return null;
   }
-  e.unknownKeys(raw, ['id', 'serial', 'kind', 'utcOffsetMin', 'doors', 'actuators', 'epoch'], where);
+  e.unknownKeys(raw, ['id', 'serial', 'kind', 'utcOffsetMin', 'doors', 'actuators', 'epoch', 'syncKey'], where);
   let ok = true;
   const id = raw.id;
   if (typeof id !== 'string' || !CONTROLLER_ID.test(id)) {
@@ -223,6 +228,15 @@ function readController(raw: unknown, index: number, e: Errors): ControllerConfi
       e.add(`${where}.epoch doit etre un entier de 0 a ${MAX_EPOCH} (0 = controleur d'origine ; l'augmenter quand le controleur est remplace) (recu : ${show(raw.epoch)})`);
       ok = false;
     } else epoch = raw.epoch;
+  }
+
+  // Cle de synchronisation : validation stricte, et jamais la valeur dans le message (c'est peut-etre une cle presque juste).
+  let syncKey: string | null = null;
+  if (raw.syncKey !== undefined) {
+    if (typeof raw.syncKey !== 'string' || !/^[0-9a-f]{64}$/.test(raw.syncKey)) {
+      e.add(`${where}.syncKey doit etre la cle de synchronisation du controleur donnee par le PSIM : 64 caracteres hexadecimaux minuscules (0-9, a-f), de preference {"$file": "secrets/fichier.txt"} ou {"$env": "NOM"}`);
+      ok = false;
+    } else syncKey = raw.syncKey;
   }
 
   const doors = new Map<number, string>();
@@ -284,7 +298,7 @@ function readController(raw: unknown, index: number, e: Errors): ControllerConfi
     }
   }
   if (!ok) return null;
-  return { id: id as string, serial: serial as string, kind, utcOffsetMin, doors, actuators, epoch };
+  return { id: id as string, serial: serial as string, kind, utcOffsetMin, doors, actuators, epoch, syncKey };
 }
 
 /** Valide la configuration ; leve une erreur listant TOUS les problemes. */
