@@ -248,6 +248,7 @@ export const S = {
   floorId: null, // étage affiché à plat
   planMode: 'floor', // 'floor' (un étage à plat) ou 'stack' (vue éclatée)
   devices: new Map(),
+  doors: new Map(), // portes du contrôle d'accès : identifiant du détecteur -> DoorView (docs/ACCES.md § 3.1)
   links: {},
   incidents: new Map(),
   audit: [],
@@ -342,6 +343,51 @@ export function followAlarm(incident) {
   S.planMode = 'floor';
   if (moved) savePlanPrefs();
   if (moved && S.floors.length > 1) $('floor-announce').textContent = `Plan affiché : ${floorName(floorId)}, alarme ${incident.detectorName}.`;
+}
+
+// ---------------------------------------------------------------- portes (contrôle d'accès)
+
+/**
+ * États d'une porte (champ `state` de DoorView) : un mot, une icône du sprite (formes distinctes) et un ton. Le ton ne
+ * porte jamais le sens seul. `short` est le mot court écrit sous la pastille du plan.
+ */
+export const DOOR_STATE = {
+  closed: { label: 'Fermée', short: 'Fermée', icon: 'lock', tone: 'ok' },
+  open: { label: 'Ouverte', short: 'Ouverte', icon: 'door-open', tone: 'info' },
+  forced: { label: 'Forcée', short: 'Forcée', icon: 'door-forced', tone: 'alarm' },
+  held_open: { label: 'Maintenue ouverte', short: 'Maintenue', icon: 'door-held', tone: 'warning' },
+  offline: { label: 'Hors ligne', short: 'Hors ligne', icon: 'state-offline', tone: 'muted' },
+  fault: { label: 'En défaut', short: 'Défaut', icon: 'wrench', tone: 'warning' },
+  unknown: { label: 'État inconnu', short: 'Inconnu', icon: 'state-unknown', tone: 'muted' },
+};
+
+/** Du plus grave au moins grave (tri des portes, résumé). */
+export const DOOR_STATE_ORDER = ['forced', 'held_open', 'offline', 'fault', 'unknown', 'open', 'closed'];
+
+let doorsRequest = null;
+
+/**
+ * Relit les portes (GET /api/access/doors), remplit S.doors et annonce 'doors'. Une seule requête à la fois : un appel
+ * pendant une lecture en cours reçoit la même promesse. Sans droit ou sans module (403, 404), ou sur toute autre erreur,
+ * S.doors reste tel quel et rien ne casse (la liste actuelle est renvoyée).
+ */
+export function loadDoors() {
+  if (doorsRequest) return doorsRequest;
+  doorsRequest = (async () => {
+    try {
+      const data = await api('/api/access/doors');
+      const list = Array.isArray(data) ? data : (data?.doors ?? data?.items);
+      if (!Array.isArray(list)) return [...S.doors.values()];
+      S.doors = new Map(list.map((d) => [d.detectorId, d]));
+      emit('doors', list);
+      return list;
+    } catch {
+      return [...S.doors.values()];
+    } finally {
+      doorsRequest = null;
+    }
+  })();
+  return doorsRequest;
 }
 
 // ---------------------------------------------------------------- navigation

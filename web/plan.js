@@ -8,7 +8,7 @@
 import { createFloorsUi } from './floors.js';
 import { createDialogs } from './account.js';
 import { CATEGORY_LABEL, formatValue } from './sources.js';
-import { $, h, icon, api, toast, S, SVG_NS, STATUS_LABEL, time, clamp, activeIncidents, currentFloor, isFiring, savePlanPrefs, render } from './core.js';
+import { $, h, icon, api, toast, S, SVG_NS, STATUS_LABEL, time, clamp, activeIncidents, currentFloor, isFiring, savePlanPrefs, render, emit, DOOR_STATE } from './core.js';
 import { wallCameraIds, toggleCamera } from './wall.js';
 
 export const floorsUi = createFloorsUi({ h, api, toast, icon, dialogs: createDialogs({ h }) });
@@ -22,6 +22,15 @@ const STATE_WORD = { normal: 'normal', prealarm: 'préalarme', alarm: 'alarme', 
 /** Équipement mis en avant sur le plan : celui de l'éditeur sur l'écran Équipements, la sélection de Surveillance ailleurs. */
 const highlighted = () => (S.editMode ? S.editId : S.selectedId);
 
+/** Porte du contrôle d'accès attachée à ce détecteur (catégorie access déclarée comme porte), sinon null. */
+const doorOf = (d) => (d.kind === 'detector' && d.category === 'access' ? (S.doors.get(d.id) ?? null) : null);
+
+/** État de la porte dit en mots pour les lecteurs d'écran : « porte forcée », « état de la porte inconnu »... */
+function doorWords(door) {
+  const info = DOOR_STATE[door.state] ?? DOOR_STATE.unknown;
+  return door.state === 'unknown' ? 'état de la porte inconnu' : `porte ${info.label.toLowerCase()}`;
+}
+
 const isDisarmed = (d) => d.category === 'intrusion' && S.arming[d.zone] === false;
 
 function pinClass(d, onWall, unacked) {
@@ -30,6 +39,8 @@ function pinClass(d, onWall, unacked) {
     parts.push(d.status, `cat-${d.category}`);
     if (isDisarmed(d)) parts.push('disarmed');
     if (unacked.has(d.id)) parts.push('unacked'); // double anneau pulsant tant que l'alarme n'est pas acquittée
+    const door = doorOf(d);
+    if (door) parts.push('has-door', `door-${door.state}`); // information AJOUTÉE : l'état d'alarme du détecteur reste inchangé
   }
   if (highlighted() === d.id) parts.push('selected');
   if (S.editMode) parts.push('editable');
@@ -42,14 +53,17 @@ function pinTitle(d) {
   if (d.kind !== 'detector') return `${d.id} ${d.name} - ${d.zone || 'sans zone'} - caméra`;
   const value = d.lastValue !== null ? ` - ${formatValue(d.lastValue, d.valueUnit)}` : '';
   const seen = d.lastSeen ? time(d.lastSeen) : 'aucun depuis le démarrage';
-  return `${d.id} ${d.name} - ${d.zone || 'sans zone'}${disarmed} - ${CATEGORY_LABEL[d.category]}${value} - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${seen}`;
+  const door = doorOf(d);
+  const doorText = door ? ` - ${DOOR_STATE[door.state]?.label ?? door.stateLabel}` : '';
+  return `${d.id} ${d.name} - ${d.zone || 'sans zone'}${disarmed} - ${CATEGORY_LABEL[d.category]}${value}${doorText} - ${STATUS_LABEL[d.status] ?? d.status} - dernier message : ${seen}`;
 }
 
 /** Nom court d'une pastille pour les lecteurs d'écran : identifiant, nom, état ; le détail reste dans l'infobulle. */
 function pinLabel(d, onWall, unacked) {
   if (d.kind !== 'detector') return `Caméra ${d.id}, ${d.name}${onWall.includes(d.id) ? ', affichée au mur' : ''}`;
   const state = STATE_WORD[d.status] ?? d.status;
-  return `${CATEGORY_LABEL[d.category] ?? 'Détecteur'} ${d.id}, ${d.name} : ${state}${unacked.has(d.id) ? ', à acquitter' : ''}${isDisarmed(d) ? ', zone désarmée' : ''}`;
+  const door = doorOf(d);
+  return `${CATEGORY_LABEL[d.category] ?? 'Détecteur'} ${d.id}, ${d.name} : ${state}${door ? `, ${doorWords(door)}` : ''}${unacked.has(d.id) ? ', à acquitter' : ''}${isDisarmed(d) ? ', zone désarmée' : ''}`;
 }
 
 /** Affiche un étage à plat (onglet, plateau de la vue éclatée, incident, inventaire). */
@@ -121,6 +135,7 @@ export function renderPlan() {
     onMode: setPlanMode,
   });
   $('stack-view').hidden = !stack;
+  renderDoorAction();
   $('plan-stage').hidden = stack;
   $('plan-stage').classList.toggle('is-editing', S.editMode);
   if (stack) {
@@ -170,6 +185,7 @@ export function renderPlan() {
         { type: 'button', class: pinClass(d, onWall, unacked), title: pinTitle(d), 'aria-label': pinLabel(d, onWall, unacked), dataset: { id: d.id } },
         h('span', { class: 'pin-glyph' }, icon(d.kind === 'detector' ? (CATEGORY_ICON[d.category] ?? 'fire') : 'camera')),
         h('span', { class: 'pin-label', text: d.kind === 'detector' && unacked.has(d.id) && d.zone ? `${d.id} · ${d.zone}` : d.id }),
+        doorBadge(d),
       );
       pin.style.left = `${d.x}%`;
       pin.style.top = `${d.y}%`;
@@ -206,6 +222,35 @@ export function renderPlan() {
       svg.append(line);
     }
   }
+}
+
+/** Petit badge d'état de porte sous la pastille : forme (icône) + mot court, en plus de la couleur. */
+function doorBadge(d) {
+  const door = doorOf(d);
+  if (!door) return null;
+  const info = DOOR_STATE[door.state] ?? DOOR_STATE.unknown;
+  return h('span', { class: `pin-door tone-${info.tone}`, 'aria-hidden': 'true' }, icon(info.icon), h('span', { text: info.short }));
+}
+
+/**
+ * Sous le plan : quand une porte est choisie sur Surveillance, un bouton ouvre sa fiche dans l'écran Accès (le clic sur la
+ * pastille garde son rôle habituel). Un vrai bouton : atteint au clavier, annoncé avec le nom de la porte.
+ */
+function renderDoorAction() {
+  const box = $('plan-door-action');
+  const d = S.editMode ? null : S.devices.get(S.selectedId);
+  const door = d && d.floorId === S.floorId ? doorOf(d) : null;
+  if (!door) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  const info = DOOR_STATE[door.state] ?? DOOR_STATE.unknown;
+  box.replaceChildren(
+    h('span', { class: `door-action-state tone-${info.tone}` }, icon(info.icon), h('span', { text: `${door.name || d.name} : ${info.label}` })),
+    h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Fiche de la porte ${door.name || d.name}`, onclick: () => emit('open-door', d.id) }, icon('door'), 'Fiche de la porte'),
+  );
+  box.hidden = false;
 }
 
 function onPinDown(ev, id, pin) {

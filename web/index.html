@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="equipment.css">
   <link rel="stylesheet" href="keys.css">
   <link rel="stylesheet" href="rules.css">
+  <link rel="stylesheet" href="access.css">
 </head>
 <body>
   <a class="skip" href="#main" hidden>Aller au contenu</a>
@@ -81,6 +82,7 @@
         <a class="nav-item" href="#/surveillance" data-view="surveillance"><svg class="icon" aria-hidden="true"><use href="icons.svg#eye"/></svg><span>Surveillance</span></a>
         <a class="nav-item" href="#/alarmes" data-view="alarmes"><svg class="icon" aria-hidden="true"><use href="icons.svg#bell"/></svg><span>Alarmes</span><span id="nav-count-alarmes" class="nav-count is-alarm" hidden></span></a>
         <a class="nav-item" href="#/cameras" data-view="cameras"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg><span>Caméras</span></a>
+        <a class="nav-item" href="#/acces" data-view="acces"><svg class="icon" aria-hidden="true"><use href="icons.svg#door"/></svg><span>Accès</span></a>
         <a id="nav-armement" class="nav-item" href="#/armement" data-view="armement" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg><span>Armement</span></a>
         <a class="nav-item" href="#/risques" data-view="risques"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg><span>Risques</span></a>
         <a class="nav-item" href="#/rapports" data-view="rapports"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg><span>Rapports</span></a>
@@ -179,6 +181,8 @@
                     </div>
                   </div>
                   <div id="stack-view" class="stack-view" hidden></div>
+                  <!-- Porte choisie sur le plan : accès à sa fiche (écran Accès). Rempli par plan.js. -->
+                  <div id="plan-door-action" class="plan-door-action" hidden></div>
                   <!-- Légende : les mêmes pastilles que sur le plan, en petit. La couleur dit l'état, la forme dit le type. -->
                   <details id="plan-legend" class="plan-legend">
                     <summary>Comprendre les symboles</summary>
@@ -204,6 +208,16 @@
                         <li><span class="lg-pin detector is-neutral cat-people" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg></span></span>Personnes (ovale)</li>
                         <li><span class="lg-pin camera" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg></span></span>Caméra (carré bleu)</li>
                         <li><span class="lg-pin camera on-wall" aria-hidden="true"><span class="pin-glyph"><svg class="icon" aria-hidden="true"><use href="icons.svg#camera"/></svg></span></span>Caméra affichée au mur</li>
+                      </ul>
+                    </div>
+                    <div class="lg-row">
+                      <p class="lg-term">Porte : le mot sous la pastille</p>
+                      <ul class="lg-items">
+                        <li><span class="pin-door tone-ok" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="icons.svg#lock"/></svg><span>Fermée</span></span>porte fermée</li>
+                        <li><span class="pin-door tone-info" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="icons.svg#door-open"/></svg><span>Ouverte</span></span>passage en cours</li>
+                        <li><span class="pin-door tone-warning lg-door-held" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="icons.svg#door-held"/></svg><span>Maintenue</span></span>retenue ouverte (pointillé)</li>
+                        <li><span class="pin-door tone-alarm lg-door-forced" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="icons.svg#door-forced"/></svg><span>Forcée</span></span>ouverte sans autorisation (double trait)</li>
+                        <li><span class="pin-door tone-muted" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="icons.svg#state-offline"/></svg><span>Hors ligne</span></span>plus de nouvelles : état inconnu</li>
                       </ul>
                     </div>
                   </details>
@@ -314,6 +328,11 @@
         <!-- ================================================================================ Risques -->
         <section class="view view-risques" id="view-risques" aria-labelledby="view-title" hidden>
           <div id="risk-view" class="risk-layout" hidden></div>
+        </section>
+
+        <!-- ================================================================================ Accès -->
+        <section class="view view-acces" id="view-acces" aria-labelledby="view-title" hidden>
+          <div id="access-view" class="access-layout"></div>
         </section>
 
         <!-- ================================================================================ Rapports -->
