@@ -30,6 +30,7 @@ import { CLOCK_SKEW_MS, TTL_MAX_S, TTL_MIN_S, ACTUATOR_ID, CLIP, CMD_ID, signCom
 import type { CommandParams } from './actuatorproto.ts';
 import { cleanHttpConfig, cleanSecretValue, sendHttp } from './actuatorhttp.ts';
 import type { HttpAllow, HttpOutcome, HttpRequestTemplate, HttpTransportConfig } from './actuatorhttp.ts';
+import { assertActuatorNotLinked, assertEmergencyChangeConsistent } from './accessremote.ts';
 import { PsimError } from './errors.ts';
 import { reauthenticate } from './reauth.ts';
 import { seal, unseal } from './secrets.ts';
@@ -546,6 +547,8 @@ export function createActuators(deps: ActuatorsDeps) {
     if (input.type !== undefined && input.type !== r.type) throw new PsimError(400, 'Le type ne change pas : supprimer et recreer');
     const previous = toView(r);
     const c = clean(r.type as ActuatorType, input, previous, r.sensitive === 1);
+    // Porte reliee : l'issue de secours doit rester la meme des deux cotes (F18, docs/ACCES.md § 11.1).
+    if (c.emergencyExit !== previous.emergencyExit) assertEmergencyChangeConsistent(db, id, c.emergencyExit);
     db.prepare(
       `UPDATE actuator SET name = ?, zone = ?, floor_id = ?, transport = ?, transport_config = ?, transport_secret = ?, actions = ?, safe_action = ?, confirm = ?,
          emergency_exit = ?, sensitive = ?, ack_timeout_s = ?, ttl_s = ?, active = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
@@ -564,6 +567,7 @@ export function createActuators(deps: ActuatorsDeps) {
     if (!r) throw new PsimError(404, 'Actionneur introuvable');
     const busy = db.prepare(`SELECT 1 AS x FROM actuator_command WHERE actuator_id = ? AND state IN ${IN_FLIGHT}`).get(id);
     if (busy) throw new PsimError(409, 'Une commande est en cours : attendre son accuse avant de supprimer');
+    assertActuatorNotLinked(db, id); // une porte du controle d'acces ne doit pas pointer vers un actionneur supprime
     // Retours a l'etat sur encore prevus : sans objet (plus de cle pour signer) ; l'equipement s'arrete seul (durationS).
     db.prepare("UPDATE actuator_command SET off_cmd_id = 'supprime' WHERE actuator_id = ? AND off_due_at IS NOT NULL AND off_cmd_id IS NULL").run(id);
     db.prepare('DELETE FROM actuator WHERE id = ?').run(id);

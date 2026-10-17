@@ -201,14 +201,20 @@ describe('controle d acces AC4 : ouverture a distance, issues de secours, mode d
     const off = (await door('P-3')).remote;
     assert.equal(off.available, false);
     assert.match(off.reason, /désactivé/);
-    // Un administrateur supprime l'actionneur lie : la fiche le dit.
+    // Un actionneur relie a une porte ne se supprime pas ; delie, la fiche le dit.
     const tmp = await api('POST', '/api/actuators', admin, { reauth: ADMIN_PW, id: 'TMP-1', name: 'Temporaire', type: 'lock', transport: 'mqtt' });
     assert.equal(tmp.status, 201);
     assert.equal((await api('POST', '/api/access/controllers', admin, { id: 'CTL-3', name: 'Controleur temporaire', brand: 'dahua' })).status, 201);
     assert.equal((await api('POST', '/api/devices', admin, { id: 'P-6', kind: 'detector', name: 'Porte P-6', zone: 'Rez-de-chaussee', category: 'access' })).status, 201);
     assert.equal((await api('POST', '/api/access/doors', admin, { detectorId: 'P-6', controllerId: 'CTL-3', doorNo: 1, actuatorId: 'TMP-1' })).status, 201);
+    // Suppression refusee tant que la porte y est reliee (409, avec le nom de la porte) ; permise une fois la porte deliee.
+    const refused = await api('DELETE', '/api/actuators/TMP-1', admin, { reauth: ADMIN_PW });
+    assert.equal(refused.status, 409);
+    assert.match(refused.text, /P-6/);
+    assert.equal((await door('P-6')).remote.available, true);
+    assert.equal((await api('PUT', '/api/access/doors/P-6', admin, { actuatorId: null })).status, 200);
     assert.equal((await api('DELETE', '/api/actuators/TMP-1', admin, { reauth: ADMIN_PW })).status, 200);
-    assert.equal((await door('P-6')).remote.reason, "L'actionneur lié n'existe plus");
+    assert.equal((await door('P-6')).remote.reason, "Aucun actionneur n'est lié à cette porte");
     assert.equal((await api('DELETE', '/api/access/doors/P-6', admin)).status, 204);
   });
 

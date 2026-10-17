@@ -176,6 +176,39 @@ export function checkDoorLink(db: DatabaseSync, door: DoorLinkInput & { detector
   if (other) throw new PsimError(409, `Cet actionneur sert deja une autre porte (${other.detector_id}) : en delier d'abord cette porte`);
 }
 
+/** Porte reliee a l'actionneur `id`, ou `null` (aucune, ou table `access_door` pas encore creee : base sans controle d'acces). Ne leve jamais. */
+export function doorLinkedTo(db: DatabaseSync, actuatorId: string): { detectorId: string; kind: string; emergencyExit: boolean } | null {
+  try {
+    const r = db.prepare('SELECT detector_id, kind, emergency_exit FROM access_door WHERE actuator_id = ? LIMIT 1').get(actuatorId) as Row | undefined;
+    return r ? { detectorId: r.detector_id as string, kind: r.kind as string, emergencyExit: r.emergency_exit === 1 } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Appele par le service des commandes AVANT de supprimer un actionneur : refus (409) s'il est relie a une porte, pour ne pas laisser
+ * une porte pointer vers rien (la fiche dirait « n'existe plus », « Tout ouvrir » la sauterait).
+ */
+export function assertActuatorNotLinked(db: DatabaseSync, actuatorId: string): void {
+  const door = doorLinkedTo(db, actuatorId);
+  if (door) throw new PsimError(409, `Cet actionneur est relie a la porte ${door.detectorId} : delier la porte d'abord (acces, fiche de la porte)`);
+}
+
+/**
+ * Appele par le service des commandes AVANT de modifier `emergency_exit` d'un actionneur : refus (409) si cela le rendrait incoherent
+ * avec la porte a laquelle il est relie (F18 : issue de secours des deux cotes ou d'aucun).
+ */
+export function assertEmergencyChangeConsistent(db: DatabaseSync, actuatorId: string, nextEmergencyExit: boolean): void {
+  const door = doorLinkedTo(db, actuatorId);
+  if (door && door.emergencyExit !== nextEmergencyExit) {
+    throw new PsimError(
+      409,
+      `Cet actionneur est relie a la porte ${door.detectorId}, qui ${door.emergencyExit ? 'est' : "n'est pas"} une issue de secours : une issue de secours doit l'etre des deux cotes, ou aucun des deux. Delier la porte d'abord`,
+    );
+  }
+}
+
 /** Fiche de porte, `remote` : l'ouverture a distance est-elle possible ? Ne depend pas des droits de l'utilisateur. */
 export interface DoorRemote {
   available: boolean;

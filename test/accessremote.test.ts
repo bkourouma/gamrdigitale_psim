@@ -311,7 +311,8 @@ describe('fiche de porte : `remote` (F17)', () => {
   it('l\'actionneur lie a ete supprime : "n\'existe plus", l\'identifiant lie reste visible', () => {
     actuator('LOCK-1', 'lock');
     declare('A-01', 1, { actuatorId: 'LOCK-1' });
-    actuators.remove('admin', 'LOCK-1');
+    // Le service des commandes refuse cette suppression (voir plus bas) : on simule une base modifiee a la main.
+    db.prepare('DELETE FROM actuator WHERE id = ?').run('LOCK-1');
     assert.deepEqual(access.door('A-01').remote, { available: false, reason: "L'actionneur lié n'existe plus", actuatorId: 'LOCK-1', actuatorName: null, actuatorType: null });
   });
 
@@ -383,6 +384,57 @@ describe('fiche de porte : `remote` (F17)', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+/** Une issue de secours n'accepte jamais l'action lock : pour en faire une, on retire lock des actions. */
+const ONLY_UNLOCK = { unlock: {} };
+
+describe('actionneur relie a une porte : suppression et issue de secours protegees (F18, service des commandes)', () => {
+  beforeEach(setup);
+
+  it('suppression refusee (409) tant qu\'une porte y est reliee, avec le nom de la porte ; permise une fois la porte déliee', () => {
+    actuator('LOCK-1', 'lock');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    assert.equal(status(() => actuators.remove('admin', 'LOCK-1')), 409);
+    assert.match(message(() => actuators.remove('admin', 'LOCK-1')), /porte A-01/);
+    assert.ok(actuators.get('LOCK-1'), 'actionneur toujours present');
+    assert.equal(door('A-01').actuatorId, 'LOCK-1');
+    access.updateDoor('admin', 'A-01', { actuatorId: null });
+    actuators.remove('admin', 'LOCK-1');
+    assert.equal(actuators.get('LOCK-1'), null);
+  });
+
+  it('un actionneur non relie se supprime comme avant', () => {
+    actuator('LOCK-2', 'lock');
+    declare('A-02', 1, { actuatorId: null });
+    actuators.remove('admin', 'LOCK-2');
+    assert.equal(actuators.get('LOCK-2'), null);
+  });
+
+  it('rendre une serrure reliee issue de secours (ou inversement) : 409, rien de modifie ; coherent des deux cotes apres avoir delie', () => {
+    actuator('LOCK-1', 'lock');
+    declare('A-01', 1, { actuatorId: 'LOCK-1' });
+    assert.equal(status(() => actuators.update('admin', 'LOCK-1', { emergencyExit: true, actions: ONLY_UNLOCK })), 409);
+    assert.equal(actuators.get('LOCK-1')!.emergencyExit, false);
+    actuator('ISSUE-1', 'lock', { emergencyExit: true });
+    declare('A-02', 2, { actuatorId: 'ISSUE-1', emergencyExit: true });
+    assert.equal(status(() => actuators.update('admin', 'ISSUE-1', { emergencyExit: false })), 409);
+    assert.equal(actuators.get('ISSUE-1')!.emergencyExit, true);
+    // Une modification qui ne touche pas l'issue de secours reste permise.
+    assert.equal(actuators.update('admin', 'ISSUE-1', { name: 'Issue nord' }).name, 'Issue nord');
+    assert.equal(actuators.update('admin', 'LOCK-1', { emergencyExit: false, name: 'Gache hall' }).name, 'Gache hall');
+    // Delier puis changer : accepte (la porte est libre de se relier a un actionneur coherent).
+    access.updateDoor('admin', 'A-01', { actuatorId: null });
+    assert.equal(actuators.update('admin', 'LOCK-1', { emergencyExit: true, actions: ONLY_UNLOCK }).emergencyExit, true);
+  });
+
+  it('base sans controle d\'acces (table access_door absente) : suppression et modification inchangees, sans erreur', () => {
+    actuator('LOCK-3', 'lock');
+    db.exec('DROP TABLE access_door');
+    assert.equal(actuators.update('admin', 'LOCK-3', { emergencyExit: true, actions: ONLY_UNLOCK }).emergencyExit, true);
+    actuators.remove('admin', 'LOCK-3');
+    assert.equal(actuators.get('LOCK-3'), null);
+  });
+});
+
 describe('issue de secours : le PSIM ne verrouille jamais (refus a l\'execution, F18)', () => {
   beforeEach(setup);
 
@@ -786,7 +838,7 @@ describe('« Tout ouvrir » (F20)', () => {
     declare('A-03', 3, { actuatorId: 'LOCK-3' });
     declare('A-04', 4);
     db.prepare("UPDATE actuator SET emergency_exit = 1 WHERE id = 'LOCK-1'").run(); // issue de secours d'un seul cote
-    actuators.remove('admin', 'LOCK-2'); // supprime apres coup
+    db.prepare("DELETE FROM actuator WHERE id = 'LOCK-2'").run(); // supprime apres coup (base modifiee a la main : le service refuse desormais)
     db.prepare("UPDATE access_door SET actuator_id = 'SIR-1' WHERE detector_id = 'A-03'").run(); // type incoherent (sirene)
     const preview = evacuation.preview();
     assert.equal(preview.doors.length, 3, 'la porte non liee n\'est pas listee');
