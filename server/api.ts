@@ -50,6 +50,7 @@ import type { Actuators } from './actuators.ts';
 import { reauthenticate } from './reauth.ts';
 import type { ProofService } from './proofpack.ts';
 import type { AccessApi } from './accessapi.ts';
+import type { HoldersApi } from './accessholdersapi.ts';
 import { localDateTime } from './video.ts';
 import type { VideoService } from './video.ts';
 import type { MountContext, Role } from './types.ts';
@@ -107,6 +108,8 @@ export interface ApiDeps {
   proofs?: ProofService;
   /** Controle d'acces : portes, journal des passages, export (routes /api/access/*, voir accessapi.ts). */
   access?: AccessApi;
+  /** Titulaires, badges, groupes, visiteurs, import et synchronisation des controleurs (routes /api/access/*, voir accessholdersapi.ts). */
+  holders?: HoldersApi;
   /** Application des agents (telephones, comptes, service, alarmes, SOS) et rondes (points, circuits, scans, main courante). */
   agents?: Agents;
   patrols?: Patrols;
@@ -1096,6 +1099,7 @@ export function createApp(deps: ApiDeps) {
   deps.actuators?.mount(app, { anyUser, adminOnly, actorOf, roleOf: (req) => (req as AuthedRequest).session.role, reauth });
   deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
   deps.access?.mount(app, { anyUser, adminOnly, actorOf });
+  deps.holders?.mount(app, { anyUser, adminOnly, actorOf, reauth });
 
   // ---- Application des agents et rondes (voir docs/AGENTS-RONDES.md) --------------------------
 

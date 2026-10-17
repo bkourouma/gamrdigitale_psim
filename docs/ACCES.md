@@ -387,3 +387,190 @@ Mesures locales (boucle locale, 20 essais chacune, deux lancements) :
 | Ordre d'ouverture, accusé reçu, 95e centile | 185 et 180 ms (médiane 124 ms) | moins de 2 s |
 
 Ces valeurs sont obtenues en boucle locale avec un faux contrôleur : elles montrent que le PSIM et la passerelle n'ajoutent presque aucun délai, pas la latence du réseau du site ni celle du matériel réel (point à mesurer à la recette sur le contrôleur Dahua pilote).
+
+## 12. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
+
+Contrat commun : `docs/CONTROLE-ACCES.md` § 1 (le code PIN n'est **pas** géré par le PSIM) et § 7 (protocole de synchronisation).
+PRD : F21 à F26, parcours P3. Types partagés (figés) : `server/accessholderstypes.ts`. Fichiers : `server/accessholders.ts`
+(titulaires, droits), `server/accesssync.ts` (synchronisation), `server/accessimport.ts` (import CSV), `server/accessholdersapi.ts`
+(routes), `web/holders.js` et `web/holders.css` (écran « Titulaires »).
+
+### 12.1 Principe
+
+Le PSIM est la **référence** des titulaires. Il calcule, pour chaque contrôleur, ce que celui-ci doit contenir (titulaires,
+plages horaires, jours fériés) d'après les droits des groupes, puis le **pousse**, une opération à la fois, par la passerelle.
+Le contrôleur décide seul d'ouvrir ; le PSIM ne prend jamais part à l'ouverture. Le PSIM ne lit pas ce que le contrôleur contient
+déjà : il ne supprime que ce qu'il y a lui-même envoyé.
+
+Rien de biométrique ni de secret ne circule : ni code PIN, ni gabarit d'empreinte ou de visage. La **photo** (facultative, 64 Ko
+au plus, JPEG, PNG ou WebP) reste dans la base du PSIM ; elle n'est jamais envoyée ni au portail ni aux contrôleurs, ni mise
+dans un journal ou un export.
+
+### 12.2 Modèle de données
+
+Tables (`CREATE TABLE IF NOT EXISTS`, créées par `createHolders`) :
+
+- `access_holder` : `id` (PK, `AUTOINCREMENT`, jamais réutilisé), `last_name`, `first_name`, `name_key` (recherche : minuscules, sans
+  accents, `holderKey` de `access.ts`), `external_ref` (matricule, unique sans tenir compte de la casse), `kind` (`staff` | `visitor`),
+  `status` (`active` | `suspended`), `valid_from`, `valid_to` (ms ou `NULL`), `visitor_host`, `visitor_reason`, `ended_at` (fin de visite effective),
+  dates et auteurs.
+- `access_holder_photo` : `holder_id` (PK), `mime`, `data` (BLOB).
+- `access_badge` : `id`, `holder_id`, `number` (`^[A-Za-z0-9_-]{1,32}$`), `state` (`active` | `disabled` | `lost` | `returned`), `state_at`,
+  `state_by`, `created_at`. Index unique **partiel** sur `number` où `state <> 'returned'` : un numéro est unique tant que le badge n'est pas
+  rendu (une carte visiteur rendue peut être redonnée ; une carte perdue garde son numéro réservé). Au plus **4 badges actifs** par titulaire,
+  12 lignes au total.
+- `access_group` : `id`, `name` (unique, casse ignorée), `description`, `for_visitors`, dates et auteurs.
+- `access_group_door` : `group_id`, `door_id` (détecteur de la porte), `schedule_id` ; PK `(group_id, door_id)`.
+- `access_holder_group` : `holder_id`, `group_id`.
+- `access_schedule` : `id`, `name` (unique), `windows` (JSON, format `Window` de `server/arming.ts`, 8 plages au plus), `closed_on_holidays`,
+  `builtin`. La plage « Tout le temps » (`builtin = 1`, 7 jours, `00:00 -> 12:00` et `12:00 -> 00:00`) est créée à la première ouverture ;
+  elle n'est ni modifiable ni supprimable.
+- `access_holiday` : `date` (`AAAA-MM-JJ`, PK), `label`. 400 dates au plus, calendrier réel (le 30 février est refusé), de 2020 à 2100.
+- Synchronisation (`accesssync.ts`) : `access_sync_key` (clé scellée), `access_sync_controller` (dernier `seq`, dernier accusé, opération en vol),
+  `access_sync_item` (par contrôleur, nature et référence : empreinte voulue, empreinte accusée, état, essais, dernier code), `access_sync_log`
+  (200 dernières opérations par contrôleur, sans clé).
+
+**Droits.** Un titulaire appartient à 0 à N groupes ; un groupe donne des portes, chacune avec **une plage horaire** ; la plage porte
+l'option « fermé les jours fériés ». Les droits d'un titulaire sur un contrôleur = les portes de ses groupes qui sont sur ce contrôleur.
+Si deux groupes donnent la **même porte** à un titulaire avec des plages différentes, la modification est **refusée** (409, « La porte X est
+déjà donnée à ce titulaire par le groupe Y avec d'autres horaires ») : le contrôleur ne reçoit qu'une plage par porte et on ne fabrique pas
+d'horaire implicite. Le contrôle est fait à l'affectation d'un groupe et à la modification des portes d'un groupe.
+
+**Contenu attendu d'un contrôleur** (`DesiredState`) : les titulaires qui ont au moins une porte sur lui et dont la visite n'est pas
+terminée ; leurs plages horaires ; les jours fériés de l'année courante. Un titulaire **suspendu** est envoyé avec `active: false` (le contrôleur
+refuse mais le connaît) ; seuls les badges **actifs** sont envoyés (un badge désactivé ou perdu est retiré du contrôleur : le passage
+suivant est refusé « badge inconnu » et le PSIM le rattache quand même au titulaire grâce à sa table). Un visiteur dont la visite est terminée
+(rendu, expiré) est retiré (`delete_holder`). Un titulaire non visiteur dont `valid_to` est passé reste sur le contrôleur (qui le refuse « expiré »).
+
+**Rattachement des passages.** À l'enregistrement d'un passage, `access.ts` appelle `resolve(credential, holderRef)` : si `holderRef` vaut `H<id>`
+et que ce titulaire existe, c'est lui ; sinon le titulaire dont un badge (non rendu) porte ce numéro. Le passage reçoit `holder_id` ; si le
+contrôleur n'a pas donné de nom, `holder_name` et `holder_key` sont remplis avec le nom du PSIM, ce qui fait profiter la recherche du journal.
+`PassageView` gagne `holderId` (nombre ou `null`).
+
+**Visiteurs.** Un visiteur est un titulaire `kind = 'visitor'` avec un badge, un accompagnateur (≤ 64), un motif (≤ 120), un groupe marqué
+« visiteurs » et une fin obligatoire (`valid_to`, 15 minutes à 31 jours). À la fin (`tick`, ou « Rendre le badge »), `ended_at` est posé, le badge
+passe `returned`, le visiteur est retiré des contrôleurs (le contrôleur l'avait déjà expiré seul par `validTo`). La fiche du visiteur est
+supprimée après la durée de conservation du journal des passages.
+
+### 12.3 API `/api/access/*` des titulaires
+
+Session obligatoire, anti-CSRF commun pour toute écriture, erreurs `{"error":"…"}` en français (400, 401, 403, 404, 409, 413, 428, 429).
+**Opérateur** : consulter les titulaires, les visiteurs, la synchronisation ; créer un visiteur et mettre fin à sa visite. **Administrateur** :
+tout le reste. Les opérations marquées `reauth` exigent le champ `reauth` (mot de passe du compte connecté) dans le corps JSON : 428 s'il manque,
+403 s'il est faux, 429 après 5 échecs par minute (compteur de la connexion).
+
+| Route | Rôle | Corps / paramètres → réponse |
+|---|---|---|
+| `GET /api/access/holders` | tous | `q`, `status`, `kind` (`staff` défaut, `visitor`, `all`), `groupId`, `limit` (1-100, 50), `cursor` → `HolderList` ; chaque titulaire porte `syncState` (`synced`, `pending`, `failed`, `blocked`, `none`) |
+| `GET /api/access/holders/:id` | tous | → `HolderDetail` + `sync: HolderSyncView[]` |
+| `POST /api/access/holders` | admin | `HolderInput` → 201 `HolderView` |
+| `PUT /api/access/holders/:id` | admin | `HolderInput` (champs absents = inchangés) → `HolderView` |
+| `DELETE /api/access/holders/:id` | admin | 204 |
+| `GET /api/access/holders/:id/photo` | tous | image, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` ; 404 si aucune |
+| `PUT /api/access/holders/:id/photo` | admin | corps brut `image/jpeg`, `image/png` ou `image/webp` (≤ 64 Ko, signature du fichier vérifiée) → 204 |
+| `DELETE /api/access/holders/:id/photo` | admin | 204 |
+| `POST /api/access/holders/:id/badges` | admin | `{ number }` → 201 `BadgeView` |
+| `PATCH /api/access/badges/:id` | admin | `{ state }` (`active`, `disabled`, `lost` ou `returned`) → `BadgeView` |
+| `DELETE /api/access/badges/:id` | admin | 204 |
+| `GET /api/access/groups`, `GET /api/access/groups/:id` | tous | `GroupView[]`, `GroupView` |
+| `POST`, `PUT`, `DELETE /api/access/groups[/:id]` | admin | `GroupInput` → 201 ou 200 `GroupView` ; 204 (409 si des titulaires y sont) |
+| `GET /api/access/schedules`, `…/:id` | tous | `ScheduleView[]`, `ScheduleView` |
+| `POST`, `PUT`, `DELETE /api/access/schedules[/:id]` | admin | `ScheduleInput` → `ScheduleView` ; 204 (409 si un groupe l'utilise) |
+| `GET /api/access/holidays` | tous | `HolidayView[]` |
+| `PUT /api/access/holidays` | admin | `{ entries: [{ date, label? }] }` (remplace tout) → `HolidayView[]` |
+| `GET /api/access/visitors` | tous | `scope=current` (défaut : en cours et à venir) ou `recent` (+ terminés depuis moins de 24 h) → `VisitorView[]` |
+| `POST /api/access/visitors` | tous | `VisitorInput` → 201 `VisitorView` (le groupe doit être marqué « visiteurs ») |
+| `POST /api/access/visitors/:id/end` | tous | → `VisitorView` (badge rendu, retiré des contrôleurs) |
+| `POST /api/access/import` | admin | corps brut CSV (≤ 1 Mo) ; `?dryRun=1` : vérifie sans rien écrire → `ImportReport` |
+| `GET /api/access/sync` | tous | → `SyncControllerStatus[]` |
+| `GET /api/access/sync/controllers/:id` | tous | → `SyncControllerDetail` |
+| `POST /api/access/sync/controllers/:id/key` | admin, `reauth` | → `{ key, createdAt, renewed }` (clé montrée **une seule fois**, `Cache-Control: no-store`) |
+| `POST /api/access/sync/controllers/:id/confirm-deletions` | admin, `reauth` | → `{ confirmed }` |
+| `POST /api/access/sync/controllers/:id/retry` | admin | → `{ requeued }` |
+
+`:id` d'un titulaire, d'un badge, d'un groupe ou d'une plage = entier positif ; autre chose = 404 sans interroger la base. `:id` d'un
+contrôleur = motif des identifiants de contrôleur (`^[A-Za-z0-9_-]{1,32}$`).
+
+**Journal infalsifiable** : `access_holder_created`, `access_holder_updated`, `access_holder_deleted`, `access_holder_photo_set`,
+`access_holder_photo_cleared` (jamais la photo), `access_badge_added`, `access_badge_state_changed`, `access_badge_removed`,
+`access_group_created|updated|deleted`, `access_schedule_created|updated|deleted`, `access_holidays_replaced`, `access_visitor_created`,
+`access_visitor_ended` (auteur ou `systeme` à l'échéance), `access_import` (une seule entrée : comptes), `access_holder_search` (recherche
+nominative, une fois par minute et par recherche), `access_sync_key_issued` (jamais la clé), `access_sync_deletions_confirmed`,
+`access_sync_retry`, `access_sync_deletions_held` (système, suppressions retenues), `access_sync_failed` (système, au passage d'un élément en échec),
+`access_sync_ack_invalid` (système, accusé à signature fausse, une fois par heure et par contrôleur). Les détails portent des **identifiants**
+(`H12`, `B5`, `G3`), jamais un nom ni un numéro de badge : le journal ne s'efface pas.
+
+### 12.4 Synchronisation (précisions du § 7 du contrat)
+
+Le § 7 de `docs/CONTROLE-ACCES.md` fait foi. Précisions de réalisation, à respecter côté passerelle :
+
+- La clé HMAC est formée des **32 octets** décodés de la clé hexadécimale (64 caractères) montrée par le PSIM ; signatures en hexadécimal minuscule.
+- Dans les chaînes canoniques, `code` absent (`null`) s'écrit **vide** : `psim-sync-ack-v1|CTL-1|<opId>|42|done||1760000000400`.
+- `seq` démarre à 1, croît de 1 à chaque **nouvelle** opération, jamais réutilisé. Un renvoi garde `opId`, `seq`, `ts` et `body` identiques
+  (seule la signature est recalculée avec la clé du moment).
+- Une seule opération en vol par contrôleur, persistée avant publication : au redémarrage du PSIM elle est renvoyée telle quelle.
+- Attente avant renvoi : 10 s, puis 20, 40, 80… jusqu'à 1 h. Au-delà de 5 essais sans accusé l'élément est **en échec** (code `no_ack`) mais les
+  essais continuent à la cadence maximale. Un accusé `error` suit la même attente. Un accusé `refused` est définitif pour ce contenu
+  (échec visible, pas de renvoi tant que le contenu ne change pas ou que l'administrateur n'a pas demandé « Réessayer »).
+- Ordre des opérations : jours fériés, plages (création/mise à jour), titulaires (création/mise à jour), titulaires (suppression), plages (suppression).
+  Un titulaire n'est jamais envoyé avant les plages qu'il utilise.
+- Un message dépasse-t-il 1 024 octets (nom très long, 8 plages) : l'élément passe en échec `invalid` avec une phrase claire, rien n'est publié.
+- Accusé accepté si : contrôleur connu et clé existante, JSON valide, signature juste, opération en vol de ce contrôleur avec le même `opId` **et** le
+  même `seq`. Tout le reste est ignoré (accusé rejoué, tardif après achèvement, d'un autre contrôleur, signature fausse) sans changer d'état.
+- **Suppressions en masse** : si le nombre de suppressions de titulaires en attente sur un contrôleur, ajouté à celles déjà envoyées sans
+  confirmation dans l'heure écoulée, dépasse **20**, aucune suppression n'est envoyée : elles passent « bloquées » et l'écran demande à
+  l'administrateur de les confirmer (mot de passe). La confirmation vaut pour la liste figée à cet instant seulement.
+- Renouveler la clé invalide immédiatement l'ancienne : la passerelle doit recevoir la nouvelle dans sa configuration, sinon les opérations
+  restent sans accusé (état « échec », phrase : vérifier la clé de la passerelle).
+- Transport : interface `SyncTransport.publish(controllerId, payload)` et entrée `receiveAck(controllerId, payload)`. Le câblage MQTT
+  (`server/mqtt.ts`, droits du compte de la passerelle) est fait après la fusion de la vague 1.
+
+### 12.5 Import CSV (F25)
+
+Fichier de 1 Mo et 5 000 lignes au plus. Encodage UTF-8 (avec ou sans BOM) ; si le fichier n'est pas de l'UTF-8 valide, il est lu en
+Windows-1252 (Excel français) et le rapport le dit. Séparateur détecté (`;`, `,` ou tabulation). Guillemets selon la RFC 4180. Une ligne d'en-tête
+est obligatoire ; les noms de colonnes sont reconnus sans accents ni majuscules :
+
+| Colonne | Obligatoire | Contenu |
+|---|---|---|
+| `nom` | oui | ≤ 40 |
+| `prenom` | non | ≤ 40 |
+| `matricule` | non | ≤ 32, `^[A-Za-z0-9._/-]+$` ; sert à retrouver le titulaire (mise à jour) |
+| `badge1` … `badge4` (ou `badge`) | non | numéros de badges |
+| `groupe` | non | noms de groupes existants, séparés par `|` |
+| `debut`, `fin` | non | `AAAA-MM-JJ` ou `JJ/MM/AAAA` (début à 00:00, fin à 23:59 heure du serveur) |
+| `statut` | non | `actif` ou `suspendu` (défaut `actif`) |
+
+Règles : toute ligne invalide est **ignorée** et listée avec sa raison, les autres sont appliquées (`?dryRun=1` ne modifie rien et dit ce qui se passerait).
+Un champ qui commence par `=`, `+`, `-`, `@`, une tabulation ou un retour chariot, un caractère de contrôle, `<` ou `>` est refusé (injection de formule
+ou de balise). Doublon de matricule ou de badge **dans le fichier** : la seconde ligne est refusée. Badge déjà porté par un autre titulaire : ligne refusée.
+Avec matricule : le titulaire existant est mis à jour, sinon créé. Sans matricule : retrouvé par un de ses badges s'il porte le même nom, sinon créé
+(avertissement « homonyme » si le nom existe déjà). Une colonne vide laisse la valeur actuelle inchangée ; les groupes listés **remplacent** ceux du titulaire
+seulement si la colonne `groupe` est présente et non vide. Les visiteurs ne s'importent pas. Une seule entrée de journal (`access_import`) résume l'import.
+
+### 12.6 Écran « Titulaires » (`web/holders.js`)
+
+Entrée « Titulaires » dans le menu (opérateur et administrateur). Onglets : **Titulaires** (recherche, fiche), **Visiteurs** (création rapide au poste de
+garde, liste « en cours » avec temps restant et dernier passage), **Groupes et horaires** (administrateur : groupes, plages, jours fériés), **Import**
+(administrateur), **Synchronisation** (état par contrôleur). L'opérateur ne voit ni les boutons d'écriture (hors visiteurs) ni l'import. Le bouton « Désactiver le
+badge » dit ce qui va se passer (« Le badge 0012345 de KONAN Yao sera retiré de 2 contrôleurs ; un passage sera refusé dans les secondes qui suivent. ») et demande
+confirmation. Un état « en attente » ou « échec » dit la raison et quoi faire. Aucune couleur seule : mot et icône.
+
+### 12.7 Câblage MQTT, mise en service, limites connues
+
+- **Droits MQTT** (`server/mqtt.ts`) : le compte d'une passerelle ne peut s'abonner qu'au topic `psim/access/<id>/sync` **exact** des contrôleurs dont
+  `access_controller.gateway_id` est égal à **son nom de compte MQTT**, et ne publie que sur leur `sync-ack`. Le rattachement est relu en base à chaque
+  autorisation et à chaque remise : réaffecter un contrôleur coupe aussitôt l'ancienne passerelle, y compris pour les messages en file d'une session
+  persistante. Le compte principal (outil de recette) n'a aucun droit sur ces topics ; les accusés ne sont remis à personne. Test : `test/garde-mqtt-sync.test.ts`.
+- **Mise en service d'un site** : déclarer le contrôleur avec sa passerelle (`gatewayId` = nom du compte MQTT de la passerelle), déclarer ses portes, créer les plages
+  et les groupes, importer ou saisir les titulaires, puis **Synchronisation -> Activer** : la clé s'affiche une seule fois, à recopier dans la configuration du module de
+  la passerelle. Les titulaires partent alors un par un, l'écran montre l'avancement.
+- **Passerelles en `clean: true`** : aedes ne borne pas la file d'une session persistante absente ; le moteur n'envoie qu'une opération à la fois (messages ≤ 1 Ko, attente
+  jusqu'à 1 h), la croissance est donc très lente, mais les passerelles devraient se connecter en `clean: true`.
+- **À la charge du module de passerelle** : accepter `set_holidays` avec `dates: []` (liste vidée après un envoi), traiter `seq` comme au § 7 du contrat, et se souvenir que
+  `seq` repart de 1 si le PSIM perd son état de synchronisation (suppression puis recréation d'un contrôleur, restauration d'une ancienne sauvegarde) : dans ce cas,
+  remettre à zéro le dernier `seq` appliqué de la passerelle en même temps qu'on renouvelle la clé.
+- **Ce que le PSIM ne fait pas** : il ne lit pas le contenu du contrôleur (un titulaire créé directement sur le contrôleur n'est ni vu ni supprimé) ; il ne gère ni code PIN
+  ni empreinte ni visage ; si une plage est refusée par le contrôleur, les titulaires qui l'utilisent sont quand même envoyés (le contrôleur les refusera, l'écran montre l'échec).
+- **Hypothèses prudentes** : un opérateur ne peut pas désactiver un badge (administrateur seulement) ; une suppression automatique de visiteurs échus compte dans la limite
+  de 20 suppressions (au-delà, confirmation) ; les journaux ne contiennent que des identifiants (`H12`, `B5`), pas de noms.

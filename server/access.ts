@@ -201,6 +201,8 @@ export interface PassageView {
   credential: string | null;
   holderName: string | null;
   holderRef: string | null;
+  /** Titulaire du PSIM auquel le passage est rattache (phase 2), ou `null`. */
+  holderId: number | null;
   method: AccessMethod;
   methodLabel: string;
   result: AccessResult;
@@ -290,6 +292,16 @@ export interface AccessOptions {
   /** Reglages d'essai de la purge (par defaut : lots de 10 000, 200 000 lignes au plus par appel). */
   purgeBatch?: number;
   purgeMaxRows?: number;
+  /**
+   * Rattachement d'un passage a un titulaire (phase 2, server/accessholders.ts) : `holderRef` `H<id>` puis numero de badge.
+   * Absent : aucun rattachement (`holder_id` reste NULL). Une erreur est ignoree (le passage est garde).
+   */
+  resolveHolder?: (credential: string | null, holderRef: string | null) => { id: number; name: string } | null;
+  /**
+   * Appele apres toute declaration, modification ou retrait d'un controleur ou d'une porte : le contenu attendu des controleurs
+   * (titulaires, phase 2) en depend. Une erreur est ignoree.
+   */
+  onTopologyChange?: () => void;
 }
 
 export interface AccessService extends AccessHook {
@@ -620,6 +632,14 @@ export function createAccess(opts: AccessOptions): AccessService {
     return Number.isInteger(stored) && stored >= MIN_RETENTION_DAYS && stored <= MAX_RETENTION_DAYS ? stored : defaultDays;
   }
 
+  function topologyChanged(): void {
+    try {
+      opts.onTopologyChange?.();
+    } catch {
+      // la synchronisation des titulaires ne doit jamais empecher de declarer une porte
+    }
+  }
+
   // ---- Point d'accroche du moteur ------------------------------------------------------------------------------------------
 
   const refuse = (status: number, error: string): AccessHookResult => ({ ok: false, status, error });
@@ -655,12 +675,20 @@ export function createAccess(opts: AccessOptions): AccessService {
     return atomically((): AccessHookResult => {
       // 2. Enregistrement du passage ; deduplication definitive par l'index unique (controleur, evenement).
       if (passage) {
+        // Titulaire connu du PSIM (phase 2) : `holder_id`, et son nom si le controleur n'en a pas donne.
+        let holder: { id: number; name: string } | null = null;
+        try {
+          holder = opts.resolveHolder?.(passage.credential, passage.holderRef) ?? null;
+        } catch {
+          holder = null;
+        }
+        const holderName = passage.holderName ?? holder?.name ?? null;
         const res = sql(
-          `INSERT INTO access_event (door_id, controller_id, at_device, at_received, direction, credential, holder_name, holder_key, holder_ref, method, result, reason, device_event_id, late)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(controller_id, device_event_id) DO NOTHING`,
+          `INSERT INTO access_event (door_id, controller_id, at_device, at_received, direction, credential, holder_name, holder_key, holder_ref, holder_id, method, result, reason, device_event_id, late)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(controller_id, device_event_id) DO NOTHING`,
         ).run(
-          device.id, passage.controllerId, atDevice, meta.receivedAt, passage.direction, passage.credential, passage.holderName,
-          passage.holderName === null ? null : holderKey(passage.holderName), passage.holderRef, passage.method, passage.result, passage.reason,
+          device.id, passage.controllerId, atDevice, meta.receivedAt, passage.direction, passage.credential, holderName,
+          holderName === null ? null : holderKey(holderName), passage.holderRef, holder?.id ?? null, passage.method, passage.result, passage.reason,
           passage.eventId, passage.deferred || meta.lateMs >= LATE_AFTER_MS ? 1 : 0,
         );
         if (Number(res.changes) === 0) return { ok: true, duplicate: true };
@@ -873,6 +901,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       credential: (r.credential as string | null) ?? null,
       holderName: (r.holder_name as string | null) ?? null,
       holderRef: (r.holder_ref as string | null) ?? null,
+      holderId: (r.holder_id as number | null) ?? null,
       method,
       methodLabel: methodLabel(method),
       result: r.result as AccessResult,
@@ -1185,6 +1214,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       'INSERT INTO access_controller (id, name, brand, model, host, gateway_id, credentials_sealed, created_at, created_by, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(id, name, brand, model ?? null, host ?? null, gatewayId ?? null, sealed, t, actor, t, actor);
     audit(actor, 'access_controller_created', { details: clip(`${id} : ${name} (${brand})${sealed ? ', identifiants enregistres' : ''}`) });
+    topologyChanged();
     return controller(id);
   }
 
@@ -1221,6 +1251,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     if (current.doorCount > 0) throw new PsimError(409, `Ce controleur a encore ${current.doorCount} porte(s) declaree(s) : les retirer d'abord`);
     sql('DELETE FROM access_controller WHERE id = ?').run(id);
     audit(actor, 'access_controller_deleted', { details: clip(`${id} : ${current.name}`) });
+    topologyChanged();
   }
 
   // ---- Declaration des portes ------------------------------------------------------------------------------------------------------
@@ -1286,6 +1317,7 @@ export function createAccess(opts: AccessOptions): AccessService {
     sql(
       'INSERT INTO access_door (detector_id, controller_id, door_no, kind, emergency_exit, held_alarm_after_s, actuator_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(detectorId, f.controllerId, f.doorNo, f.kind ?? 'door', f.emergencyExit ? 1 : 0, f.heldAlarmAfterS ?? DEFAULT_HELD_ALARM_S, f.actuatorId ?? null);
+    topologyChanged();
     audit(actor, 'access_door_declared', { deviceId: detectorId, details: clip(`porte n°${f.doorNo} du controleur ${f.controllerId}${f.emergencyExit ? ', issue de secours' : ''}${f.actuatorId ? `, actionneur ${f.actuatorId}` : ''}`) });
     return doorView(detectorId) as DoorView;
   }
@@ -1317,6 +1349,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       controllerId, doorNo, f.kind ?? current.kind, (f.emergencyExit ?? current.emergency_exit === 1) ? 1 : 0, f.heldAlarmAfterS ?? current.held_alarm_after_s,
       f.actuatorId === undefined ? current.actuator_id : f.actuatorId, id,
     );
+    topologyChanged();
     audit(actor, 'access_door_updated', { deviceId: id, details: clip(changed.length > 0 ? changed.join(', ') : 'aucun changement') });
     return doorView(id) as DoorView;
   }
@@ -1324,6 +1357,7 @@ export function createAccess(opts: AccessOptions): AccessService {
   function removeDoor(actor: string, id: string): void {
     const r = typeof id === 'string' && ID_PATTERN.test(id) ? sql('DELETE FROM access_door WHERE detector_id = ?').run(id) : null;
     if (!r || Number(r.changes) === 0) throw new PsimError(404, 'Porte introuvable');
+    topologyChanged();
     forgetDoorMode(db, id);
     audit(actor, 'access_door_removed', { deviceId: id, details: "declaration retiree ; l'historique des passages est conserve jusqu'a la purge" });
   }

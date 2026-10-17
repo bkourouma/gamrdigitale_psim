@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="equipment.css">
   <link rel="stylesheet" href="keys.css">
   <link rel="stylesheet" href="rules.css">
+  <link rel="stylesheet" href="holders.css">
   <link rel="stylesheet" href="access.css">
   <link rel="stylesheet" href="patrols.css">
   <link rel="stylesheet" href="agents-admin.css">
@@ -90,6 +91,7 @@
         <a class="nav-item" href="#/risques" data-view="risques"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg><span>Risques</span></a>
         <a class="nav-item" href="#/rapports" data-view="rapports"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg><span>Rapports</span></a>
         <a class="nav-item" href="#/journal" data-view="journal"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg><span>Journal</span></a>
+        <a class="nav-item" href="#/titulaires" data-view="titulaires"><svg class="icon" aria-hidden="true"><use href="icons.svg#badge"/></svg><span>Titulaires</span></a>
         <a class="nav-item" href="#/rondes" data-view="rondes"><svg class="icon" aria-hidden="true"><use href="icons.svg#pin"/></svg><span>Rondes</span></a>
         <div id="nav-admin" class="nav-group" role="group" aria-labelledby="nav-admin-title" hidden>
           <p id="nav-admin-title" class="nav-group-title">Administration</p>
@@ -536,6 +538,11 @@
           <section id="pt-panel-agents" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-agents" tabindex="-1" hidden></section>
           <section id="pt-panel-phones" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-phones" tabindex="-1" hidden></section>
           <section id="pt-panel-journal" class="pt-panel" role="tabpanel" aria-labelledby="pt-tab-journal" tabindex="-1" hidden></section>
+        </section>
+
+        <!-- ================================================================================ Titulaires -->
+        <section class="view view-titulaires" id="view-titulaires" aria-labelledby="view-title" hidden>
+          <div id="holders-root" class="hd-root"></div>
         </section>
 
         <!-- ================================================================================ Utilisateurs -->

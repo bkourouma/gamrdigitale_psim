@@ -10,6 +10,11 @@ const TOPIC = /^psim\/detectors\/([A-Za-z0-9_-]{1,32})\/state$/;
 // Commandes des equipements (voir actuators.ts, docs/COMMANDES.md) : ordres publies par le PSIM seul, accuses par la passerelle.
 const COMMAND_TOPIC = /^psim\/actuators\/([A-Za-z0-9_-]{1,32})\/command$/;
 const ACK_TOPIC = /^psim\/actuators\/([A-Za-z0-9_-]{1,32})\/ack$/;
+// Synchronisation des titulaires (voir accesssync.ts, docs/CONTROLE-ACCES.md § 7) : ordres publies par le PSIM seul, accuses par la
+// passerelle du controleur. Le droit suit en direct la base (`controllerOwned`), jamais une copie gardee dans la connexion.
+const SYNC_TOPIC = /^psim\/access\/([A-Za-z0-9_-]{1,32})\/sync$/;
+const SYNC_ACK_TOPIC = /^psim\/access\/([A-Za-z0-9_-]{1,32})\/sync-ack$/;
+const CONTROLLER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_PAYLOAD_BYTES = 1024;
 const MAX_CONNECTIONS = 200;
 const AUTH_FAILURE_LIMIT = 10;
@@ -17,6 +22,8 @@ const AUTH_FAILURE_WINDOW_MS = 60_000;
 // Abonnements aux ordres par connexion : au plus autant que d'actionneurs declarables (MAX_ACTUATORS, actuators.ts).
 // Sans borne, un compte a prefixe (« R-* ») ferait grossir l'etat du broker sans limite avec des ids inexistants.
 const MAX_COMMAND_SUBSCRIPTIONS = 200;
+// Meme borne pour les abonnements aux ordres de synchronisation (un controleur par abonnement).
+const MAX_SYNC_SUBSCRIPTIONS = 200;
 
 /** Passerelle : un compte MQTT propre, limite aux detecteurs qu'elle represente (identifiants exacts ou prefixe « D-* »). */
 export interface Gateway {
@@ -39,6 +46,14 @@ export interface Broker {
   publishCommand(actuatorId: string, payload: Buffer): Promise<void>;
   /** Clients de passerelle autorises actuellement abonnes aux ordres de cet actionneur. */
   actuatorListeners(actuatorId: string): number;
+  /**
+   * Publie un ordre de synchronisation sur `psim/access/<controllerId>/sync` (QoS 1, jamais conserve). SYNCHRONE : renvoie faux,
+   * sans rien publier, si l'identifiant est invalide, si le message depasse 1 024 octets ou si aucun client AUTORISE (compte de
+   * passerelle auquel le controleur est rattache, a cet instant) n'est abonne.
+   */
+  publishSync(controllerId: string, payload: string): boolean;
+  /** Clients de passerelle abonnes a l'ordre de ce controleur et encore autorises a cet instant (rattachement relu a chaque appel). */
+  syncListeners(controllerId: string): number;
   close(): Promise<void>;
 }
 
@@ -57,18 +72,26 @@ type PsimClient = {
   psimActuators?: readonly string[];
   /** Actionneurs dont cette connexion a obtenu l'abonnement aux ordres (borne MAX_COMMAND_SUBSCRIPTIONS). */
   psimCommandSubs?: Set<string>;
+  /** Controleurs dont cette connexion a obtenu l'abonnement aux ordres de synchronisation (borne MAX_SYNC_SUBSCRIPTIONS). */
+  psimSyncSubs?: Set<string>;
   conn?: Socket;
   id?: string;
   clean?: boolean;
 };
 
+/** Rattachement controleur -> compte de passerelle, lu dans la base A CHAQUE appel ; faux si absent ou si la lecture echoue. */
+type Owned = (gatewayUser: string, controllerId: string) => boolean;
+
 /**
- * Droit de LECTURE d'un client, d'apres son seul compte : les ordres de SES actionneurs, les etats des detecteurs pour le
- * compte principal (outil de recette) ; les accuses (`.../ack`), `$SYS` et tout le reste ne sont remis a personne.
+ * Droit de LECTURE d'un client, d'apres son seul compte : les ordres de SES actionneurs, l'ordre de synchronisation des
+ * controleurs RATTACHES A SA PASSERELLE (a cet instant), les etats des detecteurs pour le compte principal (outil de recette) ;
+ * les accuses (`.../ack`, `.../sync-ack`), `$SYS` et tout le reste ne sont remis a personne.
  */
-function mayRead(client: PsimClient, topic: string): boolean {
+function mayRead(client: PsimClient, topic: string, owned: Owned): boolean {
   const command = COMMAND_TOPIC.exec(topic);
   if (command) return allows(client.psimActuators ?? [], command[1]);
+  const sync = SYNC_TOPIC.exec(topic);
+  if (sync) return client.psimGateway !== undefined && owned(client.psimGateway, sync[1]);
   if (TOPIC.test(topic)) return client.psimAllowed === null;
   return false;
 }
@@ -86,7 +109,8 @@ type SubscriptionStore = {
  *
  * Durcissement : un client ne peut JAMAIS lire les messages des autres (aucun abonnement, sauf le compte principal sur le topic
  * des detecteurs : outil de recette, et un compte de passerelle sur les ORDRES de SES actionneurs, topic exact, voir
- * docs/COMMANDES.md) ni demander l'arborescence `$SYS` ; les messages « retained » sont interdits (ils seraient
+ * docs/COMMANDES.md, et sur l'ordre de synchronisation des titulaires de SES controleurs, rattachement relu en base a chaque
+ * autorisation, voir docs/CONTROLE-ACCES.md § 7) ni demander l'arborescence `$SYS` ; les messages « retained » sont interdits (ils seraient
  * stockes sans limite puis redistribues) ; un message de plus de 1 Ko est refuse ; un compte de passerelle ne peut publier que
  * pour ses propres detecteurs ; les echecs d'authentification sont limites par adresse.
  *
@@ -109,6 +133,13 @@ export async function startBroker(
     onGateway?: (user: string, connected: boolean, client: object) => void;
     /** Accuse de commande recu d'un compte autorise pour cet actionneur (voir actuators.ts, qui verifie la signature). */
     onActuatorAck?: (actuatorId: string, payload: Buffer) => void;
+    /**
+     * Le controleur est-il rattache a ce compte de passerelle (`access_controller.gateway_id`) ? Interrogee a CHAQUE autorisation
+     * (abonnement, publication, remise) : la base peut changer a tout moment, rien n'est garde dans la connexion. Absente = personne.
+     */
+    controllerOwned?: (gatewayUser: string, controllerId: string) => boolean;
+    /** Accuse de synchronisation recu d'un compte de passerelle dont le controleur est le sien (accesssync.ts verifie la signature). */
+    onAccessSyncAck?: (controllerId: string, payload: Buffer) => void;
     /** Message publie par un client d'un compte de passerelle (ecran « Cles et passerelles » : dernier message recu). */
     onGatewayMessage?: (user: string) => void;
   },
@@ -130,12 +161,33 @@ export async function startBroker(
   const failures = new Map<string, number[]>();
   // Abonnes aux ordres de chaque actionneur (une commande que personne ne recevrait est refusee, voir actuators.ts).
   const listeners = new Map<string, Set<unknown>>();
-  const trackListener = (client: unknown, actuatorId: string, on: boolean) => {
-    const set = listeners.get(actuatorId) ?? new Set<unknown>();
+  // Abonnes a l'ordre de synchronisation de chaque controleur (publishSync refuse un ordre que personne ne recevrait).
+  const syncSubscribers = new Map<string, Set<unknown>>();
+  const trackListener = (client: unknown, id: string, on: boolean, map = listeners) => {
+    const set = map.get(id) ?? new Set<unknown>();
     if (on) set.add(client);
     else set.delete(client);
-    if (set.size === 0) listeners.delete(actuatorId);
-    else listeners.set(actuatorId, set);
+    if (set.size === 0) map.delete(id);
+    else map.set(id, set);
+  };
+  // Rattachement lu en direct ; une base en erreur vaut refus (jamais un droit accorde par defaut).
+  const owned: Owned = (gatewayUser, controllerId) => {
+    if (!opts.controllerOwned) return false;
+    try {
+      return opts.controllerOwned(gatewayUser, controllerId) === true;
+    } catch (err) {
+      console.error('[mqtt] rattachement du controleur :', err);
+      return false;
+    }
+  };
+  /** Abonnes de l'ordre de ce controleur qui y ont ENCORE droit (un controleur reaffecte n'a plus d'abonne autorise). */
+  const authorizedSyncSubscribers = (controllerId: string): number => {
+    let n = 0;
+    for (const client of syncSubscribers.get(controllerId) ?? []) {
+      const user = (client as PsimClient).psimGateway;
+      if (user !== undefined && owned(user, controllerId)) n++;
+    }
+    return n;
   };
 
   aedes.authenticate = (client, username, password, done) => {
@@ -181,6 +233,16 @@ export async function startBroker(
       packet.retain = false;
       return done();
     }
+    // Accuse de synchronisation : seulement un compte de passerelle auquel CE controleur est rattache a cet instant. L'ordre
+    // (`.../sync`) n'est jamais publiable par un client : refus general ci-dessous.
+    const syncAck = SYNC_ACK_TOPIC.exec(packet.topic);
+    if (syncAck) {
+      const user = (client as unknown as PsimClient).psimGateway;
+      if (user === undefined || !owned(user, syncAck[1])) return done(new Error('Controleur non autorise pour ce compte'));
+      if ((packet.payload as Buffer).length > MAX_PAYLOAD_BYTES) return done(new Error('Message trop gros'));
+      packet.retain = false;
+      return done();
+    }
     const match = TOPIC.exec(packet.topic);
     if (!match) return done(new Error('Topic non autorise'));
     const allowed = (client as unknown as PsimClient).psimAllowed;
@@ -217,6 +279,19 @@ export async function startBroker(
       accepted.add(sub);
       return done(null, sub);
     }
+    // Ordre de synchronisation d'un controleur : topic EXACT (jamais + ni #), compte de passerelle auquel il est rattache, plafond
+    // QoS 1 (le contrat l'exige : un ordre manque pendant une coupure est remis ; le protocole est idempotent par `seq`).
+    const sync = SYNC_TOPIC.exec(topic);
+    if (sync) {
+      if (c.psimGateway === undefined || !owned(c.psimGateway, sync[1])) return deny();
+      const mine = (c.psimSyncSubs ??= new Set<string>());
+      if (!mine.has(sync[1]) && mine.size >= MAX_SYNC_SUBSCRIPTIONS) return deny();
+      mine.add(sync[1]);
+      trackListener(client, sync[1], true, syncSubscribers);
+      sub.qos = Math.min(sub.qos, 1) as 0 | 1;
+      accepted.add(sub);
+      return done(null, sub);
+    }
     const detectorsOnly = topic === 'psim/detectors/+/state' || TOPIC.test(topic);
     if (c.psimAllowed !== null || !detectorsOnly) return deny();
     accepted.add(sub);
@@ -226,7 +301,7 @@ export async function startBroker(
   // Derniere barriere avant toute remise a un client (en direct, ou depuis la file d'une session persistante) : le droit de
   // lecture est reverifie d'apres le compte, quel que soit l'abonnement qui a fait correspondre le message. Un message
   // refuse ici est aussi retire de la file du client par aedes.
-  aedes.authorizeForward = (client, packet) => (mayRead(client as unknown as PsimClient, packet.topic) ? packet : null);
+  aedes.authorizeForward = (client, packet) => (mayRead(client as unknown as PsimClient, packet.topic, owned) ? packet : null);
 
   // Liaison des passerelles : leurs capteurs ne sont pas declares muets un par un quand c'est la passerelle qui est coupee.
   const gatewayEvent = (client: unknown, connected: boolean) => {
@@ -245,17 +320,49 @@ export async function startBroker(
       set.delete(client);
       if (set.size === 0) listeners.delete(id);
     }
+    for (const [id, set] of syncSubscribers) {
+      set.delete(client);
+      if (set.size === 0) syncSubscribers.delete(id);
+    }
   });
   aedes.on('unsubscribe', (topics, client) => {
     for (const topic of topics) {
+      if (!client) continue;
       const m = COMMAND_TOPIC.exec(topic);
-      if (!m || !client) continue;
-      trackListener(client, m[1], false);
-      (client as unknown as PsimClient).psimCommandSubs?.delete(m[1]);
+      if (m) {
+        trackListener(client, m[1], false);
+        (client as unknown as PsimClient).psimCommandSubs?.delete(m[1]);
+        continue;
+      }
+      const s = SYNC_TOPIC.exec(topic);
+      if (s) {
+        trackListener(client, s[1], false, syncSubscribers);
+        (client as unknown as PsimClient).psimSyncSubs?.delete(s[1]);
+      }
     }
   });
 
   aedes.on('publish', (packet, client) => {
+    const syncAck = SYNC_ACK_TOPIC.exec(packet.topic);
+    if (syncAck) {
+      // Seuls les accuses venus d'un client (deja autorise par authorizePublish) comptent ; accesssync.ts verifie la signature.
+      if (!client || (packet.payload as Buffer).length > MAX_PAYLOAD_BYTES) return;
+      const user = (client as unknown as PsimClient).psimGateway;
+      if (user && opts.onGatewayMessage) {
+        try {
+          opts.onGatewayMessage(user); // un accuse est aussi un signe de vie de la passerelle
+        } catch (err) {
+          console.error('[mqtt] message passerelle :', err);
+        }
+      }
+      if (!opts.onAccessSyncAck) return;
+      try {
+        opts.onAccessSyncAck(syncAck[1], packet.payload as Buffer);
+      } catch (err) {
+        console.error('[mqtt] accuse de synchronisation :', err);
+      }
+      return;
+    }
     const ack = ACK_TOPIC.exec(packet.topic);
     if (ack) {
       // Seuls les accuses venus d'un client (deja autorise ci-dessus) comptent ; la signature est verifiee par actuators.ts.
@@ -318,6 +425,20 @@ export async function startBroker(
           (err) => (err ? reject(err) : resolve()),
         );
       });
+    },
+    syncListeners: (controllerId) => authorizedSyncSubscribers(controllerId),
+    publishSync(controllerId, payload) {
+      if (!CONTROLLER_ID.test(controllerId)) return false;
+      const body = Buffer.from(payload, 'utf8');
+      if (body.length > MAX_PAYLOAD_BYTES) return false;
+      if (authorizedSyncSubscribers(controllerId) === 0) return false; // personne ne le recevrait : l'essai n'est pas compte (accesssync.ts)
+      aedes.publish(
+        { cmd: 'publish', qos: 1, dup: false, retain: false, topic: `psim/access/${controllerId}/sync`, payload: body },
+        (err) => {
+          if (err) console.error('[mqtt] ordre de synchronisation :', err);
+        },
+      );
+      return true;
     },
     publishDetectorState: (detectorId, state) => broker.publishDetector(detectorId, { state }),
     publishDetector(detectorId, payload) {

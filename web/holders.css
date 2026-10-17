@@ -1,0 +1,218 @@
+/* =====================================================================================================================
+   Écran « Titulaires » (holders.js). Jetons et composants de base.css seulement : rien de neuf en couleur, en police ni en
+   forme (thèmes Jour et Nuit hérités). Toute mise en forme passe par des classes : la politique de sécurité interdit le
+   style en ligne. Espacements : échelle --s1 à --s7 de DESIGN.md.
+   Mise en page : le conteneur .hd-root décide (largeur de la feuille, pas de la fenêtre) ; sous 880 px la liste devient une
+   pile de cartes et la fiche prend sa place.
+   ===================================================================================================================== */
+
+.hd-root { container-type: inline-size; display: grid; gap: var(--s4); min-width: 0; }
+.view-titulaires { max-width: 1280px; }
+.view-titulaires h3 { font-size: var(--fs-lg); }
+.view-titulaires h4 { margin: 0; font-size: var(--fs-md); color: var(--brand-ink); }
+.view-titulaires .form-error:empty { display: none; }
+.hd-notice-text { display: grid; gap: var(--s1); min-width: 0; overflow-wrap: anywhere; }
+.hd-sub { font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.hd-label { font-size: var(--fs-sm); font-weight: 700; color: var(--ink); }
+.hd-name { overflow-wrap: anywhere; }
+.hd-apart { margin-left: auto; }
+.hd-count { min-height: 1.4em; font-size: var(--fs-sm); color: var(--ink-2); }
+.hd-list-msg { display: grid; gap: var(--s3); min-width: 0; }
+.hd-list-msg:empty { display: none; }
+.hd-plain { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+
+/* ------------------------------------------------------------------------------------------------ onglets */
+/* Rangée défilante sur téléphone : chaque onglet garde une cible de 44 px. */
+.hd-tablist { display: flex; gap: var(--s1); padding-bottom: var(--s1); overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+.hd-tab {
+  display: inline-flex; align-items: center; gap: var(--s2); flex: none;
+  min-height: var(--control-h); padding: 0 var(--s4);
+  border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: var(--ink-2);
+  font: 600 var(--fs-md) / 1.2 var(--font-ui); white-space: nowrap; cursor: pointer;
+  transition: background-color var(--t-fast) ease, color var(--t-fast) ease;
+}
+.hd-tab:hover { color: var(--ink); background: var(--surface-2); }
+.hd-tab[aria-selected='true'] { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-ink); }
+/* Écran moyen : onglets plus serrés pour que les cinq tiennent sans défilement. */
+@container (max-width: 860px) { .hd-tablist { gap: 2px; } .hd-tab { padding: 0 var(--s3); gap: var(--s1); } }
+.hd-tabpanel { display: grid; gap: var(--s4); min-width: 0; outline-offset: 4px; }
+
+/* ------------------------------------------------------------------------------------------------ titulaires */
+.hd-holders { display: grid; gap: var(--s3); min-width: 0; }
+.hd-toolbar { display: grid; gap: var(--s3); align-items: end; grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 640px) { .hd-toolbar { grid-template-columns: minmax(0, 1fr) 220px auto; } }
+.hd-split { display: grid; gap: var(--s4); align-items: start; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+@container (min-width: 880px) { .hd-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); } }
+/* Étroit : la fiche remplace la liste ; « Fermer la fiche » la ramène. */
+@container (max-width: 879px) { .hd-holders.has-detail .hd-listcol, .hd-holders.has-detail .hd-toolbar { display: none; } }
+@container (min-width: 880px) { .hd-holders:not(.has-detail) .hd-split { grid-template-columns: minmax(0, 1fr); } }
+.hd-holders:not(.has-detail) .hd-detail { display: none; }
+.hd-listcol { display: grid; gap: var(--s3); min-width: 0; align-content: start; }
+.hd-more { justify-self: center; }
+
+.hd-list { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.hd-item { min-width: 0; }
+.hd-row {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: var(--s1) var(--s3); align-items: center;
+  width: 100%; min-height: 64px; padding: var(--s3) var(--s4); text-align: left;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: none;
+  font: inherit; cursor: pointer;
+  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease;
+}
+.hd-row:hover { border-color: var(--brand); background: var(--surface-2); }
+.hd-row[aria-current='true'] { border-color: var(--brand); background: var(--brand-soft); box-shadow: inset 4px 0 0 var(--brand); }
+.hd-row-main { display: grid; gap: 2px; min-width: 0; }
+.hd-row-states { display: flex; flex-wrap: wrap; gap: var(--s2); grid-column: 2; }
+.hd-avatar { display: grid; place-items: center; width: 40px; height: 40px; overflow: hidden; border-radius: var(--r-pill); background: var(--brand-soft); color: var(--brand-ink); }
+.hd-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ------------------------------------------------------------------------------------------------ fiche */
+.hd-detail { padding: var(--s4) var(--s5) var(--s5); min-width: 0; }
+.hd-detail-body { display: grid; gap: var(--s4); min-width: 0; }
+.hd-detail-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s3) var(--s4); align-items: center; }
+.hd-detail-head h3 { overflow-wrap: anywhere; border-radius: var(--r-xs); }
+.hd-detail-id { display: grid; gap: var(--s1); min-width: 0; }
+.hd-pills { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hd-close { grid-column: 1 / -1; justify-self: start; }
+.hd-photo { width: 96px; height: 96px; object-fit: cover; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--surface-2); }
+.hd-photo.is-empty { display: grid; place-items: center; color: var(--ink-3); }
+.hd-photo.is-empty .icon { width: 40px; height: 40px; }
+.hd-section { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); min-width: 0; }
+.hd-facts { display: grid; grid-template-columns: minmax(7em, auto) minmax(0, 1fr); gap: var(--s1) var(--s3); align-items: baseline; margin: 0; }
+.hd-facts dt { font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.hd-facts dd { margin: 0; overflow-wrap: anywhere; }
+@container (max-width: 480px) { .hd-facts { grid-template-columns: minmax(0, 1fr); } .hd-facts dd { margin-bottom: var(--s2); } }
+
+.hd-badges { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.hd-badge { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.hd-badge-number { font-size: var(--fs-lg); font-weight: 700; overflow-wrap: anywhere; }
+.hd-badge-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-left: auto; }
+@container (max-width: 560px) { .hd-badge-actions { margin-left: 0; width: 100%; } }
+.hd-addbadge { display: grid; gap: var(--s2); justify-items: start; max-width: 420px; }
+.hd-addbadge .field { width: 100%; }
+.hd-sync-row { display: grid; gap: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); }
+.hd-sync-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.hd-sync-head strong { overflow-wrap: anywhere; }
+.hd-passages li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); padding: var(--s1) 0; border-bottom: 1px solid var(--line); }
+.hd-passages li:last-child { border-bottom: 0; }
+.hd-result { display: inline-flex; align-items: center; gap: var(--s1); font-weight: 700; }
+.hd-result.is-ok { color: var(--ok-ink); }
+.hd-result.is-alarm { color: var(--alarm-ink); }
+.hd-result .icon { width: 18px; height: 18px; }
+.hd-file { position: relative; cursor: pointer; }
+.hd-file:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.hd-admin .actions { gap: var(--s2) var(--s3); }
+
+/* ------------------------------------------------------------------------------------------------ formulaires et choix */
+.hd-form { min-width: 0; }
+.hd-choices { min-width: 0; }
+.hd-choice-row { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hd-choice {
+  display: flex; align-items: flex-start; gap: var(--s3); min-width: 0; min-height: var(--control-h); padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); cursor: pointer;
+  transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease;
+}
+.hd-choice-sm { align-items: center; }
+.hd-choice:hover { border-color: var(--brand); }
+.hd-choice:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.hd-choice:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.hd-choice input { margin-top: 2px; }
+.hd-choice-sm input { margin-top: 0; }
+.hd-choice-text { display: grid; gap: 2px; min-width: 0; }
+.hd-choice:has(input:checked) .hint { color: var(--ink); }
+.hd-group-check { align-items: flex-start; padding: var(--s1) 0; }
+.hd-group-check input { margin-top: 2px; }
+.hd-group-check > span { display: grid; min-width: 0; }
+
+/* ------------------------------------------------------------------------------------------------ visiteurs */
+.hd-visitors, .hd-groups, .hd-import, .hd-sync { display: grid; gap: var(--s4); min-width: 0; }
+.hd-card { min-width: 0; }
+.hd-card .panel-head h3 { margin: 0; }
+.hd-visit-form { display: grid; gap: var(--s4); min-width: 0; }
+.view-titulaires .form-grid, .hd-form .form-grid { align-items: start; } /* une aide sous un champ ne décale pas son voisin */
+/* L'heure de fin est écrite en toutes lettres avant la validation. */
+.hd-endline { padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--info-soft); color: var(--ink); font-size: var(--fs-md); font-weight: 700; }
+.hd-endline.is-problem { background: var(--warning-soft); }
+.hd-visits { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.hd-visit { display: grid; gap: var(--s3); align-content: start; min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.hd-visit.is-ended { border-style: dashed; background: var(--surface-2); }
+.hd-visit-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
+
+/* ------------------------------------------------------------------------------------------------ groupes et horaires */
+.hd-box { min-width: 0; }
+.hd-cards { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.hd-gcard { display: grid; gap: var(--s2); align-content: start; min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow-wrap: anywhere; }
+.hd-gcard-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.hd-doorrow { display: grid; gap: var(--s2); align-items: center; padding: var(--s2) 0; border-bottom: 1px solid var(--line); grid-template-columns: minmax(0, 1fr); }
+.hd-doorrow:last-child { border-bottom: 0; }
+.hd-doorrow .check { align-items: flex-start; }
+.hd-doorrow .check > span { display: grid; min-width: 0; }
+.hd-doorrow select { max-width: 100%; }
+@media (min-width: 560px) { .hd-doorrow { grid-template-columns: minmax(0, 1fr) minmax(160px, 220px); } }
+
+.hd-slots-box { display: grid; gap: var(--s2); }
+.hd-slots { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.hd-slots:empty { display: none; }
+.hd-slot fieldset { gap: var(--s3); min-width: 0; background: var(--surface); }
+.hd-days { display: grid; grid-template-columns: repeat(7, minmax(34px, 1fr)); gap: 4px; max-width: 440px; }
+.hd-day { min-width: 0; padding: 0 2px; }
+/* Jour choisi : trait sous le nom en plus de la teinte (jamais la couleur seule). */
+.hd-day[aria-pressed='true'] { font-weight: 800; box-shadow: inset 0 -4px 0 var(--brand); }
+.hd-hours { display: grid; gap: var(--s3); align-items: end; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+@media (max-width: 480px) { .hd-hours { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hd-hours .btn { grid-column: 1 / -1; justify-self: start; } }
+
+.hd-holidays { display: grid; gap: var(--s2); margin: 0 0 var(--s3); padding: 0; list-style: none; }
+.hd-holiday { display: grid; gap: var(--s2); align-items: center; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .hd-holiday { grid-template-columns: 190px minmax(0, 1fr) auto; } }
+.hd-edit { display: grid; gap: var(--s3); }
+
+/* ------------------------------------------------------------------------------------------------ import */
+.hd-columns { display: grid; gap: var(--s1) var(--s4); margin: 0; grid-template-columns: minmax(0, 1fr); }
+.hd-columns dt { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-weight: 700; }
+.hd-columns dd { margin: 0 0 var(--s2); color: var(--ink-2); }
+@container (min-width: 700px) {
+  .hd-columns { grid-template-columns: minmax(180px, auto) minmax(0, 1fr); }
+  .hd-columns dd { margin: 0; }
+}
+.hd-report { display: grid; gap: var(--s3); min-width: 0; }
+.hd-report:empty { display: none; }
+.hd-report-head { border-radius: var(--r-md); }
+.hd-stats { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.hd-stat { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.hd-stat strong { font-size: var(--fs-xl); }
+.hd-stat.is-ok { color: var(--ok-ink); }
+.hd-stat.is-info { color: var(--info-ink); }
+.hd-stat.is-alarm { color: var(--alarm-ink); }
+.hd-stat.is-offline { color: var(--offline-ink); }
+.hd-rows { display: grid; gap: var(--s2); margin: var(--s2) 0 0; padding: 0; list-style: none; }
+.hd-rowitem { display: grid; gap: var(--s1) var(--s3); align-items: center; padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); grid-template-columns: auto minmax(0, 1fr) auto; }
+.hd-rowline { color: var(--ink-2); font-size: var(--fs-sm); white-space: nowrap; }
+.hd-reasons { grid-column: 1 / -1; display: grid; gap: 2px; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.hd-reason.is-error { color: var(--alarm-ink); font-weight: 600; }
+
+/* ------------------------------------------------------------------------------------------------ synchronisation */
+.hd-sync-cards { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); align-items: start; }
+.hd-sync-card { display: grid; gap: var(--s3); padding: var(--s4) var(--s5); min-width: 0; }
+.hd-sync-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.hd-sync-title h3 { margin: 0; overflow-wrap: anywhere; }
+.hd-hint { overflow-wrap: anywhere; }
+.hd-sync-detail { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.hd-items li { display: grid; gap: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); }
+
+/* Clé de synchronisation : lisible, sélectionnable d'un geste, jamais dans un champ que le navigateur retiendrait. */
+.hd-keybox { display: grid; gap: var(--s3); min-width: 0; }
+.hd-key { display: block; padding: var(--s3) var(--s4); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); font-size: var(--fs-md); letter-spacing: 0.04em; overflow-wrap: anywhere; user-select: all; }
+.hd-keywarn { padding-left: var(--s5); list-style: disc; }
+
+/* ------------------------------------------------------------------------------------------------ téléphone */
+@container (max-width: 520px) {
+  .hd-detail { padding: var(--s4); }
+  .hd-row { padding: var(--s3); }
+  .hd-sync-card { padding: var(--s4); }
+  .hd-rowitem { grid-template-columns: minmax(0, 1fr) auto; }
+  .hd-rowline { grid-column: 1 / -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hd-tab, .hd-row, .hd-choice { transition: none; }
+}
