@@ -1,0 +1,41 @@
+/* Ouverture a distance d'une porte, mode de porte, « Tout ouvrir » (web/dooractions.js). Jetons de base.css uniquement. */
+.dooract {
+  display: grid; gap: var(--s3); padding: var(--s4);
+  border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface);
+}
+.dooract-title { font-size: var(--fs-base, 1rem); }
+.dooract-facts { display: grid; gap: var(--s2); }
+.dooract-facts p { margin: 0; }
+.dooract-mode.is-unknown { color: var(--ink-2); }
+.dooract-cams .actions, .dooract-controls .actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.dooract-controls { display: grid; gap: var(--s3); }
+.dooract .btn, .dooract-evac { min-height: var(--control-h); }
+.dooract-minutes { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+.dooract-minutes .field { max-width: 11rem; }
+.dooract-minutes input { min-height: var(--control-h); }
+.dooract-status { display: grid; gap: var(--s2); }
+.dooract-status:empty { display: none; }
+.dooract-cmd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+
+/* Tout ouvrir */
+.dooract-evac-box { display: grid; gap: var(--s3); }
+.dooract-table { width: 100%; }
+.dooract-table td, .dooract-table th { vertical-align: top; }
+.dooract-table tr.is-notready td { border-left: 0; }
+.dooract-table tr.is-notready td:first-child { box-shadow: inset 4px 0 0 var(--alarm, currentColor); }
+.dooract-bilan {
+  margin: 0; padding: var(--s3); border: 2px solid var(--line-strong); border-radius: var(--r-md);
+  font-weight: 700; color: var(--ink);
+}
+.dooract-bilan.is-ok { border-color: var(--ok, var(--line-strong)); }
+.dooract-bilan.is-bad { border-style: dashed; border-color: var(--alarm, var(--line-strong)); }
+
+/* Panneau Commandes : actionneur de la porte de l'alarme, mis en avant (bordure + etiquette, pas la couleur seule) */
+.cmd-actuator.is-focus { border: 2px solid var(--ink); border-radius: var(--r-md); padding: var(--s3); }
+.inc-door:empty { display: none; }
+.inc-door { margin: var(--s3) 0; }
+
+/* Liaison porte <-> actionneur (administrateur) */
+.dooract-link { display: grid; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.dooract-link select { min-height: var(--control-h); }
+.dooract-link .actions { display: flex; flex-wrap: wrap; gap: var(--s2); }

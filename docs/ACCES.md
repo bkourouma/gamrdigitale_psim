@@ -96,7 +96,7 @@ motif que `id`. `credentials` : `{ "username": "…", "password": "…" }` (chac
   « La porte s'est ouverte sans autorisation. Regardez la caméra, puis traitez l'alarme. »).
 - `doorState` : `closed` | `open` | `unknown` (physique, sans la supervision). `deviceStatus` : statut du détecteur.
 - `kind` : `door` | `gate` | `barrier` | `turnstile` ; `doorNo` : 1 à 4, unique par contrôleur.
-- `actuatorId` : réservé au lot AC4 (accepté, stocké, sans effet ici).
+- `actuatorId` : actionneur `lock` (porte) ou `gate` (barrière, portail, tourniquet) qui ouvre cette porte à distance, `null` si aucun (§ 11.1). `doorMode`, `doorModeLabel`, `doorModeAt` : dernier mode annoncé par le contrôleur (F19, § 11.4), `null` tant qu'aucun message n'est arrivé.
 - Corps de création : `{ detectorId, controllerId, doorNo, kind?, emergencyExit?, heldAlarmAfterS?, actuatorId? }` ;
   `detectorId` doit être un détecteur existant de catégorie `access`, pas déjà déclaré (409) ; `controllerId` doit exister ;
   `heldAlarmAfterS` : 10 à 86 400 (défaut 300). Le nom, la zone, l'étage, la position et les caméras liées restent ceux du
@@ -122,7 +122,7 @@ motif que `id`. `credentials` : `{ "username": "…", "password": "…" }` (chac
 ```json
 { "door": { "…DoorView…": "" }, "lastPassages": [ "…10 PassageView, du plus récent au plus ancien…" ],
   "cameras": [ { "id": "CAM-1", "name": "Caméra entrée", "status": "normal" } ],
-  "remote": { "available": false, "reason": "Ouverture à distance : disponible avec le lot AC4" } }
+  "remote": { "available": true, "reason": null, "actuatorId": "GACHE-1", "actuatorName": "Gâche entrée", "actuatorType": "lock" } }
 ```
 
 La consultation de la fiche n'est pas journalisée (elle ne cherche personne). 404 si la porte n'est pas déclarée.
@@ -320,3 +320,70 @@ Le portail le valide champ par champ (bloc mal formé : résumé refusé en 400 
 **Compatibilité** (essai croisé réel avec le code de `dc21510`, dans les deux sens) : un portail ancien ignore le bloc ; un PSIM ancien n'en envoie pas et le portail récent le dit « non transmis ». Ordre de mise à jour inchangé : le portail avant les PSIM.
 
 **Preuve de confidentialité** : `test/portal-access-privacy.test.ts` fouille le corps de `buildSiteSummary`, le corps réellement envoyé par `createPortalSender`, les réponses du portail pour cinq rôles et toutes les tables du portail, à la recherche du nom, du badge, de la `holderRef`, de l'identifiant et de l'hôte du contrôleur ; `test/e2e-portal-access.test.ts` le refait avec un vrai PSIM et un vrai portail, octets échangés enregistrés.
+
+## 11. Ouverture à distance (AC4 : F17 à F20)
+
+Principe : **le contrôleur décide, le PSIM commande**. L'ouverture à distance ne passe que par le **canal de commande signé** (`docs/COMMANDES.md`, `POST /api/actuators/:id/commands`) : raison obligatoire, mot de passe redemandé selon la configuration de l'actionneur, limite de fréquence, accusé, retour automatique à l'état sûr, journal infalsifiable. Il n'existe aucun autre chemin vers une serrure : l'écran Accès, la fiche d'incident et « Tout ouvrir » appellent tous le même service (`server/actuators.ts`).
+
+### 11.1 Lien porte et actionneur
+
+Une porte est liée à un actionneur déjà créé (écran Équipements, section Actionneurs) par `actuatorId` (fiche de la porte, bloc « Actionneur lié », administrateur ; ou `PUT /api/access/doors/:id`, ou `POST /api/access/doors` à la déclaration). Contrôles, sur l'état **résultant** (on revérifie aussi quand on change seulement le type ou l'issue de secours d'une porte déjà liée), refus avec un message clair :
+
+| Règle | Refus |
+|---|---|
+| L'actionneur existe | 400 |
+| Type cohérent : porte (`door`) avec un actionneur `lock` ; barrière, portail, tourniquet (`gate`, `barrier`, `turnstile`) avec un actionneur `gate` | 400 |
+| Un actionneur ne sert qu'**une seule** porte | 409 |
+| **F18 : issue de secours des deux côtés ou d'aucun** (porte `emergencyExit` et actionneur `emergencyExit`, ou ni l'un ni l'autre) | 400 |
+
+`actuatorId: null` délie la porte. Un actionneur désactivé est accepté au lien, mais la fiche dit que l'ouverture est impossible. Le refus de `lock` sur une issue de secours existe aussi à l'exécution (`server/actuators.ts`, 403 si la configuration a été falsifiée en base, 400 sinon puisque l'action n'existe pas) : le PSIM n'envoie jamais l'ordre `lock` à une issue de secours.
+
+La fiche d'une porte (`GET /api/access/doors/:id`) porte `remote` : `{ available, reason, actuatorId, actuatorName, actuatorType }`. `available` est vrai si le lien est valide, l'actionneur existe et est actif et que les types et l'issue de secours sont cohérents ; sinon `reason` dit pourquoi (aucun actionneur lié, actionneur supprimé, désactivé, type incohérent, issue de secours d'un seul côté). L'écran croise avec `GET /api/actuators` pour les droits de l'utilisateur.
+
+### 11.2 Guide de l'installateur
+
+1. Créer l'actionneur dans le PSIM (Équipements, Actionneurs) : type `lock` pour une porte, `gate` pour une barrière ou un portail, transport MQTT, **issue de secours cochée si la porte en est une** (une serrure d'issue de secours n'accepte jamais « verrouiller »). Copier la **clé de signature** (affichée une seule fois).
+2. Autoriser le compte MQTT de la passerelle pour cet actionneur (`PSIM_MQTT_GATEWAYS`, liste `actuators`), voir `docs/PASSERELLE.md` § 8.1.
+3. Déclarer l'actionneur dans la configuration de la passerelle **à deux endroits** : la section `actuators` du socle (identifiant, `keyFile`, `module: "acces-dahua"` ou `"acces-zkteco"`, actions et plafonds locaux `maxS`, `rest: "lock"`, `emergencyExit`) **et** la configuration du contrôleur dans le module (`actuators: { "GACHE-1": { "door": 1, "type": "lock" } }`, qui dit quelle porte du contrôleur il pilote). Le plafond local de la passerelle prime : un PSIM compromis ne peut pas tenir la porte ouverte plus longtemps.
+4. Fiche de la porte (Accès, Portes), bloc « Ouverture à distance », administrateur : choisir l'actionneur et cliquer « Lier ». La fiche de la porte doit afficher « Ouverture à distance » avec ses boutons ; sinon la raison est écrite.
+5. **Recette** : ouvrir (impulsion) ; vérifier l'accusé « Accusée par l'équipement » ; vérifier que la porte se referme seule ; couper la passerelle (le bouton doit se désactiver : « Liaison coupée ») ; sur une issue de secours, vérifier que « Verrouiller » est absent et que le déverrouillage matériel (centrale incendie) fonctionne **sans** le PSIM.
+
+### 11.3 Guide de l'opérateur (parcours P2, livreur à la barrière)
+
+1. Regarder la caméra de la porte (« Voir la caméra » dans le bloc, ou la caméra de l'incident).
+2. Cliquer **Ouvrir (impulsion)** (porte ou barrière), ou **Ouvrir N minutes** (porte, si l'équipement le permet). Une barrière propose Ouvrir, Fermer, Arrêter.
+3. Saisir la **raison** (« livraison gaz ») et **votre mot de passe**, cocher la confirmation, envoyer.
+4. Attendre l'état **« Accusée par l'équipement »** : « Envoyée » ne veut pas dire « ouverte ». « Échec : aucun accusé » veut dire que l'ordre a pu être exécuté : vérifier sur place.
+5. **Verrouiller** remet la porte en fonctionnement normal (badges actifs) ; c'est une action immédiate, sans raison ni mot de passe, et elle n'existe jamais sur une issue de secours. **Arrêter** stoppe une barrière tout de suite.
+
+Dans la fiche d'un **incident d'accès** (porte forcée, maintenue ouverte, refus répétés), le bloc « Ouverture à distance » apparaît pour la porte de l'incident, et le bouton « Commandes » met l'actionneur de cette porte en tête ; la commande est rattachée à l'incident. Chaque ouverture est journalisée avec sa raison, son auteur et l'incident.
+
+### 11.4 Mode de porte (F19)
+
+Un contrôleur peut être réglé pour garder une porte ouverte ou fermée selon des horaires (par exemple porte ouverte aux heures de bureau). Ce réglage reste **dans le contrôleur**, le PSIM l'affiche. Message de la passerelle : `{"event":"door_mode","doorMode":"normal"|"always_open"|"always_closed","ts":...,"msgId":...}` à la connexion et à chaque changement. Le PSIM garde le dernier mode connu et sa date (`doorMode`, `doorModeLabel`, `doorModeAt` dans la vue de la porte) ; un message plus ancien n'écrase pas un plus récent, une valeur inconnue est ignorée ; un changement de mode est inscrit au journal (`access_door_mode`). Le champ `doorMode` est lu **quel que soit** l'événement du message. Tant qu'aucun message n'est arrivé : « non communiqué par le contrôleur ».
+
+Dépendance de fusion : le moteur (`server/sources.ts`) répond aujourd'hui « event inconnu » à `{"event":"door_mode"}` ; la ligne `door_mode: 'alive'` est ajoutée par la branche de la passerelle. Tant qu'elle n'est pas fusionnée, un message `{"state":"normal","doorMode":...}` est pris en compte, pas l'événement `door_mode`.
+
+### 11.5 « Tout ouvrir » (F20, évacuation)
+
+Réservé à l'**administrateur**. **Cela ne remplace jamais le déverrouillage matériel par la centrale incendie** : les issues de secours doivent s'ouvrir par ce dispositif, le PSIM n'en est jamais l'unique moyen (PRD § 8.9).
+
+- `GET /api/access/evacuation` : aperçu des portes liées à un actionneur, avec l'action (`unlock` ou `open`), la durée maximale, et si la porte est prête ou pourquoi elle ne l'est pas. Rien n'est envoyé.
+- `POST /api/access/evacuation`, corps `{ reason, password, confirm: true, confirmPhrase: "TOUT OUVRIR", durationS? }` : **double confirmation** explicite (première boîte de dialogue avec l'avertissement, seconde avec raison, phrase `TOUT OUVRIR` et mot de passe). 428 si la confirmation, la phrase ou la raison manque, 403 si le mot de passe est faux (rien n'est envoyé), 409 si aucune porte n'est liée, 429 au-delà de 2 évacuations par minute et par administrateur.
+- Réponse : un résultat **par porte** (`sent`, `no_gateway` = aucune passerelle n'écoute l'actionneur, `refused` avec le message du service des commandes : mode maintenance, limite, actionneur inactif, lien incohérent ; `error`). L'échec d'une porte n'arrête pas les autres. Les accusés arrivent ensuite en temps réel, comme pour une commande ordinaire ; l'écran ne compte une porte « ouverte » qu'après son accusé, et dit quelles portes sont à ouvrir ou vérifier sur place.
+- Chaque ouverture est une vraie commande du canal signé (`commande_demandee`, raison `Tout ouvrir (lot xxxxxxxx) : ...`), donc soumise aux plafonds de la passerelle. La durée demandée (300 s par défaut) est ramenée au maximum configuré de chaque actionneur (10 s avec la configuration par défaut d'une serrure) et rapportée. Aucune file ni rejeu : si le PSIM redémarre, rien n'est renvoyé.
+- Journal infalsifiable : `access_evacuation` (qui, raison, nombre de portes) **avant** l'envoi (si l'écriture échoue, rien ne part), `access_evacuation_bilan` après ; échec du mot de passe : `access_evacuation_reauth_echec`.
+- Le bouton est dans Équipements, Actionneurs (administrateur).
+
+### 11.6 Essai de bout en bout et mesures (PRD § 12)
+
+`test/e2e-acces-chaine.test.ts` : faux contrôleur Dahua, module réel `acces-dahua`, socle réel de la passerelle (section `actuators`, clé de signature), broker MQTT du vrai PSIM, vrai PSIM (processus séparé, ports au hasard, base temporaire). Il couvre : passage accepté puis porte forcée (incident critique, passages dans `/api/access/events`) ; ouverture à distance avec raison et mot de passe (ordre signé, `openDoor` reçu par le faux contrôleur, accusé, retour à l'état sûr, journal) et ses refus ; issue de secours (`lock` refusé, liens refusés) ; coupure du contrôleur (porte « hors ligne », passages différés récupérés sans doublon) ; mode de porte.
+
+Mesures locales (boucle locale, 20 essais chacune, deux lancements) :
+
+| Objectif PRD § 12 | Mesure | Objectif |
+|---|---|---|
+| Porte forcée sur le contrôleur, alarme visible dans le PSIM, médiane | 4,0 et 6,3 ms (p95 6,3 et 11,8 ms) | moins de 3 s |
+| Ordre d'ouverture, accusé reçu, 95e centile | 185 et 180 ms (médiane 124 ms) | moins de 2 s |
+
+Ces valeurs sont obtenues en boucle locale avec un faux contrôleur : elles montrent que le PSIM et la passerelle n'ajoutent presque aucun délai, pas la latence du réseau du site ni celle du matériel réel (point à mesurer à la recette sur le contrôleur Dahua pilote).

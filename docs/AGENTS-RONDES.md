@@ -288,8 +288,10 @@ que `A-<identifiant>` reste un identifiant d'équipement valide. Vers le portail
 leurs incidents partent sous « Agent en service », sans nom. L'opérateur lit les points de contrôle **sans** leur code
 d'étiquette.
 
-Fusionné dans main : S1 à S3 (b81d371), S4 (474a1cb), S5, l'essai d'intégration réelle (c6bcf7e). En cours : S6,
-les correctifs (libellés d'incendie affichés sur un SOS, ré-armement d'un SOS acquitté, codes d'étiquettes).
+Fusionné dans main : S1 à S3 (b81d371), S4 (474a1cb), S5 essai d'intégration réelle (c6bcf7e), S6 correctifs
+(b2bebb6 : textes par catégorie au lieu des textes d'incendie, SOS acquitté non ré-armé par la confirmation,
+codes d'étiquettes masqués à l'opérateur). 3539 tests verts. Un détecteur réel ne doit pas s'appeler `P-<n>` sans zéro
+devant (pris pour un circuit).
 
 Reste à vérifier sur un vrai téléphone Android, avec le certificat installé : NFC, lecture QR par l'appareil photo,
 service worker et installation, son et vibration, vidéo en direct sur une caméra réelle. Hors chantier (phase 2,

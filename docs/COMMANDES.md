@@ -280,6 +280,12 @@ Journal (scellé, sans secret) : `commande_demandee` (**avant** l'envoi), `comma
 
 ---
 
+## 7 bis. Portes et « Tout ouvrir » (contrôle d'accès)
+
+Une porte du contrôle d'accès peut être liée à un actionneur `lock` ou `gate` (`access_door.actuator_id`, `docs/ACCES.md` § 11). Les boutons de la fiche de porte et de la fiche d'incident, ainsi que « Tout ouvrir » (administrateur, `POST /api/access/evacuation`), passent **tous** par `request` de `server/actuators.ts` : mêmes rôles, raison, mot de passe, limite, journal et accusé, aucun chemin parallèle. « Tout ouvrir » vérifie le mot de passe une fois puis envoie une commande ordinaire par porte (raison `Tout ouvrir (lot ...)`), porte par porte, sans file ni rejeu. Une issue de secours doit l'être des deux côtés (porte et actionneur) ; `lock` y reste refusé.
+
+---
+
 ## 8. Pilote côté passerelle et revue de sécurité
 
 ### 8.1 Pilote implémenté

@@ -20,6 +20,7 @@ import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { createAccess } from './access.ts';
 import { createAccessApi } from './accessapi.ts';
+import { createEvacuation } from './accessremote.ts';
 import { createGatewayLink } from './gatewaylink.ts';
 import type { GatewayLink } from './gatewaylink.ts';
 import { acquireLock } from './lock.ts';
@@ -55,7 +56,7 @@ import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
 import type { PsimEvent } from './types.ts';
 import { createUsersService } from './users.ts';
-import { createAgents } from './agents.ts';
+import { createAgents, isVirtualDetector } from './agents.ts';
 import { createPatrols } from './patrols.ts';
 import { createVideoService } from './video.ts';
 
@@ -185,6 +186,8 @@ const bus = new EventEmitter();
 const publish = (event: PsimEvent) => bus.emit('event', event);
 let arming: Arming | undefined;
 let gatewayLink: GatewayLink | undefined;
+// Detecteurs virtuels (agents, circuits) : le moteur est cree avant `agents`, dont la reponse n'existe qu'ensuite.
+let virtualDetector: ((id: string) => boolean) | undefined;
 // Journal des acces (portes, passages) : cree AVANT le moteur qui l'appelle ; ses fermetures atteignent le moteur a l'usage, jamais a la creation.
 const access = createAccess({
   db,
@@ -201,6 +204,8 @@ const engine = createEngine(db, publish, Date.now, {
   confirmWindowMs: config.confirmWindowS * 1000,
   persistMs: config.confirmPersistS * 1000,
   hintMs: config.falseAlarmHintS * 1000,
+  // SOS d'agents et rondes manquees : pas de confirmation par persistance ni par voisin (voir EngineOptions.virtualDetector).
+  virtualDetector: (id) => virtualDetector?.(id) ?? false,
   // Sur chaque etape d'un incident : le texte part tout de suite, les images en complement des qu'elles
   // sont prises. Tout en tache de fond : rien ne retarde ni ne fait echouer l'alarme.
   onIncidentEvent: (incident, kind) => {
@@ -314,6 +319,8 @@ const actuators = createActuators({
   publish,
   httpAllow: parseAllowList(config.actuatorHttpHosts),
 });
+// « Tout ouvrir » (controle d'acces) : passe par le service des commandes, jamais directement vers une serrure.
+const evacuation = createEvacuation({ db, actuators, audit: (actor, action, ref) => engine.audit(actor, action, ref) });
 // Incident clos : ses commandes en attente sont annulees, ses commandes temporisees en cours ramenees a l'etat sur.
 bus.on('event', (event: PsimEvent) => {
   if (event.type === 'incident' && event.incident.status === 'closed') actuators.incidentChanged(event.incident.id, 'closed');
@@ -555,6 +562,7 @@ const agents = createAgents({
   liveStream: (cameraId, res) => video.attachViewer(cameraId, res),
 });
 const patrols = createPatrols({ db, engine, agents, dataDir });
+virtualDetector = (id) => isVirtualDetector(db, id);
 
 const app = createApp({
   db,
@@ -599,7 +607,7 @@ const app = createApp({
   deviceImages,
   actuators,
   proofs,
-  access: createAccessApi(access),
+  access: createAccessApi(access, { evacuation }),
   agents,
   patrols,
   publicUrl: notify.publicUrl,

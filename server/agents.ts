@@ -211,6 +211,23 @@ const hashPin = (pin: string, salt: string): string => scryptSync(pin, salt, 64)
 /** Retire ce qui ne doit pas finir dans le texte d'un incident, et plafonne a 300 caracteres. */
 const clipDetail = (text: string): string => normalizeName(text.replace(/[\u0000-\u001f\u007f-\u009f\p{Zl}\p{Zp}\p{Cf}]/gu, ' ')).slice(0, 300);
 
+/** Detecteurs virtuels des agents : `A-<identifiant>` d'un profil, `A-phone-<n°>` d'un telephone appaire (condition sur `d.id`). */
+const VIRTUAL_AGENT_SQL = "d.id IN (SELECT 'A-' || username FROM agent_profile UNION SELECT 'A-phone-' || id FROM agent_phone)";
+/**
+ * Detecteurs virtuels des circuits de ronde : `P-<n° de circuit>` (condition sur `d.id`). Chiffres seulement, SANS zero devant : les
+ * circuits sont numerotes depuis 1 (patrols.ts : `P-${id}`), alors qu'un detecteur du site peut s'appeler `P-01`.
+ */
+const VIRTUAL_CIRCUIT_SQL = "d.id GLOB 'P-[1-9]*' AND d.id NOT GLOB 'P-*[^0-9]*'";
+
+/**
+ * Ce detecteur est-il virtuel (SOS d'un agent ou d'un telephone, ronde d'un circuit) ? Le prefixe seul ne suffit pas (voir
+ * `releaseAcknowledged`). Sert au moteur (`EngineOptions.virtualDetector`) : ces detecteurs ne subissent aucune regle anti-fausses
+ * alarmes. Faux pour un identifiant inconnu.
+ */
+export function isVirtualDetector(db: DatabaseSync, detectorId: string): boolean {
+  return db.prepare(`SELECT 1 AS x FROM device d WHERE d.id = ? AND ((${VIRTUAL_AGENT_SQL}) OR (${VIRTUAL_CIRCUIT_SQL}))`).get(detectorId) !== undefined;
+}
+
 /**
  * Un detecteur virtuel `A-` ou `P-` en (pre)alarme dont l'incident ouvert a ete acquitte (par l'exploitation OU par un agent : un
  * agent qui acquitte le SOS d'un collegue ne doit pas bloquer la cloture) recoit `{ event: 'clear' }` : sans cela personne ne pourrait
@@ -221,10 +238,7 @@ const clipDetail = (text: string): string => normalizeName(text.replace(/[\u0000
 export function releaseAcknowledged(db: DatabaseSync, engine: Pick<Engine, 'handleDetectorMessage'>, prefix: 'A-' | 'P-'): number {
   // Le prefixe seul ne suffit pas : le site peut avoir ses propres detecteurs `A-01` (controle d'acces) ; on ne libere que les
   // detecteurs virtuels de CE module (agents, telephones de secours, circuits).
-  const virtual =
-    prefix === 'A-'
-      ? "d.id IN (SELECT 'A-' || username FROM agent_profile UNION SELECT 'A-phone-' || id FROM agent_phone)"
-      : "d.id GLOB 'P-[0-9]*' AND d.id NOT GLOB 'P-*[^0-9]*'"; // `P-<n° de circuit>` : chiffres seulement
+  const virtual = prefix === 'A-' ? VIRTUAL_AGENT_SQL : VIRTUAL_CIRCUIT_SQL;
   const rows = db
     .prepare(
       `SELECT DISTINCT d.id AS id FROM incident i JOIN device d ON d.id = i.detector_id
