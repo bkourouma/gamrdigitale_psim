@@ -1,3 +1,4 @@
+import { hasForbiddenChar, normalizeName } from './text.ts';
 import type { DetectorState, DeviceCategory, Direction } from './types.ts';
 
 /**
@@ -38,7 +39,7 @@ export const CATEGORY_LABEL_PLAIN: Record<DeviceCategory, string> = {
  * une personne en danger n'est jamais « hors planning ». (Seule la categorie intrusion est armable : energie et
  * personnes ne dependent d'aucun armement.)
  */
-export const ALWAYS_ACTIVE_EVENTS: ReadonlySet<string> = new Set(['tamper', 'panic', 'sos', 'fall']);
+export const ALWAYS_ACTIVE_EVENTS: ReadonlySet<string> = new Set(['tamper', 'panic', 'sos', 'fall', 'patrol_incomplete', 'patrol_missed']);
 
 export type EventEffect = DetectorState | 'alive';
 
@@ -81,6 +82,10 @@ export const EVENTS: Readonly<Record<string, EventEffect>> = {
   badge_denied_repeated: 'prealarm',
   person_noticed: 'prealarm',
   face_noticed: 'prealarm',
+  // application des agents (server/patrols.ts) : ronde incomplete ou non faite ; signalement d'un agent a la main courante
+  patrol_incomplete: 'prealarm',
+  patrol_missed: 'alarm',
+  logbook_report: 'prealarm',
   // retour a la normale
   normal: 'normal',
   clear: 'normal',
@@ -132,6 +137,9 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   badge_denied_repeated: 'Badge refusé à répétition',
   person_noticed: 'Présence signalée',
   face_noticed: 'Visage signalé',
+  patrol_incomplete: 'Ronde incomplète',
+  patrol_missed: 'Ronde non faite',
+  logbook_report: "Signalement d'un agent",
   normal: 'Retour à la normale',
   clear: 'Retour au calme',
   restored: 'Retour à la normale',
@@ -179,10 +187,13 @@ export type Reading =
       /** Signe de vie sans etat : si l'equipement etait « hors ligne », il redevient normal. */
       alive: boolean;
       value: number | null;
+      /** Precision en clair portee par le message (1 a 300 caracteres), ou `null` s'il n'en portait pas. */
+      detail: string | null;
     }
   | { ok: false; error: string };
 
 const MAX_ABS_VALUE = 1e9;
+const MAX_DETAIL_LENGTH = 300;
 
 /** Etat deduit d'une mesure et des seuils : `null` si aucun seuil d'alarme n'est configure. */
 export function stateFromValue(value: number, s: Pick<SensorSettings, 'warnAt' | 'alarmAt' | 'direction'>): DetectorState | null {
@@ -196,7 +207,17 @@ export function stateFromValue(value: number, s: Pick<SensorSettings, 'warnAt' |
 /** Lit un message d'equipement. Ne leve jamais d'exception : toute entree inattendue donne une erreur. */
 export function interpret(settings: SensorSettings, payload: unknown): Reading {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return { ok: false, error: 'Message invalide : un objet JSON est attendu' };
-  const { state, event, value } = payload as { state?: unknown; event?: unknown; value?: unknown };
+  const { state, event, value, detail: rawDetail } = payload as { state?: unknown; event?: unknown; value?: unknown; detail?: unknown };
+
+  // `detail` (facultatif) : texte libre qui finit dans un incident, des e-mails et des journaux ; meme garde que les noms saisis.
+  let detail: string | null = null;
+  if (rawDetail !== undefined && rawDetail !== null) {
+    const text = typeof rawDetail === 'string' ? normalizeName(rawDetail) : '';
+    if (typeof rawDetail !== 'string' || text.length < 1 || text.length > MAX_DETAIL_LENGTH || hasForbiddenChar(text)) {
+      return { ok: false, error: `detail invalide (texte de 1 a ${MAX_DETAIL_LENGTH} caracteres, sans caractere de controle)` };
+    }
+    detail = text;
+  }
 
   let reading: number | null = null;
   if (value !== undefined && value !== null) {
@@ -208,16 +229,16 @@ export function interpret(settings: SensorSettings, payload: unknown): Reading {
 
   if (state !== undefined) {
     if (typeof state !== 'string' || !DETECTOR_STATES.has(state)) return { ok: false, error: 'state invalide' };
-    return { ok: true, state: state as DetectorState, event: null, alive: false, value: reading };
+    return { ok: true, state: state as DetectorState, event: null, alive: false, value: reading, detail };
   }
   if (event !== undefined) {
     if (typeof event !== 'string' || !Object.hasOwn(EVENTS, event)) return { ok: false, error: 'event inconnu' };
     const effect = EVENTS[event];
-    return effect === 'alive' ? { ok: true, state: null, event, alive: true, value: reading } : { ok: true, state: effect, event, alive: false, value: reading };
+    return effect === 'alive' ? { ok: true, state: null, event, alive: true, value: reading, detail } : { ok: true, state: effect, event, alive: false, value: reading, detail };
   }
   if (reading !== null) {
     const derived = stateFromValue(reading, settings);
-    return { ok: true, state: derived, event: null, alive: derived === null, value: reading };
+    return { ok: true, state: derived, event: null, alive: derived === null, value: reading, detail };
   }
   return { ok: false, error: 'state, event ou value requis' };
 }
