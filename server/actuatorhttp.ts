@@ -4,8 +4,12 @@
  * Protections (SSRF : un administrateur malveillant ou trompe ne doit pas pouvoir viser autre chose qu'un equipement) :
  *  - adresses TOUJOURS refusees : metadonnees cloud, lien local (169.254/16, fe80::/10), 0.0.0.0/8, multidiffusion,
  *    diffusion ; la boucle locale (127/8, ::1) seulement si elle est nommee explicitement dans la liste autorisee (essais) ;
+ *  - toute IPv6 qui embarque une IPv4 (::ffff:a.b.c.d ou ::ffff:a9fe:a9fe, ::a.b.c.d, NAT64 64:ff9b::/96) est ramenee a cette
+ *    IPv4 AVANT de decider : les refus permanents s'appliquent a l'adresse reelle ;
  *  - par defaut (liste vide) : adresses IP privees seulement (10/8, 172.16/12, 192.168/16, fc00::/7), jamais un nom ;
- *  - avec une liste (PSIM_ACTUATOR_HTTP_HOSTS) : noms, adresses ou blocs IPv4 (a.b.c.d/n) de la liste seulement ;
+ *  - avec une liste (PSIM_ACTUATOR_HTTP_HOSTS) : noms, adresses ou blocs IPv4 (a.b.c.d/n) de la liste seulement ; un NOM de la
+ *    liste n'ouvre pas pour autant n'importe quelle adresse : celle qu'il designe doit rester privee (RFC 1918 / ULA), sauf si
+ *    la liste nomme elle-meme cette adresse (adresse litterale ou bloc) ;
  *  - la verification porte sur l'adresse RESOLUE au moment de la connexion (un nom qui se met a pointer ailleurs, DNS
  *    rebinding, est refuse) ; les redirections ne sont jamais suivies (un 3xx est un echec) ;
  *  - un seul essai, delai court, corps de reponse lu au plus 4 Ko et JAMAIS journalise.
@@ -55,18 +59,55 @@ export function parseAllowList(entries: readonly string[]): HttpAllow {
     const cidr = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(entry);
     if (cidr && isIP(cidr[1]) === 4 && Number(cidr[2]) >= 8 && Number(cidr[2]) <= 32) {
       allow.cidrs.push({ base: ipv4ToInt(cidr[1]), bits: Number(cidr[2]) });
-    } else if (isIP(entry)) allow.ips.add(entry);
+    } else if (isIP(entry)) allow.ips.add(normalizeIp(entry));
     else if (/^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)*$/.test(entry) && !METADATA_NAMES.has(entry)) allow.names.add(entry);
     else throw new Error(`PSIM_ACTUATOR_HTTP_HOSTS : entree invalide « ${raw.slice(0, 64)} » (nom, adresse IP ou bloc IPv4 a.b.c.d/n ; 8 bits au moins)`);
   }
   return allow;
 }
 
-/** IPv4 inscrite dans une IPv6 (::ffff:a.b.c.d) ramenee a l'IPv4. */
-function normalizeIp(ip: string): string {
-  const lower = ip.toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower);
-  return mapped ? mapped[1] : lower;
+/** Les 16 octets d'une adresse IPv6 (formes compressee, hexadecimale et pointee finale admises), ou null si illisible. */
+function ipv6Bytes(ip: string): number[] | null {
+  let s = ip.toLowerCase();
+  const zone = s.indexOf('%');
+  if (zone >= 0) s = s.slice(0, zone);
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (dotted) {
+    const g = dotted.slice(1, 5).map(Number);
+    if (g.some((n) => n > 255)) return null;
+    s = `${s.slice(0, dotted.index)}${((g[0] << 8) | g[1]).toString(16)}:${((g[2] << 8) | g[3]).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 1 ? fill !== 0 : fill < 1) return null;
+  const groups = [...head, ...Array<string>(Math.max(fill, 0)).fill('0'), ...tail];
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.flatMap((g) => [parseInt(g, 16) >> 8, parseInt(g, 16) & 0xff]);
+}
+
+/**
+ * Ramene a l'IPv4 sous-jacente toute adresse IPv6 qui en embarque une, AVANT toute decision : IPv4 inscrite (::ffff:a.b.c.d et
+ * sa forme hexadecimale ::ffff:a9fe:a9fe), IPv4-compatible (::a.b.c.d) et NAT64 (64:ff9b::/96). Les refus permanents
+ * (metadonnees, lien local, boucle locale...) s'appliquent ainsi a l'adresse reelle. Le reste est mis en forme canonique.
+ */
+export function normalizeIp(ip: string): string {
+  if (isIP(ip) === 4) return ip;
+  const b = ipv6Bytes(ip);
+  if (!b) return ip.toLowerCase();
+  const zeros = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
+  const v4 = `${b[12]}.${b[13]}.${b[14]}.${b[15]}`;
+  if (zeros(0, 10) && b[10] === 0xff && b[11] === 0xff) return v4;
+  if (zeros(0, 12) && !(zeros(12, 15) && b[15] <= 1)) return v4; // :: et ::1 restent ce qu'ils sont
+  if (b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zeros(4, 12)) return v4;
+  const zoneless = ip.split('%')[0];
+  try {
+    return new URL(`http://[${zoneless}]/`).hostname.slice(1, -1);
+  } catch {
+    return zoneless.toLowerCase();
+  }
 }
 
 function inV4(ip: string, base: string, bits: number): boolean {
@@ -79,7 +120,8 @@ function alwaysForbidden(ip: string): boolean {
   if (isIP(ip) === 4) {
     return inV4(ip, '0.0.0.0', 8) || inV4(ip, '169.254.0.0', 16) || inV4(ip, '224.0.0.0', 4) || inV4(ip, '240.0.0.0', 4) || ip === '255.255.255.255' || inV4(ip, '100.64.0.0', 10);
   }
-  return ip === '::' || /^fe[89ab]/.test(ip) || ip.startsWith('ff') || ip.startsWith('fd00:ec2:');
+  // ::, lien local fe80::/10, site-local obsolete fec0::/10, multidiffusion, metadonnees AWS, NAT64 d'usage local 64:ff9b:1::/48
+  return ip === '::' || /^fe[89abcdef]/.test(ip) || ip.startsWith('ff') || ip.startsWith('fd00:ec2:') || ip.startsWith('64:ff9b:1:');
 }
 
 const isLoopback = (ip: string) => (isIP(ip) === 4 ? inV4(ip, '127.0.0.0', 8) : ip === '::1');
@@ -91,13 +133,18 @@ function inCidr(ip: string, c: { base: number; bits: number }): boolean {
 const inList = (ip: string, allow: HttpAllow) => allow.ips.has(ip) || (isIP(ip) === 4 && allow.cidrs.some((c) => inCidr(ip, c)));
 const listEmpty = (allow: HttpAllow) => allow.names.size === 0 && allow.ips.size === 0 && allow.cidrs.length === 0;
 
-/** Adresse (deja resolue) autorisee ? `byName` : le nom de l'URL figure dans la liste. */
+/**
+ * Adresse (deja resolue) autorisee ? `byName` : le nom de l'URL figure dans la liste.
+ * Un nom autorise ne rend PAS acceptable n'importe quelle adresse : celle qu'il designe doit rester privee (RFC 1918 / ULA),
+ * sauf si la liste la nomme elle-meme (adresse litterale ou bloc). Sinon un nom qui se met a pointer vers Internet recevrait
+ * les ordres et l'en-tete secret (rebinding).
+ */
 export function addressAllowed(rawIp: string, allow: HttpAllow, byName: boolean): boolean {
   const ip = normalizeIp(rawIp);
   if (!isIP(ip) || alwaysForbidden(ip)) return false;
   if (isLoopback(ip)) return inList(ip, allow); // jamais par defaut, jamais via un nom : seulement nommee telle quelle
   if (listEmpty(allow)) return isPrivate(ip);
-  return byName || inList(ip, allow);
+  return inList(ip, allow) || (byName && isPrivate(ip));
 }
 
 /** Controle statique d'une URL (configuration) : renvoie un motif de refus, ou null. */
@@ -134,7 +181,8 @@ export function cleanHttpConfig(input: unknown, actions: string[], allow: HttpAl
   const out: Record<string, HttpRequestTemplate> = {};
   let origin: string | null = null;
   for (const action of actions) {
-    const r = (reqs as Record<string, unknown>)[action];
+    // Object.hasOwn : "constructor", "toString"... ne sont jamais des requetes configurees (cles heritees d'Object.prototype)
+    const r = Object.hasOwn(reqs, action) ? (reqs as Record<string, unknown>)[action] : undefined;
     if (r === null || typeof r !== 'object' || Array.isArray(r)) throw new PsimError(400, `http.requests.${action} : requete manquante`);
     const { method, url, body } = r as Record<string, unknown>;
     if (method !== 'GET' && method !== 'POST' && method !== 'PUT') throw new PsimError(400, `http.requests.${action}.method : GET, POST ou PUT`);
@@ -182,7 +230,7 @@ export type HttpOutcome =
 
 function fill(template: string, values: Record<string, string>, encode: boolean): string {
   return template.replace(/\{([A-Za-z]+)\}/g, (_m, name: string) => {
-    const v = values[name] ?? '';
+    const v = Object.hasOwn(values, name) ? (values[name] ?? '') : '';
     return encode ? encodeURIComponent(v) : v;
   });
 }
@@ -200,7 +248,7 @@ export function sendHttp(
   timeoutMs: number,
 ): Promise<HttpOutcome> {
   return new Promise((resolve) => {
-    const template = config.requests[action];
+    const template = Object.hasOwn(config.requests, action) ? config.requests[action] : undefined;
     if (!template) return resolve({ kind: 'not_delivered', error: 'aucune requete configuree pour cette action' });
     const url = fill(template.url, values, true);
     const problem = urlProblem(url, allow);

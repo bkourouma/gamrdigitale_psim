@@ -5,11 +5,22 @@
  * Garde-fous tenus ICI (et nulle part ailleurs : c'est le seul chemin d'envoi) :
  *  - droits par action et par role, `confirm:true` toujours, raison et mot de passe pour les serrures et portails ;
  *  - durees bornees (plafond par type), jamais d'ordre permanent sauf action `unbounded` configuree par un administrateur ;
- *  - 4 commandes / minute / utilisateur / actionneur, dedoublonnage des commandes identiques en vol ;
+ *  - 4 commandes / minute / utilisateur / actionneur, dedoublonnage des commandes identiques en vol (APRES la
+ *    re-authentification, et jamais au profit d'un autre compte : 409) ;
+ *  - ACTION SURE (off, lock, stop du haut-parleur, stop du portail) : toujours immediate et toujours permise a operator + admin
+ *    (roles imposes a la configuration), ni raison ni mot de passe, limite de debit SEPAREE (SAFE_RATE_PER_MIN) ;
  *  - journal scelle AVANT l'envoi (`commande_demandee`), puis a chaque changement d'etat ;
- *  - un seul envoi par commande, jamais rejoue (ni apres une erreur, ni au redemarrage) ;
- *  - sans accuse dans le delai : echec, jamais « fait » par supposition ; retour automatique a l'etat sur ;
- *  - verrou global (mode maintenance), issue de secours jamais verrouillee, liaison coupee = refus.
+ *  - un seul envoi par commande manuelle, jamais rejoue (ni apres une erreur, ni au redemarrage) ; seul le RETOUR AUTOMATIQUE a
+ *    l'etat sur est reessaye (toutes les 5 s, 5 essais au plus) : l'oublier laisserait une sortie active indefiniment ;
+ *  - sans accuse dans le delai : echec, jamais « fait » par supposition ; retour automatique a l'etat sur, et si ses 5 essais
+ *    echouent, avertissement visible (journal `commande_echec` + `returnUnconfirmed`) ;
+ *  - verrou global (mode maintenance) : refuse tout SAUF l'action sure demandee a la main (arreter une sirene, reverrouiller
+ *    une serrure, y compris ouverte « sans limite », arreter un portail) et l'arret anticipe d'une commande en cours : un verrou
+ *    qui empecherait de faire cesser une action en cours serait pire que l'absence de verrou. Les retours automatiques prevus
+ *    et les reessais restent annules a l'activation du verrou (les equipements s'arretent seuls grace a `durationS`) ;
+ *  - issue de secours jamais verrouillee (verifie a la configuration, a la demande ET a l'envoi), liaison coupee = refus ;
+ *  - serrure, portail, actionneur declare « sensible » : jamais pilotes en HTTP (requete en clair, rejouable) ;
+ *  - aucune cle fournie par l'utilisateur n'est lue sans `Object.hasOwn` (« constructor », « toString »... : 400, jamais un ordre).
  */
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -18,9 +29,9 @@ import type { Express, Request, RequestHandler } from 'express';
 import { CLOCK_SKEW_MS, TTL_MAX_S, TTL_MIN_S, ACTUATOR_ID, CLIP, CMD_ID, signCommand, verifyAck } from './actuatorproto.ts';
 import type { CommandParams } from './actuatorproto.ts';
 import { cleanHttpConfig, cleanSecretValue, sendHttp } from './actuatorhttp.ts';
-import type { HttpAllow, HttpOutcome, HttpTransportConfig } from './actuatorhttp.ts';
-import { checkCredentials, isRateLimited, recordFailure } from './auth.ts';
+import type { HttpAllow, HttpOutcome, HttpRequestTemplate, HttpTransportConfig } from './actuatorhttp.ts';
 import { PsimError } from './errors.ts';
+import { reauthenticate } from './reauth.ts';
 import { seal, unseal } from './secrets.ts';
 import type { PsimEvent, Role } from './types.ts';
 
@@ -39,7 +50,7 @@ interface ActionSpec {
 }
 
 /** Catalogue : actions possibles par type, plafonds de duree, action sure, sensibilite (raison + mot de passe). */
-export const CATALOG: Record<ActuatorType, { actions: Record<string, ActionSpec>; safe: string | null; sensitive: boolean }> = {
+export const CATALOG: Record<ActuatorType, { actions: Record<string, ActionSpec>; safe: string | null; sensitive: boolean; noAutoReturn?: boolean }> = {
   siren: { actions: { on: { timed: true, ceilingS: 600, defaultMaxS: 120, unboundable: true }, off: { timed: false } }, safe: 'off', sensitive: false },
   light: { actions: { on: { timed: true, ceilingS: 3600, defaultMaxS: 600, unboundable: true }, off: { timed: false } }, safe: 'off', sensitive: false },
   relay: {
@@ -49,11 +60,19 @@ export const CATALOG: Record<ActuatorType, { actions: Record<string, ActionSpec>
   },
   lock: { actions: { unlock: { timed: true, ceilingS: 3600, defaultMaxS: 10, unboundable: true }, lock: { timed: false } }, safe: 'lock', sensitive: true },
   // Pas de retour automatique : fermer d'office une barriere sur un vehicule ou une personne est plus dangereux (docs, 4.8).
-  gate: { actions: { open: { timed: true, ceilingS: 10, defaultMaxS: 10 }, close: { timed: true, ceilingS: 10, defaultMaxS: 10 }, stop: { timed: false } }, safe: null, sensitive: true },
+  // `stop` est tout de meme l'action sure (immediate, sans raison ni mot de passe, limite de debit a part) : arreter une
+  // barriere en mouvement ne doit jamais etre plus difficile que la declencher.
+  gate: { actions: { open: { timed: true, ceilingS: 10, defaultMaxS: 10 }, close: { timed: true, ceilingS: 10, defaultMaxS: 10 }, stop: { timed: false } }, safe: 'stop', sensitive: true, noAutoReturn: true },
   speaker: { actions: { play: { timed: true, ceilingS: 300, defaultMaxS: 60, clip: true }, stop: { timed: false } }, safe: 'stop', sensitive: false },
 };
 const TYPES = Object.keys(CATALOG) as ActuatorType[];
 const ROLES: Role[] = ['operator', 'admin'];
+
+/** Action decrite par le catalogue, ou undefined : jamais une cle heritee d'Object.prototype (« constructor »...). */
+const specOf = (type: ActuatorType, action: string): ActionSpec | undefined => (Object.hasOwn(CATALOG[type].actions, action) ? CATALOG[type].actions[action] : undefined);
+
+/** Action sure d'un type : jamais « lock » pour une issue de secours (elle n'a alors aucune action sure). */
+const safeActionOf = (type: ActuatorType, emergencyExit: boolean): string | null => (type === 'lock' && emergencyExit ? null : CATALOG[type].safe);
 
 export const ACK_TIMEOUT_DEFAULT_S = 5;
 export const TTL_DEFAULT_S = 10;
@@ -64,6 +83,10 @@ const MAX_REASON = 200;
 const MAX_ACTUATORS = 200;
 /** Retour a l'etat sur prevu avant un arret du PSIM : abandonne s'il date de plus d'un jour (l'equipement s'est arrete seul). */
 const STALE_RETURN_MS = 24 * 3600_000;
+/** Retour automatique en echec : 5 envois au plus (le premier compris), 5 s entre deux, et plus rien passe ce delai. */
+export const RETURN_MAX_TRIES = 5;
+const RETURN_RETRY_DELAY_MS = 5_000;
+const RETURN_RETRY_WINDOW_MS = 10 * 60_000;
 const AUDIT_THROTTLE_MS = 60_000;
 
 export const ACTUATOR_SCHEMA = `
@@ -80,6 +103,7 @@ CREATE TABLE IF NOT EXISTS actuator (
   safe_action TEXT,
   confirm TEXT NOT NULL DEFAULT 'simple' CHECK (confirm IN ('simple', 'reauth')),
   emergency_exit INTEGER NOT NULL DEFAULT 0,
+  sensitive INTEGER NOT NULL DEFAULT 0,
   ack_timeout_s INTEGER NOT NULL DEFAULT 5,
   ttl_s INTEGER NOT NULL DEFAULT 10,
   key_sealed TEXT NOT NULL,
@@ -124,6 +148,9 @@ CREATE TABLE IF NOT EXISTS actuator_command (
 CREATE INDEX IF NOT EXISTS actuator_command_by_actuator ON actuator_command(actuator_id, requested_at);
 CREATE INDEX IF NOT EXISTS actuator_command_in_flight ON actuator_command(state) WHERE state IN ('pending', 'sent');
 CREATE INDEX IF NOT EXISTS actuator_command_returns ON actuator_command(off_due_at) WHERE off_due_at IS NOT NULL AND off_cmd_id IS NULL;
+-- Reessais du retour automatique (tick) : seules les commandes automatiques en echec figurent dans cet index.
+CREATE INDEX IF NOT EXISTS actuator_command_failed_auto ON actuator_command(finished_at) WHERE auto = 1 AND state IN ('failed', 'refused', 'expired');
+CREATE INDEX IF NOT EXISTS actuator_command_by_parent ON actuator_command(parent_id) WHERE parent_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS actuator_lock (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   locked INTEGER NOT NULL DEFAULT 0,
@@ -133,9 +160,14 @@ CREATE TABLE IF NOT EXISTS actuator_lock (
 );
 `;
 
-/** Migration : uniquement des tables nouvelles (CREATE ... IF NOT EXISTS), aucune table existante n'est touchee. */
+/**
+ * Migration : tables nouvelles (CREATE ... IF NOT EXISTS), aucune table des autres modules n'est touchee. Une base de
+ * developpement qui aurait deja la table `actuator` d'avant la colonne `sensitive` la gagne (ALTER protege par table_info).
+ */
 export function migrateActuators(db: DatabaseSync): void {
   db.exec(ACTUATOR_SCHEMA);
+  const columns = db.prepare('PRAGMA table_info(actuator)').all() as { name: string }[];
+  if (!columns.some((c) => c.name === 'sensitive')) db.exec('ALTER TABLE actuator ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0');
 }
 
 export interface ActionConfig {
@@ -157,6 +189,7 @@ export interface ActuatorView {
   actions: Record<string, ActionConfig>;
   safeAction: string | null;
   confirm: 'simple' | 'reauth';
+  /** Type sensible (serrure, portail) OU actionneur declare « sensible » : raison, mot de passe, jamais de HTTP. */
   sensitive: boolean;
   emergencyExit: boolean;
   ackTimeoutS: number;
@@ -198,6 +231,11 @@ export interface CommandView {
   offCmdId: string | null;
   cancelledBy: string | null;
   cancelledAt: number | null;
+  /**
+   * Le retour automatique a l'etat sur de cette commande a echoue (au moins un envoi, 5 essais epuises, aucun accuse) :
+   * l'equipement peut etre reste dans l'etat de la commande. Calcule a la lecture, jamais stocke.
+   */
+  returnUnconfirmed: boolean;
 }
 
 export interface MqttCommandLink {
@@ -247,6 +285,8 @@ export function createActuators(deps: ActuatorsDeps) {
   const incidentStatus =
     deps.incidentStatus ?? ((id: number) => (db.prepare('SELECT status FROM incident WHERE id = ?').get(id) as { status: string } | undefined)?.status ?? null);
   const lastInvalidAudit = new Map<string, number>();
+  /** Retours automatiques deja signales « en attente de liaison » (une seule entree de journal par retour). */
+  const waitingForLink = new Set<string>();
 
   // ---------------------------------------------------------------- lecture
 
@@ -260,9 +300,18 @@ export function createActuators(deps: ActuatorsDeps) {
     return (mqtt?.listeners(r.id as string) ?? 0) > 0;
   }
 
+  /** Action sure d'un enregistrement : recalculee depuis le type, jamais lue dans la colonne (une base modifiee a la main n'y change rien). */
+  const safeOf = (r: Row): string | null => safeActionOf(r.type as ActuatorType, r.emergency_exit === 1);
+  /** Sensible : par son type (serrure, portail) ou declare tel par l'administrateur. */
+  const sensitiveOf = (r: Row): boolean => CATALOG[r.type as ActuatorType].sensitive || r.sensitive === 1;
+
   function toView(r: Row): ActuatorView {
     const type = r.type as ActuatorType;
     const http = r.transport === 'http' ? { ...(JSON.parse(r.transport_config as string) as HttpTransportConfig), hasSecret: Boolean(r.transport_secret) } : null;
+    const actions = JSON.parse(r.actions as string) as Record<string, ActionConfig>;
+    const safe = safeOf(r);
+    // L'action sure est toujours disponible, a tous les roles (meme si la base dit autre chose).
+    if (safe) actions[safe] = { ...(Object.hasOwn(actions, safe) ? actions[safe] : {}), roles: [...ROLES] };
     return {
       id: r.id as string,
       name: r.name as string,
@@ -271,10 +320,10 @@ export function createActuators(deps: ActuatorsDeps) {
       floorId: (r.floor_id as number | null) ?? null,
       transport: r.transport as 'mqtt' | 'http',
       http,
-      actions: JSON.parse(r.actions as string) as Record<string, ActionConfig>,
-      safeAction: (r.safe_action as string | null) ?? null,
+      actions,
+      safeAction: safe,
       confirm: r.confirm as 'simple' | 'reauth',
-      sensitive: CATALOG[type].sensitive,
+      sensitive: sensitiveOf(r),
       emergencyExit: r.emergency_exit === 1,
       ackTimeoutS: r.ack_timeout_s as number,
       ttlS: r.ttl_s as number,
@@ -314,7 +363,19 @@ export function createActuators(deps: ActuatorsDeps) {
       offCmdId: (r.off_cmd_id as string | null) ?? null,
       cancelledBy: (r.cancelled_by as string | null) ?? null,
       cancelledAt: (r.cancelled_at as number | null) ?? null,
+      returnUnconfirmed: r.auto !== 1 && typeof r.off_cmd_id === 'string' && CMD_ID.test(r.off_cmd_id) && returnUnconfirmed(r.id as string),
     };
+  }
+
+  /** Envois du retour automatique (ou de l'arret anticipe) decide pour une commande, dans l'ordre. */
+  const returnAttempts = (parentId: string): Row[] => db.prepare('SELECT id, state, late_ack FROM actuator_command WHERE parent_id = ? AND auto = 1 ORDER BY rowid').all(parentId) as Row[];
+  /** Un accuse (ou un accuse tardif « done ») prouve que l'ordre est passe. */
+  const confirmed = (r: Row): boolean => r.state === 'acked' || (typeof r.late_ack === 'string' && r.late_ack.startsWith('done'));
+  const failedState = (r: Row): boolean => r.state === 'failed' || r.state === 'refused' || r.state === 'expired';
+  /** Les 5 essais sont epuises, le dernier a echoue, aucun n'a ete accuse : l'equipement a pu rester dans l'etat de la commande. */
+  function returnUnconfirmed(parentId: string): boolean {
+    const rows = returnAttempts(parentId);
+    return rows.length >= RETURN_MAX_TRIES && failedState(rows[rows.length - 1]) && !rows.some(confirmed);
   }
 
   const commandRow = (cmdId: string): Row | null =>
@@ -333,10 +394,9 @@ export function createActuators(deps: ActuatorsDeps) {
   // ---------------------------------------------------------------- configuration (administrateur)
 
   function cleanActions(type: ActuatorType, input: unknown, emergencyExit: boolean): Record<string, ActionConfig> {
-    const catalog = CATALOG[type].actions;
     const source: Record<string, unknown> =
       input === undefined || input === null
-        ? Object.fromEntries(Object.keys(catalog).filter((a) => !(emergencyExit && a === 'lock')).map((a) => [a, {}]))
+        ? Object.fromEntries(Object.keys(CATALOG[type].actions).filter((a) => !(emergencyExit && a === 'lock')).map((a) => [a, {}]))
         : typeof input === 'object' && !Array.isArray(input)
           ? (input as Record<string, unknown>)
           : (() => {
@@ -344,8 +404,9 @@ export function createActuators(deps: ActuatorsDeps) {
             })();
     const out: Record<string, ActionConfig> = {};
     for (const [action, raw] of Object.entries(source)) {
-      const spec = catalog[action];
-      if (!spec) throw new PsimError(400, `actions : « ${action.slice(0, 20)} » n'existe pas pour le type ${type} (${Object.keys(catalog).join(', ')})`);
+      // Object.hasOwn (via specOf) : « constructor », « toString », « __proto__ » ne sont pas des actions
+      const spec = specOf(type, action);
+      if (!spec) throw new PsimError(400, `actions : « ${action.slice(0, 20)} » n'existe pas pour le type ${type} (${Object.keys(CATALOG[type].actions).join(', ')})`);
       if (emergencyExit && action === 'lock') throw new PsimError(400, 'Issue de secours : le PSIM ne doit jamais pouvoir la verrouiller (action lock interdite)');
       const cfg = (raw ?? {}) as Record<string, unknown>;
       if (typeof cfg !== 'object' || Array.isArray(cfg)) throw new PsimError(400, `actions.${action} : objet attendu`);
@@ -370,13 +431,12 @@ export function createActuators(deps: ActuatorsDeps) {
       out[action] = entry;
     }
     if (Object.keys(out).length === 0) throw new PsimError(400, 'actions : au moins une action');
-    // L'action sure est toujours disponible (arreter une sirene ne doit jamais etre impossible).
+    // L'action sure est toujours disponible ET toujours permise a operator + admin, quoi que dise la configuration : arreter
+    // une sirene, reverrouiller une serrure, arreter une barriere ne doit jamais devenir impossible pour un operateur.
     const safe = safeActionOf(type, emergencyExit);
-    if (safe && !out[safe]) out[safe] = { roles: [...ROLES] };
+    if (safe) out[safe] = { roles: [...ROLES] };
     return out;
   }
-
-  const safeActionOf = (type: ActuatorType, emergencyExit: boolean): string | null => (type === 'lock' && emergencyExit ? null : CATALOG[type].safe);
 
   interface Cleaned {
     name: string;
@@ -389,12 +449,14 @@ export function createActuators(deps: ActuatorsDeps) {
     safeAction: string | null;
     confirm: 'simple' | 'reauth';
     emergencyExit: boolean;
+    /** Declare « sensible » par l'administrateur (le type serrure / portail l'est de toute facon). */
+    sensitive: boolean;
     ackTimeoutS: number;
     ttlS: number;
     active: boolean;
   }
 
-  function clean(type: ActuatorType, input: Record<string, unknown>, previous: ActuatorView | null): Cleaned {
+  function clean(type: ActuatorType, input: Record<string, unknown>, previous: ActuatorView | null, previousDeclared = false): Cleaned {
     const pick = <T>(key: string, fallback: T): unknown => (input[key] === undefined ? fallback : input[key]);
     const name = cleanText(pick('name', previous?.name), 'name', 80, true);
     const zone = cleanText(pick('zone', previous?.zone ?? ''), 'zone', 60, false);
@@ -410,8 +472,11 @@ export function createActuators(deps: ActuatorsDeps) {
     if (emergencyRaw && actions.lock) throw new PsimError(400, 'Issue de secours : action lock interdite');
     const confirmRaw = pick('confirm', previous?.confirm ?? 'simple');
     if (confirmRaw !== 'simple' && confirmRaw !== 'reauth') throw new PsimError(400, 'confirm : simple ou reauth');
-    // Serrures et portails : mot de passe redemande, jamais abaissable.
-    const confirm = CATALOG[type].sensitive ? 'reauth' : confirmRaw;
+    const sensitiveRaw = pick('sensitive', previousDeclared);
+    if (typeof sensitiveRaw !== 'boolean') throw new PsimError(400, 'sensitive : vrai ou faux');
+    const sensitive = CATALOG[type].sensitive || sensitiveRaw;
+    // Serrures, portails et actionneurs declares sensibles : mot de passe redemande, jamais abaissable.
+    const confirm = sensitive ? 'reauth' : confirmRaw;
     const ackTimeoutS = pick('ackTimeoutS', previous?.ackTimeoutS ?? ACK_TIMEOUT_DEFAULT_S);
     if (!intIn(ackTimeoutS, 1, 30)) throw new PsimError(400, 'ackTimeoutS : entier de 1 a 30');
     const ttlS = pick('ttlS', previous?.ttlS ?? TTL_DEFAULT_S);
@@ -421,8 +486,18 @@ export function createActuators(deps: ActuatorsDeps) {
     let transportConfig = '{}';
     let secret: string | null | undefined;
     if (transport === 'http') {
+      // Une serrure, un portail, un actionneur sensible : jamais en HTTP (requete en clair, rejouable, en-tete secret lisible).
+      if (sensitive) throw new PsimError(400, 'Transport HTTP interdit pour une serrure, un portail ou un actionneur sensible : passer par le transport MQTT signe via une passerelle');
       const httpInput = input.http === undefined ? previous?.http : input.http;
       const cfg = cleanHttpConfig(httpInput, Object.keys(actions), deps.httpAllow);
+      // Une action temporisee doit transmettre sa duree au relais : c'est elle qui l'eteint seul si le retour automatique echoue.
+      for (const [action, ac] of Object.entries(actions)) {
+        if (!specOf(type, action)?.timed || ac.unbounded) continue;
+        const tpl = cfg.requests[action];
+        if (!tpl.url.includes('{durationS}') && !(tpl.body ?? '').includes('{durationS}')) {
+          throw new PsimError(400, `http.requests.${action} : action temporisee, l'adresse ou le corps doit contenir {durationS} (sinon le relais ne s'eteindra pas seul si le retour automatique echoue)`);
+        }
+      }
       transportConfig = JSON.stringify(cfg);
       const secretInput = (input.http as Record<string, unknown> | undefined)?.secretValue;
       if (secretInput !== undefined && secretInput !== null && secretInput !== '') {
@@ -433,7 +508,7 @@ export function createActuators(deps: ActuatorsDeps) {
       if (input.http !== undefined && input.http !== null) throw new PsimError(400, 'http : seulement pour le transport http');
       secret = null;
     }
-    return { name, zone, floorId: floorRaw as number | null, transport, transportConfig, secret, actions, safeAction: safeActionOf(type, emergencyRaw), confirm, emergencyExit: emergencyRaw, ackTimeoutS: ackTimeoutS as number, ttlS: ttlS as number, active };
+    return { name, zone, floorId: floorRaw as number | null, transport, transportConfig, secret, actions, safeAction: safeActionOf(type, emergencyRaw), confirm, emergencyExit: emergencyRaw, sensitive: sensitiveRaw, ackTimeoutS: ackTimeoutS as number, ttlS: ttlS as number, active };
   }
 
   const newKey = () => randomBytes(32).toString('hex');
@@ -449,9 +524,9 @@ export function createActuators(deps: ActuatorsDeps) {
     const key = newKey();
     const t = now();
     db.prepare(
-      `INSERT INTO actuator (id, name, type, zone, floor_id, transport, transport_config, transport_secret, actions, safe_action, confirm, emergency_exit,
-         ack_timeout_s, ttl_s, key_sealed, key_version, active, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-    ).run(id, c.name, type, c.zone, c.floorId, c.transport, c.transportConfig, c.secret ?? null, JSON.stringify(c.actions), c.safeAction, c.confirm, c.emergencyExit ? 1 : 0, c.ackTimeoutS, c.ttlS, seal(deps.key, key), c.active ? 1 : 0, t, actor);
+      `INSERT INTO actuator (id, name, type, zone, floor_id, transport, transport_config, transport_secret, actions, safe_action, confirm, emergency_exit, sensitive,
+         ack_timeout_s, ttl_s, key_sealed, key_version, active, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+    ).run(id, c.name, type, c.zone, c.floorId, c.transport, c.transportConfig, c.secret ?? null, JSON.stringify(c.actions), c.safeAction, c.confirm, c.emergencyExit ? 1 : 0, c.sensitive ? 1 : 0, c.ackTimeoutS, c.ttlS, seal(deps.key, key), c.active ? 1 : 0, t, actor);
     deps.audit(actor, 'actionneur_cree', { deviceId: id, details: describeConfig(type as ActuatorType, c) });
     deps.publish({ type: 'actuators' });
     return { actuator: toView(actuatorRow(id)!), key };
@@ -461,7 +536,7 @@ export function createActuators(deps: ActuatorsDeps) {
     const actions = Object.entries(c.actions)
       .map(([a, cfg]) => `${a}${cfg.maxS !== undefined ? ` ${cfg.minS}-${cfg.maxS} s` : ''}${cfg.unbounded ? ' SANS LIMITE' : ''} [${cfg.roles.join('+')}]`)
       .join(', ');
-    return `${type} « ${c.name} » via ${c.transport}${c.emergencyExit ? ', ISSUE DE SECOURS' : ''}, ${c.active ? 'actif' : 'inactif'} ; actions : ${actions}`;
+    return `${type} « ${c.name} » via ${c.transport}${c.emergencyExit ? ', ISSUE DE SECOURS' : ''}${c.sensitive ? ', SENSIBLE' : ''}, ${c.active ? 'actif' : 'inactif'} ; actions : ${actions}`;
   }
 
   function update(actor: string, id: string, input: Record<string, unknown>): ActuatorView {
@@ -470,13 +545,13 @@ export function createActuators(deps: ActuatorsDeps) {
     if (input.id !== undefined && input.id !== id) throw new PsimError(400, "L'identifiant ne change pas : supprimer et recreer");
     if (input.type !== undefined && input.type !== r.type) throw new PsimError(400, 'Le type ne change pas : supprimer et recreer');
     const previous = toView(r);
-    const c = clean(r.type as ActuatorType, input, previous);
+    const c = clean(r.type as ActuatorType, input, previous, r.sensitive === 1);
     db.prepare(
       `UPDATE actuator SET name = ?, zone = ?, floor_id = ?, transport = ?, transport_config = ?, transport_secret = ?, actions = ?, safe_action = ?, confirm = ?,
-         emergency_exit = ?, ack_timeout_s = ?, ttl_s = ?, active = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
+         emergency_exit = ?, sensitive = ?, ack_timeout_s = ?, ttl_s = ?, active = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
     ).run(
       c.name, c.zone, c.floorId, c.transport, c.transportConfig, c.secret === undefined ? ((r.transport_secret as string | null) ?? null) : c.secret,
-      JSON.stringify(c.actions), c.safeAction, c.confirm, c.emergencyExit ? 1 : 0, c.ackTimeoutS, c.ttlS, c.active ? 1 : 0, now(), actor, id,
+      JSON.stringify(c.actions), c.safeAction, c.confirm, c.emergencyExit ? 1 : 0, c.sensitive ? 1 : 0, c.ackTimeoutS, c.ttlS, c.active ? 1 : 0, now(), actor, id,
     );
     deps.audit(actor, 'actionneur_modifie', { deviceId: id, details: describeConfig(r.type as ActuatorType, c) });
     if (!c.active && previous.active) cancelPending({ actuatorId: id }, actor, 'actionneur desactive');
@@ -516,7 +591,10 @@ export function createActuators(deps: ActuatorsDeps) {
     ).run(locked ? 1 : 0, actor, t, reason || null);
     if (locked) {
       const skipped = db.prepare("UPDATE actuator_command SET off_cmd_id = 'verrou' WHERE off_due_at IS NOT NULL AND off_cmd_id IS NULL").run().changes;
-      deps.audit(actor, 'commandes_verrouillees', { details: `mode maintenance : aucune commande ne part${skipped ? ` ; ${skipped} retour(s) automatique(s) a l'etat sur annule(s), les equipements s'arretent seuls` : ''} ; raison : ${reason}` });
+      const retries = abandonRetries('verrou');
+      deps.audit(actor, 'commandes_verrouillees', {
+        details: `mode maintenance : seules l'action sure demandee a la main et l'arret anticipe partent${skipped ? ` ; ${skipped} retour(s) automatique(s) a l'etat sur annule(s), les equipements s'arretent seuls` : ''}${retries ? ` ; ${retries} reessai(s) de retour automatique abandonne(s)` : ''} ; raison : ${reason}`,
+      });
       cancelPending({}, actor, 'mode maintenance');
     } else deps.audit(actor, 'commandes_deverrouillees', { details: reason ? `raison : ${reason}` : undefined });
     deps.publish({ type: 'actuators' });
@@ -540,6 +618,52 @@ export function createActuators(deps: ActuatorsDeps) {
       details: `${r.action} (cmd ${cmdId.slice(0, 8)}) : ${text}${uncertain ? " ; l'ordre a PU etre execute" : ''}`,
     });
     publishCommand(cmdId);
+    noteReturnFailure(cmdId);
+  }
+
+  /** Refus decide par le PSIM lui-meme au moment d'envoyer : rien n'est parti, etat `refused`, motif au journal. */
+  function refuse(cmdId: string, actuatorId: string, text: string): void {
+    const r = commandRow(cmdId);
+    if (!r || (r.state !== 'sent' && r.state !== 'pending')) return;
+    setState(cmdId, { state: 'refused', finished_at: now(), ack: text, uncertain: 0 });
+    deps.audit('systeme', 'commande_refusee', {
+      deviceId: actuatorId,
+      incidentId: (r.incident_id as number | null) ?? undefined,
+      details: `${r.action} (cmd ${cmdId.slice(0, 8)}) : refusee par le PSIM, rien n'est parti : ${text}`,
+    });
+    publishCommand(cmdId);
+    noteReturnFailure(cmdId);
+  }
+
+  /**
+   * Dernier essai du retour automatique en echec : avertissement VISIBLE (journal + `returnUnconfirmed` de la commande
+   * d'origine, republiee). Appelee a chaque passage d'une commande a l'echec : le dernier essai ne passe qu'une fois.
+   */
+  function noteReturnFailure(cmdId: string): void {
+    const r = commandRow(cmdId);
+    if (!r || r.auto !== 1 || typeof r.parent_id !== 'string') return;
+    const attempts = returnAttempts(r.parent_id);
+    if (attempts.length < RETURN_MAX_TRIES || attempts.some(confirmed) || attempts[attempts.length - 1].id !== cmdId) return;
+    deps.audit('systeme', 'commande_echec', {
+      deviceId: r.actuator_id as string,
+      incidentId: (r.incident_id as number | null) ?? undefined,
+      details: `retour a l'etat sur NON CONFIRME : « ${r.action} » apres la commande ${r.parent_id.slice(0, 8)}, ${attempts.length} essais sans accuse ; l'equipement peut etre reste dans l'etat de la commande, verifier sur place`,
+    });
+    publishCommand(r.parent_id);
+  }
+
+  const safely = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      console.error('[actionneurs]', err);
+    }
+  };
+
+  /** Exception inattendue pendant un envoi : la commande est marquee en echec (incertaine), le PSIM continue. */
+  function internalError(cmdId: string, actuatorId: string, err: unknown): void {
+    console.error('[actionneurs] erreur interne :', err);
+    safely(() => fail(cmdId, actuatorId, "erreur interne : la commande n'a pas pu etre suivie", true));
   }
 
   function onHttpOutcome(cmdId: string, actuatorId: string, outcome: HttpOutcome): void {
@@ -562,12 +686,20 @@ export function createActuators(deps: ActuatorsDeps) {
     const c = commandRow(cmdId)!;
     const a = actuatorRow(c.actuator_id as string);
     if (!a) return fail(cmdId, c.actuator_id as string, 'actionneur supprime', false);
+    const type = a.type as ActuatorType;
+    const safe = safeOf(a);
+    // Issue de secours : l'ordre « lock » ne part JAMAIS, quelle que soit la base (request() le verifie aussi : defense en profondeur).
+    if (type === 'lock' && a.emergency_exit === 1 && c.action === 'lock') return refuse(cmdId, a.id as string, "issue de secours : l'ordre « lock » n'est jamais envoye");
+    // Serrure, portail, actionneur sensible : jamais en HTTP (requete en clair, rejouable). Seule l'action sure peut encore partir
+    // (un enregistrement ancien ne doit pas empecher de reverrouiller ; la rejouer est inoffensif).
+    if (a.transport === 'http' && sensitiveOf(a) && c.action !== safe) {
+      return refuse(cmdId, a.id as string, 'transport HTTP interdit pour une serrure, un portail ou un actionneur sensible : passer par le transport MQTT signe via une passerelle');
+    }
     const t = now();
     const params = JSON.parse(c.params as string) as CommandParams;
     const durationS = (c.duration_s as number | null) ?? null;
-    const safe = (a.safe_action as string | null) ?? null;
-    // Retour a l'etat sur planifie des l'envoi, meme sans accuse : l'equipement a pu executer.
-    const offDue = durationS !== null && safe && safe !== c.action ? t + durationS * 1000 + 1000 : null;
+    // Retour a l'etat sur planifie des l'envoi, meme sans accuse : l'equipement a pu executer. Jamais pour un portail (docs, 4.8).
+    const offDue = durationS !== null && safe && safe !== c.action && !CATALOG[type].noAutoReturn ? t + durationS * 1000 + 1000 : null;
     let keyHex: string;
     try {
       keyHex = unseal(deps.key, a.key_sealed as string);
@@ -584,22 +716,31 @@ export function createActuators(deps: ActuatorsDeps) {
       details: `${c.action} (cmd ${cmdId.slice(0, 8)}) via ${a.transport}${offDue ? ` ; retour a « ${safe} » prevu dans ${durationS} s` : ''}`,
     });
     publishCommand(cmdId);
-    if (a.transport === 'mqtt') {
-      if (!mqtt) return fail(cmdId, a.id as string, 'broker MQTT indisponible', false);
-      mqtt.publishCommand(a.id as string, Buffer.from(JSON.stringify(message))).catch((err: unknown) => fail(cmdId, a.id as string, `publication impossible (${String((err as Error)?.message ?? err).slice(0, 80)})`, false));
-      return;
-    }
-    const config = JSON.parse(a.transport_config as string) as HttpTransportConfig;
-    let secret: string | null = null;
-    if (a.transport_secret) {
-      try {
-        secret = unseal(deps.key, a.transport_secret as string);
-      } catch {
-        return fail(cmdId, a.id as string, 'secret HTTP illisible : le ressaisir', false);
+    // Une exception (base, JSON...) apres l'envoi ne doit jamais arreter le PSIM : la commande passe en echec incertain.
+    try {
+      if (a.transport === 'mqtt') {
+        if (!mqtt) return fail(cmdId, a.id as string, 'broker MQTT indisponible', false);
+        mqtt
+          .publishCommand(a.id as string, Buffer.from(JSON.stringify(message)))
+          .catch((err: unknown) => safely(() => fail(cmdId, a.id as string, `publication impossible (${String((err as Error)?.message ?? err).slice(0, 80)})`, false)));
+        return;
       }
+      const config = JSON.parse(a.transport_config as string) as HttpTransportConfig;
+      let secret: string | null = null;
+      if (a.transport_secret) {
+        try {
+          secret = unseal(deps.key, a.transport_secret as string);
+        } catch {
+          return fail(cmdId, a.id as string, 'secret HTTP illisible : le ressaisir', false);
+        }
+      }
+      const values = { action: message.action, durationS: params.durationS === undefined ? '' : String(params.durationS), clip: params.clip ?? '', cmdId, ts: String(t), sig: message.sig };
+      void sendHttp(config, message.action, values, secret, deps.httpAllow, (a.ack_timeout_s as number) * 1000)
+        .then((outcome) => onHttpOutcome(cmdId, a.id as string, outcome))
+        .catch((err: unknown) => internalError(cmdId, a.id as string, err));
+    } catch (err) {
+      internalError(cmdId, a.id as string, err);
     }
-    const values = { action: message.action, durationS: params.durationS === undefined ? '' : String(params.durationS), clip: params.clip ?? '', cmdId, ts: String(t), sig: message.sig };
-    void sendHttp(config, message.action, values, secret, deps.httpAllow, (a.ack_timeout_s as number) * 1000).then((outcome) => onHttpOutcome(cmdId, a.id as string, outcome));
   }
 
   /** Cree la commande (journalisee) puis l'envoie. `auto` : retour a l'etat sur decide par le PSIM. */
@@ -616,7 +757,7 @@ export function createActuators(deps: ActuatorsDeps) {
       deps.audit(fields.requestedBy, 'commande_demandee', {
         deviceId: a.id as string,
         incidentId: fields.incidentId ?? undefined,
-        details: `${fields.action}${CATALOG[a.type as ActuatorType].actions[fields.action]?.timed ? ` ${describeDuration(durationS)}` : ''}${fields.params.clip ? ` message ${fields.params.clip}` : ''} sur « ${a.name} » (cmd ${cmdId.slice(0, 8)})${fields.auto ? ' : retour automatique a l etat sur' : ''}${fields.reason ? ` ; raison : ${fields.reason}` : ''}`,
+        details: `${fields.action}${specOf(a.type as ActuatorType, fields.action)?.timed ? ` ${describeDuration(durationS)}` : ''}${fields.params.clip ? ` message ${fields.params.clip}` : ''} sur « ${a.name} » (cmd ${cmdId.slice(0, 8)})${fields.auto ? ' : retour automatique a l etat sur' : ''}${fields.reason ? ` ; raison : ${fields.reason}` : ''}`,
       });
       db.exec('COMMIT');
     } catch (err) {
@@ -630,7 +771,7 @@ export function createActuators(deps: ActuatorsDeps) {
   // ---------------------------------------------------------------- commande (operateur / administrateur)
 
   function cleanParams(a: ActuatorView, action: string, raw: unknown): CommandParams {
-    const spec = CATALOG[a.type].actions[action];
+    const spec = specOf(a.type, action)!;
     const cfg = a.actions[action];
     const input = raw === undefined || raw === null ? {} : raw;
     if (typeof input !== 'object' || Array.isArray(input)) throw new PsimError(400, 'params : objet attendu');
@@ -658,14 +799,17 @@ export function createActuators(deps: ActuatorsDeps) {
     if (!r) throw new PsimError(404, 'Actionneur introuvable');
     const a = toView(r);
     const action = body.action;
-    if (typeof action !== 'string' || !a.actions[action]) throw new PsimError(400, `action : ${Object.keys(a.actions).join(', ')}`);
+    // Object.hasOwn : « constructor », « toString », « __proto__ » ne sont jamais des actions (400, jamais un ordre signe).
+    if (typeof action !== 'string' || !Object.hasOwn(a.actions, action) || !specOf(a.type, action)) throw new PsimError(400, `action : ${Object.keys(a.actions).join(', ')}`);
     // Issue de secours : verifie ici aussi, quelle que soit la configuration enregistree (base modifiee a la main).
     if (a.type === 'lock' && a.emergencyExit && action === 'lock') throw new PsimError(403, 'Issue de secours : le PSIM ne la verrouille jamais');
+    // Action sure : immediate, permise a operator + admin, hors verrou, sans raison ni mot de passe, limite de debit a part.
+    const isSafe = action === a.safeAction;
     if (!a.actions[action].roles.includes(user.role)) throw new PsimError(403, 'Droits insuffisants pour cette action');
     if (body.confirm !== true) throw new PsimError(428, 'Confirmation explicite requise (confirm: true)');
     const reason = cleanText(body.reason, 'reason', MAX_REASON, false);
-    // Serrure, portail : raison obligatoire, sauf pour l'action sure (reverrouiller doit rester immediat).
-    if (a.sensitive && !reason && action !== a.safeAction) throw new PsimError(428, 'Raison obligatoire pour une serrure ou un portail');
+    // Serrure, portail, actionneur sensible : raison obligatoire, sauf pour l'action sure (reverrouiller, arreter doivent rester immediats).
+    if (a.sensitive && !reason && !isSafe) throw new PsimError(428, 'Raison obligatoire pour une serrure, un portail ou un actionneur sensible');
     const params = cleanParams(a, action, body.params);
     let incidentId: number | null = null;
     if (body.incidentId !== undefined && body.incidentId !== null) {
@@ -675,51 +819,52 @@ export function createActuators(deps: ActuatorsDeps) {
       if (status === 'closed') throw new PsimError(409, 'Incident clos : plus de commande en son nom');
       incidentId = body.incidentId;
     }
-    if (lockState().locked) throw new PsimError(409, 'Commandes verrouillees (mode maintenance)');
+    // Mode maintenance : tout est refuse SAUF l'action sure demandee a la main (faire cesser une action ne doit jamais etre impossible).
+    if (lockState().locked && !isSafe) throw new PsimError(409, 'Commandes verrouillees (mode maintenance)');
     if (!a.active) throw new PsimError(409, 'Actionneur desactive');
     if (a.linkUp === false) throw new PsimError(409, "Liaison coupee : aucune passerelle autorisee n'ecoute cet actionneur");
-    // Double-clic, double envoi : la commande identique deja en vol est renvoyee, rien n'est reemis.
+    // Re-authentification AVANT le dedoublonnage : sinon la reponse « deja en cours » dispenserait de prouver son identite.
+    // Compteur d'echecs PARTAGE avec la connexion (server/reauth.ts). L'action sure reste immediate.
+    if (a.confirm === 'reauth' && !isSafe) reauthenticate(db, user.username, body.password, deps.audit, { what: `commande ${action}`, failAction: 'commande_reauth_echec', deviceId: a.id });
+    // Double-clic, double envoi : la commande identique deja en vol est renvoyee, rien n'est reemis. Jamais celle d'un AUTRE compte
+    // (sa raison, son nom ne regardent pas ce compte) : 409 sans rien reveler.
     const same = db
       .prepare(`SELECT * FROM actuator_command WHERE actuator_id = ? AND action = ? AND params = ? AND auto = 0 AND state IN ${IN_FLIGHT} ORDER BY requested_at DESC LIMIT 1`)
       .get(a.id, action, canonicalParams(params)) as Row | undefined;
-    if (same) return { status: 200, command: commandView(same), deduplicated: true };
-    const isSafe = action === a.safeAction;
+    if (same) {
+      if (same.requested_by !== user.username) throw new PsimError(409, 'Commande identique deja en cours par un autre compte');
+      return { status: 200, command: commandView(same), deduplicated: true };
+    }
     const recent = (
       db
         .prepare(`SELECT COUNT(*) AS n FROM actuator_command WHERE actuator_id = ? AND requested_by = ? AND auto = 0 AND requested_at > ? AND action ${isSafe ? '=' : '<>'} ?`)
         .get(a.id, user.username, now() - 60_000, a.safeAction ?? '') as { n: number }
     ).n;
     if (recent >= (isSafe ? SAFE_RATE_PER_MIN : RATE_PER_MIN)) throw new PsimError(429, `Trop de commandes sur cet actionneur : ${isSafe ? SAFE_RATE_PER_MIN : RATE_PER_MIN} par minute au plus`);
-    // Re-authentification : mot de passe redemande (sauf l'action sure, qui doit rester immediate).
-    if (a.confirm === 'reauth' && !isSafe) {
-      if (typeof body.password !== 'string' || !body.password) throw new PsimError(428, 'Mot de passe requis pour cette commande');
-      const key = `reauth:${user.username}`;
-      if (isRateLimited(key)) throw new PsimError(429, 'Trop de mots de passe faux, reessayer dans une minute');
-      if (body.password.length > 200 || checkCredentials(db, user.username, body.password) === null) {
-        recordFailure(key);
-        deps.audit(user.username, 'commande_reauth_echec', { deviceId: a.id, details: `${action} refuse : mot de passe incorrect` });
-        throw new PsimError(403, 'Mot de passe incorrect');
-      }
-    }
     const cmdId = createAndDispatch(r, { action, params, requestedBy: user.username, reason: reason || null, incidentId, auto: false, parentId: null });
     return { status: 201, command: commandView(commandRow(cmdId)!) };
   }
 
   /** Commande temporisee encore en cours (retour a l'etat sur pas encore parti) ou sans limite, arretable par l'action sure. */
   function running(c: Row, a: Row | null): boolean {
-    if (!a || !a.safe_action || c.action === a.safe_action || c.cancelled_at !== null) return false;
+    const safe = a ? safeOf(a) : null;
+    if (!a || !safe || c.action === safe || c.cancelled_at !== null) return false;
     if (c.state !== 'sent' && c.state !== 'acked') return false;
     if (c.duration_s === null) return true;
-    return c.off_due_at !== null && c.off_cmd_id === null && (c.off_due_at as number) > now();
+    // Retour prevu pas encore parti. En mode maintenance il est annule (« verrou ») mais l'equipement tourne jusqu'a la fin de sa duree : arretable.
+    return c.off_due_at !== null && (c.off_cmd_id === null || c.off_cmd_id === 'verrou') && (c.off_due_at as number) > now();
   }
 
-  /** Arret anticipe : l'action sure part tout de suite, le retour planifie est retire. Renvoie la commande d'arret. */
+  /**
+   * Arret anticipe : l'action sure part tout de suite, le retour planifie est retire. Renvoie la commande d'arret.
+   * Permis en mode maintenance (c'est justement faire cesser une action en cours) ; les arrets automatiques (incident clos)
+   * verifient eux-memes le verrou avant d'appeler.
+   */
   function stopEarly(c: Row, a: Row, actor: string, why: string): string {
-    if (lockState().locked) throw new PsimError(409, 'Commandes verrouillees (mode maintenance)');
     setState(c.id as string, { cancelled_by: actor, cancelled_at: now() });
-    const stopId = createAndDispatch(a, { action: a.safe_action as string, params: {}, requestedBy: actor, reason: why, incidentId: (c.incident_id as number | null) ?? null, auto: true, parentId: c.id as string });
+    const stopId = createAndDispatch(a, { action: safeOf(a) as string, params: {}, requestedBy: actor, reason: why, incidentId: (c.incident_id as number | null) ?? null, auto: true, parentId: c.id as string });
     setState(c.id as string, { off_cmd_id: stopId });
-    deps.audit(actor, 'commande_annulee', { deviceId: a.id as string, incidentId: (c.incident_id as number | null) ?? undefined, details: `${c.action} (cmd ${(c.id as string).slice(0, 8)}) : arret anticipe (${why}), « ${a.safe_action} » envoye` });
+    deps.audit(actor, 'commande_annulee', { deviceId: a.id as string, incidentId: (c.incident_id as number | null) ?? undefined, details: `${c.action} (cmd ${(c.id as string).slice(0, 8)}) : arret anticipe (${why}), « ${safeOf(a)} » envoye` });
     publishCommand(c.id as string);
     return stopId;
   }
@@ -728,7 +873,8 @@ export function createActuators(deps: ActuatorsDeps) {
     const c = commandRow(cmdId);
     if (!c) throw new PsimError(404, 'Commande introuvable');
     const a = actuatorRow(c.actuator_id as string);
-    const cfg = a ? (JSON.parse(a.actions as string) as Record<string, ActionConfig>)[c.action as string] : null;
+    const actions = a ? (JSON.parse(a.actions as string) as Record<string, ActionConfig>) : null;
+    const cfg = actions && Object.hasOwn(actions, c.action as string) ? actions[c.action as string] : null;
     if (user.role !== 'admin' && !cfg?.roles.includes(user.role)) throw new PsimError(403, 'Droits insuffisants pour cette commande');
     if (c.state === 'pending') {
       setState(cmdId, { state: 'cancelled', finished_at: now(), cancelled_by: user.username, cancelled_at: now(), ack: 'annulee avant envoi' });
@@ -805,22 +951,90 @@ export function createActuators(deps: ActuatorsDeps) {
       const action = state === 'acked' ? 'commande_accusee' : state === 'refused' ? 'commande_refusee' : 'commande_echec';
       deps.audit('systeme', action, { ...ref, details: `${c.action} (cmd ${ack.cmdId.slice(0, 8)}) : ${text}, accuse signe en ${t - (c.sent_at as number)} ms` });
       publishCommand(ack.cmdId);
+      if (state !== 'acked') noteReturnFailure(ack.cmdId);
     } else if ((c.state === 'failed' || c.state === 'expired') && c.ack_kind === null && c.late_ack === null) {
       // Jamais d'histoire reecrite : l'etat reste, mais l'operateur doit savoir que l'ordre a ete execute.
       setState(ack.cmdId, { late_ack: text, late_ack_at: t });
       deps.audit('systeme', 'commande_accuse_tardif', { ...ref, details: `${c.action} (cmd ${ack.cmdId.slice(0, 8)}) : accuse « ${text} » recu ${Math.round((t - (c.sent_at as number)) / 1000)} s apres l'envoi, apres l'echeance` });
       publishCommand(ack.cmdId);
+      if (typeof c.parent_id === 'string') publishCommand(c.parent_id); // un accuse tardif « done » leve l'avertissement du retour non confirme
     }
   }
 
   // ---------------------------------------------------------------- controle periodique et demarrage
 
-  // Controle periodique (chaque seconde) : une seule requete preparee une fois quand il n'y a rien a suivre (cas courant).
+  // Controle periodique (chaque seconde) : requetes preparees une fois, indexees ; rien a suivre = deux lectures vides (cas courant).
   const anyWork = db.prepare("SELECT 1 AS x FROM actuator_command WHERE state IN ('pending', 'sent') OR (off_due_at IS NOT NULL AND off_cmd_id IS NULL) LIMIT 1");
+  const retryWork = db.prepare("SELECT 1 AS x FROM actuator_command WHERE auto = 1 AND state IN ('failed', 'refused', 'expired') AND finished_at > ? LIMIT 1");
+
+  /** Derniers envois en echec de chaque retour automatique (un par commande d'origine) dans la fenetre de reessai [from, to]. */
+  const retryCandidates = (from: number, to: number): Row[] =>
+    db
+      .prepare(
+        `SELECT c.id, c.rowid AS rid, c.actuator_id, c.parent_id, c.incident_id FROM actuator_command c
+         WHERE c.auto = 1 AND c.state IN ('failed', 'refused', 'expired') AND c.finished_at > ? AND c.finished_at <= ? AND c.parent_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM actuator_command n WHERE n.parent_id = c.parent_id AND n.auto = 1 AND n.rowid > c.rowid)`,
+      )
+      .all(from, to) as Row[];
+
+  /** Les reessais en cours sont abandonnes (mode maintenance...) : le pointeur de la commande d'origine recoit le motif. */
+  function abandonRetries(marker: string): number {
+    let n = 0;
+    const t = now();
+    for (const c of retryCandidates(t - RETURN_RETRY_WINDOW_MS, t)) {
+      const p = commandRow(c.parent_id as string);
+      if (!p || typeof p.off_cmd_id !== 'string' || !CMD_ID.test(p.off_cmd_id)) continue;
+      const attempts = returnAttempts(p.id as string);
+      if (attempts.length >= RETURN_MAX_TRIES || attempts.some(confirmed)) continue;
+      setState(p.id as string, { off_cmd_id: marker });
+      n++;
+    }
+    return n;
+  }
+
+  /**
+   * Retour automatique a l'etat sur en echec : nouvel envoi (toutes les 5 s, 5 essais au plus, envoi initial compris) jusqu'a
+   * accuse. Sans objet des qu'un ordre plus recent a pris la main sur l'actionneur, en mode maintenance, ou si l'actionneur
+   * a disparu. Ne concerne jamais les commandes manuelles (jamais rejouees).
+   */
+  function retryReturn(c: Row): void {
+    const parentId = c.parent_id as string;
+    const p = commandRow(parentId);
+    if (!p || typeof p.off_cmd_id !== 'string' || !CMD_ID.test(p.off_cmd_id)) return; // chaine abandonnee (verrou, remplace...)
+    const attempts = returnAttempts(parentId);
+    if (attempts.length >= RETURN_MAX_TRIES || attempts.some(confirmed)) return;
+    const a = actuatorRow(c.actuator_id as string);
+    if (!a) return void setState(parentId, { off_cmd_id: 'supprime' });
+    // Un ordre plus recent (envoye, accuse, ou peut-etre execute) a pris la main : y toucher serait pire que d'attendre.
+    const newer = db
+      .prepare(
+        `SELECT 1 AS x FROM actuator_command WHERE actuator_id = ? AND rowid > ? AND NOT (auto = 1 AND parent_id = ?)
+           AND state NOT IN ('refused', 'cancelled') AND NOT (state = 'expired' AND sent_at IS NULL) LIMIT 1`,
+      )
+      .get(a.id as string, c.rid as number, parentId);
+    if (newer) return void setState(parentId, { off_cmd_id: 'remplace' });
+    if (lockState().locked) {
+      setState(parentId, { off_cmd_id: 'verrou' });
+      deps.audit('systeme', 'commande_echec', { deviceId: a.id as string, details: `retour automatique apres cmd ${parentId.slice(0, 8)} non reessaye : mode maintenance ; l'equipement s'arrete seul (durationS)` });
+      return;
+    }
+    const safe = safeOf(a);
+    if (!safe) return void setState(parentId, { off_cmd_id: 'sans_objet' });
+    if (a.transport === 'mqtt' && linkUp(a) === false) return; // la passerelle reviendra : on attend, dans la fenetre de reessai
+    createAndDispatch(a, {
+      action: safe,
+      params: {},
+      requestedBy: 'systeme',
+      reason: `retour automatique a l'etat sur (essai ${attempts.length + 1}/${RETURN_MAX_TRIES})`,
+      incidentId: (c.incident_id as number | null) ?? null,
+      auto: true,
+      parentId,
+    });
+  }
 
   function tick(): void {
-    if (anyWork.get() === undefined) return;
     const t = now();
+    if (anyWork.get() === undefined && retryWork.get(t - RETURN_RETRY_WINDOW_MS) === undefined) return;
     // Sans accuse a l'echeance : echec, jamais « fait » par supposition (HTTP : sa propre echeance, celle-ci en filet).
     for (const c of db.prepare("SELECT c.id, c.actuator_id, c.ack_deadline, a.transport FROM actuator_command c LEFT JOIN actuator a ON a.id = c.actuator_id WHERE c.state = 'sent'").all() as Row[]) {
       const deadline = (c.ack_deadline as number) + (c.transport === 'http' ? 2000 : 0);
@@ -834,31 +1048,46 @@ export function createActuators(deps: ActuatorsDeps) {
     // Retours automatiques a l'etat sur arrives a echeance.
     for (const c of db.prepare('SELECT * FROM actuator_command WHERE off_due_at IS NOT NULL AND off_cmd_id IS NULL AND off_due_at <= ?').all(t) as Row[]) {
       const a = actuatorRow(c.actuator_id as string);
-      if (!a || !a.safe_action || lockState().locked) {
+      const safe = a ? safeOf(a) : null;
+      if (!a || !safe || lockState().locked) {
         setState(c.id as string, { off_cmd_id: lockState().locked ? 'verrou' : 'sans_objet' });
         continue;
       }
       if (a.transport === 'mqtt' && linkUp(a) === false) {
-        setState(c.id as string, { off_cmd_id: 'liaison_coupee' });
-        deps.audit('systeme', 'commande_echec', { deviceId: a.id as string, details: `retour automatique a « ${a.safe_action} » (apres cmd ${(c.id as string).slice(0, 8)}) non envoye : liaison coupee ; l'equipement s'arrete seul (durationS)` });
+        // La passerelle n'est pas (encore) abonnee, au redemarrage par exemple : le retour reste en attente et part des qu'elle
+        // revient, au plus pendant STALE_RETURN_MS. Une seule entree de journal, pas une par seconde.
+        if (t - (c.off_due_at as number) > STALE_RETURN_MS) {
+          setState(c.id as string, { off_cmd_id: 'liaison_coupee' });
+          waitingForLink.delete(c.id as string);
+          deps.audit('systeme', 'commande_echec', { deviceId: a.id as string, details: `retour automatique a « ${safe} » (apres cmd ${(c.id as string).slice(0, 8)}) abandonne : liaison coupee depuis plus de 24 h ; l'equipement s'est arrete seul (durationS)` });
+        } else if (!waitingForLink.has(c.id as string)) {
+          if (waitingForLink.size > 1000) waitingForLink.clear();
+          waitingForLink.add(c.id as string);
+          deps.audit('systeme', 'commande_echec', { deviceId: a.id as string, details: `retour automatique a « ${safe} » (apres cmd ${(c.id as string).slice(0, 8)}) en attente : liaison coupee ; il partira des le retour de la passerelle` });
+        }
         continue;
       }
+      waitingForLink.delete(c.id as string);
       setState(c.id as string, { off_cmd_id: 'en_cours' });
       try {
-        const stopId = createAndDispatch(a, { action: a.safe_action as string, params: {}, requestedBy: 'systeme', reason: "retour automatique a l'etat sur", incidentId: (c.incident_id as number | null) ?? null, auto: true, parentId: c.id as string });
+        const stopId = createAndDispatch(a, { action: safe, params: {}, requestedBy: 'systeme', reason: "retour automatique a l'etat sur", incidentId: (c.incident_id as number | null) ?? null, auto: true, parentId: c.id as string });
         setState(c.id as string, { off_cmd_id: stopId });
       } catch (err) {
         console.error('[actionneurs] retour automatique :', err);
+        safely(() => setState(c.id as string, { off_cmd_id: 'abandonne' }));
       }
     }
+    // Retours automatiques en echec : reessais.
+    for (const c of retryCandidates(t - RETURN_RETRY_WINDOW_MS, t - RETURN_RETRY_DELAY_MS)) safely(() => retryReturn(c));
   }
 
   // Demarrage : une commande en vol au moment de l'arret n'est JAMAIS renvoyee ; on dit seulement qu'elle n'a pas ete suivie.
   {
     const t = now();
-    const stale = db.prepare(`SELECT id, actuator_id, action, state FROM actuator_command WHERE state IN ${IN_FLIGHT}`).all() as Row[];
+    const stale = db.prepare(`SELECT id, actuator_id, action, state, auto FROM actuator_command WHERE state IN ${IN_FLIGHT}`).all() as Row[];
     for (const [i, c] of stale.entries()) {
       setState(c.id as string, { state: 'expired', finished_at: t, ack: `PSIM redemarre (etait ${c.state}) : jamais renvoyee` });
+      if (c.auto === 1) noteReturnFailure(c.id as string);
       if (i < 20) deps.audit('systeme', 'commande_expiree', { deviceId: c.actuator_id as string, details: `${c.action} (cmd ${(c.id as string).slice(0, 8)}) : PSIM redemarre, commande non suivie et jamais renvoyee` });
     }
     if (stale.length > 20) deps.audit('systeme', 'commande_expiree', { details: `${stale.length - 20} autre(s) commande(s) expiree(s) au redemarrage` });
@@ -869,12 +1098,24 @@ export function createActuators(deps: ActuatorsDeps) {
 
   // ---------------------------------------------------------------- lecture (API)
 
+  const MASK = '?...';
+  /** Identifiants `user:pw@` et chaine de requete d'une URL (jetons, cles) remplaces par un marqueur. */
+  const maskUrl = (url: string): string => url.replace(/^(https?:\/\/)[^/?#]*@/i, '$1***@').replace(/\?[\s\S]*$/, MASK);
+
+  /** Pour un role autre qu'administrateur : le detail des requetes HTTP (jetons, cles, corps) n'est pas montre. */
+  function redactHttp(http: NonNullable<ActuatorView['http']>): NonNullable<ActuatorView['http']> {
+    const requests: Record<string, HttpRequestTemplate> = {};
+    for (const [action, req] of Object.entries(http.requests)) requests[action] = { method: req.method, url: maskUrl(req.url), ...(req.body ? { body: '(masque)' } : {}) };
+    return { ...http, requests };
+  }
+
   function list(role: Role): { actuators: (ActuatorView & { allowed: string[] })[]; lock: ReturnType<typeof lockState> } {
     const rows = db.prepare('SELECT * FROM actuator ORDER BY zone, name, id').all() as Row[];
     return {
       actuators: rows.map((r) => {
         const v = toView(r);
-        return { ...v, allowed: Object.entries(v.actions).filter(([, c]) => c.roles.includes(role)).map(([a]) => a) };
+        const view = role === 'admin' || !v.http ? v : { ...v, http: redactHttp(v.http) };
+        return { ...view, allowed: Object.entries(v.actions).filter(([, c]) => c.roles.includes(role)).map(([a]) => a) };
       }),
       lock: lockState(),
     };

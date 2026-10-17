@@ -170,7 +170,7 @@ describe('actionneurs : configuration (administrateur)', () => {
 
   it('transport HTTP : adresses de metadonnees et noms non listes refuses a la configuration', () => {
     const { svc } = setup({ allow: [] });
-    const http = (url: string) => ({ requests: { on: { method: 'POST', url }, off: { method: 'POST', url } } });
+    const http = (url: string) => ({ requests: { on: { method: 'POST', url: `${url}?t={durationS}` }, off: { method: 'POST', url } } });
     for (const url of ['http://169.254.169.254/latest/meta-data', 'http://metadata.google.internal/x', 'http://127.0.0.1/x', 'http://relais.local/x', 'http://[::ffff:169.254.169.254]/x', 'file:///etc/passwd', 'http://u:p@10.0.0.5/x']) {
       assert.equal(status(() => svc.create('admin', { id: 'H1', name: 'h', type: 'light', transport: 'http', http: http(url) })), 400, url);
     }
@@ -335,14 +335,15 @@ describe('actionneurs : commandes', () => {
     assert.equal(s.svc.request(OP, 'SIR-01', { action: 'on', params: { durationS: 15 }, confirm: true }).status, 201);
   });
 
-  it('mode maintenance : tout est refuse, les retours prevus sont annules ; actionneur inactif ; liaison coupee', () => {
+  it("mode maintenance : tout est refuse SAUF l'action sure ; les retours prevus sont annules ; actionneur inactif ; liaison coupee", () => {
     const s = withSiren();
     s.svc.request(OP, 'SIR-01', { action: 'on', params: { durationS: 10 }, confirm: true });
     assert.equal(status(() => s.svc.setLock(OP.username, true, 'x')), 0, 'le service ne juge pas le role : la route est adminOnly');
-    assert.equal(status(() => s.svc.request(ADMIN, 'SIR-01', { action: 'off', confirm: true })), 409);
+    assert.equal(status(() => s.svc.request(ADMIN, 'SIR-01', { action: 'on', params: { durationS: 20 }, confirm: true })), 409);
     s.clock.t += 20_000;
     s.svc.tick();
     assert.equal(s.sent.length, 1, 'aucun retour automatique en mode maintenance');
+    assert.equal(s.svc.request(ADMIN, 'SIR-01', { action: 'off', confirm: true }).status, 201, "l'action sure (arreter) reste permise sous verrou");
     s.svc.setLock('admin', false, 'fin des travaux');
     s.svc.update('admin', 'SIR-01', { active: false });
     assert.equal(status(() => s.svc.request(ADMIN, 'SIR-01', { action: 'off', confirm: true })), 409);
