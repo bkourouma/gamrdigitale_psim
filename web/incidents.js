@@ -9,7 +9,7 @@
  * sont mises à jour SUR PLACE, jamais recréées (l'attente l'est chaque seconde) : un commentaire en cours de saisie garde
  * son texte et son focus. Une fiche où l'on écrit reste dépliée quand une autre alarme prend la main.
  */
-import { CATEGORY_LABEL, eventLabel, formatValue, qualificationLabel, realEventLabel } from './sources.js';
+import { CATEGORY_LABEL, blockedText, chipText, commentPlaceholder, eventLabel, formatValue, qualificationLabel, realEventLabel, unconfirmedText } from './sources.js';
 import { CATEGORY_ICON } from './plan.js';
 import { $, h, icon, api, toast, S, time, elapsed, emit, go, activeIncidents, focusedIncident, followAlarm, isActive, isFiring, devicesOf, STATUS_LABEL, render } from './core.js';
 import { commandsButton } from './commands.js';
@@ -344,7 +344,7 @@ function buildCard(incident) {
   const s3 = makeStep(3, 'Clôturez après vérification');
   const reasonId = `inc-reason-${id}`;
   refs.reason = h('p', { class: 'step-reason', id: reasonId });
-  refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: 'Ex. fumée de cuisson, porte mal fermée, ronde faite…' });
+  refs.comment = h('textarea', { rows: '2', maxlength: '500', placeholder: commentPlaceholder(incident.category) });
   refs.false = h('button', { class: 'btn', type: 'button', 'aria-describedby': reasonId, text: 'Fausse alarme', onclick: () => closeAs('false_alarm', refs.false) });
   refs.fire = h('button', { class: 'btn btn-danger', type: 'button', 'aria-describedby': reasonId, onclick: () => askReal() });
   refs.closeActions = h('div', { class: 'actions inc-close' }, refs.false, refs.fire);
@@ -388,7 +388,7 @@ function buildCard(incident) {
 
   function askReal() {
     const inc = current();
-    const label = realEventLabel(inc.category);
+    const label = realEventLabel(inc.category, inc.event);
     refs.confirmText.textContent =
       `Vous déclarez un événement réel. L’alarme sera clôturée et enregistrée comme « ${label} » dans le journal et les rapports.` +
       (inc.category === 'fire' ? " Elle sera prise en compte dans l’indice de sécurité de la zone." : '');
@@ -472,9 +472,9 @@ function updateCameraStep({ refs }, incident, followed) {
 }
 
 /** Ce que fait le détecteur, et donc si la clôture est possible. */
-function closeReason(detector) {
+function closeReason(detector, incident) {
   if (!detector) return { cls: 'is-ready', icon: 'info', text: "Le détecteur n’existe plus : vous pouvez clôturer." };
-  if (isFiring(detector)) return { cls: 'is-blocked', icon: 'lock', text: 'Le détecteur sonne encore : « Fausse alarme » et « Feu confirmé » seront disponibles quand il sera revenu à la normale.' };
+  if (isFiring(detector)) return { cls: 'is-blocked', icon: 'lock', text: blockedText(incident.category, incident.event) };
   if (detector.status === 'offline') return { cls: 'is-down', icon: 'state-offline', text: 'Le détecteur ne répond plus : vérifiez sur place avant de clôturer.' };
   if (detector.status === 'fault') return { cls: 'is-down', icon: 'wrench', text: 'Le détecteur est en défaut : vérifiez sur place avant de clôturer.' };
   return { cls: 'is-ready', icon: 'state-ok', text: 'Le détecteur est revenu à la normale : vous pouvez clôturer.' };
@@ -508,7 +508,7 @@ function updateCard(card, incident, followed) {
   setLevel(refs.rowBadge, critical, false);
   refs.rowName.textContent = incident.detectorName;
   refs.rowPlace.textContent = placeText(incident);
-  const rowReason = closeReason(detector);
+  const rowReason = closeReason(detector, incident);
   const rowCls = open ? ' is-open' : rowReason.cls === 'is-ready' ? ' is-ready' : rowReason.cls === 'is-blocked' ? ' is-blocked' : ' is-down';
   refs.rowState.className = `inc-row-state${rowCls}`;
   const rowText = open ? 'À acquitter' : rowReason.cls === 'is-ready' ? 'À clôturer : détecteur revenu à la normale' : rowReason.cls === 'is-blocked' ? 'Acquittée : le détecteur sonne encore' : 'Acquittée : à vérifier sur place';
@@ -517,7 +517,7 @@ function updateCard(card, incident, followed) {
   // En-tête
   setLevel(refs.badge, critical);
   fill(refs.type, `${incident.category}:${incident.event ?? ''}`, icon(CATEGORY_ICON[incident.category] ?? 'fire', 'icon-sm'), `${CATEGORY_LABEL[incident.category] ?? CATEGORY_LABEL.fire}${incident.event ? ` · ${eventLabel(incident.event)}` : ''}`);
-  refs.chip.textContent = confirmed ? 'Confirmée' : 'À confirmer';
+  refs.chip.textContent = chipText(incident.category, confirmed);
   refs.chip.className = `tag inc-conf ${confirmed ? 'is-confirmed' : 'is-dashed'}`;
   refs.title.textContent = incident.detectorName;
   refs.place.textContent = placeText(incident);
@@ -529,7 +529,7 @@ function updateCard(card, incident, followed) {
   // Une alarme « à confirmer » reste une alarme à traiter : on le dit pour qu'elle ne soit jamais prise à la légère.
   refs.conf.textContent = confirmed
     ? `Confirmée : ${confirmationText(incident.confirmationReason)}.`
-    : 'Rien ne confirme encore le feu. Traitez-la comme une vraie alarme.';
+    : unconfirmedText(incident.category, incident.event);
   refs.conf.hidden = !confirmed && !open && !blocked;
   const detailText = typeof incident.detail === 'string' ? incident.detail.trim() : '';
   refs.detail.textContent = detailText;
@@ -552,10 +552,10 @@ function updateCard(card, incident, followed) {
   refs.ackActions.hidden = !open;
   setStep(refs.steps.s3, open ? 'next' : 'current');
 
-  const reason = closeReason(detector);
+  const reason = closeReason(detector, incident);
   refs.reason.className = `step-reason ${reason.cls}`;
   fill(refs.reason, reason.text, icon(reason.icon, 'icon-sm'), h('span', { text: reason.text }));
-  refs.fire.textContent = realEventLabel(incident.category);
+  refs.fire.textContent = realEventLabel(incident.category, incident.event);
   refs.false.disabled = blocked;
   refs.fire.disabled = blocked;
   refs.confirmYes.disabled = blocked;
@@ -605,7 +605,7 @@ export function renderIncidents() {
   const count = $('incidents-count');
   if (count) {
     count.hidden = list.length === 0;
-    const toClose = list.filter((i) => i.status !== 'open' && closeReason(S.devices.get(i.detectorId)).cls === 'is-ready').length;
+    const toClose = list.filter((i) => i.status !== 'open' && closeReason(S.devices.get(i.detectorId), i).cls === 'is-ready').length;
     count.textContent = [`${list.length} en cours`, unacked ? `${unacked} à acquitter` : '', toClose ? `${toClose} à clôturer` : ''].filter(Boolean).join(' · ');
   }
 
@@ -734,7 +734,7 @@ function closedRow(i) {
     h(
       'td',
       { 'data-label': 'Qualification' },
-      h('span', { class: `tag${real ? ' is-alarm' : ''}` }, real ? icon('state-alarm', 'icon-sm') : null, qualificationLabel(i.category, i.qualification) || '—'),
+      h('span', { class: `tag${real ? ' is-alarm' : ''}` }, real ? icon('state-alarm', 'icon-sm') : null, qualificationLabel(i.category, i.qualification, i.event) || '—'),
     ),
     h('td', { class: 'num', 'data-label': 'Clôturée' }, h('time', { datetime: new Date(i.closedAt).toISOString(), text: dateTime(i.closedAt) })),
     h('td', { 'data-label': 'Par', text: i.closedBy ?? '—' }),

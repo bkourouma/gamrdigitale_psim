@@ -19,16 +19,6 @@ export const CATEGORY_LABEL = {
   people: 'Personnes',
 };
 
-// La qualification « fire » est stockée telle quelle pour toutes les catégories : elle veut dire « événement réel ».
-const REAL_LABEL = {
-  fire: 'Feu confirmé',
-  intrusion: 'Intrusion avérée',
-  access: 'Accès anormal avéré',
-  environment: 'Incident avéré',
-  energy: 'Panne avérée',
-  people: 'Détresse avérée',
-};
-
 // Motif en clair de chaque événement nommé (même table que server/sources.ts, EVENT_LABEL : un test les compare).
 export const EVENT_LABEL = {
   intrusion: 'Intrusion',
@@ -81,13 +71,82 @@ export const EVENT_LABEL = {
 /** Motif d'un incident (« Gaz détecté ») ; chaîne vide si l'équipement n'a envoyé qu'un état ou une mesure. */
 export const eventLabel = (event) => (event ? (Object.hasOwn(EVENT_LABEL, event) ? EVENT_LABEL[event] : event) : '');
 
-export function qualificationLabel(category, qualification) {
-  if (qualification === 'false_alarm') return 'Fausse alarme';
-  if (qualification === 'fire') return REAL_LABEL[category] ?? REAL_LABEL.fire;
-  return '';
+// DEBUT-TEXTES-INCIDENT
+// Textes du détail d'un incident, par catégorie (et par événement pour « Personnes »). Un texte d'incendie (« feu »,
+// « incendie », « fumée ») ne doit apparaître que pour la catégorie « fire » : tout passe par cette table.
+
+// La qualification « fire » est stockée telle quelle pour toutes les catégories : elle veut dire « événement réel ».
+const REAL_LABEL = {
+  fire: 'Feu confirmé',
+  intrusion: 'Intrusion avérée',
+  access: 'Accès anormal avéré',
+  environment: 'Incident avéré',
+  energy: 'Panne avérée',
+  people: 'Détresse avérée',
+};
+
+// Libellé de « événement réel » propre à un événement (catégorie « Personnes »), à défaut celui de la catégorie.
+const REAL_LABEL_EVENT = {
+  people: {
+    sos: 'Détresse avérée',
+    patrol_incomplete: 'Ronde non faite avérée',
+    patrol_missed: 'Ronde non faite avérée',
+    logbook_report: 'Signalement avéré',
+  },
+};
+
+const PEOPLE_UNCONFIRMED = {
+  sos: "Agent en détresse : envoyez de l'aide et appelez-le",
+  patrol_incomplete: 'Ronde non faite : joignez l’agent',
+  patrol_missed: 'Ronde non faite : joignez l’agent',
+  logbook_report: 'Signalement d’un agent : lisez la main courante',
+};
+
+const texts = (unconfirmed, placeholder, blocked, chipPending = 'À confirmer', chipConfirmed = 'Confirmée') => ({ unconfirmed, placeholder, blocked, chipPending, chipConfirmed });
+const blockedBy = (subject, done) => (real) => `${subject} : « Fausse alarme » et « ${real} » seront disponibles quand ${done}.`;
+
+export const INCIDENT_TEXTS = {
+  fire: texts(
+    'Rien ne confirme encore le feu. Traitez-la comme une vraie alarme.',
+    'Ex. fumée de cuisson, porte mal fermée, ronde faite…',
+    blockedBy('Le détecteur sonne encore', 'il sera revenu à la normale'),
+  ),
+  intrusion: texts('Rien ne confirme encore l’intrusion. Traitez-la comme une vraie alarme.', 'Ex. porte mal fermée, passage d’un collègue…', blockedBy('Le détecteur sonne encore', 'il sera revenu à la normale')),
+  access: texts('Rien ne confirme encore l’accès anormal. Traitez-le comme une vraie alarme.', 'Ex. badge prêté, porte mal fermée…', blockedBy('Le détecteur sonne encore', 'il sera revenu à la normale')),
+  environment: texts('Rien ne confirme encore l’incident. Traitez-le comme une vraie alarme.', 'Ex. fausse manœuvre, capteur déréglé…', blockedBy('Le détecteur sonne encore', 'il sera revenu à la normale')),
+  energy: texts('Rien ne confirme encore la panne. Traitez-la comme une vraie alarme.', 'Ex. coupure programmée, groupe électrogène démarré…', blockedBy('Le détecteur sonne encore', 'il sera revenu à la normale')),
+  people: texts(
+    'Rien ne confirme encore l’alerte. Traitez-la comme une vraie alarme.', // événement inconnu : les 4 événements connus ont leur texte ci-dessus
+    'Ex. agent joint, ronde faite, fausse manipulation…',
+    blockedBy('L’alarme est encore active', 'elle sera terminée'),
+    'Non traité',
+    'Confirmé',
+  ),
+};
+
+const textsFor = (category) => (Object.hasOwn(INCIDENT_TEXTS, category) ? INCIDENT_TEXTS[category] : INCIDENT_TEXTS.fire);
+
+export const realEventLabel = (category, event) => {
+  const byEvent = event && Object.hasOwn(REAL_LABEL_EVENT, category) && Object.hasOwn(REAL_LABEL_EVENT[category], event);
+  return byEvent ? REAL_LABEL_EVENT[category][event] : (REAL_LABEL[category] ?? REAL_LABEL.fire);
+};
+
+/** Phrase affichée tant que l'alarme n'est pas confirmée (propre à la catégorie, et à l'événement pour « Personnes »). */
+export function unconfirmedText(category, event) {
+  if (category === 'people' && event && Object.hasOwn(PEOPLE_UNCONFIRMED, event)) return PEOPLE_UNCONFIRMED[event];
+  return textsFor(category).unconfirmed;
 }
 
-export const realEventLabel = (category) => REAL_LABEL[category] ?? REAL_LABEL.fire;
+export const chipText = (category, confirmed) => (confirmed ? textsFor(category).chipConfirmed : textsFor(category).chipPending);
+export const commentPlaceholder = (category) => textsFor(category).placeholder;
+export const blockedText = (category, event) => textsFor(category).blocked(realEventLabel(category, event));
+
+export function qualificationLabel(category, qualification, event) {
+  if (qualification === 'false_alarm') return 'Fausse alarme';
+  if (qualification === 'fire') return realEventLabel(category, event);
+  return '';
+}
+// FIN-TEXTES-INCIDENT
 
 export function formatValue(value, unit) {
   if (value === null || value === undefined) return '';
