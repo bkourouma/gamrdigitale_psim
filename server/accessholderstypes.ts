@@ -304,6 +304,11 @@ export interface HoldersService extends RightsSource {
   tick(): void;
   /** Regroupe les ecritures d'une operation en masse : une seule transaction, une seule notification des controleurs. */
   batch<T>(fn: () => T): T;
+  /**
+   * Simulation (import « a blanc ») : execute `fn` (qui appelle les memes methodes que pour de vrai), puis ANNULE toutes les ecritures
+   * (savepoint) ; aucune notification, aucune entree de journal ne subsiste. Renvoie ce que renvoie `fn`.
+   */
+  simulate<T>(fn: () => T): T;
 }
 
 // ---- Synchronisation -------------------------------------------------------------------------------------------------------------

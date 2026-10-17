@@ -194,6 +194,8 @@ export interface PassageView {
   credential: string | null;
   holderName: string | null;
   holderRef: string | null;
+  /** Titulaire du PSIM auquel le passage est rattache (phase 2), ou `null`. */
+  holderId: number | null;
   method: AccessMethod;
   methodLabel: string;
   result: AccessResult;
@@ -282,6 +284,11 @@ export interface AccessOptions {
   /** Reglages d'essai de la purge (par defaut : lots de 10 000, 200 000 lignes au plus par appel). */
   purgeBatch?: number;
   purgeMaxRows?: number;
+  /**
+   * Rattachement d'un passage a un titulaire (phase 2, server/accessholders.ts) : `holderRef` `H<id>` puis numero de badge.
+   * Absent : aucun rattachement (`holder_id` reste NULL). Une erreur est ignoree (le passage est garde).
+   */
+  resolveHolder?: (credential: string | null, holderRef: string | null) => { id: number; name: string } | null;
 }
 
 export interface AccessService extends AccessHook {
@@ -646,12 +653,20 @@ export function createAccess(opts: AccessOptions): AccessService {
     return atomically((): AccessHookResult => {
       // 2. Enregistrement du passage ; deduplication definitive par l'index unique (controleur, evenement).
       if (passage) {
+        // Titulaire connu du PSIM (phase 2) : `holder_id`, et son nom si le controleur n'en a pas donne.
+        let holder: { id: number; name: string } | null = null;
+        try {
+          holder = opts.resolveHolder?.(passage.credential, passage.holderRef) ?? null;
+        } catch {
+          holder = null;
+        }
+        const holderName = passage.holderName ?? holder?.name ?? null;
         const res = sql(
-          `INSERT INTO access_event (door_id, controller_id, at_device, at_received, direction, credential, holder_name, holder_key, holder_ref, method, result, reason, device_event_id, late)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(controller_id, device_event_id) DO NOTHING`,
+          `INSERT INTO access_event (door_id, controller_id, at_device, at_received, direction, credential, holder_name, holder_key, holder_ref, holder_id, method, result, reason, device_event_id, late)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(controller_id, device_event_id) DO NOTHING`,
         ).run(
-          device.id, passage.controllerId, atDevice, meta.receivedAt, passage.direction, passage.credential, passage.holderName,
-          passage.holderName === null ? null : holderKey(passage.holderName), passage.holderRef, passage.method, passage.result, passage.reason,
+          device.id, passage.controllerId, atDevice, meta.receivedAt, passage.direction, passage.credential, holderName,
+          holderName === null ? null : holderKey(holderName), passage.holderRef, holder?.id ?? null, passage.method, passage.result, passage.reason,
           passage.eventId, passage.deferred || meta.lateMs >= LATE_AFTER_MS ? 1 : 0,
         );
         if (Number(res.changes) === 0) return { ok: true, duplicate: true };
@@ -853,6 +868,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       credential: (r.credential as string | null) ?? null,
       holderName: (r.holder_name as string | null) ?? null,
       holderRef: (r.holder_ref as string | null) ?? null,
+      holderId: (r.holder_id as number | null) ?? null,
       method,
       methodLabel: methodLabel(method),
       result: r.result as AccessResult,

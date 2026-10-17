@@ -14,6 +14,7 @@ import { createRiskView } from './risk.js';
 import { createUsersAdmin } from './users.js';
 import { createKeysAdmin } from './keys.js';
 import { createRulesView } from './rules.js';
+import { createHoldersView } from './holders.js';
 import { $, h, icon, api, toast, S, on, go, setRouter, render, activeIncidents, devicesOf, followAlarm, floorName, hasUnsavedInput, setCounterText, STATUS_LABEL } from './core.js';
 import { renderPlan } from './plan.js';
 import { renderWall, stopTiles } from './wall.js';
@@ -101,6 +102,8 @@ const rulesView = createRulesView({
   getMe: () => S.me,
   getDevices: () => devicesOf('camera').map((d) => ({ id: d.id, name: d.name, zone: d.zone || '' })),
 });
+// Titulaires, visiteurs, groupes, import et synchronisation du contrôle d'accès : l'écran lit tout lui-même, le rôle vient du compte.
+const holdersView = createHoldersView({ api, h, icon, toast, dialogs, getMe: () => S.me });
 initNotifications({ loadRecipients: () => usersAdmin.loadRecipients() });
 const riskView = createRiskView({ api, h, toast, getMe: () => S.me, dialogs });
 
@@ -131,6 +134,7 @@ const ROUTES = {
   risques: { title: 'Risques', sub: "Indice de sécurité GAMR par zone et priorités d'action" },
   rapports: { title: 'Rapports', sub: 'Rapports imprimables, exports et envoi automatique' },
   journal: { title: 'Journal', sub: 'Toutes les actions, des personnes et du système' },
+  titulaires: { title: 'Titulaires', sub: 'Qui a un badge, quelles portes il ouvre, visiteurs et synchronisation des contrôleurs' },
   equipements: { title: 'Équipements et plan', sub: 'Placer, régler et ajouter les détecteurs et les caméras', admin: true },
   notifications: { title: 'Personnes prévenues', sub: "Qui reçoit les alarmes hors de l'écran, et par quel canal", admin: true },
   regles: { title: 'Règles', sub: "Prévenir quand quelqu'un est vu par une caméra : où, quand et à quelle condition", admin: true },
@@ -174,6 +178,8 @@ function leave(view) {
     keysAdmin.hide();
   } else if (view === 'regles') {
     rulesView.hide(); // le brouillon reste : l'écran est masqué, pas détruit
+  } else if (view === 'titulaires') {
+    holdersView.hide(); // les minuteurs s'arrêtent, les formulaires commencés restent
   } else if (view === 'risques') {
     riskView.hide();
     loadRailGauge(); // une évaluation vient peut-être de changer l'indice
@@ -206,6 +212,8 @@ function enter(view) {
     keysAdmin.show();
   } else if (view === 'regles') {
     rulesView.show(); // relit la liste ; un formulaire commencé n'est jamais remplacé
+  } else if (view === 'titulaires') {
+    holdersView.show(); // relit l'onglet affiché ; ne détruit rien
   } else if (view === 'systeme') {
     loadSystem();
   } else if (view === 'simulateur') {

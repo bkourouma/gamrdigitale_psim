@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="equipment.css">
   <link rel="stylesheet" href="keys.css">
   <link rel="stylesheet" href="rules.css">
+  <link rel="stylesheet" href="holders.css">
 </head>
 <body>
   <a class="skip" href="#main" hidden>Aller au contenu</a>
@@ -85,6 +86,7 @@
         <a class="nav-item" href="#/risques" data-view="risques"><svg class="icon" aria-hidden="true"><use href="icons.svg#gauge"/></svg><span>Risques</span></a>
         <a class="nav-item" href="#/rapports" data-view="rapports"><svg class="icon" aria-hidden="true"><use href="icons.svg#doc"/></svg><span>Rapports</span></a>
         <a class="nav-item" href="#/journal" data-view="journal"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg><span>Journal</span></a>
+        <a class="nav-item" href="#/titulaires" data-view="titulaires"><svg class="icon" aria-hidden="true"><use href="icons.svg#badge"/></svg><span>Titulaires</span></a>
         <div id="nav-admin" class="nav-group" role="group" aria-labelledby="nav-admin-title" hidden>
           <p id="nav-admin-title" class="nav-group-title">Administration</p>
           <a class="nav-item" href="#/equipements" data-view="equipements"><svg class="icon" aria-hidden="true"><use href="icons.svg#plan"/></svg><span>Équipements et plan</span></a>
@@ -496,6 +498,11 @@
               <ul id="rules-list" class="rl-list" aria-label="Règles enregistrées" hidden></ul>
             </div>
           </section>
+        </section>
+
+        <!-- ================================================================================ Titulaires -->
+        <section class="view view-titulaires" id="view-titulaires" aria-labelledby="view-title" hidden>
+          <div id="holders-root" class="hd-root"></div>
         </section>
 
         <!-- ================================================================================ Utilisateurs -->
