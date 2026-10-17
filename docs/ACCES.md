@@ -344,7 +344,7 @@ La fiche d'une porte (`GET /api/access/doors/:id`) porte `remote` : `{ available
 
 1. Créer l'actionneur dans le PSIM (Équipements, Actionneurs) : type `lock` pour une porte, `gate` pour une barrière ou un portail, transport MQTT, **issue de secours cochée si la porte en est une** (une serrure d'issue de secours n'accepte jamais « verrouiller »). Copier la **clé de signature** (affichée une seule fois).
 2. Autoriser le compte MQTT de la passerelle pour cet actionneur (`PSIM_MQTT_GATEWAYS`, liste `actuators`), voir `docs/PASSERELLE.md` § 8.1.
-3. Déclarer l'actionneur dans la configuration de la passerelle **à deux endroits** : la section `actuators` du socle (identifiant, `keyFile`, `module: "acces-dahua"` ou `"acces-zkteco"`, actions et plafonds locaux `maxS`, `rest: "lock"`, `emergencyExit`) **et** la configuration du contrôleur dans le module (`actuators: { "GACHE-1": { "door": 1, "type": "lock" } }`, qui dit quelle porte du contrôleur il pilote). Le plafond local de la passerelle prime : un PSIM compromis ne peut pas tenir la porte ouverte plus longtemps.
+3. Déclarer l'actionneur dans la configuration de la passerelle **à deux endroits** : la section `actuators` du socle (identifiant, `keyFile`, `module: "acces-dahua"` ou `"acces-zkteco"`, actions et plafonds locaux `maxS`, `rest: "lock"`, `emergencyExit`) **et** la configuration du contrôleur dans le module (`actuators: { "GACHE-1": { "door": 1, "type": "lock" } }`, qui dit quelle porte du contrôleur il pilote). Le plafond local de la passerelle prime : un PSIM compromis ne peut pas tenir la porte ouverte plus longtemps. Pour que « Tout ouvrir » ouvre **15 minutes** (et non 10 s), la section `actuators` de la passerelle doit aussi **permettre l'action `evacuate`** : `"actions": { "unlock": { "maxS": 10 }, "evacuate": { "maxS": 900 }, "lock": {} }` pour une serrure, `"evacuate": {}` pour un portail ou une barrière. Sans cela la passerelle refuse l'ordre (`not_allowed`) ; la traduction de `evacuate` en opération sur le contrôleur est faite par les modules d'accès de la passerelle (lot d'intégration).
 4. Fiche de la porte (Accès, Portes), bloc « Ouverture à distance », administrateur : choisir l'actionneur et cliquer « Lier ». La fiche de la porte doit afficher « Ouverture à distance » avec ses boutons ; sinon la raison est écrite.
 5. **Recette** : ouvrir (impulsion) ; vérifier l'accusé « Accusée par l'équipement » ; vérifier que la porte se referme seule ; couper la passerelle (le bouton doit se désactiver : « Liaison coupée ») ; sur une issue de secours, vérifier que « Verrouiller » est absent et que le déverrouillage matériel (centrale incendie) fonctionne **sans** le PSIM.
 
@@ -356,6 +356,8 @@ La fiche d'une porte (`GET /api/access/doors/:id`) porte `remote` : `{ available
 4. Attendre l'état **« Accusée par l'équipement »** : « Envoyée » ne veut pas dire « ouverte ». « Échec : aucun accusé » veut dire que l'ordre a pu être exécuté : vérifier sur place.
 5. **Verrouiller** remet la porte en fonctionnement normal (badges actifs) ; c'est une action immédiate, sans raison ni mot de passe, et elle n'existe jamais sur une issue de secours. **Arrêter** stoppe une barrière tout de suite.
 
+**« Ouvrir N minutes »** : par défaut seule l'impulsion est proposée (la durée maximale d'une ouverture de serrure est de 10 s). L'administrateur relève la durée **porte par porte** : relever `maxS` de l'action `unlock` de l'actionneur dans le PSIM (Équipements, Actionneurs, Actions : par exemple `{"unlock":{"maxS":600}}`) **et** dans la section `actuators` de la passerelle (le plafond local prime) ; le bouton apparaît alors sur la fiche de la porte. Tant que ce n'est pas fait, le bouton est masqué et la fiche l'explique.
+
 Dans la fiche d'un **incident d'accès** (porte forcée, maintenue ouverte, refus répétés), le bloc « Ouverture à distance » apparaît pour la porte de l'incident, et le bouton « Commandes » met l'actionneur de cette porte en tête ; la commande est rattachée à l'incident. Chaque ouverture est journalisée avec sa raison, son auteur et l'incident.
 
 ### 11.4 Mode de porte (F19)
@@ -366,13 +368,25 @@ Dépendance de fusion : le moteur (`server/sources.ts`) répond aujourd'hui « e
 
 ### 11.5 « Tout ouvrir » (F20, évacuation)
 
-Réservé à l'**administrateur**. **Cela ne remplace jamais le déverrouillage matériel par la centrale incendie** : les issues de secours doivent s'ouvrir par ce dispositif, le PSIM n'en est jamais l'unique moyen (PRD § 8.9).
+Réservé à l'**administrateur**. **Cela ne remplace jamais le déverrouillage matériel par la centrale incendie** : les issues de secours doivent s'ouvrir par ce dispositif, le PSIM n'en est jamais l'unique moyen (PRD § 8.9, voir § 11.7).
 
-- `GET /api/access/evacuation` : aperçu des portes liées à un actionneur, avec l'action (`unlock` ou `open`), la durée maximale, et si la porte est prête ou pourquoi elle ne l'est pas. Rien n'est envoyé.
-- `POST /api/access/evacuation`, corps `{ reason, password, confirm: true, confirmPhrase: "TOUT OUVRIR", durationS? }` : **double confirmation** explicite (première boîte de dialogue avec l'avertissement, seconde avec raison, phrase `TOUT OUVRIR` et mot de passe). 428 si la confirmation, la phrase ou la raison manque, 403 si le mot de passe est faux (rien n'est envoyé), 409 si aucune porte n'est liée, 429 au-delà de 2 évacuations par minute et par administrateur.
-- Réponse : un résultat **par porte** (`sent`, `no_gateway` = aucune passerelle n'écoute l'actionneur, `refused` avec le message du service des commandes : mode maintenance, limite, actionneur inactif, lien incohérent ; `error`). L'échec d'une porte n'arrête pas les autres. Les accusés arrivent ensuite en temps réel, comme pour une commande ordinaire ; l'écran ne compte une porte « ouverte » qu'après son accusé, et dit quelles portes sont à ouvrir ou vérifier sur place.
-- Chaque ouverture est une vraie commande du canal signé (`commande_demandee`, raison `Tout ouvrir (lot xxxxxxxx) : ...`), donc soumise aux plafonds de la passerelle. La durée demandée (300 s par défaut) est ramenée au maximum configuré de chaque actionneur (10 s avec la configuration par défaut d'une serrure) et rapportée. Aucune file ni rejeu : si le PSIM redémarre, rien n'est renvoyé.
-- Journal infalsifiable : `access_evacuation` (qui, raison, nombre de portes) **avant** l'envoi (si l'écriture échoue, rien ne part), `access_evacuation_bilan` après ; échec du mot de passe : `access_evacuation_reauth_echec`.
+**Action `evacuate`.** « Tout ouvrir » n'utilise pas l'impulsion de 10 s des opérateurs : le catalogue des actionneurs a une action propre, `evacuate`, réservée à l'administrateur (`roles` ne peut pas contenir `operator`), ajoutée par défaut aux **nouveaux** actionneurs `lock` et `gate` :
+
+| Actionneur | `evacuate` | Retour |
+|---|---|---|
+| Serrure (`lock`) | ouverture de `maxS` secondes (défaut **900**, plafond 3 600) | retour automatique à `lock` à la fin, comme `unlock` (envoi `durationS` + 1 s, et l'équipement se referme seul) |
+| Serrure **issue de secours** | ouverture de `maxS` secondes | **aucun ordre `lock` n'est jamais envoyé** par le PSIM : la porte revient à son état par le réglage de l'équipement (sécurité positive). Choix le plus sûr : on ouvre, on ne referme jamais |
+| Portail, barrière (`gate`) | ouverture instantanée, **sans durée**, laissée ouverte | aucun retour automatique (§ 4.8 de `docs/COMMANDES.md` : fermer d'office sur une personne ou un véhicule est plus dangereux) ; fermeture sur place ou par un opérateur (« Fermer ») |
+
+**Actionneurs existants** : une base existante ne gagne **pas** l'action en silence. Pour l'activer, l'administrateur modifie l'actionneur (Équipements, Actionneurs, Actions) : `{"unlock":{"maxS":10},"evacuate":{"maxS":900}}` (serrure) ou `{"open":{},"close":{},"evacuate":{}}` (portail). **Sans l'action `evacuate`**, « Tout ouvrir » se replie sur l'impulsion (`unlock` ou `open`, bornée par son `maxS`) et le dit : dans l'aperçu et dans le bilan, la porte porte l'avertissement « ne s'ouvrira que N s : ajoutez l'action évacuation ».
+
+**Limite actuelle (passerelle)** : tant que les modules d'accès de la passerelle (`gateway/src/modules/acces-commun/actuator.ts`) ne traduisent pas `evacuate` (lot d'intégration), la passerelle refuse l'ordre (`not_supported` ou `not_allowed`) : la commande finit `refused`, la porte ne s'ouvre pas et l'écran ne la compte jamais ouverte. Seuls les actionneurs qui n'ont pas `evacuate` (se repliant sur `unlock` ou `open`) s'ouvrent aujourd'hui. À vérifier à la recette avant de compter sur « Tout ouvrir ».
+
+- `GET /api/access/evacuation` : aperçu des portes liées à un actionneur, avec l'action (`evacuate`, ou `unlock` / `open` en repli), la durée maximale (`null` pour un portail en `evacuate`), si la porte est prête ou pourquoi elle ne l'est pas, et l'avertissement de repli (`warning`). Rien n'est envoyé.
+- `POST /api/access/evacuation`, corps `{ reason, password, confirm: true, confirmPhrase: "TOUT OUVRIR", durationS? }` : **double confirmation** explicite (première boîte de dialogue avec l'avertissement, seconde avec raison, phrase `TOUT OUVRIR` et mot de passe). Durée par défaut **900 s** (15 minutes), ramenée au maximum configuré de chaque actionneur. 428 si la confirmation, la phrase ou la raison manque, 403 si le mot de passe est faux (rien n'est envoyé), 409 si aucune porte n'est liée, 429 au-delà de 2 évacuations par minute et par administrateur.
+- Réponse : un résultat **par porte** (`sent`, `no_gateway` = aucune passerelle n'écoute l'actionneur, `refused` avec le message du service des commandes : mode maintenance, limite, actionneur inactif, lien incohérent ; `error`), avec l'action envoyée, la durée réellement demandée et l'éventuel avertissement. L'échec d'une porte n'arrête pas les autres. Les accusés arrivent ensuite en temps réel, comme pour une commande ordinaire ; l'écran ne compte une porte « ouverte » qu'après son accusé, et dit quelles portes sont à ouvrir ou vérifier sur place.
+- Chaque ouverture est une vraie commande du canal signé (`commande_demandee`, raison `Tout ouvrir (lot xxxxxxxx) : ...`), donc soumise aux plafonds de la passerelle. Aucune file ni rejeu : si le PSIM redémarre, rien n'est renvoyé.
+- Journal infalsifiable : `access_evacuation` (qui, raison, nombre de portes) **avant** l'envoi (si l'écriture échoue, rien ne part), `access_evacuation_bilan` après (portes en échec, portes ouvertes brièvement faute d'action `evacuate`) ; échec du mot de passe : `access_evacuation_reauth_echec`.
 - Le bouton est dans Équipements, Actionneurs (administrateur).
 
 ### 11.6 Essai de bout en bout et mesures (PRD § 12)
@@ -387,6 +401,14 @@ Mesures locales (boucle locale, 20 essais chacune, deux lancements) :
 | Ordre d'ouverture, accusé reçu, 95e centile | 185 et 180 ms (médiane 124 ms) | moins de 2 s |
 
 Ces valeurs sont obtenues en boucle locale avec un faux contrôleur : elles montrent que le PSIM et la passerelle n'ajoutent presque aucun délai, pas la latence du réseau du site ni celle du matériel réel (point à mesurer à la recette sur le contrôleur Dahua pilote).
+
+### 11.7 Sécurité incendie : le PSIM n'ouvre jamais seul les issues de secours
+
+Décision de l'utilisateur : une **alarme incendie n'ouvre pas automatiquement** les issues de secours depuis le PSIM. L'ouverture est **manuelle seulement** (bouton « Ouvrir » de l'opérateur ou « Tout ouvrir » de l'administrateur, avec raison et mot de passe).
+
+- Le déverrouillage des issues en cas d'incendie relève de la **centrale incendie** et de la **sécurité positive des serrures** (la serrure se libère quand le courant ou le signal de la centrale tombe), pas du PSIM. L'installation doit fonctionner **sans** le PSIM : la recette le vérifie (coupure de courant : porte libre).
+- Aucune règle du PSIM ne déclenche une commande d'ouverture à partir d'une alarme incendie ; un incident incendie ne crée jamais de commande. Le PSIM ne peut pas non plus verrouiller une issue de secours (F18).
+- « Tout ouvrir » aide l'opérateur à ouvrir les portes d'accès et les barrières pendant une évacuation ; il ne remplace jamais le dispositif matériel.
 
 ## 12. Titulaires, badges, groupes, visiteurs et synchronisation (lot AC5, phase 2)
 

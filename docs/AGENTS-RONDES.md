@@ -296,3 +296,17 @@ devant (pris pour un circuit).
 Reste à vérifier sur un vrai téléphone Android, avec le certificat installé : NFC, lecture QR par l'appareil photo,
 service worker et installation, son et vibration, vidéo en direct sur une caméra réelle. Hors chantier (phase 2,
 lot AG6) : F7, F19 repli SMS, F20, F21, F23.
+
+## Avenant 4 : préparation de l'essai réel (lot S7, 17 octobre 2026)
+
+- **Certificat** : `npm run make-cert` crée désormais une petite autorité locale (`ca.pem` / `ca-key.pem`, 10 ans, CA:TRUE,
+  pathlen 0) qui signe le certificat du serveur (825 jours, SAN, serverAuth, CA:FALSE). `cert.pem` = serveur + autorité
+  (le PSIM envoie la chaîne complète), `key.pem` = clé du serveur. `--force` renouvelle le serveur et garde l'autorité
+  (rien à refaire sur les téléphones), `--nouvelle-autorite` la remplace, `--autosigne` garde l'ancien certificat unique.
+  `GET /api/agent-cert` ne sert que l'autorité (`server/cert-info.ts`, `pickPhoneCa`), jamais une clé ni le certificat du
+  serveur ; un certificat unique CA:TRUE (ancien mode) est servi tel quel. L'ancien certificat de production était déjà
+  CA:TRUE (défaut d'OpenSSL) mais sans renouvellement possible sans réinstallation.
+- **Contrôle** : `npm run check-agents` (`:prod`, option `--live`) : HTTPS, certificat à installer, noms du certificat,
+  `PSIM_PUBLIC_URL`, écoute réseau, plan, agents, téléphones, circuits, points placés.
+- **Étiquettes** : QR imprimé à 35 mm (symbole ≥ 3 cm), test `test/etiquettes.test.ts`.
+- **Guide** : `docs/ESSAI-AGENTS-KOUROUMA.md`.

@@ -54,19 +54,21 @@ interface Mod {
   EMERGENCY_NOTE: string;
   doorModeText: (door: unknown) => { known: boolean; text: string; at: number | null };
   pulseDurationS: (cfg?: Cfg) => number | null;
-  minutesLimit: (cfg?: Cfg) => { ok: boolean; maxMinutes: number; reason: string | null };
+  minutesLimit: (cfg?: Cfg, role?: string) => { ok: boolean; maxMinutes: number; reason: string | null };
   minutesToSeconds: (m: unknown, cfg?: Cfg) => number | null;
   minutesLabel: (n: number) => string;
-  doorActionPlan: (x: { door?: unknown; remote?: unknown; actuator?: Actuator | null; maintenance?: boolean }) => Plan;
+  doorActionPlan: (x: { door?: unknown; remote?: unknown; actuator?: Actuator | null; maintenance?: boolean; role?: string }) => Plan;
   commandStateText: (c: unknown) => string;
   commandTone: (c: unknown) => string;
   evacuationPhraseOk: (t: unknown) => boolean;
   evacuationPayload: (x: { reason?: string; phrase?: string; password?: string }) => { ok: boolean; missing?: string[]; body?: Record<string, unknown> };
-  evacuationPreview: (d: unknown) => { total: number; ready: number; notReady: unknown[]; canGo: boolean };
+  evacuationPreview: (d: unknown) => { total: number; ready: number; notReady: unknown[]; canGo: boolean; full: number; brief: number; evacuationS: number | null; warned: number };
   evacuationRowState: (r: unknown, c?: unknown) => RowState;
   evacuationBilan: (s: RowState[]) => { opened: number; total: number; pending: number; text: string; complete: boolean; allOpen: boolean };
   actuatorTypeForKind: (k: unknown) => string | null;
   compatibleActuators: (x: { door: unknown; actuators: unknown[]; doors: unknown[] }) => { id: string }[];
+  evacuationSummary: (p: unknown) => string;
+  evacuationDurationText: (p: unknown) => string;
   doorActions: unknown;
   evacuationButton: unknown;
 }
@@ -191,6 +193,50 @@ describe('liaison porte <-> actionneur (administrateur)', () => {
     assert.match(src, /const isAdmin = core\.S\.me\?\.role === 'admin'/);
     assert.match(src, /if \(isAdmin\) \{[\s\S]*?Actionneur lié/);
     assert.match(read('dooractions.css'), /.dooract-link/);
+  });
+});
+
+describe('T3b : aide « Ouvrir N minutes » selon le role, action evacuate', () => {
+  it('maxS < 60 s : l’administrateur sait comment activer, l’operateur doit demander', () => {
+    const adm = m.minutesLimit({ minS: 1, maxS: 10 }, 'admin');
+    assert.equal(adm.ok, false);
+    assert.match(adm.reason ?? '', /relever maxS de l’action unlock dans le PSIM \(Équipements, Actionneurs, Actions\) ET dans la section actuators de la passerelle/);
+    const op = m.minutesLimit({ minS: 1, maxS: 10 }, 'operator');
+    assert.match(op.reason ?? '', /Demandez à un administrateur/);
+    assert.doesNotMatch(op.reason ?? '', /passerelle/);
+    const plan = m.doorActionPlan({ door: {}, remote: remote(), actuator: lock({ actions: { unlock: { minS: 1, maxS: 10 }, lock: {} } }), role: 'admin' });
+    assert.match(plan.minutes?.reason ?? '', /passerelle/);
+  });
+
+  it('apercu : portes ouvertes toute l’evacuation et portes ouvertes brievement, avec avertissements', () => {
+    const doors = [
+      { ready: true, action: 'evacuate', maxDurationS: 900, warning: null },
+      { ready: true, action: 'evacuate', maxDurationS: null, warning: null },
+      { ready: true, action: 'unlock', maxDurationS: 10, warning: 'ne s’ouvrira que 10 s' },
+      { ready: false, action: 'open', problem: 'liaison coupée' },
+    ];
+    const p = m.evacuationPreview(doors);
+    assert.deepEqual([p.full, p.brief, p.evacuationS, p.warned], [2, 1, 900, 1]);
+    assert.equal(m.evacuationSummary(p), '2 portes s’ouvriront pour toute la durée d’évacuation (15 minutes puis reverrouillage automatique), 1 ne s’ouvrira que brièvement.');
+    assert.match(m.evacuationDurationText(p), /15 minutes puis se reverrouillent seules/);
+    assert.match(m.evacuationDurationText(p), /portails et barrières restent ouverts/);
+    assert.doesNotMatch(m.evacuationDurationText(p), /5 minutes au plus/);
+    assert.equal(m.evacuationSummary(m.evacuationPreview([])), 'Aucune porte ne recevra d’ordre.');
+  });
+
+  it('le warning de chaque porte est conserve dans le bilan, sans changer le calcul des portes ouvertes', () => {
+    const s = m.evacuationRowState({ status: 'sent', action: 'unlock', warning: 'brève' }, { state: 'acked' }) as RowState & { warning: string | null };
+    assert.equal(s.warning, 'brève');
+    assert.equal(s.open, true);
+    assert.equal((m.evacuationRowState({ status: 'sent' }, null) as RowState & { warning: string | null }).warning, null);
+    assert.equal(m.evacuationBilan([s]).text, '1 porte sur 1 ouverte');
+  });
+
+  it('evacuate : libelle « Évacuation », jamais un bouton de la fiche de porte', () => {
+    assert.match(read('commands.js'), /evacuate: 'Évacuation'/);
+    assert.match(read('commands.js'), /"evacuate":{"maxS":900}/);
+    const p = m.doorActionPlan({ door: {}, remote: remote(), actuator: lock({ allowed: ['unlock', 'lock', 'evacuate'], actions: { unlock: { minS: 1, maxS: 600 }, lock: {}, evacuate: { minS: 1, maxS: 900 } } }) });
+    assert.ok(!p.buttons.some((b) => b.action === 'evacuate'));
   });
 });
 
