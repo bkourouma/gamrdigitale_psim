@@ -56,7 +56,7 @@ interface Rules {
   TRIAL_DAYS: number[];
   ARMED_NOTE: string;
   defaultForm: () => Form;
-  formFromRule: (rule: { name: string; enabled: boolean; spec: RuleSpec }) => Form;
+  formFromRule: (rule: { name: string; enabled: boolean; spec: RuleSpec; needsReview?: boolean }) => Form;
   buildSpec: (form: Form) => RuleSpec;
   formKey: (form: Form) => string;
   formProblems: (form: Form, ctx?: { cameraIds: Set<string>; zones: Set<string> } | null) => Problem[];
@@ -91,10 +91,20 @@ interface Rules {
   restoreForAnyone: (a: { triggerMode: 'appears' | 'stays'; severity: 'warning' | 'critical'; autoTrigger: boolean; autoSeverity: 'warning' | 'critical' | null; touched: boolean }) => { triggerMode: 'appears' | 'stays'; severity: 'warning' | 'critical' };
   severityTexts: (face: boolean) => { warning: string; critical: string };
   appearsTexts: (who: Who) => { label: string; desc: string };
-  listChoices: (lists: FaceList[], ...whos: (Who | null)[]) => { id: string; label: string; note: string; missing: boolean }[];
-  selectedListIndex: (items: { id: string; label: string }[], who: Who) => number;
-  facesView: (faces: { status: string; lists?: FaceList[]; notes?: string[] }, who: Who, stored?: Who | null) => { kind: 'loading' | 'error' | 'empty' | 'select'; items: { id: string; label: string; note: string; missing: boolean }[]; notes: string[] };
-  formFromProposal: (proposal: { name: string; spec: RuleSpec; summary?: string }, ctx?: { cameraIds?: Set<string>; zones?: Set<string>; lists?: { id: string }[] | null }) => { form: Form; issues: string[] };
+  REVIEW_NOTE: string;
+  REVIEW_PERSON_NOTE: string;
+  UNSPECIFIED_CAMERA: string;
+  isDeviceWho: (who: unknown) => boolean;
+  whoToReview: (who: unknown) => Who;
+  reviewNote: (who: unknown) => string;
+  ruleState: (rule: { enabled?: boolean; needsReview?: boolean }) => { running: boolean; review: boolean; word: string; title: string };
+  serverProblem: (message: unknown) => { key: 'who' | 'where' | null; box: string; text: string };
+  personCameraChoices: (cameras: { id: string; name: string; zone: string }[], current: string) => { id: string; label: string; missing: boolean }[];
+  listMatches: (list: unknown, who: unknown) => boolean;
+  listChoices: (lists: FaceList[], whos?: (Who | null)[], cameraName?: (id: string) => string) => ListItem[];
+  selectedListIndex: (items: ListItem[], who: Who) => number;
+  facesView: (faces: { status: string; lists?: FaceList[]; notes?: string[] }, who: Who, stored?: Who | null, cameraName?: (id: string) => string) => { kind: 'loading' | 'error' | 'empty' | 'select'; items: ListItem[]; notes: string[] };
+  formFromProposal: (proposal: { name: string; spec: RuleSpec; summary?: string }, ctx?: { cameraIds?: Set<string>; zones?: Set<string>; lists?: { id: string; name?: string; cameraId?: string; deviceCameraIds?: string[] }[] | null }) => { form: Form; issues: string[] };
   historyForAssist: (turns: Turn[]) => Turn[];
   sourceTextOf: (turns: Turn[]) => string;
   nextAssistTurns: (turns: Turn[], sent: string, result: unknown) => { turns: Turn[]; sourceText: string };
@@ -104,6 +114,20 @@ interface FaceList {
   name: string;
   cameraId: string;
   cameraName: string;
+  /** Cameras du PSIM lues par le meme appareil (la representante comprise) ; absent dans une ancienne reponse. */
+  deviceCameraIds?: string[];
+}
+/** Entree du menu des listes : le couple (camera, liste), son etiquette et sa remarque. */
+interface ListItem {
+  key: string;
+  id: string;
+  cameraId: string;
+  deviceCameraIds: string[];
+  cameraName: string;
+  name: string;
+  label: string;
+  note: string;
+  missing: boolean;
 }
 interface Turn {
   role: 'user' | 'assistant';
@@ -204,6 +228,9 @@ describe('ecran « Regles » : page et navigation', () => {
       'Les listes de visages n’ont pas pu être lues',
       'Réessayer',
       'Répondre',
+      'À revoir',
+      'Cette règle doit être réenregistrée : choisissez à nouveau la liste.',
+      'Caméra qui connaît cette personne',
     ]) {
       assert.ok(all.includes(text), `texte absent : ${text}`);
     }
@@ -546,22 +573,27 @@ describe('ecran « Regles » : un brouillon n’est jamais ecrase', () => {
 
   it("une carte de regle est mise a jour sur place : une confirmation ouverte survit au rafraichissement", () => {
     assert.match(code, /const card = cards\.get\(rule\.id\)|let card = cards\.get\(rule\.id\)/);
-    assert.match(code, /if \(!c\.busy\) toggle\.checked = rule\.enabled/);
+    assert.match(code, /if \(!c\.busy\) \{\s*toggle\.checked = state\.running;/, 'pendant une action, l’interrupteur n’est pas touche');
     assert.match(code, /current\.length !== order\.length \|\| current\.some\(\(el, i\) => el !== order\[i\]\)/);
   });
 
   it("interrupteur : un vrai role=switch avec mot et icone ; l'etat « Inactive » se dit en mots", () => {
     assert.match(code, /type: 'checkbox', role: 'switch'/);
-    assert.match(code, /rule\.enabled \? 'Active' : 'Inactive'/);
-    assert.match(code, /icon\(rule\.enabled \? 'state-ok' : 'state-offline'\)/);
+    // L'etat vient de ruleState : « Active », « Inactive » ou « À revoir » (une regle a revoir n'est jamais « Active »).
+    assert.match(code, /if \(rule\?\.enabled\) return \{ running: true, review: false, word: 'Active'/);
+    assert.match(code, /word: 'Inactive'/);
+    assert.match(code, /stateWord\.textContent = state\.word;/);
+    assert.match(code, /icon\(state\.review \? 'state-warning' : state\.running \? 'state-ok' : 'state-offline'\)/);
   });
 });
 
 // ------------------------------------------------------------------------------------------------ visages et assistant
 
-const LIST_WHO: Who = { type: 'list', listId: '1', listName: 'Résidents et personnel' };
-const PERSON_WHO: Who = { type: 'person', personId: 'P-42', personName: 'Awa Koné' };
-const WHOS: Who[] = [{ type: 'anyone' }, { type: 'unknown' }, LIST_WHO, { type: 'list', listId: '7', listName: 'Interdits' }, PERSON_WHO];
+const LIST_WHO: Who = { type: 'list', cameraId: 'D05', listId: '1', listName: 'Résidents et personnel' };
+const PERSON_WHO: Who = { type: 'person', cameraId: 'D05', personId: 'P-42', personName: 'Awa Koné' };
+const WHOS: Who[] = [{ type: 'anyone' }, { type: 'unknown' }, LIST_WHO, { type: 'list', cameraId: 'D01', listId: '7', listName: 'Interdits' }, PERSON_WHO];
+/** Une liste de visages « Famille », sur la camera D05 sauf indication contraire. */
+const listOf = (over: Partial<Extract<Who, { type: 'list' }>> = {}): Who => ({ type: 'list', cameraId: 'D05', listId: '1', listName: 'Famille', ...over });
 const LISTS = [
   { id: '1', name: 'Résidents et personnel', cameraId: 'D05', cameraName: 'Avant cour' },
   { id: '2', name: 'Interdits', cameraId: 'D05', cameraName: 'Avant cour' },
@@ -597,8 +629,36 @@ describe('ecran « Regles » : case « Qui » etendue aux visages, meme verifica
   it('les trois phrases de visage sont celles du serveur', () => {
     const phrase = (who: Who) => rules.liveSentence(form({ who }), nameOf) ?? '';
     assert.match(phrase({ type: 'unknown' }), /^Prévenir \(avertissement\) si un visage inconnu est vu devant la caméra « Avant cour », à toute heure ;/);
-    assert.match(phrase(LIST_WHO), /si une personne de la liste « Résidents et personnel » est reconnue devant/);
-    assert.match(phrase(PERSON_WHO), /si la personne « Awa Koné » est reconnue devant/);
+    assert.match(phrase(LIST_WHO), /si une personne de la liste « Résidents et personnel » \(caméra « Avant cour »\) est reconnue devant/);
+    assert.match(phrase(PERSON_WHO), /si la personne « Awa Koné » \(caméra « Avant cour »\) est reconnue devant/);
+  });
+
+  it('la camera de la liste est dite dans la phrase ; sans camera : « caméra non précisée » (comme le serveur)', () => {
+    assert.match(rules.describeSpec(rules.buildSpec(form({ who: listOf({ cameraId: 'D01' }) })), nameOf), /de la liste « Famille » \(caméra « Portail »\) est reconnue/);
+    // Camera inconnue de l'ecran : son identifiant, comme le serveur.
+    assert.match(rules.describeSpec(rules.buildSpec(form({ who: listOf({ cameraId: 'ZZ' }) })), nameOf), /\(caméra « ZZ »\)/);
+    const old = { type: 'list', listId: '1', listName: 'Famille' } as unknown as Who;
+    const text = rules.describeSpec({ ...rules.buildSpec(form()), who: old }, nameOf);
+    assert.match(text, /si une personne de la liste « Famille » \(caméra non précisée\) est reconnue/);
+    assert.equal(text, describeRule({ ...rules.buildSpec(form()), who: old }, { cameraName: nameOf }), 'meme phrase que le serveur, camera absente comprise');
+    assert.equal(rules.UNSPECIFIED_CAMERA, '(caméra non précisée)');
+    const person = { type: 'person', personId: 'P1', personName: 'Awa' } as unknown as Who;
+    assert.equal(rules.describeSpec({ ...rules.buildSpec(form()), who: person }, nameOf), describeRule({ ...rules.buildSpec(form()), who: person }, { cameraName: nameOf }));
+  });
+
+  it('le « Qui » envoye au serveur porte la camera (liste et personne), telle quelle', () => {
+    assert.deepEqual(rules.buildSpec(form({ who: listOf({ cameraId: 'D01' }) })).who, { type: 'list', cameraId: 'D01', listId: '1', listName: 'Famille' });
+    assert.deepEqual(rules.buildSpec(form({ who: PERSON_WHO })).who, PERSON_WHO);
+    assert.deepEqual(rules.cloneWho({ type: 'list', listId: '1', listName: 'A' }), { type: 'list', cameraId: '', listId: '1', listName: 'A' }, 'camera absente : texte vide, jamais « undefined »');
+    assert.equal(rules.isDeviceWho(LIST_WHO), true);
+    assert.equal(rules.isDeviceWho(PERSON_WHO), true);
+    assert.equal(rules.isDeviceWho({ type: 'unknown' }), false);
+    assert.equal(rules.isDeviceWho(undefined), false);
+    // Deux formulaires qui ne different que par la camera ne sont pas le meme brouillon.
+    assert.notEqual(rules.formKey(form({ who: listOf({ cameraId: 'D05' }) })), rules.formKey(form({ who: listOf({ cameraId: 'D01' }) })));
+    // Le serveur accepte et ne change rien.
+    const spec = rules.buildSpec(form({ who: listOf({ cameraId: 'D01' }) }));
+    assert.deepEqual(validateSpec(spec, CTX), spec);
   });
 
   it('pour un visage, « reste plus de N minutes » est refuse par l’ecran comme par le serveur', () => {
@@ -623,20 +683,24 @@ describe('ecran « Regles » : case « Qui » etendue aux visages, meme verifica
       }
     };
     const keys = (f: Form) => rules.formProblems(f, CTX).map((p) => p.key);
-    const none = form({ who: { type: 'list', listId: '', listName: '' } });
+    const none = form({ who: { type: 'list', cameraId: '', listId: '', listName: '' } });
     assert.deepEqual(keys(none), ['who']);
     assert.match(rules.formProblems(none, CTX)[0].message, /^Choisissez une liste de visages\.$/);
     assert.equal(serverAccepts(none), false);
     const cases: [string, Who][] = [
-      ['id de 64', { type: 'list', listId: 'x'.repeat(rules.MAX_FACE_ID), listName: 'A' }],
-      ['id de 65', { type: 'list', listId: 'x'.repeat(rules.MAX_FACE_ID + 1), listName: 'A' }],
-      ['nom de 80', { type: 'list', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME) }],
-      ['nom de 81', { type: 'list', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME + 1) }],
-      ['nom vide', { type: 'list', listId: '1', listName: '   ' }],
-      ['nom avec controle', { type: 'list', listId: '1', listName: 'A\u0007B' }],
-      ['nom avec caractere invisible', { type: 'list', listId: '1', listName: 'A​B' }],
-      ['personne sans id', { type: 'person', personId: '', personName: 'Awa' }],
-      ['personne sans nom', { type: 'person', personId: 'P1', personName: '' }],
+      ['id de 64', { type: 'list', cameraId: 'D05', listId: 'x'.repeat(rules.MAX_FACE_ID), listName: 'A' }],
+      ['id de 65', { type: 'list', cameraId: 'D05', listId: 'x'.repeat(rules.MAX_FACE_ID + 1), listName: 'A' }],
+      ['nom de 80', { type: 'list', cameraId: 'D05', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME) }],
+      ['nom de 81', { type: 'list', cameraId: 'D05', listId: '1', listName: 'x'.repeat(rules.MAX_FACE_NAME + 1) }],
+      ['nom vide', { type: 'list', cameraId: 'D05', listId: '1', listName: '   ' }],
+      ['nom avec controle', { type: 'list', cameraId: 'D05', listId: '1', listName: 'A\u0007B' }],
+      ['nom avec caractere invisible', { type: 'list', cameraId: 'D05', listId: '1', listName: 'A​B' }],
+      ['personne sans id', { type: 'person', cameraId: 'D05', personId: '', personName: 'Awa' }],
+      ['personne sans nom', { type: 'person', cameraId: 'D05', personId: 'P1', personName: '' }],
+      ['liste sans camera', { type: 'list', cameraId: '', listId: '1', listName: 'A' }],
+      ['liste d’une camera inconnue', { type: 'list', cameraId: 'ZZ', listId: '1', listName: 'A' }],
+      ['personne sans camera', { type: 'person', cameraId: '', personId: 'P1', personName: 'Awa' }],
+      ['personne d’une camera inconnue', { type: 'person', cameraId: 'ZZ', personId: 'P1', personName: 'Awa' }],
     ];
     for (const [label, who] of cases) {
       const f = form({ who });
@@ -647,17 +711,30 @@ describe('ecran « Regles » : case « Qui » etendue aux visages, meme verifica
     assert.match(SERVER_RULES, /const MAX_FACE_ID = 64;/);
     assert.match(SERVER_RULES, /const MAX_FACE_NAME = 80;/);
     // Espaces et composition Unicode : l'ecran envoie ce que le serveur gardera.
-    const messy = form({ who: { type: 'list', listId: ' 1 ', listName: '  Résidents   et\tpersonnel ' } });
+    const messy = form({ who: { type: 'list', cameraId: 'D05', listId: ' 1 ', listName: '  Résidents   et\tpersonnel ' } });
     assert.deepEqual(rules.buildSpec(messy).who, LIST_WHO);
     assert.deepEqual(validateSpec(rules.buildSpec(messy), CTX).who, LIST_WHO);
-    const decomposed = form({ who: { type: 'list', listId: '1', listName: 'Résidents et personnel' } });
+    const decomposed = form({ who: { type: 'list', cameraId: 'D05', listId: '1', listName: 'Résidents et personnel' } });
     assert.deepEqual(rules.buildSpec(decomposed).who, LIST_WHO);
   });
 
+  it('la camera de la liste est exigee en mots clairs : absente, ou disparue du PSIM ; la personne aussi', () => {
+    const msg = (who: Who, ctx: { cameraIds: Set<string>; zones: Set<string> } | null = CTX) => rules.formProblems(form({ who }), ctx).filter((p) => p.key === 'who').map((p) => p.message);
+    assert.deepEqual(msg(listOf({ cameraId: '' })), ['Choisissez à nouveau la liste : la caméra qui la lit n’est pas précisée.']);
+    assert.deepEqual(msg(listOf({ cameraId: 'ZZ' })), ['La caméra de la liste n’existe plus (« ZZ ») : choisissez à nouveau la liste.']);
+    assert.deepEqual(msg({ type: 'person', cameraId: '', personId: 'P1', personName: 'Awa' }), ['Choisissez la caméra qui connaît cette personne.']);
+    assert.deepEqual(msg({ type: 'person', cameraId: 'ZZ', personId: 'P1', personName: 'Awa' }), ['La caméra de la personne n’existe plus (« ZZ ») : choisissez-en une autre.']);
+    // Sans contexte (cameras pas encore connues) : l'existence de la camera n'est pas jugee, sa presence oui.
+    assert.deepEqual(msg(listOf({ cameraId: 'ZZ' }), null), []);
+    assert.equal(msg(listOf({ cameraId: '' }), null).length, 1);
+    // Un formulaire dont la liste n'a pas de camera n'a pas de phrase en direct (cases incompletes).
+    assert.equal(rules.liveSentence(form({ who: listOf({ cameraId: '' }) }), nameOf), null);
+  });
+
   it('une liste qui n’est plus lue n’empeche pas d’enregistrer : seul le contexte des cameras et zones est controle', () => {
-    const f = form({ who: { type: 'list', listId: 'disparue', listName: 'Ancienne base' } });
+    const f = form({ who: { type: 'list', cameraId: 'D05', listId: 'disparue', listName: 'Ancienne base' } });
     assert.deepEqual(rules.formProblems(f, CTX), []);
-    assert.deepEqual(validateSpec(rules.buildSpec(f), CTX).who, { type: 'list', listId: 'disparue', listName: 'Ancienne base' });
+    assert.deepEqual(validateSpec(rules.buildSpec(f), CTX).who, { type: 'list', cameraId: 'D05', listId: 'disparue', listName: 'Ancienne base' });
   });
 
   it('une regle enregistree rouvre le meme formulaire pour chaque « Qui » (Modifier -> Enregistrer ne change rien)', () => {
@@ -676,6 +753,7 @@ describe('ecran « Regles » : case « Qui » etendue aux visages, meme verifica
     assert.equal((spec.who as { listName: string }).listName, 'Résidents et personnel');
     assert.notEqual(rules.formKey(form({ who: LIST_WHO })), rules.formKey(form({ who: { type: 'unknown' } })));
     assert.notEqual(rules.formKey(form({ who: LIST_WHO })), rules.formKey(form({ who: { ...LIST_WHO, listId: '2' } })));
+    assert.notEqual(rules.formKey(form({ who: LIST_WHO })), rules.formKey(form({ who: { ...LIST_WHO, cameraId: 'D01' } })), 'meme numero sur une autre camera : une autre liste');
   });
 
   it('une regle sans « Qui » (ancienne forme) se rouvre comme « n’importe qui »', () => {
@@ -743,39 +821,181 @@ describe('ecran « Regles » : « Si » et « Alors » suivent le « Qui »', ()
 });
 
 describe('ecran « Regles » : listes de visages (lecture de /api/faces/lists)', () => {
-  it('menu : « Nom de la liste » ; la camera source n’est precisee que s’il y a plusieurs sources', () => {
-    assert.deepEqual(rules.listChoices(LISTS, { type: 'anyone' }).map((i) => [i.id, i.label, i.note, i.missing]), [['1', 'Résidents et personnel', '', false], ['2', 'Interdits', '', false]]);
-    const two = [...LISTS, { id: '1', name: 'Résidents', cameraId: 'D09', cameraName: 'Portail' }];
-    assert.deepEqual(rules.listChoices(two, { type: 'anyone' }).map((i) => [i.label, i.note]), [['Résidents et personnel', 'Avant cour'], ['Interdits', 'Avant cour'], ['Résidents', 'Portail']]);
-    assert.deepEqual(rules.listChoices([{ id: '5', name: '', cameraId: 'D05', cameraName: '' }], null).map((i) => i.label), ['5'], 'sans nom : l’identifiant');
+  const PORTAIL: FaceList[] = [
+    { id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' },
+    { id: '2', name: 'Interdits', cameraId: 'D01', cameraName: 'Portail' },
+  ];
+  const ESCALIER: FaceList = { id: '1', name: 'Visiteurs', cameraId: 'D08', cameraName: 'Escalier' };
+  const row = (i: ListItem) => [i.cameraId, i.id, i.name, i.label, i.note, i.missing];
+
+  it('un seul appareil : le menu garde l’etiquette actuelle, « Nom de la liste », sans camera', () => {
+    const items = rules.listChoices(LISTS, [{ type: 'anyone' }]);
+    assert.deepEqual(items.map(row), [
+      ['D05', '1', 'Résidents et personnel', 'Résidents et personnel', '', false],
+      ['D05', '2', 'Interdits', 'Interdits', '', false],
+    ]);
+    assert.ok(items.every((i) => !i.label.includes('caméra')));
+    assert.deepEqual(items.map((i) => i.cameraName), ['Avant cour', 'Avant cour']);
+    assert.deepEqual(rules.listChoices([{ id: '5', name: '', cameraId: 'D05', cameraName: '' }], null as unknown as Who[]).map((i) => i.label), ['5'], 'sans nom : l’identifiant');
+  });
+
+  it('plusieurs appareils : chaque option porte le couple (camera, liste) et se lit « Famille — caméra Portail »', () => {
+    const items = rules.listChoices([...PORTAIL, ESCALIER], []);
+    assert.deepEqual(items.map(row), [
+      ['D01', '1', 'Famille', 'Famille — caméra Portail', '', false],
+      ['D01', '2', 'Interdits', 'Interdits — caméra Portail', '', false],
+      ['D08', '1', 'Visiteurs', 'Visiteurs — caméra Escalier', '', false],
+    ]);
+    assert.equal(new Set(items.map((i) => i.key)).size, 3, 'trois couples distincts, dont deux listes « 1 »');
+    // Le nom enregistre dans la regle est le nom de la liste, jamais l'etiquette.
+    assert.equal(items[0].name, 'Famille');
+  });
+
+  it('deux entrees de meme nom : l’etiquette dit la camera, et le numero si cela ne suffit pas', () => {
+    const same = rules.listChoices([{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }, { id: '1', name: 'Famille', cameraId: 'D08', cameraName: 'Escalier' }], []);
+    assert.deepEqual(same.map((i) => i.label), ['Famille — caméra Portail', 'Famille — caméra Escalier']);
+    // Meme nom sur une seule camera : deux entrees identiques a l'ecran seraient un piege, le numero les distingue.
+    const twin = rules.listChoices([{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }, { id: '2', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }], []);
+    assert.deepEqual(twin.map((i) => i.label), ['Famille — caméra Portail (n° 1)', 'Famille — caméra Portail (n° 2)']);
+    // Le nom de la camera vient de la lecture, sinon de l'ecran, sinon son identifiant.
+    const bare = [{ id: '1', name: 'A', cameraId: 'D01' }, { id: '1', name: 'B', cameraId: 'D08' }] as FaceList[];
+    assert.deepEqual(rules.listChoices(bare, [], nameOf).map((i) => i.label), ['A — caméra Portail', 'B — caméra Escalier']);
+    assert.deepEqual(rules.listChoices(bare, []).map((i) => i.label), ['A — caméra D01', 'B — caméra D08']);
   });
 
   it('une liste enregistree qui n’est plus lue reste proposee, avec son nom, et se retrouve dans le menu', () => {
-    const gone: Who = { type: 'list', listId: '99', listName: 'Ancienne base' };
-    const items = rules.listChoices(LISTS, gone);
-    assert.deepEqual(items.at(-1), { id: '99', label: 'Ancienne base', note: 'Liste non retrouvée', missing: true });
+    const gone: Who = { type: 'list', cameraId: 'D05', listId: '99', listName: 'Ancienne base' };
+    const items = rules.listChoices(LISTS, [gone]);
+    assert.deepEqual(row(items.at(-1)!), ['D05', '99', 'Ancienne base', 'Ancienne base', 'Liste non retrouvée', true]);
     assert.equal(rules.selectedListIndex(items, gone), 2);
     // Apres avoir choisi une autre liste, la liste enregistree reste proposee (via `stored`) pour revenir en arriere.
-    const afterPick = rules.listChoices(LISTS, LIST_WHO, gone);
+    const afterPick = rules.listChoices(LISTS, [LIST_WHO, gone]);
     assert.deepEqual(afterPick.at(-1)?.label, 'Ancienne base');
     assert.equal(afterPick.filter((i) => i.id === '99').length, 1);
     // Une liste lue n’est pas ajoutee deux fois.
-    assert.equal(rules.listChoices(LISTS, LIST_WHO, LIST_WHO).length, 2);
-    assert.equal(rules.listChoices(LISTS, { type: 'list', listId: '', listName: '' }).length, 2);
+    assert.equal(rules.listChoices(LISTS, [LIST_WHO, LIST_WHO]).length, 2);
+    assert.equal(rules.listChoices(LISTS, [{ type: 'list', cameraId: '', listId: '', listName: '' }]).length, 2);
+    // Sans camera, une liste enregistree n'est pas proposee : elle ne correspondrait a aucun appareil.
+    assert.equal(rules.listChoices(LISTS, [{ type: 'list', cameraId: '', listId: '99', listName: 'Ancienne base' }]).length, 2);
+    // Avec plusieurs appareils, la liste non retrouvee dit aussi sa camera (nom pris a l'ecran).
+    const several = rules.listChoices([...PORTAIL, ESCALIER], [{ type: 'list', cameraId: 'D05', listId: '99', listName: 'Ancienne base' }], nameOf);
+    assert.deepEqual(several.at(-1)?.label, 'Ancienne base — caméra Avant cour');
+    assert.deepEqual(several.at(-1)?.note, 'Liste non retrouvée');
   });
 
-  it('deux sources qui numerotent pareil : le choix suit identifiant ET nom', () => {
-    const two = [{ id: '1', name: 'Résidents', cameraId: 'A', cameraName: 'A' }, { id: '1', name: 'Visiteurs', cameraId: 'B', cameraName: 'B' }];
-    const items = rules.listChoices(two, { type: 'anyone' });
-    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Visiteurs' }), 1);
-    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Résidents' }), 0);
-    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '1', listName: 'Renomme' }), 0, 'nom change : l’identifiant seul');
-    assert.equal(rules.selectedListIndex(items, { type: 'list', listId: '', listName: '' }), -1);
+  it('le meme numero sur un autre appareil n’est PAS la meme liste : il est propose a part, « non retrouvee »', () => {
+    // La regle vise la liste « 1 » de D08 ; seule la liste « 1 » de D01 est lue.
+    const who: Who = { type: 'list', cameraId: 'D08', listId: '1', listName: 'Visiteurs' };
+    const items = rules.listChoices(PORTAIL, [who], nameOf);
+    assert.equal(items.length, 3);
+    assert.deepEqual(row(items[2]), ['D08', '1', 'Visiteurs', 'Visiteurs — caméra Escalier', 'Liste non retrouvée', true]);
+    assert.equal(rules.selectedListIndex(items, who), 2, 'la liste de D08, pas celle de D01 qui a le meme numero');
+  });
+
+  it('deux listes « 1 » sur deux appareils restent distinctes a la selection et a la re-selection d’une regle existante', () => {
+    const lists = [{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }, { id: '1', name: 'Famille', cameraId: 'D08', cameraName: 'Escalier' }];
+    const items = rules.listChoices(lists, []);
+    const on = (cameraId: string, listName = 'Famille'): Who => ({ type: 'list', cameraId, listId: '1', listName });
+    assert.equal(rules.selectedListIndex(items, on('D01')), 0);
+    assert.equal(rules.selectedListIndex(items, on('D08')), 1);
+    assert.equal(rules.selectedListIndex(items, on('D01', 'Autre nom')), 0, 'liste renommee sur l’appareil : le couple (camera, numero) fait foi, pas le nom');
+    assert.equal(rules.selectedListIndex(items, on('D09')), -1, 'meme numero, camera sans cette liste : rien n’est selectionne');
+    assert.equal(rules.selectedListIndex(items, { type: 'list', cameraId: '', listId: '1', listName: 'Famille' }), -1, 'regle ancienne sans camera : jamais l’identifiant seul');
+    assert.equal(rules.selectedListIndex(items, { type: 'list', cameraId: 'D01', listId: '', listName: '' }), -1);
     assert.equal(rules.selectedListIndex(items, { type: 'unknown' }), -1);
+    assert.equal(rules.selectedListIndex(items, { type: 'person', cameraId: 'D01', personId: '1', personName: 'x' }), -1);
+
+    // Re-selection : la regle enregistree sur D08 rouvre sur l'entree de D08, celle de D01 sur l'entree de D01.
+    for (const [cameraId, index] of [['D01', 0], ['D08', 1]] as const) {
+      const spec = rules.buildSpec(form({ who: on(cameraId), cameras: [cameraId === 'D01' ? 'D01' : 'D08'] }));
+      const back = rules.formFromRule({ name: 'Famille', enabled: true, spec, needsReview: false });
+      const view = rules.facesView({ status: 'ok', lists, notes: [] }, back.who, back.who, nameOf);
+      assert.equal(view.items.length, 2, 'aucune entree « non retrouvee » en plus');
+      assert.equal(rules.selectedListIndex(view.items, back.who), index);
+    }
+  });
+
+  it('une regle creee depuis une autre voie du meme enregistreur est retrouvee dans la liste via deviceCameraIds', () => {
+    // Deux appareils, une liste « 1 » chacun ; la camera representante est D01 (appareil A) et D08 (appareil B).
+    const lists: FaceList[] = [
+      { id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail', deviceCameraIds: ['D01', 'D05'] },
+      { id: '1', name: 'Visiteurs', cameraId: 'D08', cameraName: 'Escalier', deviceCameraIds: ['D08'] },
+    ];
+    const items = rules.listChoices(lists, []);
+    assert.deepEqual(items.map((i) => i.deviceCameraIds), [['D01', 'D05'], ['D08']]);
+    // La regle a ete creee par la voie D05 (autre voie de l'appareil A) : c'est bien la liste « Famille » de l'appareil A.
+    const viaOtherChannel: Who = { type: 'list', cameraId: 'D05', listId: '1', listName: 'Famille' };
+    assert.equal(rules.selectedListIndex(items, viaOtherChannel), 0);
+    assert.equal(rules.selectedListIndex(items, { ...viaOtherChannel, cameraId: 'D01' }), 0, 'la representante elle-meme');
+    assert.equal(rules.selectedListIndex(items, { ...viaOtherChannel, cameraId: 'D08' }), 1, 'meme numero, autre appareil : l’autre liste');
+    assert.equal(rules.selectedListIndex(items, { ...viaOtherChannel, listId: '2' }), -1, 'autre numero sur le bon appareil');
+    assert.equal(rules.selectedListIndex(items, { ...viaOtherChannel, cameraId: 'D09' }), -1, 'camera d’aucun appareil lu');
+    // Re-selection d'une regle existante : elle rouvre sur la liste de l'appareil, sans entree « non retrouvee » en plus.
+    const view = rules.facesView({ status: 'ok', lists, notes: [] }, viaOtherChannel, viaOtherChannel, nameOf);
+    assert.equal(view.items.length, 2);
+    assert.equal(view.items.some((i) => i.missing), false);
+    assert.equal(rules.selectedListIndex(view.items, viaOtherChannel), 0);
+    // Une camera d'aucun appareil lu reste proposee comme « non retrouvee ».
+    const lost = rules.facesView({ status: 'ok', lists, notes: [] }, { ...viaOtherChannel, cameraId: 'D09' }, null, nameOf);
+    assert.deepEqual(lost.items.map((i) => i.missing), [false, false, true]);
+    // Si l'utilisateur rechoisit la liste, c'est la camera representante qui part avec la regle.
+    const reselected: Who = { type: 'list', cameraId: items[0].cameraId, listId: items[0].id, listName: items[0].name };
+    assert.equal((rules.buildSpec(form({ who: reselected })).who as { cameraId: string }).cameraId, 'D01');
+    // Une ancienne reponse sans deviceCameraIds : retombe sur l'egalite de cameraId.
+    const old = rules.listChoices([{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }], []);
+    assert.deepEqual(old[0].deviceCameraIds, ['D01']);
+    assert.equal(rules.selectedListIndex(old, viaOtherChannel), -1);
+    assert.equal(rules.selectedListIndex(old, { ...viaOtherChannel, cameraId: 'D01' }), 0);
+  });
+
+  it('listMatches : meme numero ET camera lue par l’appareil, rien d’autre ; entrees hostiles sans effet', () => {
+    const list = { id: '1', cameraId: 'D01', deviceCameraIds: ['D01', 'D05'] };
+    assert.equal(rules.listMatches(list, { listId: '1', cameraId: 'D05' }), true);
+    assert.equal(rules.listMatches(list, { listId: '1', cameraId: 'D01' }), true);
+    assert.equal(rules.listMatches({ ...list, id: 1 }, { listId: '1', cameraId: 'D05' }), true, 'numero lu comme nombre');
+    assert.equal(rules.listMatches(list, { listId: '2', cameraId: 'D05' }), false);
+    assert.equal(rules.listMatches(list, { listId: '1', cameraId: 'D08' }), false);
+    assert.equal(rules.listMatches(list, { listId: '1', cameraId: '' }), false);
+    assert.equal(rules.listMatches(list, { listId: '', cameraId: 'D05' }), false);
+    assert.equal(rules.listMatches(list, { listId: '1' }), false);
+    assert.equal(rules.listMatches(list, undefined), false);
+    assert.equal(rules.listMatches(undefined, { listId: '1', cameraId: 'D05' }), false);
+    assert.equal(rules.listMatches({ id: null, cameraId: 'D01' }, { listId: 'null', cameraId: 'D01' }), false);
+    // Champ mal forme : ignore, la camera representante compte toujours.
+    for (const bad of ['D05', 7, null, { 0: 'D05' }, [null, 3, '', 'D05']]) {
+      const l = { id: '1', cameraId: 'D01', deviceCameraIds: bad };
+      assert.equal(rules.listMatches(l, { listId: '1', cameraId: 'D01' }), true, JSON.stringify(bad));
+      assert.equal(rules.listMatches(l, { listId: '1', cameraId: 'D05' }), Array.isArray(bad), JSON.stringify(bad));
+    }
+    // La comparaison est UNE fonction, utilisee partout (menu, selection, proposition).
+    const code = read('rules.js');
+    assert.equal([...code.matchAll(/\bdeviceCameras\(/g)].length >= 2, true);
+    assert.match(code, /if \(items\.some\(\(i\) => listMatches\(i, who\)\)\) continue;/);
+    assert.match(code, /return items\.findIndex\(\(i\) => listMatches\(i, who\)\);/);
+    assert.match(code, /!ctx\.lists\.some\(\(l\) => listMatches\(l, form\.who\)\)/);
+    assert.ok(!/i\.cameraId === who\.cameraId/.test(code), 'plus d’egalite stricte sur la camera');
+  });
+
+  it('le « Qui » envoye porte la camera de l’entree choisie dans le menu', () => {
+    const lists = [{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }, { id: '1', name: 'Famille', cameraId: 'D08', cameraName: 'Escalier' }];
+    const view = rules.facesView({ status: 'ok', lists, notes: [] }, { type: 'list', cameraId: '', listId: '', listName: '' }, null, nameOf);
+    // Ce que fait le menu (web/rules.js, facesSelect « change ») : le couple de l'entree, avec le nom de la liste (pas l'etiquette).
+    const picked = (n: number): Who => ({ type: 'list', cameraId: view.items[n].cameraId, listId: view.items[n].id, listName: view.items[n].name });
+    assert.deepEqual(rules.buildSpec(form({ who: picked(0), cameras: ['D01'] })).who, { type: 'list', cameraId: 'D01', listId: '1', listName: 'Famille' });
+    assert.deepEqual(rules.buildSpec(form({ who: picked(1), cameras: ['D08'] })).who, { type: 'list', cameraId: 'D08', listId: '1', listName: 'Famille' });
+    const code = read('rules.js');
+    assert.match(code, /state\.who = item && facesSelect\.value !== '' \? \{ type: 'list', cameraId: item\.cameraId, listId: item\.id, listName: item\.name \}/);
+    assert.ok(!/listName: item\.label/.test(code), 'l’etiquette (avec la camera) n’est jamais enregistree comme nom de liste');
+    // Le serveur accepte ces deux regles et les distingue.
+    const specA = rules.buildSpec(form({ who: picked(0), cameras: ['D01'] }));
+    const specB = rules.buildSpec(form({ who: picked(1), cameras: ['D08'] }));
+    assert.deepEqual(validateSpec(specA, CTX), specA);
+    assert.deepEqual(validateSpec(specB, CTX), specB);
+    assert.notEqual(rules.formKey(form({ who: picked(0) })), rules.formKey(form({ who: picked(1) })));
   });
 
   it('ce que montre la zone : lecture en cours, erreur, aucune liste, menu (avec les remarques du serveur)', () => {
-    const who: Who = { type: 'list', listId: '', listName: '' };
+    const who: Who = { type: 'list', cameraId: '', listId: '', listName: '' };
     assert.equal(rules.facesView({ status: 'loading', lists: [] }, who).kind, 'loading');
     assert.equal(rules.facesView({ status: 'idle', lists: [] }, who).kind, 'loading');
     assert.equal(rules.facesView({ status: 'error', lists: [] }, who).kind, 'error');
@@ -786,10 +1006,13 @@ describe('ecran « Regles » : listes de visages (lecture de /api/faces/lists)',
     assert.equal(ok.kind, 'select');
     assert.equal(ok.items.length, 2);
     // Une liste deja choisie reste affichee meme si la lecture a echoue ou ne la voit plus.
-    const stored: Who = { type: 'list', listId: '9', listName: 'Ancienne base' };
+    const stored: Who = { type: 'list', cameraId: 'D05', listId: '9', listName: 'Ancienne base' };
     assert.equal(rules.facesView({ status: 'error', lists: [] }, stored).items[0].label, 'Ancienne base');
     assert.equal(rules.facesView({ status: 'ok', lists: [] }, stored).kind, 'select', 'pas « aucune liste » quand une liste est deja choisie');
     assert.equal(rules.facesView({ status: 'loading', lists: [] }, stored).items.length, 1);
+    // Des entrees illisibles de la lecture sont ignorees, jamais affichees.
+    const junk = rules.facesView({ status: 'ok', lists: [null, 3, {}, { id: 4 }] as unknown as FaceList[], notes: [] }, who);
+    assert.deepEqual(junk.items.map((i) => i.id), ['4']);
   });
 
   it("le texte « aucune liste » est celui demande, et les remarques, l'erreur et « Reessayer » sont branches", () => {
@@ -805,7 +1028,7 @@ describe('ecran « Regles » : listes de visages (lecture de /api/faces/lists)',
     assert.match(code, /FACES_FRESH_MS = 5 \* 60_000/);
   });
 
-  it('« Une personne precise » n’est pas proposee a l’ecran, mais une regle existante s’affiche et se rouvre sans perte', () => {
+  it('« Une personne precise » n’est pas proposee a l’ecran, mais une regle existante s’affiche et se rouvre sans perte, camera comprise', () => {
     const code = read('rules.js');
     assert.match(code, /whoPerson\.el\.hidden = true;/, 'cachee par defaut');
     assert.match(code, /whoPerson\.el\.hidden = !\(type === 'person' \|\| keptPerson\);/, 'visible seulement pour une regle qui en a une');
@@ -813,6 +1036,186 @@ describe('ecran « Regles » : listes de visages (lecture de /api/faces/lists)',
     const spec = rules.buildSpec(form({ who: PERSON_WHO }));
     const back = rules.formFromRule({ name: 'Awa', enabled: true, spec });
     assert.deepEqual(rules.buildSpec(back).who, PERSON_WHO);
+    assert.deepEqual((rules.buildSpec(back).who as { cameraId: string }).cameraId, 'D05', 'la camera de la personne repart avec la regle');
+  });
+
+  it('personne precise : la camera qui la lit se choisit parmi les cameras, une camera disparue reste visible', () => {
+    assert.deepEqual(rules.personCameraChoices(CAMERAS, 'D01'), [
+      { id: 'D05', label: 'Avant cour (Cour)', missing: false },
+      { id: 'D08', label: 'Escalier (Intérieur)', missing: false },
+      { id: 'D01', label: 'Portail (Cour)', missing: false },
+    ]);
+    assert.deepEqual(rules.personCameraChoices(CAMERAS, 'X9').at(-1), { id: 'X9', label: 'X9 (caméra introuvable)', missing: true });
+    assert.equal(rules.personCameraChoices(CAMERAS, '').length, 3, 'rien de choisi : aucune entree en plus');
+    assert.deepEqual(rules.personCameraChoices([{ id: 'C1', name: '', zone: '' }], '').map((i) => i.label), ['C1']);
+    const code = read('rules.js');
+    assert.match(code, /state\.who = \{ \.\.\.state\.who, cameraId: personSelect\.value \};/);
+  });
+});
+
+describe('ecran « Regles » : regle « a revoir » (needsReview)', () => {
+  const lists = [{ id: '1', name: 'Famille', cameraId: 'D01', cameraName: 'Portail' }, { id: '1', name: 'Visiteurs', cameraId: 'D08', cameraName: 'Escalier' }];
+  const stored = (who: unknown): RuleSpec => ({ ...rules.buildSpec(form()), who: who as Who });
+  const oldList = { type: 'list', listId: '1', listName: 'Famille' }; // enregistree avant la camera source
+  const code = read('rules.js');
+
+  it('les messages sont ceux du serveur, en francais courant', () => {
+    assert.equal(rules.REVIEW_NOTE, 'Cette règle doit être réenregistrée : choisissez à nouveau la liste.');
+    assert.match(rules.REVIEW_PERSON_NOTE, /^Cette règle doit être réenregistrée : choisissez à nouveau la caméra/);
+    assert.equal(rules.reviewNote(LIST_WHO), rules.REVIEW_NOTE);
+    assert.equal(rules.reviewNote(PERSON_WHO), rules.REVIEW_PERSON_NOTE);
+    assert.equal(rules.reviewNote({ type: 'unknown' }), '');
+    assert.equal(rules.reviewNote(undefined), '');
+    // Le serveur dit la meme chose (sans accents) : si son message change, l'ecran doit suivre.
+    assert.match(SERVER_RULES, /needsReview/);
+    assert.match(SERVER_RULES, /Cette regle doit etre reenregistree : choisissez a nouveau la liste/);
+  });
+
+  it('dans la liste : badge « À revoir », interrupteur verrouille et jamais « Active », message sur la carte', () => {
+    assert.deepEqual(rules.ruleState({ enabled: true, needsReview: false }), { running: true, review: false, word: 'Active', title: 'Active : touchez pour la désactiver' });
+    assert.deepEqual(rules.ruleState({ enabled: false, needsReview: false }), { running: false, review: false, word: 'Inactive', title: 'Inactive : touchez pour la réactiver' });
+    assert.deepEqual(rules.ruleState({ enabled: false }), { running: false, review: false, word: 'Inactive', title: 'Inactive : touchez pour la réactiver' });
+    // « Activee » en base mais a revoir : montree comme ne se declenchant pas.
+    for (const enabled of [true, false]) {
+      const s = rules.ruleState({ enabled, needsReview: true });
+      assert.equal(s.running, false);
+      assert.equal(s.review, true);
+      assert.equal(s.word, 'À revoir');
+      assert.match(s.title, /ne se déclenche pas/);
+      assert.match(s.title, /Modifier/);
+    }
+    // Seul `needsReview === true` compte (une valeur approximative n'est pas une alerte).
+    assert.equal(rules.ruleState({ enabled: true, needsReview: 'oui' as unknown as boolean }).review, false);
+    // Cablage de la carte : badge, message, interrupteur verrouille, jamais de PUT depuis une carte « a revoir ».
+    assert.match(code, /h\('span', \{ class: 'tag is-warning', hidden: true \}, icon\('state-warning', 'icon-sm'\), 'À revoir'\)/);
+    assert.match(code, /toggle\.checked = state\.running;\s*toggle\.disabled = state\.review;/);
+    assert.match(code, /c\.el\.classList\.toggle\('is-inactive', !state\.running\)/);
+    assert.match(code, /reviewTag\.hidden = !state\.review;\s*reviewBox\.hidden = !state\.review;/);
+    assert.match(code, /Elle ne se déclenche pas tant que ce n’est pas fait : touchez « Modifier »/);
+    assert.match(code, /live\.hidden = !ruleState\(rule\)\.running \|\| ids\.length === 0;/, 'pas de « quelqu’un est vu » sur une regle qui ne se declenche pas');
+    assert.match(code, /toggle\.checked = ruleState\(c\.rule\)\.running;/, 'apres un echec, l’interrupteur dit ce que fait vraiment la regle');
+    assert.match(code, /h\('div', \{ class: 'rl-rule-head' \}, nameEl, reviewTag, editingTag, toggleLabel\)/);
+    // Les classes de style existent deja (badge, avertissement) : rien de nouveau dans la feuille de style.
+    const css = read('base.css');
+    assert.match(css, /\.tag\.is-warning/);
+    assert.match(css, /\.notice\.is-warning/);
+  });
+
+  it('le compte en haut de la liste ne compte pas une regle a revoir comme active', () => {
+    assert.match(code, /const running = rules\.filter\(\(r\) => ruleState\(r\)\.running\)\.length;/);
+    assert.match(code, /const review = rules\.filter\(\(r\) => ruleState\(r\)\.review\)\.length;/);
+    assert.match(code, /\$\{review \? ` et \$\{review\} à revoir` : ''\}/);
+  });
+
+  it('a l’ouverture en edition, la liste est vide et a re-choisir ; l’enregistrement exige ce nouveau choix', () => {
+    const rule = { name: 'Famille la nuit', enabled: true, needsReview: true, spec: stored(oldList) };
+    const f = rules.formFromRule(rule);
+    assert.deepEqual(f.who, { type: 'list', cameraId: '', listId: '', listName: '' });
+    // Case « Qui » vide : selection vide meme si la liste « 1 » existe sur un appareil.
+    const view = rules.facesView({ status: 'ok', lists, notes: [] }, f.who, null, nameOf);
+    assert.equal(rules.selectedListIndex(view.items, f.who), -1);
+    assert.equal(view.items.length, 2, 'aucune entree « non retrouvee » reprise de l’ancienne regle');
+    assert.ok(view.items.every((i) => !i.missing));
+    // Enregistrer exige le choix : tant que la liste est vide, le probleme est sur la case « Qui » (donc sur la liste).
+    const problems = rules.formProblems(f, CTX);
+    assert.deepEqual(problems.map((p) => p.key), ['who']);
+    assert.equal(problems[0].message, 'Choisissez une liste de visages.');
+    // Apres le choix d'une liste : plus de probleme, et le serveur accepte.
+    const chosen = { ...f, who: { type: 'list', cameraId: view.items[0].cameraId, listId: view.items[0].id, listName: view.items[0].name } as Who, cameras: ['D01'] };
+    assert.deepEqual(rules.formProblems(chosen, CTX), []);
+    assert.deepEqual(validateSpec(rules.buildSpec(chosen), CTX), rules.buildSpec(chosen));
+    // Le brouillon ouvert ne compte pas comme modifie tant que rien n'est touche, puis oui apres le choix.
+    assert.equal(rules.formKey(f), rules.formKey(rules.formFromRule(rule)));
+    assert.notEqual(rules.formKey(f), rules.formKey(chosen));
+    // Cablage : message dans la case « Qui », tant que la liste n'est pas rechoisie.
+    assert.match(code, /reviewWho = Boolean\(rule\?\.needsReview\) && isDeviceWho\(rule\?\.spec\?\.who\);/);
+    assert.match(code, /const pending = reviewWho && \(\(t === 'list' && !state\.who\.listId\) \|\| \(t === 'person' && !state\.who\.cameraId\)\);/);
+    assert.match(code, /whoReviewText\.textContent = pending \? reviewNote\(state\.who\) : '';/);
+  });
+
+  it('une regle ordinaire (sans needsReview) rouvre telle quelle, camera comprise', () => {
+    for (const needsReview of [false, undefined]) {
+      const f = rules.formFromRule({ name: 'x', enabled: true, needsReview, spec: stored(LIST_WHO) });
+      assert.deepEqual(f.who, LIST_WHO);
+    }
+    assert.deepEqual(rules.formFromRule({ name: 'x', enabled: true, needsReview: true, spec: stored({ type: 'unknown' }) }).who, { type: 'unknown' }, 'rien a revoir pour un visage inconnu');
+    assert.deepEqual(rules.formFromRule({ name: 'x', enabled: true, needsReview: true, spec: stored({ type: 'anyone' }) }).who, { type: 'anyone' });
+  });
+
+  it('une personne precise a revoir garde son identite et attend sa camera', () => {
+    const f = rules.formFromRule({ name: 'Awa', enabled: false, needsReview: true, spec: stored({ type: 'person', personId: 'P-42', personName: 'Awa Koné' }) });
+    assert.deepEqual(f.who, { type: 'person', cameraId: '', personId: 'P-42', personName: 'Awa Koné' });
+    assert.deepEqual(rules.formProblems(f, CTX).map((p) => [p.key, p.message]), [['who', 'Choisissez la caméra qui connaît cette personne.']]);
+    // Meme avec une camera deja inscrite (disparue du PSIM), elle est a rechoisir.
+    const gone = rules.formFromRule({ name: 'Awa', enabled: true, needsReview: true, spec: stored({ type: 'person', cameraId: 'ZZ', personId: 'P-42', personName: 'Awa Koné' }) });
+    assert.equal((gone.who as { cameraId: string }).cameraId, '');
+    assert.deepEqual(rules.whoToReview(PERSON_WHO), { ...PERSON_WHO, cameraId: '' });
+    assert.deepEqual(rules.whoToReview(LIST_WHO), { type: 'list', cameraId: '', listId: '', listName: '' });
+    assert.deepEqual(rules.whoToReview({ type: 'unknown' }), { type: 'unknown' });
+  });
+
+  it('liste ancienne sans camera, ou camera disparue : la phrase de la carte est celle du serveur', () => {
+    const rule = stored(oldList);
+    assert.match(rules.describeSpec(rule, nameOf), /de la liste « Famille » \(caméra non précisée\) est reconnue/);
+    assert.equal(rules.describeSpec(rule, nameOf), describeRule(rule, { cameraName: nameOf }));
+    assert.throws(() => validateSpec(rule, CTX), /camera de la liste est requise/, 'le serveur la refuse tant qu’elle n’est pas reenregistree');
+  });
+});
+
+describe('ecran « Regles » : un refus du serveur sur « Qui » ou « Ou » s’affiche sur la bonne case', () => {
+  const code = read('rules.js');
+  const OU = "Ou : aucune camera choisie n'appartient a l'appareil de la liste « Famille » (camera « Portail ») : elle ne pourrait jamais se declencher";
+
+  it('« Ou : aucune camera choisie n’appartient a l’appareil… » -> case « Où », sans le prefixe, en phrase', () => {
+    const p = rules.serverProblem(OU);
+    assert.equal(p.key, 'where');
+    assert.equal(p.box, 'Où');
+    assert.equal(p.text, "Aucune camera choisie n'appartient a l'appareil de la liste « Famille » (camera « Portail ») : elle ne pourrait jamais se declencher.");
+    assert.match(SERVER_RULES, /Ou : aucune camera choisie n'appartient a l'appareil \$\{label\} \(camera « \$\{shown\(cameraName\(who\.cameraId\)\)\} »\) : elle ne pourrait jamais se declencher/, 'le message du serveur est bien celui que l’ecran reconnait');
+    assert.equal(rules.serverProblem('Où : une autre formulation').key, 'where');
+  });
+
+  it('« Qui : camera inconnue … » et « Qui : la camera de la liste est requise » -> case « Qui »', () => {
+    for (const message of ['Qui : camera inconnue « D99 »', 'Qui : la camera de la liste est requise', 'Qui : la camera de la personne est requise', "Qui : la camera « Portail » de la liste « Famille » n'est reliee a aucun appareil (pas de source video) : la regle ne pourrait jamais se declencher"]) {
+      const p = rules.serverProblem(message);
+      assert.equal(p.key, 'who', message);
+      assert.equal(p.box, 'Qui');
+      assert.ok(!p.text.startsWith('Qui'), 'prefixe retire');
+      assert.match(p.text, /^[A-ZÀ-Ý].*\.$/u, 'phrase : majuscule et point');
+    }
+    // Les vrais refus du serveur (validateSpec) sont bien rattaches a « Qui ».
+    const msgOf = (who: unknown) => {
+      try {
+        validateSpec({ ...rules.buildSpec(form()), who }, CTX);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return '';
+    };
+    assert.equal(rules.serverProblem(msgOf({ type: 'list', cameraId: 'D99', listId: '1', listName: 'A' })).key, 'who');
+    assert.equal(rules.serverProblem(msgOf({ type: 'list', cameraId: '', listId: '1', listName: 'A' })).key, 'who');
+    assert.equal(rules.serverProblem(msgOf({ type: 'person', personId: 'P1', personName: 'Awa' })).key, 'who');
+    assert.match(rules.serverProblem(msgOf({ type: 'list', cameraId: 'D99', listId: '1', listName: 'A' })).text, /^Camera inconnue « D99 »\.$/);
+  });
+
+  it('tout autre message reste en bas du formulaire, en phrase ; les mots qui commencent comme un prefixe ne comptent pas', () => {
+    for (const message of ['Nom de la regle requis', 'Quand : au moins une plage horaire est necessaire', 'Ouverture : impossible', 'Oui : non', 'Quiconque : x', '', undefined, null]) {
+      const p = rules.serverProblem(message);
+      assert.equal(p.key, null, String(message));
+      assert.equal(p.box, '');
+    }
+    assert.equal(rules.serverProblem('Nom de la regle requis').text, 'Nom de la regle requis.');
+    assert.equal(rules.serverProblem(undefined).text, 'Le serveur n’a donné aucune explication.', 'message absent : une phrase, pas un point seul');
+  });
+
+  it('cablage : l’enregistrement ET l’essai posent le message sur la case, qui reçoit le focus, et le disent en bas', () => {
+    assert.match(code, /const problem = serverProblem\(err\.message\);\s*if \(problem\.key\) \{[\s\S]{0,200}showProblems\(\[\{ key: problem\.key, message: problem\.text \}\]\);\s*formError\.textContent = `La règle n’a pas été enregistrée : corrigez la case « \$\{problem\.box\} »\.`;/);
+    assert.match(code, /const problem = serverProblem\(err\.message\);\s*if \(problem\.key\) \{\s*showProblems\(\[\{ key: problem\.key, message: problem\.text \}\]\);\s*trialError\.textContent = `L’essai n’a pas pu avoir lieu : corrigez la case « \$\{problem\.box\} »\.`;/);
+    // Les cles 'who' et 'where' existent bien parmi les cases : le message arrive sur leurs zones d'erreur.
+    assert.match(code, /who: \{ input: [^\n]*, err: whoErr \}/);
+    assert.match(code, /where: \{ input: [^\n]*, err: whereErr \}/);
+    // Un message sur « Qui » avec une personne : le focus va au menu de la camera de la personne.
+    assert.match(code, /state\.who\.type === 'list' \? facesSelect : state\.who\.type === 'person' \? personSelect : whoAnyone\.input/);
   });
 });
 
@@ -918,7 +1321,7 @@ describe('ecran « Regles » : proposition de l’assistant -> formulaire (fonct
       const stays = who.type === 'anyone';
       const src = form({ who, whereMode: 'zones', zones: ['Cour'], whenMode: 'armed', triggerMode: stays ? 'stays' : 'appears', minutes: '12', severity: 'critical', cooldown: '0' });
       const spec = rules.buildSpec(src);
-      const { form: f, issues } = rules.formFromProposal({ name: 'x', spec }, { ...ctx, lists: stays ? null : [{ id: '1' }, { id: '7' }] });
+      const { form: f, issues } = rules.formFromProposal({ name: 'x', spec }, { ...ctx, lists: stays ? null : [{ id: '1', cameraId: 'D05' }, { id: '7', cameraId: 'D01' }] });
       assert.deepEqual(issues, [], who.type);
       assert.deepEqual(rules.buildSpec(f), spec);
     }
@@ -942,15 +1345,46 @@ describe('ecran « Regles » : proposition de l’assistant -> formulaire (fonct
   });
 
   it('une liste inconnue de l’ecran : la case « Qui » reste a completer ; listes pas encore lues : on garde le choix', () => {
-    const spec = { who: { type: 'list', listId: '99', listName: 'Fantomes' } } as Partial<RuleSpec>;
+    const spec = { who: { type: 'list', cameraId: 'D05', listId: '99', listName: 'Fantomes' } } as Partial<RuleSpec>;
     const known = rules.formFromProposal(proposal(spec), ctx);
-    assert.deepEqual(known.form.who, { type: 'list', listId: '', listName: '' });
+    assert.deepEqual(known.form.who, { type: 'list', cameraId: '', listId: '', listName: '' });
     assert.match(known.issues[0], /^La liste « Fantomes » n’existe pas dans les listes lues sur l’enregistreur\. Choisissez-la dans la case « Qui »\.$/);
     assert.deepEqual(rules.formProblems(known.form, CTX).map((p) => p.key), ['who']);
     const unread = rules.formFromProposal(proposal(spec), { ...ctx, lists: null });
-    assert.deepEqual(unread.form.who, { type: 'list', listId: '99', listName: 'Fantomes' });
+    assert.deepEqual(unread.form.who, { type: 'list', cameraId: 'D05', listId: '99', listName: 'Fantomes' });
     assert.deepEqual(unread.issues, []);
     assert.deepEqual(rules.formFromProposal(proposal({ who: LIST_WHO }), ctx).form.who, LIST_WHO);
+  });
+
+  it('une proposition retrouve sa liste par la camera ET le numero : le meme numero ailleurs est une autre liste', () => {
+    const two = [{ id: '1', name: 'Famille', cameraId: 'D01' }, { id: '1', name: 'Visiteurs', cameraId: 'D08' }];
+    const on = (cameraId: string, listId = '1'): Partial<RuleSpec> => ({ who: { type: 'list', cameraId, listId, listName: 'Famille' } });
+    for (const cameraId of ['D01', 'D08']) {
+      const { form: f, issues } = rules.formFromProposal(proposal(on(cameraId)), { ...ctx, lists: two });
+      assert.deepEqual(issues, [], cameraId);
+      assert.deepEqual(f.who, { type: 'list', cameraId, listId: '1', listName: 'Famille' });
+    }
+    // Une autre voie du meme appareil (deviceCameraIds) retrouve la liste.
+    const viaChannel = rules.formFromProposal(proposal(on('D05')), { ...ctx, lists: [{ id: '1', name: 'Famille', cameraId: 'D01', deviceCameraIds: ['D01', 'D05'] }] });
+    assert.deepEqual(viaChannel.issues, []);
+    assert.deepEqual(viaChannel.form.who, { type: 'list', cameraId: 'D05', listId: '1', listName: 'Famille' });
+    // Numero connu, mais pas sur cette camera : la case reste a completer, comme pour une liste inconnue.
+    const other = rules.formFromProposal(proposal(on('D05')), { ...ctx, lists: two });
+    assert.deepEqual(other.form.who, { type: 'list', cameraId: '', listId: '', listName: '' });
+    assert.match(other.issues[0], /n’existe pas dans les listes lues/);
+    // Une proposition sans camera pour la liste : jamais reprise (le serveur la refuserait), meme si les listes ne sont pas lues.
+    const noCamera = { who: { type: 'list', listId: '1', listName: 'Famille' } } as unknown as Partial<RuleSpec>;
+    for (const lists of [two, null]) {
+      const res = rules.formFromProposal(proposal(noCamera), { ...ctx, lists });
+      assert.deepEqual(res.form.who, { type: 'list', cameraId: '', listId: '', listName: '' });
+      assert.match(res.issues[0], /^La proposition ne dit pas de quelle caméra vient la liste « Famille »\. Choisissez-la dans la case « Qui »\.$/);
+    }
+    // Personne : reprise avec sa camera ; sans camera, reprise mais a completer.
+    assert.deepEqual(rules.formFromProposal(proposal({ who: PERSON_WHO }), ctx).form.who, PERSON_WHO);
+    const person = rules.formFromProposal(proposal({ who: { type: 'person', personId: 'P1', personName: 'Awa' } as unknown as Who }), ctx);
+    assert.deepEqual(person.form.who, { type: 'person', cameraId: '', personId: 'P1', personName: 'Awa' });
+    assert.match(person.issues[0], /^La proposition ne dit pas de quelle caméra vient la personne « Awa »\./);
+    assert.deepEqual(rules.formProblems(person.form, CTX).map((p) => p.key), ['who']);
   });
 
   it('nom borne, valeurs par defaut, pas de partage avec la proposition', () => {

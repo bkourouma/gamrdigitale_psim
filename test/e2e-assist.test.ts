@@ -18,9 +18,11 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { createFaceLists } from '../server/api.ts';
+import { createFaceLists, stableFaceHosts } from '../server/api.ts';
 import { DahuaAuthError } from '../server/dahua.ts';
 import type { Credentials } from '../server/dahua.ts';
+import { openDb } from '../server/db.ts';
+import { seedDemo } from '../server/seed.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const ADMIN_PW = 'Mot-de-passe-admin-solide-1';
@@ -101,7 +103,9 @@ const SPEC_UNKNOWN = {
   then: { severity: 'warning' },
   cooldownMinutes: 10,
 };
-const SPEC_LIST = { ...SPEC_UNKNOWN, who: { type: 'list', listId: '1', listName: 'Residents et personnel' } };
+// Chaque appareil numerote ses listes : la liste « 1 » de l'appareil de C-01 (Residents et personnel) n'est pas celle de C-10 (Visiteurs).
+const SPEC_LIST = { ...SPEC_UNKNOWN, who: { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Residents et personnel' } };
+const SPEC_LIST_B = { ...SPEC_UNKNOWN, where: { cameras: ['C-10'] }, who: { type: 'list', cameraId: 'C-10', listId: '1', listName: 'Visiteurs' } };
 
 // ---------------------------------------------------------------- faux appareil Dahua (Digest, flux d'evenements, bases de visages)
 
@@ -211,10 +215,11 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
   let admin = '';
   let operator = '';
   const service = fakeAssistantService();
-  // A : bases (fixture) ; B : une autre base ; C : sans reconnaissance faciale (501) ; D : injoignable ; E : reponse vide (le XVR actuel).
+  // A : bases (fixture : « 1 » et « 2 ») ; B : une autre base, ELLE AUSSI numerotee « 1 » ; C : sans reconnaissance faciale (501) ; D : injoignable ;
+  // E : reponse vide (le XVR actuel).
   const hosts = {
     A: fakeDahuaHost('127.0.0.1', { kind: 'groups', text: fixture('dahua-face-groups.txt') }),
-    B: fakeDahuaHost('127.0.0.2', { kind: 'groups', text: 'GroupList[0].groupID=7\nGroupList[0].groupName=Visiteurs\nGroupList[0].groupSize=3\n' }),
+    B: fakeDahuaHost('127.0.0.2', { kind: 'groups', text: 'GroupList[0].groupID=1\nGroupList[0].groupName=Visiteurs\nGroupList[0].groupSize=3\n' }),
     C: fakeDahuaHost('127.0.0.3', { kind: 'status', status: 501 }),
     E: fakeDahuaHost('127.0.0.5', { kind: 'empty' }),
   };
@@ -298,6 +303,10 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
     await setup('C-11', 'Camera C', '127.0.0.3', ports.C, 'I-11');
     await setup('C-12', 'Camera D', '127.0.0.4', dead, 'I-12');
     await setup('C-13', 'Camera E', '127.0.0.5', ports.E, 'I-13');
+    // Deuxieme voie du premier enregistreur (meme hote que C-01, voie 2) : meme appareil, sans detecteur.
+    assert.equal((await asAdmin('POST', '/api/devices', { id: 'C-14', kind: 'camera', name: 'Camera accueil voie 2', zone: 'Accueil' })).status, 201);
+    const second = await asAdmin('PUT', '/api/cameras/C-14/source', { kind: 'rtsp', host: '127.0.0.1', port: 554, rtspPath: '/cam/realmonitor?channel=2&subtype=1', username: USER, password: PASSWORD });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
   });
 
   it("listes de visages : fusion des appareils, vide et 501 ignores sans note, injoignable = une note lisible sans adresse ni mot de passe ; cache de 5 minutes", async () => {
@@ -309,9 +318,11 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
       [
         ['1', 'Residents et personnel', 12, 'C-01', 'Camera accueil'],
         ['2', 'Interdits', 0, 'C-01', 'Camera accueil'],
-        ['7', 'Visiteurs', 3, 'C-10', 'Camera B'],
+        ['1', 'Visiteurs', 3, 'C-10', 'Camera B'],
       ],
     );
+    // Chaque liste porte les cameras de TOUTES les voies de son appareil (triees, representante comprise) ; deux appareils : disjoints.
+    assert.deepEqual(r.body.lists.map((l: any) => l.deviceCameraIds), [['C-01', 'C-14'], ['C-01', 'C-14'], ['C-10']]);
     assert.equal(r.body.notes.length, 1, JSON.stringify(r.body.notes));
     assert.match(r.body.notes[0], /^La caméra « Camera D » ne répond pas : /);
     assert.doesNotMatch(r.text, /127\.0\.0\./, "aucune adresse IP");
@@ -340,10 +351,10 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
     const sent = service.calls[0];
     assert.equal(sent.headers['x-api-key'], KEY, 'la cle sert a appeler le service');
     const prompt = sent.body.system.map((b: any) => b.text).join('\n');
-    // Les listes lues sur les appareils sont dans l'invite (identifiant : nom), de tous les appareils.
-    assert.match(prompt, /1 : Residents et personnel/);
-    assert.match(prompt, /2 : Interdits/);
-    assert.match(prompt, /7 : Visiteurs/);
+    // Les listes lues sur les appareils sont dans l'invite (camera, identifiant, nom), de tous les appareils.
+    assert.match(prompt, /- camera C-01 \(« Camera accueil », appareil 1\) : liste 1 : Residents et personnel/);
+    assert.match(prompt, /- camera C-01 \(« Camera accueil », appareil 1\) : liste 2 : Interdits/);
+    assert.match(prompt, /- camera C-10 \(« Camera B », appareil 2\) : liste 1 : Visiteurs/);
     assert.match(prompt, /C-01 : Camera accueil \(zone Accueil\)/);
     assert.match(prompt, /C-12 : Camera D/);
     assert.match(sent.raw, /Prévenez-moi quand un visage inconnu/);
@@ -353,15 +364,68 @@ describe('assistant de regles et listes de visages (processus reel, avec cle)', 
     assert.ok(!s.output().includes(KEY), 'la cle ne figure pas dans la sortie du serveur');
   });
 
+  it("deux appareils ayant chacun une liste « 1 » : le contexte les distingue (camera et nom de camera) ; la liste du second appareil est acceptee, un melange des deux ou une portee hors de l'appareil est rejete", async () => {
+    service.setReply(() => ({ out: ruleOut(SPEC_UNKNOWN) }));
+    const start0 = service.calls.length;
+    assert.equal((await ask({ text: 'Quelles listes existent ?' })).status, 200);
+    const prompt = service.calls[start0].body.system.map((b: any) => b.text).join('\n');
+    const ones = prompt.split('\n').filter((line: string) => /^- camera \S+ \(.*\) : liste 1 : /.test(line));
+    assert.deepEqual(
+      ones,
+      ['- camera C-01 (« Camera accueil », appareil 1) : liste 1 : Residents et personnel', '- camera C-10 (« Camera B », appareil 2) : liste 1 : Visiteurs'],
+      'deux lignes, une par appareil, pas de fusion, chacune avec le repere de son appareil',
+    );
+    // Reperes d'appareil : les deux voies du meme enregistreur (C-01, C-14) portent le meme, un autre appareil un autre ; une camera sans source, aucun.
+    const markOf = (id: string) => /\((appareil \d+)\)\s*$/.exec(prompt.split('\n').find((line: string) => line.startsWith(`- ${id} : `)) ?? '')?.[1];
+    assert.equal(markOf('C-01'), 'appareil 1');
+    assert.equal(markOf('C-14'), 'appareil 1', 'deuxieme voie du meme enregistreur');
+    assert.equal(markOf('C-10'), 'appareil 2');
+    assert.equal(markOf('C-12'), 'appareil 4');
+    assert.equal(markOf('C-02'), undefined, 'camera sans source video : aucun repere');
+    assert.doesNotMatch(service.calls[start0].raw, /\b\d{1,3}(\.\d{1,3}){3}\b/, "aucune adresse IP dans la requete");
+
+    // Une proposition correcte pour le second appareil.
+    service.setReply(() => ({ out: ruleOut(SPEC_LIST_B, 'Visiteurs sur la camera B') }));
+    const ok = await ask({ text: 'Signalez les visiteurs de la camera B' });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.body.kind, 'rule', ok.text);
+    assert.deepEqual(ok.body.spec, SPEC_LIST_B);
+    assert.match(ok.body.summary, /liste « Visiteurs » \(caméra « Camera B »\)/);
+
+    // Melanges : le cameraId d'un appareil avec la liste de l'autre (meme numero « 1 », autre nom) : rejete, apres un seul nouvel essai.
+    for (const who of [
+      { type: 'list', cameraId: 'C-10', listId: '1', listName: 'Residents et personnel' },
+      { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Visiteurs' },
+      { type: 'list', cameraId: 'C-10', listId: '2', listName: 'Interdits' },
+    ]) {
+      const before = service.calls.length;
+      service.setReply(() => ({ out: ruleOut({ ...SPEC_LIST_B, who }) }));
+      const mixed = await ask({ text: 'Signalez une liste melangee' });
+      assert.equal(mixed.status, 200, mixed.text);
+      assert.equal(mixed.body.kind, 'refused', JSON.stringify(who));
+      assert.equal(service.calls.length - before, 2, 'un seul nouvel essai');
+    }
+
+    // La bonne liste, mais des cameras qui ne sont pas sur son appareil : la meme verification que la saisie manuelle la refuse,
+    // et son message (« Ou : ... ») est renvoye au service pour le nouvel essai.
+    const before = service.calls.length;
+    service.setReply(() => ({ out: ruleOut({ ...SPEC_LIST_B, where: { cameras: ['C-01'] } }) }));
+    const outside = await ask({ text: 'Signalez les visiteurs a l accueil' });
+    assert.equal(outside.body.kind, 'refused', outside.text);
+    assert.equal(service.calls.length - before, 2);
+    const retry = service.calls[service.calls.length - 1].body.messages;
+    assert.match(retry[retry.length - 1].content, /Ou : aucune camera choisie n'appartient a l'appareil de la liste « Visiteurs »/);
+  });
+
   it("une regle sur une liste connue est acceptee ; une liste inventee est refusee apres un nouvel essai ; question et refus passent tels quels ; l'historique est transmis", async () => {
     service.setReply(() => ({ out: ruleOut(SPEC_LIST, 'Residents a l accueil') }));
     const known = await ask({ text: 'Signalez les résidents à l accueil' });
     assert.equal(known.status, 200, known.text);
     assert.equal(known.body.kind, 'rule');
-    assert.deepEqual(known.body.spec.who, { type: 'list', listId: '1', listName: 'Residents et personnel' });
+    assert.deepEqual(known.body.spec.who, { type: 'list', cameraId: 'C-01', listId: '1', listName: 'Residents et personnel' });
 
     const before = service.calls.length;
-    service.setReply(() => ({ out: ruleOut({ ...SPEC_LIST, who: { type: 'list', listId: '99', listName: 'Inventee' } }) }));
+    service.setReply(() => ({ out: ruleOut({ ...SPEC_LIST, who: { type: 'list', cameraId: 'C-01', listId: '99', listName: 'Inventee' } }) }));
     const invented = await ask({ text: 'Signalez les inventés' });
     assert.equal(invented.status, 200);
     assert.equal(invented.body.kind, 'refused');
@@ -590,5 +654,124 @@ describe('listes de visages : cache par appareil (en processus, horloge maitrise
     });
     const r = await leaky.lists.read();
     assert.ok(!r.notes[0].includes('10.0.0.1') && !r.notes[0].includes('secret-pw'), r.notes[0]);
+  });
+});
+
+describe("listes de visages : contexte de l'assistant, une ligne par (appareil, liste)", () => {
+  const cred = (host: string): Credentials => ({ host, port: 80, username: 'admin', password: 'secret-pw' });
+  const make = (byHost: Record<string, { id: string; name: string; size?: number }[]>, hosts: { cameraId: string; creds: Credentials }[]) =>
+    createFaceLists({ hosts: () => hosts, cameraName: (id) => `Camera ${id}`, now: () => 1_000_000, fetchGroups: async (c) => byHost[c.host] ?? [] });
+
+  it("deux appareils ayant tous deux une liste « 1 » du meme nom (ou non) donnent deux lignes, chacune avec sa camera et le nom de sa camera", async () => {
+    const same = make({ '10.0.0.1': [{ id: '1', name: 'Famille' }], '10.0.0.2': [{ id: '1', name: 'Famille' }] }, [
+      { cameraId: 'C-1', creds: cred('10.0.0.1') },
+      { cameraId: 'C-2', creds: cred('10.0.0.2') },
+    ]);
+    assert.deepEqual(same.cached(), [], 'rien de lu : le contexte ne lit rien');
+    await same.read();
+    assert.deepEqual(same.cached(), [
+      { cameraId: 'C-1', cameraName: 'Camera C-1', id: '1', name: 'Famille' },
+      { cameraId: 'C-2', cameraName: 'Camera C-2', id: '1', name: 'Famille' },
+    ]);
+
+    const other = make({ '10.0.0.1': [{ id: '1', name: 'Famille' }, { id: '2', name: 'Interdits' }], '10.0.0.2': [{ id: '1', name: 'Visiteurs' }] }, [
+      { cameraId: 'C-1', creds: cred('10.0.0.1') },
+      { cameraId: 'C-2', creds: cred('10.0.0.2') },
+    ]);
+    await other.read();
+    assert.deepEqual(other.cached().map((l) => [l.cameraId, l.id, l.name]), [
+      ['C-1', '1', 'Famille'],
+      ['C-1', '2', 'Interdits'],
+      ['C-2', '1', 'Visiteurs'],
+    ]);
+  });
+
+  it("un appareil declare deux fois n'est compte qu'une fois ; un appareil en echec garde ses dernieres listes dans le contexte", async () => {
+    let broken = false;
+    const hosts = [
+      { cameraId: 'C-1', creds: cred('10.0.0.1') },
+      { cameraId: 'C-1', creds: cred('10.0.0.1') },
+    ];
+    let clock = 1_000_000;
+    const lists = createFaceLists({
+      hosts: () => hosts,
+      cameraName: (id) => `Camera ${id}`,
+      now: () => clock,
+      fetchGroups: async () => {
+        if (broken) throw new Error('coupure');
+        return [{ id: '1', name: 'Famille' }];
+      },
+    });
+    await lists.read();
+    assert.equal(lists.cached().length, 1);
+    broken = true;
+    clock += 6 * 60_000;
+    await lists.read();
+    assert.deepEqual(lists.cached().map((l) => l.id), ['1'], 'dernieres listes connues');
+  });
+});
+
+describe("camera annoncee pour chaque appareil (stableFaceHosts) : la meme d'une lecture a l'autre", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'psim-stable-'));
+    const db = openDb(join(dir, 'psim.db'));
+    seedDemo(db, dir, join(ROOT, 'seed'));
+    db.exec('DELETE FROM camera_source');
+    const put = (camera: string, host: string, path = '/cam/realmonitor?channel=1&subtype=1') =>
+      db.prepare("INSERT OR REPLACE INTO camera_source (device_id, kind, host, port, rtsp_path, username, secret) VALUES (?, 'rtsp', ?, 554, ?, 'u', 's')").run(camera, host, path);
+    // Comme faceHosts de dahua.ts : la premiere camera de chaque hote, par ordre d'identifiant.
+    const first = () => {
+      const seen = new Set<string>();
+      const out: { cameraId: string; creds: Credentials }[] = [];
+      for (const r of db.prepare('SELECT device_id, host, rtsp_path FROM camera_source WHERE rtsp_path IS NOT NULL ORDER BY device_id').all() as { device_id: string; host: string; rtsp_path: string }[]) {
+        if (!/channel=\d+/i.test(r.rtsp_path) || seen.has(r.host)) continue;
+        seen.add(r.host);
+        out.push({ cameraId: r.device_id, creds: { host: r.host, port: 80, username: 'u', password: 'p' } });
+      }
+      return out;
+    };
+    const stable = stableFaceHosts(db, first);
+    const ids = () => stable().map((h) => `${h.creds.host}=${h.cameraId}`).sort();
+    return { db, put, ids, raw: () => first().map((h) => `${h.creds.host}=${h.cameraId}`).sort() };
+  }
+
+  it("une camera d'identifiant plus petit ajoutee sur l'hote ne change pas la camera annoncee ; une autre adresse ne s'en mele pas", () => {
+    const t = setup();
+    try {
+      t.put('C-02', '10.0.0.1');
+      t.put('C-03', '10.0.0.1');
+      t.put('C-04', '10.0.0.2');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-02', '10.0.0.2=C-04']);
+      t.put('C-01', '10.0.0.1');
+      assert.deepEqual(t.raw(), ['10.0.0.1=C-01', '10.0.0.2=C-04'], 'sans memoire, la camera annoncee changerait');
+      for (let i = 0; i < 3; i++) assert.deepEqual(t.ids(), ['10.0.0.1=C-02', '10.0.0.2=C-04'], `lecture ${i + 1}`);
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("la camera annoncee est remplacee quand elle ne lit plus l'hote (supprimee, adresse changee, plus de voie), puis reste stable", () => {
+    const t = setup();
+    try {
+      t.put('C-02', '10.0.0.1');
+      t.put('C-03', '10.0.0.1');
+      t.put('C-05', '10.0.0.2');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-02', '10.0.0.2=C-05']);
+      // Supprimee : la suivante par ordre d'identifiant, puis elle ne bouge plus meme si C-02 revient.
+      t.db.prepare('DELETE FROM camera_source WHERE device_id = ?').run('C-02');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-03', '10.0.0.2=C-05']);
+      t.put('C-02', '10.0.0.1');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-03', '10.0.0.2=C-05']);
+      // Adresse changee : C-03 ne lit plus l'hote 10.0.0.1.
+      t.put('C-03', '10.0.0.9');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-02', '10.0.0.2=C-05', '10.0.0.9=C-03']);
+      // Plus de voie dans le chemin video : elle ne lit plus rien.
+      t.put('C-02', '10.0.0.1', '/live');
+      t.put('C-04', '10.0.0.1');
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-04', '10.0.0.2=C-05', '10.0.0.9=C-03']);
+      assert.deepEqual(t.ids(), ['10.0.0.1=C-04', '10.0.0.2=C-05', '10.0.0.9=C-03']);
+    } finally {
+      t.db.close();
+    }
   });
 });

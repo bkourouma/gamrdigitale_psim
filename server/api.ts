@@ -32,7 +32,7 @@ import { fetchFaceGroups } from './faces.ts';
 import type { FaceGroup } from './faces.ts';
 import type { FaceObs } from './faceobs.ts';
 import type { Presence } from './presence.ts';
-import { describeRule, validateSpec } from './rules.ts';
+import { describeRule } from './rules.ts';
 import type { Rules } from './rules.ts';
 import { createRuleAssistant } from './ruleassist.ts';
 import type { TuyaService } from './tuya.ts';
@@ -112,6 +112,11 @@ export interface FaceListEntry {
   size?: number;
   cameraId: string;
   cameraName: string;
+  /**
+   * Identifiants de TOUTES les cameras du PSIM lues par le meme appareil que `cameraId` (triees, `cameraId` comprise), relus a chaque
+   * lecture ; sert a retrouver la liste d'une regle creee depuis une autre voie du meme enregistreur. Aucune adresse.
+   */
+  deviceCameraIds?: string[];
 }
 
 export interface FaceListsResult {
@@ -147,6 +152,8 @@ interface FaceHostState {
 export function createFaceLists(deps: {
   hosts: () => { cameraId: string; creds: Credentials }[];
   cameraName: (cameraId: string) => string;
+  /** Cameras du meme appareil que la camera donnee (voir `deviceIndex`) : ajoute `deviceCameraIds` a chaque entree. */
+  deviceCameraIds?: (cameraId: string) => string[];
   fetchGroups?: (creds: Credentials) => Promise<FaceGroup[]>;
   now?: () => number;
 }) {
@@ -216,7 +223,8 @@ export function createFaceLists(deps: {
     const notes: string[] = [];
     for (const e of states) {
       const cameraName = deps.cameraName(e.cameraId);
-      for (const g of e.groups) lists.push({ id: g.id, name: g.name, ...(g.size === undefined ? {} : { size: g.size }), cameraId: e.cameraId, cameraName });
+      const sameDevice = deps.deviceCameraIds ? { deviceCameraIds: deps.deviceCameraIds(e.cameraId) } : {};
+      for (const g of e.groups) lists.push({ id: g.id, name: g.name, ...(g.size === undefined ? {} : { size: g.size }), cameraId: e.cameraId, cameraName, ...sameDevice });
       if (e.failure) {
         notes.push(`La caméra « ${cameraName} » ne répond pas : ${e.failure.reason}.`);
       } else if (e.at === 0) {
@@ -226,21 +234,90 @@ export function createFaceLists(deps: {
     return { lists, notes, hosts: states.length };
   }
 
-  /** Ce que le cache contient maintenant, sans rien lire (contexte de l'assistant). */
-  function cached(): { id: string; name: string }[] {
-    const seen = new Set<string>();
-    const out: { id: string; name: string }[] = [];
+  /**
+   * Ce que le cache contient maintenant, sans rien lire (contexte de l'assistant) : UNE ligne par (appareil, liste), avec la camera
+   * par laquelle la liste se lit. Aucun dedoublonnage entre appareils : chaque appareil numerote ses listes lui-meme, deux appareils
+   * peuvent avoir chacun une liste « 1 » (meme nom ou non), et ce sont deux listes distinctes.
+   */
+  function cached(): { cameraId: string; cameraName: string; id: string; name: string }[] {
+    const out: { cameraId: string; cameraName: string; id: string; name: string }[] = [];
+    const done = new Set<FaceHostState>();
     for (const h of deps.hosts()) {
-      for (const g of cache.get(keyOf(h.creds))?.groups ?? []) {
-        if (seen.has(`${g.id}|${g.name}`)) continue;
-        seen.add(`${g.id}|${g.name}`);
-        out.push({ id: g.id, name: g.name });
-      }
+      const entry = cache.get(keyOf(h.creds));
+      if (!entry || done.has(entry)) continue;
+      done.add(entry);
+      const cameraName = deps.cameraName(h.cameraId);
+      for (const g of entry.groups) out.push({ cameraId: h.cameraId, cameraName, id: g.id, name: g.name });
     }
     return out;
   }
 
   return { read, cached };
+}
+
+/**
+ * Stabilise la camera annoncee pour chaque appareil. `faceHosts()` prend la premiere camera de l'hote par ordre d'identifiant : y
+ * ajouter une camera d'identifiant plus petit (ou corriger les identifiants de la premiere) changerait le `cameraId` annonce, et
+ * l'ecran ne retrouverait plus la liste d'une regle deja enregistree. On garde donc, par hote, la camera deja annoncee tant qu'elle
+ * lit encore cet hote (source video avec une voie) ; sinon (camera supprimee, adresse changee) on prend celle que `faceHosts()` donne.
+ * La correspondance des regles se fait par APPAREIL (hote) : ce choix ne change jamais le declenchement, seulement ce que l'ecran affiche.
+ * La memoire vit dans le processus : apres un redemarrage, c'est de nouveau la premiere camera de l'hote par ordre d'identifiant.
+ */
+export function stableFaceHosts(db: DatabaseSync, hosts: () => { cameraId: string; creds: Credentials }[]): () => { cameraId: string; creds: Credentials }[] {
+  const chosen = new Map<string, string>();
+  const stillReads = (cameraId: string, host: string): boolean => {
+    try {
+      const row = db.prepare('SELECT host, rtsp_path FROM camera_source WHERE device_id = ?').get(cameraId) as { host?: unknown; rtsp_path?: unknown } | undefined;
+      return row?.host === host && typeof row.rtsp_path === 'string' && /channel=\d+/i.test(row.rtsp_path);
+    } catch {
+      return false;
+    }
+  };
+  return () =>
+    hosts().map((h) => {
+      const kept = chosen.get(h.creds.host);
+      if (kept !== undefined && kept !== h.cameraId && stillReads(kept, h.creds.host)) return { ...h, cameraId: kept };
+      chosen.set(h.creds.host, h.cameraId);
+      return h;
+    });
+}
+
+/**
+ * Index des appareils (un par hote de camera_source). Reperes d'appareil OPAQUES pour le contexte de l'assistant : « appareil 1 », « appareil 2 »... un par hote distinct de
+ * camera_source (hotes tries, hote -> rang), le meme pour toutes les cameras d'un meme hote (enregistreur a plusieurs voies).
+ * Camera sans source video ou a hote vide : aucun repere. L'hote lui-meme (adresse) ne sort JAMAIS d'ici. Relu a chaque appel :
+ * une camera dont on change l'adresse change d'appareil au contexte suivant.
+ */
+export function deviceIndex(db: DatabaseSync): { mark: (cameraId: string) => string | undefined; cameras: (cameraId: string) => string[] } {
+  // Meme comparaison d'hotes que les regles (rules.ts) : sans espaces autour, en minuscules.
+  const keyOf = (host: unknown): string | null => (typeof host === 'string' && host.trim() !== '' ? host.trim().toLowerCase() : null);
+  let rows: { device_id: string; host: unknown }[] = [];
+  try {
+    rows = db.prepare('SELECT device_id, host FROM camera_source').all() as unknown as { device_id: string; host: unknown }[];
+  } catch {
+    return { mark: () => undefined, cameras: () => [] }; // base illisible : rien plutot qu'une reponse en erreur
+  }
+  const hosts = [...new Set(rows.map((r) => keyOf(r.host)).filter((k): k is string => k !== null))].sort();
+  const rank = new Map(hosts.map((h, i) => [h, i + 1] as const));
+  const byCamera = new Map(rows.map((r) => [r.device_id, keyOf(r.host)] as const));
+  const byHost = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = keyOf(r.host);
+    if (key !== null) byHost.set(key, [...(byHost.get(key) ?? []), r.device_id]);
+  }
+  for (const ids of byHost.values()) ids.sort();
+  return {
+    mark: (cameraId) => {
+      const key = byCamera.get(cameraId);
+      const n = key ? rank.get(key) : undefined;
+      return n === undefined ? undefined : `appareil ${n}`;
+    },
+    /** Toutes les cameras lues par le meme appareil que `cameraId` (triees, elle comprise) ; aucune si elle n'a pas de source. */
+    cameras: (cameraId) => {
+      const key = byCamera.get(cameraId);
+      return key ? [...(byHost.get(key) ?? [])] : [];
+    },
+  };
 }
 
 /** Compteur glissant : au plus `max` appels par `windowMs` et par cle. */
@@ -691,7 +768,11 @@ export function createApp(deps: ApiDeps) {
 
   // Listes de visages (bases des appareils Dahua de camera_source) : cache partage avec le contexte de l'assistant.
   const cameraNameOf = (id: string): string => engine.getDevice(id)?.name ?? id;
-  const faceLists = createFaceLists({ hosts: () => deps.dahua.faceHosts(), cameraName: cameraNameOf });
+  const faceLists = createFaceLists({
+    hosts: stableFaceHosts(deps.db, () => deps.dahua.faceHosts()),
+    cameraName: cameraNameOf,
+    deviceCameraIds: (cameraId) => deviceIndex(deps.db).cameras(cameraId),
+  });
 
   // Assistant : meme validation et meme phrase francaise que la saisie manuelle ; le contexte ne contient que des noms.
   const assistEnvironment = () => {
@@ -706,14 +787,21 @@ export function createApp(deps: ApiDeps) {
     apiKey: deps.assist?.apiKey,
     model: deps.assist?.model,
     url: deps.assist?.apiUrl,
-    validate: (input) => validateSpec(input, assistEnvironment().ctx),
+    // Meme verification que la saisie manuelle (forme, portee, et camera de la portee sur l'appareil de la liste).
+    validate: (input) => deps.rules.validate(input),
     describe: (spec) => describeRule(spec, { cameraName: cameraNameOf }),
     context: () => {
       const { cameras, ctx } = assistEnvironment();
+      const markOf = deviceIndex(deps.db).mark;
+      const mark = (cameraId: string) => {
+        const device = markOf(cameraId);
+        return device === undefined ? {} : { device };
+      };
       return {
-        cameras: cameras.map((c) => ({ id: c.id, name: c.name, zone: c.zone })),
+        cameras: cameras.map((c) => ({ id: c.id, name: c.name, zone: c.zone, ...mark(c.id) })),
         zones: [...ctx.zones],
-        lists: faceLists.cached(),
+        // Le repere d'une liste est celui de sa camera : une liste et les cameras de son appareil portent le meme.
+        lists: faceLists.cached().map((l) => ({ cameraId: l.cameraId, cameraName: l.cameraName, ...mark(l.cameraId), id: l.id, name: l.name })),
       };
     },
   });

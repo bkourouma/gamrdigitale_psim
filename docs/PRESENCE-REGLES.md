@@ -97,7 +97,10 @@ la casse). Les présences brutes sont stockées telles quelles ; le lissage est 
 
 ```ts
 import type { Window } from './arming.ts'; // même format de plages horaires que l'armement
-export type Who = { type: 'anyone' };       // étape 3 : | { type: 'list'; listId } | { type: 'person'; personId } | { type: 'unknown' }
+export type Who =                             // lot V5 : cameraId = caméra du PSIM par laquelle la base est lue
+  | { type: 'anyone' } | { type: 'unknown' }
+  | { type: 'list'; cameraId: string; listId: string; listName: string }
+  | { type: 'person'; cameraId: string; personId: string; personName: string };
 export interface RuleSpec {
   who: Who;
   where: { cameras: string[] } | { zones: string[] };
@@ -188,6 +191,7 @@ sur le vrai XVR** (lot V4) : les jeux d'essai viennent de la documentation Dahua
 | **V2** | Mise en service visages : procédure, essai de fiabilité, information du personnel | `docs/VISAGES.md` | — | **fait** (98774b4) |
 | **V3** | Règles d'identité (`who` : liste, personne, inconnu), écran des listes | `server/rules.ts`, `server/presence.ts`, `web/rules.js`, … | P3, V1 | **fait** (437c35a) |
 | **V4** | Sur le vrai XVR : activer la reconnaissance voies 5 et 8, créer les bases, enregistrer, mesurer | (matériel) | V1, V2 | **avec l'accord de l'utilisateur, par le chef** |
+| **V5** | Identifiants de liste et de personne propres à chaque appareil (`who.cameraId`) | `server/rules.ts`, `server/ruleassist.ts`, `server/api.ts`, `web/rules.js`, tests | V3 | **fait** (branche `identifiants-visage`) |
 
 Règles communes : un fichier n'appartient qu'à un lot actif à la fois ; personne ne touche `data-prod/`, le PSIM de
 production, ni le vrai enregistreur (sauf V4, par le chef) ; tests ciblés + `npm run typecheck` avant chaque commit ;
@@ -236,9 +240,49 @@ Assistant IA dans l'écran « Règles » (`GET/POST /api/rules/assist`, 20 propo
 `GET /api/faces/lists` (bases lues sur toutes les caméras Dahua), `GET /api/faces/recent`. Réglages : `PSIM_ASSIST_API_KEY`,
 `PSIM_ASSIST_MODEL`, `PSIM_ASSIST_API_URL` (essais seulement : https partout, http seulement vers cette machine).
 
-Points ouverts : deux caméras peuvent numéroter leurs listes pareil (`who.listId` seul se confondrait : ajouter la caméra
-source à la règle si une deuxième caméra visage arrive) ; doublon Start/Pulse dédoublonné seulement à heure identique (à
+Points ouverts : doublon Start/Pulse dédoublonné seulement à heure identique (à
 vérifier sur la vraie caméra) ; `scripts/check-config.ts` ne contrôle pas encore `PSIM_ASSIST_*` ; le texte d'accueil de
 `web/index.html` ne parle pas des visages ; le 409 de suppression reconnu par son message à l'écran.
 Reste : **la caméra visage** (achat, pose, qualification : format réel de `FaceRecognition` et de `findGroup`), puis l'essai
 familial décrit dans `docs/VISAGES.md`.
+
+## Lot V5 — identifiants de liste et de personne propres à chaque appareil
+
+Défaut corrigé : chaque appareil Dahua numérote ses bases et ses personnes (`GroupID` « 1 », `UID` « 1 »…) ; comparer le seul
+identifiant confondait la liste « 1 » d'une caméra avec la liste « 1 » d'une autre.
+
+- **`Who`** : `list` et `person` portent `cameraId` (obligatoire, caméra connue du PSIM : celle par laquelle la base est lue, comme
+  `cameraId` de `GET /api/faces/lists`).
+- **Correspondance par APPAREIL, pas par voie** : `faceMatches(who, obs, hostOf)` — l'observation correspond si l'hôte
+  (`camera_source.host`, comparé sans espaces ni casse) de sa caméra est celui de `who.cameraId` ET si l'identifiant est le même.
+  Un enregistreur à plusieurs voies n'a qu'une base pour toutes ses voies. L'hôte est relu à chaque comparaison
+  (`MachineContext.hostOf`, requis ; la machine reste pure et le direct et l'essai utilisent la même fonction). Caméra supprimée,
+  sans source ou `who` sans `cameraId` : aucune correspondance, jamais « tous appareils ». « Inconnu » reste indépendant de l'appareil.
+- **Garde de nom** : si l'observation porte un nom de liste (ou de personne), il doit égaler `listName` (`personName`) de la règle (espaces
+  compactés, casse ignorée) ; sinon pas de correspondance (cas d'une caméra déplacée vers un autre appareil dont la liste « 1 » a
+  un autre nom : une règle sur « Interdits » ne doit pas viser une autre liste). Sans nom dans l'observation, la correspondance
+  reste (hôte, identifiant). `faceMismatch` signale ce cas ; le direct écrit un avertissement UNE fois par vie de la règle dans le journal technique.
+- **Validation** : `cameraId` requis et connu (« Qui : … ») ; une portée (`where`, zones résolues à ce moment) sans aucune caméra de
+  l'appareil de la liste/personne est refusée (« Ou : aucune camera choisie n'appartient a l'appareil… »), à la création, à la
+  modification et à l'essai. Fait dans `createRules` (accès à la base), pas dans `validateSpec` ni dans la machine ;
+  `createRules(...).validate(spec)` l'expose (utilisé pour la proposition de l'assistant).
+- **Règles à revoir** : une règle liste/personne enregistrée sans `cameraId` (ou dont la caméra n'a plus de source) est chargée sans
+  erreur, `Rule.needsReview` est vrai, elle ne déclenche rien et ne peut pas être réactivée telle quelle (400 « Cette regle doit etre
+  reenregistree : choisissez a nouveau la liste ») ; la désactiver, la renommer, la supprimer ou la réenregistrer reste possible.
+  Elle peut rester « activée » en base : l'écran la signale (badge, interrupteur verrouillé).
+- **`describeRule`** : « si une personne de la liste « Famille » (caméra « Portail ») est reconnue » ; sans caméra : « (caméra non précisée) ».
+- **Assistant** : contexte des listes `{ cameraId, cameraName, device?, id, name }`, caméras avec `device?` ; `device` est un repère OPAQUE
+  (« appareil 1 », « appareil 2 »…, un par hôte, jamais l'adresse) ; schéma de sortie avec `cameraId` requis ; vérification du
+  triplet (cameraId, id, nom) ; l'invite impose une portée contenant une caméra du même appareil que la liste ; la proposition repasse
+  par `rules.validate`.
+- **API** : `GET /api/faces/lists` : une entrée par (appareil, liste), `cameraId` = caméra représentante de l'hôte (la première par
+  identifiant ayant des identifiants lisibles, puis mémorisée en processus pour rester la même d'une lecture à l'autre), et
+  `deviceCameraIds` = toutes les caméras du PSIM de cet hôte (relu à chaque appel, sans adresse IP). `GET /api/rules` porte `needsReview`.
+- **Écran** : options « Famille — caméra Portail » dès que plusieurs sources ont des bases (« (n° 2) » pour deux listes homonymes d'un même
+  appareil) ; une liste est retrouvée par appareil (`deviceCameraIds`) puis identifiant ; règle à revoir signalée ; les messages « Qui : » /
+  « Ou : » du serveur s'affichent sur la bonne case.
+
+Points ouverts : l'essai sur le passé rejoue avec les hôtes ACTUELS des caméras (pas ceux du jour de l'observation) ; l'avertissement de
+nom n'est que dans le journal technique (`psim.log`), pas encore dans l'écran Système ni sur la carte de la règle ; messages
+serveur de validation sans accents, affichés tels quels ; la caméra représentante d'un appareil n'est mémorisée qu'en processus
+(après redémarrage : de nouveau la première par identifiant).
