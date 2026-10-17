@@ -17,7 +17,7 @@ import {
   pill, sitePill, devicePill, dataTable, emptyBlock, notice, panel, facts,
 } from './ui.js';
 import { createRing, createThermometer, createTube, BANDS } from './gauge.js';
-import { disposeCharts, downtimeChart, riskTrend } from './charts.js';
+import { disposeCharts, downtimeChart, patrolsChart, riskTrend } from './charts.js';
 import { clientsPage, crumbs, groupHref, groupPage, orgPage, orgTrail, railTree, soloGroupId } from './groups.js';
 
 const DAY_MS = 86_400_000;
@@ -42,7 +42,7 @@ const state = {
   /** Écran affiché : { kind: 'home' }, { kind: 'org', id }, { kind: 'group', id } ou { kind: 'site', id, tab, days }. */
   page: null,
   /** Bascules « Voir en tableau », gardées d'un rafraîchissement à l'autre. */
-  prefs: { downtime: false, risk: false },
+  prefs: { downtime: false, risk: false, patrols: false },
   timer: null,
   seq: 0,
   loadedAt: 0,
@@ -836,6 +836,14 @@ function riskSummary(d) {
   return panel({ title: 'Indice de sécurité', iconName: 'gauge' }, h('div', { class: 'risk-summary' }, ring.el, h('div', { class: 'risk-summary-text' }, ...text, link)));
 }
 
+/**
+ * Rondes de sécurité par semaine : seulement si le site transmet l'application des agents (`d.patrols`). Sans elle, rien
+ * n'apparaît : beaucoup de sites n'ont pas d'agents, une carte « non transmis » sur chacun serait du bruit. Que des compteurs.
+ */
+function patrolsPanel(d) {
+  return d.patrols ? patrolsChart(d.patrols, { prefs: state.prefs, stale: Boolean(staleSince(d)) }) : null;
+}
+
 // ---- onglet Synthèse
 
 function tabSynthese(d, r) {
@@ -853,7 +861,7 @@ function tabSynthese(d, r) {
   } else equipNote = down.length ? `${plural(down.length, 'hors service', 'hors service')} sur ${monitored.length} suivis.` : `Les ${monitored.length} équipements suivis répondent.`;
   const equipment = ['Équipements', d.devices.length ? plural(d.devices.length, 'équipement', 'équipements') : 'Aucun déclaré', equipNote];
   if (d.status.level === 'unknown') {
-    return h('div', { class: 'grid-2' }, panel({ title: 'En bref', iconName: 'list' }, facts([equipment]), notice('info', 'info', 'La disponibilité et le temps d’arrêt apparaîtront quand l’état des équipements sera mesuré.')), riskSummary(d));
+    return [h('div', { class: 'grid-2' }, panel({ title: 'En bref', iconName: 'list' }, facts([equipment]), notice('info', 'info', 'La disponibilité et le temps d’arrêt apparaîtront quand l’état des équipements sera mesuré.')), riskSummary(d)), patrolsPanel(d)];
   }
   const a = d.availability;
   const inc = incidentSummary(d);
@@ -878,6 +886,7 @@ function tabSynthese(d, r) {
   return [
     h('div', { class: 'grid-2' }, panel({ title: periodTitle(d, r), iconName: 'list' }, list), riskSummary(d)),
     downtimeChart(d.daily, { prefs: state.prefs, title: 'Arrêts par jour', stale: Boolean(since), blind: { periods: d.blindPeriods, offsetMin: d.utcOffsetMin } }),
+    patrolsPanel(d),
   ];
 }
 
