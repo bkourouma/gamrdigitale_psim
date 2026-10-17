@@ -374,7 +374,7 @@ export const DOOR_STATE = {
   closed: { label: 'Fermée', short: 'Fermée', icon: 'lock', tone: 'ok' },
   open: { label: 'Ouverte', short: 'Ouverte', icon: 'door-open', tone: 'info' },
   forced: { label: 'Forcée', short: 'Forcée', icon: 'door-forced', tone: 'alarm' },
-  held_open: { label: 'Maintenue ouverte', short: 'Maintenue', icon: 'door-held', tone: 'warning' },
+  held_open: { label: 'Maintenue ouverte', short: 'Reste ouverte', icon: 'door-held', tone: 'warning' },
   offline: { label: 'Hors ligne', short: 'Hors ligne', icon: 'state-offline', tone: 'muted' },
   fault: { label: 'En défaut', short: 'Défaut', icon: 'wrench', tone: 'warning' },
   unknown: { label: 'État inconnu', short: 'Inconnu', icon: 'state-unknown', tone: 'muted' },

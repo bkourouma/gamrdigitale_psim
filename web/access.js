@@ -4,11 +4,14 @@
  *
  * Principes tenus ici :
  *  - le contrôleur décide d'ouvrir, le PSIM enregistre et supervise : cet écran ne commande rien (l'ouverture à distance
- *    est un emplacement réservé au lot AC4, `data-slot="remote-open"`) ;
+ *    est un emplacement, `data-slot="remote-open"`, rempli par un composant externe qui écoute l'évènement
+ *    `psim:door-card` émis après chaque rendu de la fiche) ;
+ *  - le vocabulaire est celui des agents de garde : « boîtier de contrôle d'accès (contrôleur) » à la première apparition
+ *    visible de chaque écran, « contrôleur » ensuite ; « reçu après coupure » (le mot `late` ne vit que dans l'API) ;
  *  - un état = une forme + une icône + un mot, et chaque état dit quoi faire (texte du serveur, `stateHint`) ;
  *  - tout ce qui vient du serveur (noms, numéros de badge) est hostile : texte seulement (`textContent` via h()), jamais
  *    d'HTML construit, jamais de style en ligne (CSP stricte) ;
- *  - aucune donnée personnelle dans l'adresse de la page (la sous-route ne porte que porte, résultat et « différé ») ;
+ *  - aucune donnée personnelle dans l'adresse de la page (la sous-route ne porte que porte, résultat et « reçu après coupure ») ;
  *  - « Voir la vidéo » montre l'ENREGISTREMENT du passage (10 s avant, 20 s après) quand une caméra liée est une voie
  *    d'enregistreur Dahua que le PSIM sait relire (GET /api/cameras/replayable) ; sinon l'image EN DIRECT, et l'interface
  *    dit toujours laquelle des deux elle montre, et pourquoi (docs/ACCES.md § 5) ;
@@ -54,6 +57,7 @@ export const TABS = [
 
 export const PRESETS = [
   { id: 'today', label: 'Aujourd’hui' },
+  { id: 'last24', label: 'Dernières 24 h' },
   { id: 'yesterday', label: 'Hier' },
   { id: 'week', label: '7 derniers jours' },
 ];
@@ -90,20 +94,45 @@ const STATE_WORDS = {
   closed: ['fermée', 'fermées'],
 };
 
+/**
+ * Phrase du serveur (`stateHint`) dont la première mention de « contrôleur » est expliquée : sur la fiche, ce texte est
+ * le premier à l'écran, avant la liste des informations. `explained` dit que c'est fait (le libellé de la liste reste court).
+ */
+export function explainController(text) {
+  const raw = String(text ?? '');
+  if (/boîtier de contrôle/i.test(raw) || !/contrôleur/i.test(raw)) return { text: raw, explained: false };
+  return { text: raw.replace(/contrôleur/i, (m) => (m[0] === 'C' ? capFirst(CONTROLLER_LONG) : CONTROLLER_LONG)), explained: true };
+}
+
 /** Secours si le serveur ne donne pas de `stateHint` : ce que l'état signifie et ce qu'il faut faire. */
 export const STATE_HINT = {
   closed: 'La porte est fermée. Rien à faire.',
   open: 'Un passage est en cours. Rien à faire.',
   forced: 'La porte s’est ouverte sans autorisation. Regardez la caméra, puis traitez l’alarme.',
   held_open: 'Quelqu’un retient la porte ouverte. Si elle reste ouverte, l’alarme sonnera.',
-  offline: 'Le PSIM n’a plus de nouvelles du contrôleur. Les badges fonctionnent toujours sur place : faites vérifier l’alimentation et le réseau.',
+  offline: 'Le PSIM n’a plus de nouvelles de cette porte. Les badges fonctionnent toujours sur place : faites vérifier l’alimentation et le réseau.',
   fault: 'L’équipement signale une panne. Prévenez le technicien.',
   unknown: 'Aucun message reçu pour l’instant : l’état de la porte n’est pas connu.',
 };
 
 export const EXPORT_TRUNCATED_TEXT = 'Export limité à 100 000 lignes, réduisez la période.';
-export const JOURNAL_NOTE = 'Les recherches par titulaire ou badge et les exports sont inscrits au journal.';
-export const REMOTE_UNAVAILABLE_TEXT = 'Ouverture à distance : pas encore disponible sur cette installation.';
+export const JOURNAL_NOTE = 'Les recherches par nom ou par badge et les exports sont notés dans le journal des actions du PSIM.';
+/** Première apparition de « contrôleur » sur un écran : on dit ce que c'est. */
+export const CONTROLLER_LONG = 'boîtier de contrôle d’accès (contrôleur)';
+export const LATE_LABEL = 'Reçu après coupure';
+export const LATE_HELP = `Passages récupérés dans la mémoire du ${CONTROLLER_LONG} après une coupure.`;
+export const LATE_TITLE = 'Passage récupéré après une coupure de liaison. L’heure affichée est celle de la porte.';
+export const PERIOD_HINT = 'Heure affichée : celle de la porte.';
+export const SEARCH_HINT = 'Appuyez sur Entrée ou sur Rechercher.';
+export const EXPORT_LABEL = 'Exporter (tableur)';
+export const EXPORT_HELP = 'Fichier lisible dans Excel.';
+export const MORE_FILTERS_LABEL = 'Plus de filtres';
+/** Carte « Ouverture à distance » quand aucun composant ne l'a remplie (contrat de l'évènement `psim:door-card`). */
+export const REMOTE_FALLBACK_TEXT = 'Ouverture à distance : aucune serrure ou barrière n’est reliée à cette porte.';
+export const REMOTE_ADMIN_HINT = 'Reliez-en une dans ';
+/** Nom de l'évènement émis sur `document` après chaque rendu de la fiche d'une porte. */
+export const DOOR_CARD_EVENT = 'psim:door-card';
+export const BACK_LABELS = { portes: 'Retour aux portes', journal: 'Retour au journal', plan: 'Retour au plan' };
 export const UNDECLARED_TEXT = 'Ce détecteur n’est rattaché à aucun contrôleur : ses passages seront enregistrés mais la porte n’a pas d’état.';
 
 // ================================================================================================ dates et heures
@@ -180,19 +209,33 @@ const isoOrEmpty = (ts) => (validTs(ts) ? new Date(ts).toISOString() : '');
 
 /**
  * Raccourcis de période, en valeurs de champs. « Au » est INCLUS à la minute près (le serveur reçoit la minute suivante,
- * il exclut sa borne) : « Aujourd’hui » va donc de 00:00 à 23:59.
+ * il exclut sa borne) : « Aujourd’hui » va donc de 00:00 à 23:59. « Dernières 24 h » va de la minute d'il y a 24 heures
+ * à la minute présente : elle englobe la ronde de nuit, que « Aujourd’hui » (depuis minuit) laisse de côté le matin.
  */
 export function quickRange(id, now) {
   const endOfDay = (offset) => dayStart(now, offset) - 60_000;
   if (id === 'today') return { from: toInputValue(dayStart(now)), to: toInputValue(endOfDay(1)) };
+  if (id === 'last24') return { from: toInputValue(now - DAY_MS), to: toInputValue(now) };
   if (id === 'yesterday') return { from: toInputValue(dayStart(now, -1)), to: toInputValue(endOfDay(0)) };
   if (id === 'week') return { from: toInputValue(dayStart(now, -6)), to: toInputValue(endOfDay(1)) };
   return null;
 }
 
-/** Raccourci qui correspond exactement à la période saisie, sinon null (il reste « enfoncé » tant que les dates collent). */
+/** « Dernières 24 h » glisse avec l'horloge : on la reconnaît à sa largeur (24 h pile) et à une fin récente. */
+const ROLLING_TOLERANCE_MS = 10 * 60_000;
+
+/**
+ * Raccourci qui correspond à la période saisie, sinon null (il reste « enfoncé » tant que les dates collent). Les 24
+ * dernières heures restent reconnues pendant dix minutes, le temps de lire la liste.
+ */
 export function matchPreset(filters, now) {
   for (const p of PRESETS) {
+    if (p.id === 'last24') {
+      const from = fromInputValue(filters.from);
+      const to = fromInputValue(filters.to);
+      if (from !== null && to !== null && to - from === DAY_MS && to <= now && now - to < ROLLING_TOLERANCE_MS) return p.id;
+      continue;
+    }
     const r = quickRange(p.id, now);
     if (r && r.from === filters.from && r.to === filters.to) return p.id;
   }
@@ -272,6 +315,36 @@ export function resultLabelOf(p) {
 /** Ton visuel du résultat : l'icône et le mot portent le sens, jamais la couleur seule. */
 export function resultTone(p) {
   return p?.result === 'granted' ? 'ok' : 'warning';
+}
+
+/**
+ * Le résultat en deux morceaux pour l'écran : le mot court de la pastille (« Refusé ») et la raison, écrite à côté, hors
+ * de la pastille (« Badge inconnu »). `full` (« Refusé — badge inconnu ») reste le nom lu par les lecteurs d'écran.
+ */
+export function resultParts(p) {
+  const full = resultLabelOf(p);
+  const fallback = p?.result === 'granted' ? 'Accepté' : 'Refusé';
+  const cut = full.indexOf('—');
+  if (cut < 0) return { word: full.trim() || fallback, reason: '', full };
+  return { word: full.slice(0, cut).trim() || fallback, reason: capFirst(full.slice(cut + 1).trim()), full };
+}
+
+/** Icône du résultat : coche pour un passage accepté, croix pour un refus (jamais un cadenas, qui dit « fermé »). */
+export const resultIcon = (p) => (resultTone(p) === 'ok' ? 'state-ok' : 'state-denied');
+
+/**
+ * L'incident EN COURS (ouvert ou acquitté) du détecteur d'une porte qui sonne, pour le bouton « Aller à l'alarme ».
+ * Rien si la porte ne sonne pas (ni forcée, ni maintenue ouverte, ni détecteur en alarme ou préalarme) ou s'il n'y a pas
+ * d'incident ouvert : pas de bouton qui mène nulle part. Le plus urgent d'abord : non acquitté, puis le plus récent.
+ */
+export function incidentForDoor(door, incidents) {
+  if (!door || typeof door.detectorId !== 'string') return null;
+  const sounding = door.state === 'forced' || door.state === 'held_open' || door.deviceStatus === 'alarm' || door.deviceStatus === 'prealarm';
+  if (!sounding) return null;
+  const list = incidents instanceof Map ? [...incidents.values()] : Array.isArray(incidents) ? incidents : [];
+  const mine = list.filter((i) => i && i.detectorId === door.detectorId && i.status !== 'closed');
+  mine.sort((a, b) => (b.status === 'open') - (a.status === 'open') || (Number(b.openedAt) || 0) - (Number(a.openedAt) || 0));
+  return mine[0] ?? null;
 }
 
 /** « KONAN Yao — Accepté, aujourd’hui à 14:32 » : le dernier passage d'une porte en une phrase. */
@@ -364,15 +437,6 @@ export function videoBanner(mode, reason, ts, now) {
   return { kind: 'warning', title: videoNoteText(ts, now), detail: liveReasonText(reason) };
 }
 
-/** Texte de l'emplacement réservé à l'ouverture à distance (lot AC4). Aucun bouton tant que le serveur ne l'offre pas. */
-export function remoteSlotText(remote) {
-  if (remote?.available) return 'Ouverture à distance disponible sur cette porte.';
-  const reason = typeof remote?.reason === 'string' ? remote.reason.trim() : '';
-  // La raison d'aujourd'hui parle d'un lot de développement : on garde la phrase sobre pour l'opérateur.
-  if (!reason || /\blot\b|\bAC\d\b/i.test(reason)) return REMOTE_UNAVAILABLE_TEXT;
-  return reason;
-}
-
 // ================================================================================================ filtres du journal
 
 export function defaultFilters(now) {
@@ -389,11 +453,27 @@ export function hasPersonalFilter(filters) {
   return Boolean(filters.holder?.trim() || filters.credential?.trim());
 }
 
-/** Ce qui empêche la recherche : [{ field, message }], dans l'ordre de l'écran. Vide = tout va bien. */
+/** Nombre de filtres posés dans le bloc « Plus de filtres » (nom, badge, reçus après coupure) : signalé sur son bouton. */
+export function hiddenFilterCount(filters) {
+  return Number(Boolean(filters.holder?.trim())) + Number(Boolean(filters.credential?.trim())) + Number(Boolean(filters.late));
+}
+
+/** « Plus de filtres » ou « Plus de filtres (2) ». */
+export function moreFiltersText(count) {
+  return count > 0 ? `${MORE_FILTERS_LABEL} (${count})` : MORE_FILTERS_LABEL;
+}
+
+/**
+ * Ce qui empêche la recherche : [{ field, message }], dans l'ordre de l'écran. Vide = tout va bien. Une date vide (ou
+ * incomplète : le champ ne rend alors rien) est refusée : chercher sans borne relirait tout le journal.
+ */
 export function filterProblems(filters) {
   const problems = [];
   const from = filters.from ? fromInputValue(filters.from) : null;
   const to = filters.to ? fromInputValue(filters.to) : null;
+  if (!filters.from && !filters.to) problems.push({ field: 'from', message: 'Les dates de début et de fin sont vides : choisissez la période à chercher.' });
+  else if (!filters.from) problems.push({ field: 'from', message: 'La date de début est vide ou incomplète : choisissez un jour et une heure.' });
+  else if (!filters.to) problems.push({ field: 'to', message: 'La date de fin est vide ou incomplète : choisissez un jour et une heure.' });
   if (filters.from && from === null) problems.push({ field: 'from', message: 'La date de début n’est pas valide : choisissez un jour et une heure.' });
   if (filters.to && to === null) problems.push({ field: 'to', message: 'La date de fin n’est pas valide : choisissez un jour et une heure.' });
   if (from !== null && to !== null && from > to) problems.push({ field: 'from', message: 'La date de début est après la date de fin : corrigez l’une des deux.' });
@@ -527,7 +607,7 @@ export function parseRoute(sub) {
   return route;
 }
 
-/** Sous-route à afficher dans l'adresse. Jamais de nom ni de numéro de badge : seulement porte, résultat et « différé ». */
+/** Sous-route à afficher dans l'adresse. Jamais de nom ni de numéro de badge : seulement porte, résultat et « reçu après coupure ». */
 export function buildRoute({ tab, doorId = null, filters = null }) {
   if (tab === 'portes') return doorId && ID_PATTERN.test(doorId) ? `portes/${doorId}` : 'portes';
   if (tab === 'declaration') return 'declaration';
@@ -746,11 +826,13 @@ export function lastPurgeText(purge, now) {
  * @param {(message: string, kind?: string) => void} deps.toast  message éphémère
  * @param {() => ({ role: string, username?: string } | null)} deps.getMe  compte connecté
  * @param {object} deps.dialogs  fenêtre commune (account.js)
- * @param {((slot: HTMLElement, info: { door: object, remote: object }) => void) | null} [deps.renderRemote]
- *   crochet du lot AC4 : appelé avec l'emplacement `data-slot="remote-open"` de la fiche pour y poser ses boutons.
- * @returns {{ show: (container: HTMLElement, subRoute?: string) => Promise<void>, hide: () => void, openDoor: (id: string) => void, reset: () => void }}
+ * @param {((incident: object) => void) | null} [deps.goToAlarm]
+ *   « Aller à l'alarme » : ouvre l'incident en cours sur Surveillance (app.js : même chemin qu'une nouvelle alarme).
+ * @param {(() => void) | null} [deps.goToPlan]
+ *   « Retour au plan » : ramène sur Surveillance, là où la porte a été choisie.
+ * @returns {{ show: (container: HTMLElement, subRoute?: string) => Promise<void>, hide: () => void, openDoor: (id: string, o?: { origin?: string }) => void, reset: () => void }}
  */
-export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote = null }) {
+export function createAccessView({ api, h, toast, getMe, dialogs, goToAlarm = null, goToPlan = null }) {
   let core = null; // core.js et account.js, chargés à la première ouverture (ils touchent à la page)
   let acc = null;
   let modulesPromise = null;
@@ -857,6 +939,28 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
   function alarmPill(door) {
     if (door?.deviceStatus === 'alarm' && door.state !== 'forced') return h('span', { class: 'pill is-solid-alarm' }, ico('state-alarm'), 'Alarme en cours');
     return null;
+  }
+
+  /**
+   * « Aller à l'alarme » : pour une porte qui sonne (forcée, maintenue ouverte, détecteur en alarme) dont l'incident est en
+   * cours. Le clic ouvre cet incident sur Surveillance, comme une nouvelle alarme (étage, caméras). Pas d'incident en
+   * cours : pas de bouton qui ne mène nulle part.
+   */
+  function alarmButton(door, incident) {
+    if (!incident) return null;
+    const button = h('button', { class: 'btn btn-primary acc-alarm-go', type: 'button', 'aria-label': `Aller à l’alarme de la porte ${doorName(door)}` }, ico('state-alarm'), 'Aller à l’alarme');
+    button.addEventListener('click', () => {
+      // L'alarme a pu se clore depuis l'affichage : on relit l'incident au moment du clic.
+      const live = incidentForDoor(core.S.doors.get(door.detectorId) ?? door, core.S.incidents);
+      if (!live) {
+        toast('Cette alarme n’est plus en cours.', 'ok');
+        if (state.fiche.id) renderFiche();
+        return;
+      }
+      if (goToAlarm) goToAlarm(live);
+      else core.go('surveillance');
+    });
+    return button;
   }
 
   function floorNameOf(door) {
@@ -1176,6 +1280,15 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
 
   // ================================================================================================ onglet JOURNAL
 
+  /** Largeur « téléphone » : le bloc « Plus de filtres » y est fermé par défaut, ouvert au-dessus. */
+  const isPhone = () => {
+    try {
+      return Boolean(globalThis.matchMedia?.('(max-width: 600px)').matches);
+    } catch {
+      return false;
+    }
+  };
+
   function buildJournal() {
     const j = state.ui.j;
     j.from = h('input', { type: 'datetime-local', id: 'acc-from', step: '60' });
@@ -1185,6 +1298,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.credential = h('input', { id: 'acc-credential', type: 'text', maxlength: String(MAX_CREDENTIAL), autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'search', placeholder: 'ex. 0012345' });
     j.late = h('input', { type: 'checkbox', id: 'acc-late' });
     j.error = h('p', { class: 'form-error', role: 'alert' });
+    j.periodError = h('p', { class: 'form-error', role: 'alert' }); // sous les dates : le message est là où l'on corrige
     j.result = ''; // résultat choisi : '' (tous), 'granted' ou 'denied'
 
     j.presetButtons = PRESETS.map((p) => {
@@ -1207,10 +1321,17 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     });
 
     j.door.addEventListener('change', () => applyFilters());
-    j.late.addEventListener('change', () => applyFilters());
-    for (const input of [j.from, j.to]) input.addEventListener('change', () => updatePresetButtons());
+    j.late.addEventListener('change', () => {
+      updateMoreSummary();
+      applyFilters();
+    });
+    // Une date modifiée relance la recherche (sans voler le focus : la personne est peut-être en train de saisir l'autre).
+    for (const input of [j.from, j.to]) input.addEventListener('change', () => applyFilters({ focus: false }));
+    // Nom et badge attendent « Rechercher » (ou Entrée) : chaque frappe n'envoie rien, et la recherche est inscrite au journal.
+    for (const input of [j.holder, j.credential]) input.addEventListener('input', () => updateMoreSummary());
 
-    j.exportBtn = h('button', { class: 'btn', type: 'button' }, ico('download'), 'Exporter en CSV');
+    j.exportHint = h('p', { class: 'hint acc-export-help', id: 'acc-export-help', text: `${EXPORT_LABEL} : ${EXPORT_HELP.charAt(0).toLowerCase()}${EXPORT_HELP.slice(1)}` });
+    j.exportBtn = h('button', { class: 'btn', type: 'button', title: EXPORT_HELP, 'aria-describedby': 'acc-export-help' }, ico('download'), EXPORT_LABEL);
     j.exportBtn.addEventListener('click', () => exportCsv());
     j.refreshBtn = h('button', { class: 'btn btn-ghost', type: 'button' }, ico('refresh'), 'Actualiser');
     j.refreshBtn.addEventListener('click', () => {
@@ -1224,6 +1345,22 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     });
     j.searchBtn = h('button', { class: 'btn btn-primary', type: 'submit' }, ico('search'), 'Rechercher');
 
+    // « Plus de filtres » : un vrai <details> (clavier : Tab, Entrée, Espace), fermé sur téléphone. Un filtre actif caché
+    // dans le bloc fermé est signalé sur son titre : « Plus de filtres (2) ».
+    j.moreText = h('span', { text: MORE_FILTERS_LABEL });
+    j.more = h(
+      'details',
+      { class: 'acc-more' },
+      h('summary', { class: 'acc-more-summary' }, ico('chevron-right', 'acc-more-chevron'), j.moreText),
+      h(
+        'div',
+        { class: 'acc-more-body' },
+        h('div', { class: 'acc-fields' }, field('Titulaire (nom)', j.holder, `Une partie du nom suffit. ${SEARCH_HINT}`), field('Numéro de badge', j.credential, `Le début du numéro suffit. ${SEARCH_HINT}`)),
+        checkRow(j.late, 'Seulement les passages reçus après coupure', LATE_HELP),
+      ),
+    );
+    j.more.open = !isPhone();
+
     const form = h(
       'form',
       { class: 'acc-filters', 'aria-label': 'Filtres du journal des passages', novalidate: true },
@@ -1233,22 +1370,24 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         h('h3', { id: 'acc-period-title', text: 'Période' }),
         h('div', { class: 'segmented acc-presets', role: 'group', 'aria-label': 'Raccourcis de période' }, ...j.presetButtons),
         h('div', { class: 'acc-fields' }, field('Du', j.from), field('Au (inclus)', j.to)),
-        h('p', { class: 'hint', text: 'Heures du contrôleur, à la minute près.' }),
+        j.periodError,
+        h('p', { class: 'hint', text: PERIOD_HINT }),
       ),
       h(
         'div',
         { class: 'acc-filter-group', role: 'group', 'aria-labelledby': 'acc-what-title' },
-        h('h3', { id: 'acc-what-title', text: 'Quoi et qui' }),
-        h('div', { class: 'acc-fields' }, field('Porte', j.door), field('Titulaire (nom)', j.holder, 'Une partie du nom suffit.'), field('Numéro de badge', j.credential, 'Le début du numéro suffit.')),
+        h('h3', { id: 'acc-what-title', text: 'Porte et résultat' }),
         h(
           'div',
           { class: 'acc-fields acc-fields-inline' },
+          field('Porte', j.door),
           h('div', { class: 'field' }, h('span', { id: 'acc-result-label', text: 'Résultat' }), h('div', { class: 'segmented', role: 'group', 'aria-labelledby': 'acc-result-label' }, ...j.resultButtons)),
-          checkRow(j.late, 'Seulement les passages reçus en différé', 'Récupérés dans la mémoire du contrôleur après une coupure.'),
         ),
       ),
+      j.more,
       j.error,
       h('div', { class: 'actions' }, j.searchBtn, j.clearBtn, h('span', { class: 'acc-spacer' }), j.refreshBtn, j.exportBtn),
+      j.exportHint,
     );
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -1269,8 +1408,8 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.table = h(
       'table',
       { class: 'data acc-stack acc-journal-table' },
-      h('caption', { class: 'sr-only', text: 'Passages enregistrés par les contrôleurs, du plus récent au plus ancien' }),
-      h('thead', {}, h('tr', {}, ...['Date et heure', 'Porte', 'Sens', 'Titulaire', 'Méthode', 'Résultat', 'Vidéo'].map((t) => h('th', { scope: 'col', text: t })))),
+      h('caption', { class: 'sr-only', text: 'Passages enregistrés par les boîtiers de contrôle d’accès, du plus récent au plus ancien' }),
+      h('thead', {}, h('tr', {}, ...['Date et heure', 'Porte', 'Entrée / sortie', 'Titulaire', 'Moyen d’accès', 'Résultat', 'Vidéo'].map((t) => h('th', { scope: 'col', text: t })))),
       j.tbody,
     );
     j.tableWrap = h('div', { class: 'table-scroll acc-tablewrap' }, j.table);
@@ -1281,10 +1420,16 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.newer.addEventListener('click', () => changePage('newer'));
     j.older.addEventListener('click', () => changePage('older'));
     j.pager = h('nav', { class: 'acc-pager', 'aria-label': 'Pages du journal' }, j.newer, j.pageText, j.older);
-    j.videoHelp = h('p', { class: 'panel-note acc-video-help' }, ico('camera', 'icon-sm'), h('span', { text: '« Voir la vidéo » montre l’enregistrement du passage (10 s avant, 20 s après) quand la caméra de la porte est une voie d’enregistreur Dahua ; sinon l’image en direct de la caméra, et la fenêtre le dit.' }));
-    j.results = h('div', { class: 'acc-results', 'aria-busy': 'false' }, j.head, j.message, j.tableWrap, j.pager, j.videoHelp);
+    j.results = h('div', { class: 'acc-results', 'aria-busy': 'false' }, j.head, j.message, j.tableWrap, j.pager);
 
     return h('section', { class: 'panel acc-panel', 'aria-label': 'Journal des passages' }, h('div', { class: 'panel-body' }, h('h2', { class: 'sr-only', text: 'Journal des passages' }), form, j.note, j.status, j.results));
+  }
+
+  /** Titre du bloc « Plus de filtres » : le nombre de filtres posés s'y lit même quand le bloc est fermé. */
+  function updateMoreSummary() {
+    const j = state.ui?.j;
+    if (!j?.moreText) return;
+    j.moreText.textContent = moreFiltersText(hiddenFilterCount(readForm()));
   }
 
   /** Remplit le formulaire à partir d'un objet de filtres. */
@@ -1299,6 +1444,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.late.checked = Boolean(filters.late);
     updateResultButtons();
     updatePresetButtons();
+    updateMoreSummary();
   }
 
   function readForm() {
@@ -1328,24 +1474,31 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     j.door.value = keep;
   }
 
-  /** Valide, mémorise les filtres, revient à la première page et relit le journal. */
-  function applyFilters() {
+  /**
+   * Valide, mémorise les filtres, revient à la première page et relit le journal. Refusée, la recherche dit pourquoi
+   * (message annoncé) ; avec `focus: false`, le focus ne va pas au champ fautif (une date modifiée pendant la saisie).
+   */
+  function applyFilters({ focus = true } = {}) {
     const j = state.ui.j;
     updateResultButtons();
+    updatePresetButtons();
+    updateMoreSummary();
     const filters = readForm();
     const problems = filterProblems(filters);
+    for (const el of j.form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+    j.periodError.textContent = '';
+    j.error.textContent = '';
     if (problems.length) {
       const first = problems[0];
-      j.error.textContent = first.message;
+      (first.field === 'from' || first.field === 'to' ? j.periodError : j.error).textContent = first.message;
       const target = { from: j.from, to: j.to, door: j.door, holder: j.holder, credential: j.credential }[first.field];
       if (target) {
         target.setAttribute('aria-invalid', 'true');
-        target.focus();
+        if (j.more.contains(target)) j.more.open = true; // le champ fautif ne reste pas caché dans le bloc fermé
+        if (focus) target.focus();
       }
       return false;
     }
-    j.error.textContent = '';
-    for (const el of j.form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
     state.filters = filters;
     state.journal.stack.reset();
     updatePresetButtons();
@@ -1396,25 +1549,41 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     });
   }
 
+  /**
+   * Résultat d'un passage : une pastille courte (forme + icône + mot : « Refusé »), la raison à côté, hors de la pastille
+   * (« Badge inconnu »), et « Reçu après coupure » s'il y a lieu. Le nom lu par les lecteurs d'écran est le libellé complet
+   * du serveur (« Refusé — badge inconnu ») ; le visible est masqué pour eux afin de ne pas se répéter.
+   */
+  function resultBlock(p) {
+    const parts = resultParts(p);
+    return h(
+      'div',
+      { class: 'acc-cell-stack' },
+      h('span', { class: `pill ${resultTone(p) === 'ok' ? 'is-ok' : 'is-warning'}`, 'aria-hidden': 'true' }, ico(resultIcon(p)), parts.word),
+      parts.reason ? h('span', { class: 'acc-sub acc-reason', 'aria-hidden': 'true', text: parts.reason }) : null,
+      h('span', { class: 'sr-only', text: parts.full }),
+      p.late ? h('span', { class: 'tag is-info', title: LATE_TITLE }, ico('clock', 'icon-sm'), LATE_LABEL) : null,
+    );
+  }
+
   function passageRow(p) {
     const t = now();
     const stamp = passageStamp(p.atDevice, t);
     const door = core.S.doors.get(p.doorId);
     const cameras = Array.isArray(door?.cameraIds) ? door.cameraIds : [];
-    const tone = resultTone(p);
-    const resultCell = h(
-      'td',
-      { 'data-label': 'Résultat' },
-      h(
-        'div',
-        { class: 'acc-cell-stack' },
-        h('span', { class: `pill ${tone === 'ok' ? 'is-ok' : 'is-warning'}` }, ico(tone === 'ok' ? 'state-ok' : 'lock'), resultLabelOf(p)),
-        p.late ? h('span', { class: 'tag is-info', title: 'Récupéré dans la mémoire du contrôleur après une coupure. L’heure affichée est celle du contrôleur.' }, ico('clock', 'icon-sm'), 'Reçu en différé') : null,
-      ),
-    );
+    // Le nom de la porte mène à ses détails (retour au journal) quand la porte existe encore.
+    let doorCell = h('strong', { text: p.doorName || p.doorId || '—' });
+    if (door && ID_PATTERN.test(String(p.doorId))) {
+      const link = h('button', { class: 'acc-door-link', type: 'button', 'aria-label': `Détails de la porte ${p.doorName || p.doorId}` }, h('strong', { text: p.doorName || p.doorId }));
+      link.addEventListener('click', () => openFiche(p.doorId, { trigger: link, backTab: 'journal' }));
+      doorCell = link;
+    }
+    const resultCell = h('td', { 'data-label': 'Résultat', class: 'acc-result' }, resultBlock(p));
     let videoCell;
     if (cameras.length) {
-      const opener = h('button', { class: 'btn btn-sm', type: 'button', 'aria-label': `Voir la vidéo du passage de ${formatClock(p.atDevice)}, ${p.doorName || p.doorId} (l’enregistrement si la caméra le permet, sinon l’image en direct)` }, ico('camera'), 'Voir la vidéo');
+      // Bouton discret : « Vidéo » à l'écran, la phrase complète pour les lecteurs d'écran ; la fenêtre dit laquelle des deux
+      // images (enregistrement ou direct) elle montre.
+      const opener = h('button', { class: 'btn btn-sm btn-ghost', type: 'button', 'aria-label': `Voir la vidéo du passage de ${formatClock(p.atDevice)}`, title: 'Enregistrement du passage si la caméra le permet, sinon image en direct' }, ico('camera'), 'Vidéo');
       opener.addEventListener('click', () => {
         const ids = core.S.doors.get(p.doorId)?.cameraIds ?? cameras; // les caméras liées ont pu changer depuis l'affichage
         openVideo(p, ids.map((id) => ({ id, name: core.S.devices.get(id)?.name ?? id })), opener);
@@ -1433,16 +1602,16 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       h(
         'td',
         { 'data-label': 'Date et heure', class: 'acc-when' },
-        h('time', { datetime: isoOrEmpty(p.atDevice), title: `Heure du contrôleur. Reçu par le PSIM ${formatWhen(p.atReceived, t, { seconds: true })}.` }, h('strong', { text: stamp.time }), h('span', { class: 'acc-sub', text: stamp.day })),
+        h('time', { datetime: isoOrEmpty(p.atDevice), title: `Heure de la porte. Reçu par le PSIM ${formatWhen(p.atReceived, t, { seconds: true })}.` }, h('strong', { text: stamp.time }), h('span', { class: 'acc-sub', text: stamp.day })),
       ),
-      h('td', { 'data-label': 'Porte' }, h('div', { class: 'acc-cell-stack' }, h('strong', { text: p.doorName || p.doorId || '—' }), p.doorName ? null : h('span', { class: 'tag is-dashed', text: 'Porte retirée' }))),
-      h('td', { 'data-label': 'Sens', text: directionLabel(p.direction) }),
+      h('td', { 'data-label': 'Porte' }, h('div', { class: 'acc-cell-stack' }, doorCell, p.doorName ? null : h('span', { class: 'tag is-dashed', text: 'Porte retirée' }))),
+      h('td', { 'data-label': 'Entrée / sortie', text: directionLabel(p.direction) }),
       h(
         'td',
         { 'data-label': 'Titulaire' },
-        h('div', { class: 'acc-cell-stack' }, h('strong', { class: p.holderName ? '' : 'muted', text: holderLine(p) }), badgeLine(p) ? h('span', { class: 'acc-sub mono', text: badgeLine(p) }) : null, p.holderRef ? h('span', { class: 'acc-sub', text: `Réf. ${p.holderRef}` }) : null),
+        h('div', { class: 'acc-cell-stack' }, h('strong', { class: p.holderName ? '' : 'muted', text: holderLine(p) }), badgeLine(p) ? h('span', { class: 'acc-sub mono', text: badgeLine(p) }) : null, p.holderRef ? h('span', { class: 'acc-sub', text: `N° de personne ${p.holderRef}` }) : null),
       ),
-      h('td', { 'data-label': 'Méthode', text: p.methodLabel || '—' }),
+      h('td', { 'data-label': 'Moyen d’accès', text: p.methodLabel || '—' }),
       resultCell,
       videoCell,
     );
@@ -1474,7 +1643,6 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     }
     j.tableWrap.hidden = !showTable;
     j.pager.hidden = !showTable && !jr.stack.canNewer();
-    j.videoHelp.hidden = !showTable;
     // Les lignes ne sont reconstruites que si la liste a changé, ou si les caméras liées aux portes ont changé (« Voir la
     // vidéo » en dépend et les portes peuvent arriver après le journal) : pas à chaque relevé, le focus reste en place.
     const cameraKey = jr.items.map((p) => (core.S.doors.get(p.doorId)?.cameraIds ?? []).join(',')).join('|');
@@ -1508,7 +1676,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       { class: 'empty' },
       ico('list'),
       h('strong', { text: narrowed ? 'Aucun passage ne correspond à ces filtres.' : 'Aucun passage sur cette période.' }),
-      h('span', { text: narrowed ? 'Élargissez la période ou retirez un filtre, puis relancez la recherche.' : 'Les passages arrivent depuis les contrôleurs déclarés dans l’onglet Déclaration.' }),
+      h('span', { text: narrowed ? 'Élargissez la période ou retirez un filtre, puis relancez la recherche.' : isAdmin() ? 'Les passages arrivent des boîtiers de contrôle d’accès déclarés dans l’onglet Déclaration.' : 'Les passages arrivent des boîtiers de contrôle d’accès du site. Un administrateur les déclare.' }),
       actions.length ? h('div', { class: 'actions' }, ...actions) : null,
     );
   }
@@ -1571,9 +1739,10 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       { class: 'acc-doors-pane', 'aria-label': 'Portes' },
       h('h2', { class: 'sr-only', text: 'Portes' }),
       h('div', { class: 'acc-doors-head' }, h('div', {}, d.summary, d.updated), d.refresh),
+      // Dit une fois pour toutes ce qu'est le contrôleur, avant la première carte qui en parle.
+      h('p', { class: 'panel-note' }, ico('info', 'icon-sm'), h('span', { text: `Le ${CONTROLLER_LONG} décide seul d’ouvrir la porte pour un badge. Le PSIM enregistre les passages et surveille l’état des portes.` })),
       d.message,
       d.list,
-      h('p', { class: 'panel-note' }, ico('info', 'icon-sm'), h('span', { text: 'Le contrôleur décide seul d’ouvrir la porte pour un badge. Le PSIM enregistre les passages et surveille l’état des portes.' })),
     );
   }
 
@@ -1641,7 +1810,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     const states = h('div', { class: 'acc-door-states' });
     const hint = h('p', { class: 'acc-door-hint' });
     const facts = h('dl', { class: 'acc-facts' });
-    const open = h('button', { class: 'btn', type: 'button', 'data-door-trigger': door.detectorId }, ico('door'), 'Fiche');
+    const open = h('button', { class: 'btn', type: 'button', 'data-door-trigger': door.detectorId }, ico('door'), 'Détails de la porte');
     open.addEventListener('click', () => openFiche(door.detectorId, { trigger: open, backTab: 'portes' }));
     const passages = h('button', { class: 'btn btn-ghost', type: 'button' }, ico('list'), 'Voir les passages');
     passages.addEventListener('click', () => showJournalForDoor(door.detectorId));
@@ -1670,7 +1839,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       ...fact('Type', door.emergencyExit ? `${kindLabel(door.kind)} · issue de secours` : kindLabel(door.kind)),
       ...fact('Dernier passage', lastText),
     );
-    card.open.setAttribute('aria-label', `Fiche de la porte ${doorName(door)}`);
+    card.open.setAttribute('aria-label', `Détails de la porte ${doorName(door)}`);
     card.passages.setAttribute('aria-label', `Voir les passages de la porte ${doorName(door)}`);
   }
 
@@ -1716,8 +1885,10 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
 
   function buildFicheShell() {
     const f = state.ui.f;
-    f.back = h('button', { class: 'btn', type: 'button' }, ico('chevron-left'), 'Retour aux portes');
-    f.back.addEventListener('click', () => closeFiche({ focus: true }));
+    // Le bouton de retour dit d'où l'on vient (le plan, la liste des portes ou le journal) et y ramène.
+    f.backText = h('span', { text: BACK_LABELS.portes });
+    f.back = h('button', { class: 'btn', type: 'button' }, ico('chevron-left'), f.backText);
+    f.back.addEventListener('click', () => backFromFiche());
     f.title = h('h2', { id: 'acc-fiche-title', class: 'acc-fiche-title', tabindex: '-1' });
     f.stateBlock = h('div', { class: 'state-block acc-fiche-state' });
     f.message = h('div', { class: 'acc-message' });
@@ -1747,7 +1918,8 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     );
   }
 
-  /** Ouvre la fiche d'une porte (depuis la liste, le plan ou le journal) ; le focus est rendu au déclencheur à la fermeture. */
+  /** Ouvre la fiche d'une porte (depuis la liste, le plan ou le journal) ; le focus est rendu au déclencheur à la fermeture.
+   *  `backTab` : d'où l'on vient (« portes », « journal » ou « plan ») ; il décide du bouton de retour. */
   function openFiche(id, { trigger = null, backTab = 'portes' } = {}) {
     if (!ID_PATTERN.test(String(id))) return;
     const ui = state.ui;
@@ -1756,7 +1928,12 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     scrollBefore = document.getElementById('workspace')?.scrollTop ?? 0;
     fiche.id = id;
     fiche.trigger = trigger instanceof HTMLElement && trigger !== document.body ? trigger : null;
-    fiche.backTab = backTab;
+    fiche.backTab = BACK_LABELS[backTab] ? backTab : 'portes';
+    ui.f.backText.textContent = BACK_LABELS[fiche.backTab];
+    // La carte « Ouverture à distance » repart de zéro à chaque ouverture : jamais les boutons d'une autre porte.
+    ui.f.remote.replaceChildren();
+    ui.f.remote.removeAttribute('data-filled');
+    ui.f.remote.removeAttribute('data-key');
     fiche.data = null;
     fiche.error = null;
     fiche.loadedFor = null;
@@ -1771,7 +1948,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     ui.f.title.focus({ preventScroll: true });
     document.getElementById('workspace')?.scrollTo?.(0, 0);
     syncRoute();
-    announce(`Fiche de la porte ${doorName(core.S.doors.get(id)) || id}.`);
+    announce(`Détails de la porte ${doorName(core.S.doors.get(id)) || id}.`);
   }
 
   function stopFicheViewer() {
@@ -1791,7 +1968,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     fiche.id = null;
     ui.fiche.hidden = true;
     ui.tabList.hidden = false;
-    const target = tab ?? fiche.backTab ?? 'portes';
+    const target = tab ?? (fiche.backTab === 'journal' ? 'journal' : 'portes'); // « plan » : la fiche se range sur les portes
     const trigger = fiche.trigger;
     fiche.trigger = null;
     state.tab = target;
@@ -1808,6 +1985,21 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     const card = ui.d.cards.get(id)?.open;
     const back = [trigger, card, ui.tabs[target]].find((el) => isDisplayed(el));
     back?.focus({ preventScroll: true });
+  }
+
+  /**
+   * Bouton « Retour… » et touche Échap : on revient d'où l'on vient. Du plan : sur Surveillance (la porte y reste choisie) ;
+   * des portes ou du journal : sur cet onglet, le focus rendu au bouton qui avait ouvert la fiche.
+   */
+  function backFromFiche() {
+    if (!state.fiche.id) return;
+    if (state.fiche.backTab === 'plan') {
+      closeFiche({ focus: false });
+      if (goToPlan) goToPlan();
+      else core.go('surveillance');
+      return;
+    }
+    closeFiche({ focus: true });
   }
 
   async function loadFiche() {
@@ -1855,7 +2047,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     if (!door) {
       f.stateBlock.className = 'state-block is-offline acc-fiche-state';
       f.stateBlock.replaceChildren(ico('state-unknown'), h('div', {}, h('p', { class: 'state-title', text: fiche.loading || !fiche.error ? 'Lecture de la porte…' : notFound ? 'Porte introuvable' : 'La porte n’a pas pu être lue' }), h('p', { class: 'state-detail', text: fiche.error ? (notFound ? 'Cette porte n’est pas déclarée (ou ne l’est plus). Retournez à la liste des portes.' : '') : '' })));
-      if (fiche.error && !notFound) setKeyed(f.message, `erreur|${fiche.error.message}`, () => errorNotice('La fiche n’a pas pu être lue.', fiche.error, () => loadFiche()));
+      if (fiche.error && !notFound) setKeyed(f.message, `erreur|${fiche.error.message}`, () => errorNotice('Les détails de la porte n’ont pas pu être lus.', fiche.error, () => loadFiche()));
       else setKeyed(f.message, 'rien', () => null);
       f.facts.replaceChildren();
       f.facts.dataset.key = '';
@@ -1863,36 +2055,41 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       f.passages.dataset.key = '';
       f.cameras.replaceChildren();
       stopFicheViewer();
-      f.remote.replaceChildren(h('p', { class: 'muted', text: REMOTE_UNAVAILABLE_TEXT }));
-      f.remote.dataset.key = '';
+      if (f.remote.dataset.filled !== '1') {
+        f.remote.replaceChildren(h('p', { class: 'muted', text: REMOTE_FALLBACK_TEXT }));
+        f.remote.dataset.key = '';
+      }
       return;
     }
 
     const info = stateInfo(door);
     const day = dayStart(now());
+    const incident = incidentForDoor(door, core.S.incidents);
+    const hint = explainController(door.stateHint || STATE_HINT[door.state] || STATE_HINT.unknown);
     f.stateBlock.className = `state-block ${toneToBlock(info.tone)} acc-fiche-state`;
-    setKeyed(f.stateBlock, JSON.stringify([id, door.state, door.stateLabel, door.stateHint, door.stateSince, door.deviceStatus, day]), () => [
+    setKeyed(f.stateBlock, JSON.stringify([id, door.state, door.stateLabel, door.stateHint, door.stateSince, door.deviceStatus, day, incident?.id ?? null, incident?.status ?? null]), () => [
       ico(info.icon),
       h(
         'div',
         {},
         h('p', { class: 'state-title', text: door.stateLabel || info.label }),
-        h('p', { class: 'state-detail', text: door.stateHint || STATE_HINT[door.state] || STATE_HINT.unknown }),
+        h('p', { class: 'state-detail', text: hint.text }),
         door.stateSince ? h('p', { class: 'hint', text: `Depuis ${formatWhen(door.stateSince, now(), { seconds: false })}.` }) : null,
         alarmPill(door),
+        alarmButton(door, incident),
       ),
     ]);
-    if (fiche.error) setKeyed(f.message, `erreur|${fiche.error.message}`, () => errorNotice('La fiche n’a pas pu être mise à jour.', fiche.error, () => loadFiche()));
+    if (fiche.error) setKeyed(f.message, `erreur|${fiche.error.message}`, () => errorNotice('Les détails de la porte n’ont pas pu être mis à jour.', fiche.error, () => loadFiche()));
     else setKeyed(f.message, 'rien', () => null);
 
-    setKeyed(f.facts, JSON.stringify([door, (core.S.floors ?? []).length, day]), () => [
+    setKeyed(f.facts, JSON.stringify([door, (core.S.floors ?? []).length, day, hint.explained]), () => [
       ...fact('Où', doorPlaceText(door, floorNameOf(door))),
       ...fact('Détecteur', h('span', { class: 'mono', text: door.detectorId })),
-      ...fact('Contrôleur', door.controllerName || door.controllerId || '—'),
+      ...fact(hint.explained ? 'Contrôleur' : capFirst(CONTROLLER_LONG), door.controllerName || door.controllerId || '—'),
       ...fact('Numéro de porte', `n° ${door.doorNo ?? '?'} sur le contrôleur`),
       ...fact('Type', kindLabel(door.kind)),
       ...fact('Issue de secours', door.emergencyExit ? 'Oui : cette porte ne se verrouille jamais à distance.' : 'Non'),
-      ...fact('Alarme « maintenue ouverte »', door.heldAlarmAfterS ? `Après ${secondsText(door.heldAlarmAfterS)} porte ouverte` : '—'),
+      ...fact('Alarme si la porte reste ouverte', door.heldAlarmAfterS ? `Après ${secondsText(door.heldAlarmAfterS)} d’ouverture` : '—'),
       ...fact('Dernier signe de vie', door.lastSeen ? capFirst(formatWhen(door.lastSeen, now(), { seconds: true })) : 'Aucun depuis le démarrage du PSIM'),
     ]);
 
@@ -1919,25 +2116,20 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     const t = now();
     const rows = list.map((p) => {
       const stamp = passageStamp(p.atDevice, t);
-      const tone = resultTone(p);
       return h(
         'tr',
         {},
         h('td', { 'data-label': 'Date et heure', class: 'acc-when' }, h('time', { datetime: isoOrEmpty(p.atDevice) }, h('strong', { text: stamp.time }), h('span', { class: 'acc-sub', text: stamp.day }))),
         h('td', { 'data-label': 'Titulaire' }, h('div', { class: 'acc-cell-stack' }, h('strong', { class: p.holderName ? '' : 'muted', text: holderLine(p) }), badgeLine(p) ? h('span', { class: 'acc-sub mono', text: badgeLine(p) }) : null)),
-        h('td', { 'data-label': 'Méthode et sens' }, h('div', { class: 'acc-cell-stack' }, h('span', { text: p.methodLabel || '—' }), h('span', { class: 'acc-sub', text: directionLabel(p.direction) }))),
-        h(
-          'td',
-          { 'data-label': 'Résultat' },
-          h('div', { class: 'acc-cell-stack' }, h('span', { class: `pill ${tone === 'ok' ? 'is-ok' : 'is-warning'}` }, ico(tone === 'ok' ? 'state-ok' : 'lock'), resultLabelOf(p)), p.late ? h('span', { class: 'tag is-info' }, ico('clock', 'icon-sm'), 'Reçu en différé') : null),
-        ),
+        h('td', { 'data-label': 'Moyen d’accès' }, h('div', { class: 'acc-cell-stack' }, h('span', { text: p.methodLabel || '—' }), h('span', { class: 'acc-sub', text: directionLabel(p.direction) }))),
+        h('td', { 'data-label': 'Résultat', class: 'acc-result' }, resultBlock(p)),
       );
     });
     f.passages.replaceChildren(
       h(
         'div',
         { class: 'table-scroll acc-tablewrap' },
-        h('table', { class: 'data acc-stack acc-mini-table' }, h('caption', { class: 'sr-only', text: `${list.length} derniers passages de la porte, du plus récent au plus ancien` }), h('thead', {}, h('tr', {}, ...['Date et heure', 'Titulaire', 'Méthode et sens', 'Résultat'].map((x) => h('th', { scope: 'col', text: x })))), h('tbody', {}, ...rows)),
+        h('table', { class: 'data acc-stack acc-mini-table' }, h('caption', { class: 'sr-only', text: `${list.length} derniers passages de la porte, du plus récent au plus ancien` }), h('thead', {}, h('tr', {}, ...['Date et heure', 'Titulaire', 'Moyen d’accès', 'Résultat'].map((x) => h('th', { scope: 'col', text: x })))), h('tbody', {}, ...rows)),
       ),
     );
   }
@@ -1970,16 +2162,26 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     f.cameras.replaceChildren(fiche.viewer.el);
   }
 
+  /**
+   * Carte « Ouverture à distance ». Cet écran ne commande rien : après CHAQUE rendu de la fiche il émet
+   * `psim:door-card` ({ slot, door }) et un composant externe remplit l'emplacement `[data-slot="remote-open"]`. Tant qu'aucun
+   * ne l'a pris en main, la carte dit qu'aucune serrure ou barrière n'est reliée (et, à l'administrateur, où la relier).
+   * Un composant qui pose `slot.dataset.filled = '1'` garde sa carte : le rendu ne la reconstruit pas, il ré-émet seulement.
+   */
   function renderFicheRemote(door) {
-    const f = state.ui.f;
-    const remote = state.fiche.data?.remote ?? { available: false, reason: '' };
-    const key = JSON.stringify([door.detectorId, remote, Boolean(state.fiche.data)]);
-    if (f.remote.dataset.key === key) return;
-    f.remote.dataset.key = key;
-    f.remote.dataset.available = String(Boolean(remote.available));
-    f.remote.dataset.door = door.detectorId;
-    f.remote.replaceChildren(h('p', { class: 'acc-remote-text', text: remoteSlotText(remote) }));
-    if (typeof renderRemote === 'function' && state.fiche.data) renderRemote(f.remote, { door, remote }); // lot AC4 : ses boutons
+    const slot = state.ui.f.remote;
+    const key = `${door.detectorId}|${isAdmin()}`;
+    if (slot.dataset.filled !== '1' && slot.dataset.key !== key) {
+      slot.dataset.key = key;
+      slot.replaceChildren(
+        ...[
+          h('p', { class: 'acc-remote-text', text: REMOTE_FALLBACK_TEXT }),
+          isAdmin() ? h('p', { class: 'acc-remote-text' }, REMOTE_ADMIN_HINT, h('a', { class: 'acc-link', href: '#/acces/declaration' }, 'Déclaration'), '.') : null,
+        ].filter(Boolean),
+      );
+    }
+    slot.dataset.door = door.detectorId;
+    document.dispatchEvent(new CustomEvent(DOOR_CARD_EVENT, { detail: { slot, door } }));
   }
 
   // ================================================================================================ onglet DÉCLARATION
@@ -2005,7 +2207,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     return h(
       'div',
       { class: 'acc-decl' },
-      infoNotice('info', h('p', { text: 'Le contrôleur est le boîtier qui décide d’ouvrir la porte pour un badge. Le PSIM enregistre les passages et surveille l’état des portes : il ne prend jamais part à l’ouverture par badge.' }), h('p', { text: 'Déclarez d’abord le contrôleur, puis chacune de ses portes (un détecteur de catégorie « Contrôle d’accès » par porte, créé dans Équipements et plan).' })),
+      infoNotice('info', h('p', { text: `Le ${CONTROLLER_LONG} décide d’ouvrir la porte pour un badge. Le PSIM enregistre les passages et surveille l’état des portes : il ne prend jamais part à l’ouverture par badge.` }), h('p', { text: 'Déclarez d’abord le contrôleur, puis chacune de ses portes (un détecteur de catégorie « Contrôle d’accès » par porte, créé dans Équipements et plan).' })),
       c.undeclared,
       panel('acc-ctl-title', 'server', 'Contrôleurs', c.addController, c.ctlForm, c.ctlList),
       panel('acc-door-title', 'door', 'Portes déclarées', c.addDoor, c.doorForm, c.doorList),
@@ -2096,7 +2298,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         h('td', { 'data-label': 'Adresse' }, ctl.host ? h('span', { class: 'mono', text: ctl.host }) : h('span', { class: 'muted', text: 'Non renseignée' })),
         h('td', { 'data-label': 'Passerelle' }, ctl.gatewayId ? h('span', { class: 'mono', text: ctl.gatewayId }) : h('span', { class: 'muted', text: 'Aucune' })),
         h('td', { 'data-label': 'Identifiants enregistrés' }, ctl.hasCredentials ? h('span', { class: 'pill is-ok' }, ico('lock'), 'Oui') : h('span', { class: 'pill is-offline is-dashed' }, ico('unlock'), 'Non')),
-        h('td', { 'data-label': 'Écart d’horloge' }, h('div', { class: 'acc-cell-stack' }, h('span', { class: `pill ${clock.tone === 'warning' ? 'is-warning' : clock.tone === 'ok' ? 'is-ok' : 'is-offline'}` }, ico(clock.warn ? 'state-warning' : clock.tone === 'ok' ? 'clock' : 'state-unknown'), clock.text), clock.hint ? h('span', { class: 'acc-sub', text: clock.hint }) : null)),
+        h('td', { 'data-label': 'Heure du contrôleur' }, h('div', { class: 'acc-cell-stack' }, h('span', { class: `pill ${clock.tone === 'warning' ? 'is-warning' : clock.tone === 'ok' ? 'is-ok' : 'is-offline'}` }, ico(clock.warn ? 'state-warning' : clock.tone === 'ok' ? 'clock' : 'state-unknown'), clock.text), clock.hint ? h('span', { class: 'acc-sub', text: clock.hint }) : null)),
         h('td', { 'data-label': 'Vu pour la dernière fois' }, ctl.lastSeen ? capFirst(formatWhen(ctl.lastSeen, t)) : h('span', { class: 'muted', text: 'Jamais' })),
         h('td', { 'data-label': 'Portes', class: 'num', text: String(ctl.doorCount ?? 0) }),
         h('td', { class: 'acc-actions-cell' }, h('div', { class: 'actions' }, edit, remove)),
@@ -2111,7 +2313,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
           'table',
           { class: 'data acc-stack acc-decl-table' },
           h('caption', { class: 'sr-only', text: plural(list.length, 'contrôleur déclaré', 'contrôleurs déclarés') }),
-          h('thead', {}, h('tr', {}, ...['Contrôleur', 'Marque et modèle', 'Adresse', 'Passerelle', 'Identifiants enregistrés', 'Écart d’horloge', 'Vu pour la dernière fois', 'Portes'].map((x) => h('th', { scope: 'col', text: x })), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
+          h('thead', {}, h('tr', {}, ...['Contrôleur', 'Marque et modèle', 'Adresse', 'Passerelle', 'Identifiants enregistrés', 'Heure du contrôleur', 'Vu pour la dernière fois', 'Portes'].map((x) => h('th', { scope: 'col', text: x })), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
           h('tbody', {}, ...rows),
         ),
       ),
@@ -2278,7 +2480,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         h('td', { 'data-label': 'Contrôleur' }, h('div', { class: 'acc-cell-stack' }, h('span', { text: door.controllerName || door.controllerId || '—' }), h('span', { class: 'acc-sub', text: `Porte n° ${door.doorNo ?? '?'}` }))),
         h('td', { 'data-label': 'Type', text: kindLabel(door.kind) }),
         h('td', { 'data-label': 'Issue de secours' }, door.emergencyExit ? h('span', { class: 'tag is-warning' }, ico('door', 'icon-sm'), 'Issue de secours') : h('span', { class: 'muted', text: 'Non' })),
-        h('td', { 'data-label': 'Alarme « maintenue ouverte »', text: door.heldAlarmAfterS ? `Après ${secondsText(door.heldAlarmAfterS)}` : '—' }),
+        h('td', { 'data-label': 'Alarme si la porte reste ouverte', text: door.heldAlarmAfterS ? `Après ${secondsText(door.heldAlarmAfterS)}` : '—' }),
         h('td', { 'data-label': 'Caméras liées' }, cams ? `${cams}` : h('span', { class: 'muted', text: 'Aucune' })),
         h('td', { class: 'acc-actions-cell' }, h('div', { class: 'actions' }, edit, remove)),
       );
@@ -2291,7 +2493,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
           'table',
           { class: 'data acc-stack acc-decl-table' },
           h('caption', { class: 'sr-only', text: plural(doors.length, 'porte déclarée', 'portes déclarées') }),
-          h('thead', {}, h('tr', {}, ...['Porte', 'Contrôleur', 'Type', 'Issue de secours', 'Alarme « maintenue ouverte »', 'Caméras liées'].map((x) => h('th', { scope: 'col', text: x })), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
+          h('thead', {}, h('tr', {}, ...['Porte', 'Contrôleur', 'Type', 'Issue de secours', 'Alarme si la porte reste ouverte', 'Caméras liées'].map((x) => h('th', { scope: 'col', text: x })), h('th', { scope: 'col' }, h('span', { class: 'sr-only', text: 'Actions' })))),
           h('tbody', {}, ...rows),
         ),
       ),
@@ -2347,7 +2549,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         field('Contrôleur', inputs.controllerId),
         field('Numéro de porte sur le contrôleur', inputs.doorNo, 'De 1 à 4. Deux portes d’un même contrôleur n’ont pas le même numéro.'),
         field('Type', inputs.kind),
-        field('Alarme « maintenue ouverte » après (minutes)', inputs.heldMinutes, 'Au bout de ce délai, une porte restée ouverte déclenche l’alarme. Par exemple 5, ou 0,5 pour trente secondes (de 10 secondes à 24 heures).'),
+        field('Alarme si la porte reste ouverte plus de (minutes)', inputs.heldMinutes, 'Au bout de ce délai, une porte restée ouverte déclenche l’alarme. Par exemple 5, ou 0,5 pour trente secondes (de 10 secondes à 24 heures).'),
       ),
       checkRow(inputs.emergencyExit, 'Cette porte est une issue de secours', 'Une issue de secours ne se verrouille jamais à distance, quoi qu’il arrive. Cochez-la pour toute porte qui doit rester libre à la sortie.'),
       error,
@@ -2446,7 +2648,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
       label,
       h('p', { class: 'hint', id: 'acc-retention-help', text: `De ${RETENTION_MIN} à ${formatInt(RETENTION_MAX)} jours.` }),
       c.retentionHint,
-      infoNotice('info', h('p', { text: 'La suppression est automatique : passé ce délai, le PSIM efface les passages (noms et numéros de badge compris). Chaque purge est inscrite au journal. Un export CSV garde les passages au-delà de cette durée : conservez-le avec les mêmes précautions.' })),
+      infoNotice('info', h('p', { text: 'La suppression est automatique : passé ce délai, le PSIM efface les passages (noms et numéros de badge compris). Chaque purge est inscrite au journal. Un fichier exporté garde les passages au-delà de cette durée : conservez-le avec les mêmes précautions.' })),
       error,
       h('div', { class: 'actions' }, save),
     );
@@ -2466,7 +2668,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
           const ok = await dialogs.confirm({
             heading: 'Réduire la durée de conservation',
             message: `Les passages de plus de ${parsed.days} jours (au lieu de ${current}) seront supprimés définitivement à la prochaine purge automatique, avec les noms et les numéros de badge.`,
-            details: 'Cette action est inscrite au journal. Pour garder ces passages, exportez-les d’abord en CSV depuis l’onglet Journal.',
+            details: 'Cette action est inscrite au journal. Pour garder ces passages, exportez-les d’abord avec « Exporter (tableur) », dans l’onglet Journal.',
             confirmLabel: 'Réduire la durée',
           });
           if (!ok) {
@@ -2547,7 +2749,7 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     };
     if (shown('dialog') || shown('lightbox')) return;
     e.preventDefault();
-    closeFiche({ focus: true });
+    backFromFiche();
   }
 
   /**
@@ -2612,9 +2814,9 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
         if (state.fiche.id) refreshFicheFromDoors();
       });
       if (state.pendingDoor) {
-        const id = state.pendingDoor;
+        const { id, origin } = state.pendingDoor;
         state.pendingDoor = null;
-        openFiche(id, { backTab: 'portes' });
+        openFiche(id, { backTab: origin });
       }
     } finally {
       state.showing = false;
@@ -2672,12 +2874,18 @@ export function createAccessView({ api, h, toast, getMe, dialogs, renderRemote =
     state.builtFor = null;
   }
 
-  function openDoor(detectorId) {
+  /** Ouvre la fiche d'une porte demandée de l'extérieur : le plan (« Retour au plan ») sauf mention contraire. */
+  function openDoor(detectorId, { origin = 'plan' } = {}) {
     if (!ID_PATTERN.test(String(detectorId ?? ''))) return;
     // show() est asynchrone (l'application l'appelle juste avant) : tant qu'il n'a pas fini, la fiche attend son tour.
-    if (state.ready && state.visible && !state.showing) openFiche(detectorId, { trigger: document.activeElement, backTab: 'portes' });
-    else state.pendingDoor = detectorId;
+    if (state.ready && state.visible && !state.showing) openFiche(detectorId, { trigger: document.activeElement, backTab: origin });
+    else state.pendingDoor = { id: detectorId, origin };
   }
 
-  return { show, hide, openDoor, reset };
+  /** Une alarme a changé ailleurs (incident ouvert, acquitté, clos) : la fiche ouverte redit si elle a une alarme à ouvrir. */
+  function refresh() {
+    if (state.visible && state.ready && state.fiche.id) renderFiche();
+  }
+
+  return { show, hide, openDoor, reset, refresh };
 }

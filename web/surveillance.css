@@ -453,24 +453,30 @@
 /* État d'une porte sous la pastille d'un détecteur de catégorie access : icône + mot court, jamais la couleur seule.
    S'ajoute à l'état d'alarme du détecteur, ne le remplace pas. */
 .pin-door {
-  display: inline-flex; align-items: center; gap: 2px;
-  max-width: 11ch; padding: 0 4px 0 2px; border: 1.5px solid var(--line-strong); border-radius: var(--r-pill);
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 17ch; padding: 2px 9px 2px 5px; border: 2px solid var(--line-strong); border-radius: var(--r-pill);
   background: var(--surface); color: var(--ink);
-  font-size: var(--fs-xs); font-weight: 700; line-height: 1.3; white-space: nowrap;
+  font-size: var(--fs-sm); font-weight: 700; line-height: 1.25; white-space: nowrap;
   box-shadow: var(--shadow-1);
 }
-.pin-door .icon { width: 13px; height: 13px; flex: none; }
+.pin-door .icon { width: 16px; height: 16px; flex: none; }
 .pin-door.tone-ok { border-color: var(--ok); color: var(--ok-ink); }
 .pin-door.tone-info { border-color: var(--info); color: var(--info-ink); }
 .pin-door.tone-warning { border-color: var(--warning); background: var(--warning-soft); color: var(--warning-ink); }
 .pin-door.tone-alarm { border-color: var(--alarm); background: var(--alarm-soft); color: var(--alarm-ink); }
 .pin-door.tone-muted { border-color: var(--offline); background: var(--offline-soft); color: var(--offline-ink); }
-.pin.door-forced .pin-door, .pin.door-held_open .pin-door { border-width: 2px; }
-.pin.door-forced .pin-door { border-style: double; border-width: 3px; }
+.pin.door-forced .pin-door { border-style: double; border-width: 4px; }
 .pin.door-held_open .pin-door { border-style: dashed; }
+/* Trait de rappel d'une pastille écartée de sa porte (dessiné par plan.js sous les pastilles, sur la feuille claire du plan). */
+.door-leader { stroke: var(--navy); stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; opacity: 0.75; }
+/* Plan étroit : la pastille se resserre (le texte garde sa taille : il doit rester lisible) ; plan.js l'écarte de ses voisines. */
+@container plan (max-width: 640px) {
+  .pin-door { padding: 1px 7px 1px 4px; gap: 3px; border-width: 1.5px; }
+  .pin.door-forced .pin-door { border-width: 3px; }
+}
 /* Même traits dans la légende du plan. */
-.pin-door.lg-door-forced { border-style: double; border-width: 3px; }
-.pin-door.lg-door-held { border-style: dashed; border-width: 2px; }
+.pin-door.lg-door-forced { border-style: double; border-width: 4px; }
+.pin-door.lg-door-held { border-style: dashed; }
 
 /* Accès à la fiche de la porte choisie sur le plan. */
 .plan-door-action {
