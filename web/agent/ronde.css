@@ -13,7 +13,8 @@
 /* Boutons toujours atteignables : colles en bas de l'ecran */
 .rd-actions {
   position: sticky;
-  bottom: 0;
+  /* au-dessus de la barre d'onglets fixe de la coquille (64 px + filet de 2 px) */
+  bottom: calc(66px + env(safe-area-inset-bottom));
   z-index: 2;
   display: flex;
   flex-direction: column;
@@ -432,4 +433,13 @@
   .rd-bar-fill {
     transition: none;
   }
+}
+
+/* Les phrases d'etat sont longues : elles passent a la ligne au lieu de deborder de l'ecran. */
+.rd-offline,
+.rd-pending {
+  display: flex;
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  white-space: normal;
 }

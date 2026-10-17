@@ -81,6 +81,18 @@ export function setAuthLostHandler(fn) {
   authLostHandler = fn;
 }
 
+let networkHandler = null;
+/** Appelee a chaque appel d'API : true si le serveur a repondu (meme par une erreur), false s'il est injoignable. */
+export function setNetworkHandler(fn) {
+  networkHandler = fn;
+}
+let lastNetworkOk = null;
+function reportNetwork(ok) {
+  if (ok === lastNetworkOk) return;
+  lastNetworkOk = ok;
+  if (networkHandler) networkHandler(ok);
+}
+
 /**
  * Appel de l'API du PSIM. Ne leve jamais : { ok, status, data, error, network }.
  * `network: true` = pas de reponse du tout (hors ligne, serveur injoignable, delai depasse) ; `status` vaut alors 0.
@@ -107,9 +119,11 @@ export async function api(path, { method = 'GET', body, signal, timeoutMs = 1500
       // pas de corps JSON (image, 204...) : data reste null
     }
     const result = { ok: res.ok, status: res.status, data, error: res.ok ? null : String(data?.error ?? `Erreur ${res.status}`), network: false };
+    reportNetwork(true);
     if (res.status === 401 && authLostHandler) authLostHandler(result);
     return result;
   } catch {
+    if (!signal?.aborted) reportNetwork(false);
     return { ok: false, status: 0, data: null, error: 'Pas de réseau', network: true };
   } finally {
     clearTimeout(timer);

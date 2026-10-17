@@ -61,7 +61,7 @@
 
 .sos-ring-progress {
   stroke: var(--alarm-ink);
-  stroke-linecap: round;
+  stroke-linecap: butt;
   stroke-dasharray: 100;
   stroke-dashoffset: calc(100 - var(--sos-p, 0) * 100);
 }
@@ -388,3 +388,16 @@
     transition: left 0.15s, background-color 0.15s;
   }
 }
+
+/* Interrupteur : sur un telephone etroit, l etat (Active / Desactive) passe sous le titre au lieu d ecraser le texte. */
+.sos-switch {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: 'input text' 'input state';
+  align-items: center;
+  column-gap: var(--gap);
+  row-gap: 2px;
+}
+.sos-switch-input { grid-area: input; }
+.sos-switch-text { grid-area: text; }
+.sos-switch-state { grid-area: state; }

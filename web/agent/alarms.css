@@ -304,3 +304,10 @@
 .al-act[hidden] {
   display: none;
 }
+
+/* Le bouton Retour reste atteignable meme quand l'image et la video allongent la page. */
+.al-back {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}

@@ -390,7 +390,7 @@ noscript p {
   z-index: 50;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start; /* la feuille se colle en bas par sa marge auto : un contenu plus haut que l'ecran reste atteignable en defilant */
   background: rgb(10 20 40 / 0.6);
   overflow-y: auto;
 }
@@ -398,7 +398,7 @@ noscript p {
 .sheet {
   width: 100%;
   max-width: 560px;
-  margin: 0 auto;
+  margin: auto auto 0;
   padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
   border-radius: calc(var(--radius) + 6px) calc(var(--radius) + 6px) 0 0;
   background: var(--surface);
@@ -790,4 +790,27 @@ noscript p {
   .btn:active {
     transform: none;
   }
+}
+
+/* Ligne du nom : le point vert (en ligne) ou orange (hors ligne) suit le nom ; le mot complet n'apparait
+   dans l'en-tete que si quelque chose est a dire (hors ligne, envois en attente). */
+.sh-who-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sh-who-line .sh-who-name {
+  min-width: 0;
+}
+
+.sh-net {
+  flex: none;
+  color: #7be08f;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.sh-net-off {
+  color: var(--warn);
 }

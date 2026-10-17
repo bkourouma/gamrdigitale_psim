@@ -204,12 +204,12 @@ export function createRonde({ api, queue, toast, getUser, openLogbook }) {
     if (offline && runsAt > 0) {
       parts.push(h('p', { class: 'pill pill-off rd-offline', text: `Liste du ${fmtClock(runsAt)} (hors réseau)` }));
     } else if (loadError) {
-      parts.push(h('p', { class: 'pill pill-warn rd-offline', text: `! ${loadError}` }));
+      parts.push(h('p', { class: 'pill pill-warn rd-offline', text: loadError }));
     }
     if (pendingScans > 0) {
       parts.push(h('p', { class: 'pill pill-warn rd-pending',
-        text: pendingScans === 1 ? '! 1 passage enregistré, envoi en attente'
-          : `! ${pendingScans} passages enregistrés, envoi en attente` }));
+        text: pendingScans === 1 ? '1 passage enregistré, envoi en attente'
+          : `${pendingScans} passages enregistrés, envoi en attente` }));
     }
     if (current) {
       parts.push(runCard(current, now));

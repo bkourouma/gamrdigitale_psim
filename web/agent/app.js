@@ -1,6 +1,6 @@
 // Application des agents : la coquille. Routeur d'écrans (boot -> pair | login | service | main), session, onglets,
 // en-tête, bandeau d'alarme, fin de service. Les écrans (alarmes, ronde, SOS, main courante) sont des modules à part.
-import { h, setChildren, api, local, fmtClock, setAuthLostHandler } from './util.js';
+import { h, setChildren, api, local, fmtClock, setAuthLostHandler, setNetworkHandler } from './util.js';
 import { installAudioUnlock } from './sound.js';
 import { createQueue, idbStore, makeSend } from './queue.js';
 import { createSos } from './sos.js';
@@ -357,7 +357,7 @@ function showService(message = null) {
     page(
       h('h1', { class: 'sh-title', text: `Bonjour ${me?.displayName ?? ''}`.trim() }),
       message ? h('p', { class: 'sh-notice', role: 'status', text: message }) : null,
-      h('div', { class: 'card' }, h('h2', { class: 'card-title', text: 'Vos zones' }), zones.length ? h('div', { class: 'sh-zones' }, zones.map((z) => h('span', { class: 'pill pill-ok', text: z }))) : h('p', { class: 'muted', text: 'Aucune zone ne vous est attribuée.' })),
+      h('div', { class: 'card' }, h('h2', { class: 'card-title', text: 'Vos zones' }), zones.length ? h('div', { class: 'sh-zones' }, zones.map((z) => h('span', { class: 'pill pill-ok', text: z }))) : h('p', { class: 'muted', text: 'Toutes les zones du site.' })),
       error,
       start,
       h('button', { class: 'btn btn-quiet', type: 'button', text: 'Ce n’est pas moi', onClick: () => void notMe() }),
@@ -454,11 +454,14 @@ function readSavedTab() {
 
 function buildShell() {
   const { sos, alarms, ronde, logbook } = services;
+  const netDot = h('span', { class: 'sh-net', role: 'img', 'aria-label': 'En ligne', text: '●' });
   const whoName = h('span', { class: 'sh-who-name' });
   const whoService = h('span', { class: 'sh-who-service' });
-  const who = h('button', { class: 'sh-who', type: 'button', 'aria-haspopup': 'dialog', onClick: openAccountSheet }, whoName, whoService);
+  const who = h('button', { class: 'sh-who', type: 'button', 'aria-haspopup': 'dialog', onClick: openAccountSheet }, h('span', { class: 'sh-who-line' }, whoName, netDot), whoService);
   const online = h('span', { class: 'pill pill-ok', text: 'En ligne' });
   const badge = h('button', { class: 'sh-badge', type: 'button', hidden: true, onClick: () => void flushNow() });
+  // La ligne d'état ne prend de la place que si quelque chose est à dire : hors ligne ou envois en attente.
+  const statusRow = h('div', { class: 'sh-header-status', hidden: true }, online, badge);
   const bannerText = h('span');
   const banner = h(
     'button',
@@ -486,14 +489,14 @@ function buildShell() {
   const el = h(
     'div',
     { class: 'sh-main' },
-    h('header', { class: 'sh-header' }, h('div', { class: 'sh-header-top' }, who, sos.holdButton({ variant: 'compact' })), h('div', { class: 'sh-header-status' }, online, badge)),
+    h('header', { class: 'sh-header' }, h('div', { class: 'sh-header-top' }, who, sos.holdButton({ variant: 'compact' })), statusRow),
     sos.statusEl,
     banner,
     h('div', { class: 'sh-panes' }, panes.alarms, panes.ronde, panes.sos),
     nav,
     logbook.el,
   );
-  shell = { el, whoName, whoService, online, badge, banner, bannerText, panes, tabs, counts };
+  shell = { el, whoName, whoService, online, netDot, statusRow, pendingCount: 0, badge, banner, bannerText, panes, tabs, counts };
 }
 
 function renderHeader() {
@@ -507,12 +510,22 @@ function updateOnline() {
   const ok = navigator.onLine && netOk;
   shell.online.textContent = ok ? 'En ligne' : 'Hors ligne';
   shell.online.className = `pill ${ok ? 'pill-ok' : 'pill-warn'}`;
+  shell.netDot.className = `sh-net${ok ? '' : ' sh-net-off'}`;
+  shell.netDot.setAttribute('aria-label', ok ? 'En ligne' : 'Hors ligne');
+  updateStatusRow();
+}
+
+function updateStatusRow() {
+  if (!shell) return;
+  shell.statusRow.hidden = navigator.onLine && netOk && shell.pendingCount <= 0;
 }
 
 function updatePending(count) {
   if (!shell) return;
+  shell.pendingCount = count;
   shell.badge.hidden = count <= 0;
   shell.badge.textContent = `${plural(count, 'envoi', 'envois')} en attente`;
+  updateStatusRow();
 }
 
 async function flushNow() {
@@ -793,6 +806,11 @@ function start() {
     });
   }
   setAuthLostHandler(onSessionLost);
+  // La pastille « En ligne / Hors ligne » suit les vrais appels (alarmes, rondes, envois), pas seulement le Wi-Fi.
+  setNetworkHandler((ok) => {
+    netOk = ok;
+    updateOnline();
+  });
   window.addEventListener('online', () => {
     netOk = true;
     updateOnline();
