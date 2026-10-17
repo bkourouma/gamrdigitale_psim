@@ -276,3 +276,21 @@ portail (F25 : `SiteSummary.patrols?` facultatif = taux par semaine + nombre de 
 
 `npm run typecheck` vert, tests ciblés verts puis `npm test` complet avant le compte rendu, captures du navigateur
 intégré pour S2 et S3 (vue téléphone 375 × 812 pour S3), aucun fichier hors de sa liste modifié.
+
+## Avenant 3 et état (17 octobre 2026)
+
+Décisions de l'utilisateur : un SOS d'agent est visible de **tous** les agents en service, quelle que soit leur zone ;
+un agent connecté peut acquitter une alarme et signaler « J'y vais » ou « Sur place » **sans** avoir pris son service ;
+le rapport e-mail ne montre que les totaux par jour et par circuit, et le détail par agent reste à l'écran et dans le CSV.
+
+Décisions du chef : un identifiant d'agent compte de 3 à 30 caractères (lettres, chiffres, `-`, `_`, sans point), pour
+que `A-<identifiant>` reste un identifiant d'équipement valide. Vers le portail, les détecteurs `A-*` sont masqués et
+leurs incidents partent sous « Agent en service », sans nom. L'opérateur lit les points de contrôle **sans** leur code
+d'étiquette.
+
+Fusionné dans main : S1 à S3 (b81d371), S4 (474a1cb), S5, l'essai d'intégration réelle (c6bcf7e). En cours : S6,
+les correctifs (libellés d'incendie affichés sur un SOS, ré-armement d'un SOS acquitté, codes d'étiquettes).
+
+Reste à vérifier sur un vrai téléphone Android, avec le certificat installé : NFC, lecture QR par l'appareil photo,
+service worker et installation, son et vibration, vidéo en direct sur une caméra réelle. Hors chantier (phase 2,
+lot AG6) : F7, F19 repli SMS, F20, F21, F23.
