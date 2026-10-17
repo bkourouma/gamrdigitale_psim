@@ -203,8 +203,73 @@ Les modules `acces-dahua` et `acces-zkteco` rapportent au PSIM ce que font les c
 - **Message de passage** : un message par passage, avec l'événement `badge_granted` ou `badge_denied` et un bloc `access` (contrôleur, identifiant d'événement, sens, numéro de badge, titulaire, méthode, résultat, motif, « différé »). Le format exact est décrit dans [docs/CONTROLE-ACCES.md](CONTROLE-ACCES.md) § 2.
 - **Passages manqués et curseur.** Après une coupure, le module relit la mémoire du contrôleur et rejoue les passages manqués (marqués « différés »). Le dernier passage traité est gardé dans un **curseur**, dans le dossier `stateDir` de chaque module (par défaut `gateway/data/acces`). Le contexte des modules n'expose pas encore `dataDir` : **si `dataDir` change, régler `stateDir` à la main**, sinon les curseurs restent à l'ancien endroit. Donner de préférence **un `stateDir` différent à chaque module** (par exemple `data/acces-dahua` et `data/acces-zkteco`) : le fichier de curseurs porte le même nom pour tous (les curseurs sont fusionnés à l'écriture, deux modules qui partageraient un dossier ne s'écraseraient pas, mais un dossier par module reste plus lisible). Le compte de service doit pouvoir écrire dans ce dossier.
 - **Comptes MQTT.** La liste `detectors` du compte de la passerelle (`PSIM_MQTT_GATEWAYS`, et `psim.detectors` dans la configuration de la passerelle) doit **inclure les identifiants des portes**, par exemple `"P-*"` si tous les détecteurs de portes commencent par `P-`. Sinon les messages sont refusés (voir le dépannage).
-- **Secrets des modules désactivés.** Un module avec `"enabled": false` voit quand même ses `{"$file": ...}` et `{"$env": ...}` résolus : créer le fichier de secret (ou retirer le bloc du module) avant `npm run gateway:check-config`.
+- **Secrets des modules désactivés.** Un module avec `"enabled": false` voit quand même ses `{"$file": ...}` et `{"$env": ...}` résolus : créer le fichier de secret (ou retirer le bloc du module) avant `npm run gateway:check-config`. C'est vrai du mot de passe du contrôleur **et** de sa clé de synchronisation (`syncKey`) : l'exemple `gateway\config.example.json` demande, pour être validé tel quel, les fichiers `secrets\acces-dahua-asc-entree.txt`, `secrets\acces-dahua-asc-entree-sync.key` et `secrets\acces-zkteco-c3-entree-sync.key` (la clé : 64 hexadécimaux minuscules, sur une ligne).
 - **Ouverture à distance** : uniquement par le **canal de commande signé** du PSIM, pour les actionneurs déclarés dans `actuators`. L'accusé n'est donné qu'après la confirmation du contrôleur ; « verrouiller » remet la porte en mode normal et ne coupe jamais les badges.
+- **Actionneur du module non déclaré dans la passerelle.** Chaque porte pilotable est déclarée à **deux** endroits : dans la section `actuators` **du module** (`"SERRURE-ENTREE": { "door": 1, "type": "lock" }`) et dans la section `actuators` **de la passerelle** (section 8, avec sa clé de signature et son champ `module`, qui doit être exactement le nom du module : `acces-dahua` ou `acces-zkteco`, ou son `label`). Si le second manque, l'ouverture à distance de cette porte est indisponible, mais **la remontée des passages, des alarmes et des modes n'est jamais coupée** : le module continue de surveiller et le journal dit une fois « actionneur « SERRURE-ENTREE » non enregistre : ouverture a distance indisponible, surveillance seule (...) ». C'est le cas de l'exemple `gateway\config.example.json`, qui déclare des actionneurs dans les modules mais aucune section `actuators` : surveillance seule, par construction.
+- **Mode de porte et contrainte.** Chaque porte envoie au PSIM son **mode** (`{"event":"door_mode","doorMode":"normal"}`, ou `always_open`, `always_closed`) à la connexion du contrôleur et à chaque changement : Dahua le lit dans la configuration du contrôleur, ZKTeco le déduit de quelques événements (il ne peut pas l'interroger). `door_mode` compte comme un signe de vie du détecteur. Une **contrainte** (code ou doigt « sous la menace », carte de contrainte Dahua) envoie `{"event":"panic"}`, alarme silencieuse toujours active, en plus du passage. Détails : pages des modules.
+- **Remplacement d'un contrôleur : l'`epoch`.** Quand un contrôleur est remplacé (mémoire vide, numéros d'enregistrement repartis de zéro), l'installateur **augmente** de 1 la clé `epoch` de **ce** contrôleur dans la configuration du module (0 par défaut) puis redémarre la passerelle : les identifiants des passages deviennent `<epoch>.<numéro>` et le curseur de récupération repart de zéro, sans jamais confondre l'ancien et le nouveau contrôleur. **Ne jamais diminuer `epoch`.** Procédure pas à pas : section 9 de [gateway/docs/acces-dahua.md](../gateway/docs/acces-dahua.md) et section 8 de [gateway/docs/acces-zkteco.md](../gateway/docs/acces-zkteco.md).
+
+#### Synchronisation des titulaires (PSIM → contrôleurs)
+
+**Principe.** Le PSIM est la référence des titulaires (personnes, badges, validité, portes, horaires, jours fériés). Il les **pousse** vers chaque contrôleur par la passerelle, **une opération à la fois**, et garde l'état de la synchronisation de chaque contrôleur. Le contrat est dans [docs/CONTROLE-ACCES.md](CONTROLE-ACCES.md) § 7 ; ce qui est écrit dans chaque marque est dans la page du module. Le contrôleur reste maître de l'ouverture : la synchronisation ne fait que tenir sa liste à jour. Jamais de code PIN, de gabarit biométrique ni de photo dans un message. Fonctionnement **par contrôleur**, activé seulement par sa clé `syncKey` : sans elle, le contrôleur est surveillé mais ne reçoit rien.
+
+**Les messages (MQTT).** Un abonnement **exact** (jamais de joker) par contrôleur qui a une `syncKey`, repris à chaque reconnexion au PSIM :
+
+| Topic | Sens | Contenu |
+|---|---|---|
+| `psim/access/<controllerId>/sync` | PSIM → passerelle, QoS 1, **jamais `retain`** | l'ordre signé : `{"v":1,"opId":...,"seq":...,"ts":...,"body":"...","sig":"..."}` |
+| `psim/access/<controllerId>/sync-ack` | passerelle → PSIM, QoS 1, jamais `retain` | l'accusé signé : `{"v":1,"opId":...,"seq":...,"result":...,"code":...,"ts":...,"sig":"..."}` |
+
+`<controllerId>` est l'identifiant du contrôleur : le même dans le PSIM (`access_controller.id`) et dans la clé `id` du contrôleur de la configuration du module. Un message `retain` est ignoré (un ordre conservé par le broker serait rejouable). L'accusé part tout de suite (5 s au plus) et n'est **jamais** mis en file sur le disque : s'il est perdu, le PSIM renvoie l'opération et reçoit l'accusé réémis. La chaîne signée, les formats et les **vecteurs de signature** de référence sont dans `gateway/test/accesssync.test.ts` (à reprendre côté PSIM).
+
+**La clé de synchronisation d'un contrôleur.** Elle est créée avec le contrôleur dans le PSIM et **montrée une seule fois**. À recopier (64 caractères hexadécimaux minuscules, sur une seule ligne) dans un fichier de `gateway\secrets\`, puis à référencer dans la configuration du module :
+
+```
+"syncKey": { "$file": "secrets/acces-dahua-asc-entree-sync.key" }
+```
+
+C'est un secret au même titre que le mot de passe du contrôleur et les clés des actionneurs : même protection du dossier `secrets\` (`icacls`, section 2), jamais dans un message, un courriel ou le journal, et elle n'apparaît ni dans `gateway:check-config`, ni dans les journaux, ni dans `<dataDir>\status.json`. Une clé perdue se **remplace** (nouvelle clé dans le PSIM, nouveau fichier ici, redémarrage).
+
+**Ce que le socle vérifie, dans cet ordre** (`gateway/src/accesssync.ts`) :
+
+1. **Formats** : 1 024 octets au plus, UTF-8 valide, objet JSON dont les champs sont exactement `v` (= 1), `opId` (32 hexadécimaux minuscules), `seq` (entier supérieur ou égal à 1), `ts` (entier en ms), `body` (texte de 800 octets au plus) et `sig` (64 hexadécimaux minuscules). Sinon : ignoré, **sans accusé**.
+2. **Signature** HMAC-SHA256 avec la clé du contrôleur, comparée en **temps constant**. Fausse : ignorée **sans accusé** (aucun renseignement pour un attaquant).
+3. **Anti-rejeu** : le `seq` doit être **strictement croissant** pour ce contrôleur. Le dernier `seq` est **persisté** dans `<dataDir>\access-sync-state.json` (écrit de façon atomique **avant** l'exécution) : un redémarrage n'accepte plus un `seq` inférieur. Un `seq` inférieur au dernier, ou égal avec un autre `opId`, est ignoré. Un `seq` **déjà appliqué** n'est pas réexécuté : son **accusé est réémis**. Un `seq` encore en cours d'exécution est ignoré (l'accusé partira à la fin). Il n'y a pas de délai de fraîcheur : l'ordre et le `seq` suffisent, la synchronisation n'est pas urgente.
+4. **Module disponible** : si aucun module ne suit ce contrôleur (module arrêté ou en échec de démarrage), accusé `error` / `unreachable`, sans consommer le `seq` : le PSIM peut renvoyer la même opération plus tard.
+5. **Corps** : un objet JSON avec un champ `type` (et sans `opId` ni `seq`), sinon accusé `refused` / `invalid`.
+6. **Une opération à la fois** par contrôleur, dans l'ordre d'arrivée, 8 au plus en attente (au-delà : ignoré, le PSIM renverra). Délai maximal d'une opération : **300 s** (le module peut attendre plusieurs interrogations de l'appareil) ; au-delà, accusé `error` / `timeout`. Une exception du module donne `error` / `io`.
+7. **Accusé signé**, jamais retenté. Résultats : `done`, `refused` (codes `not_supported`, `invalid`, `full`) ou `error` (`io`, `unreachable`, `timeout`...). Quand le module est **arrêté** ou en échec, les ordres reçus sont accusés `error` / `unreachable` : l'abonnement est gardé pendant un redémarrage du module.
+
+Le fichier `access-sync-state.json` ne contient **aucun secret** (ni clé, ni signature, ni nom, ni badge) : pour chaque contrôleur, le dernier `seq`, son `opId`, son résultat et une empreinte non secrète de la clé. Absent, illisible ou corrompu : la mémoire repart à vide, avec un avertissement dans le journal (un attaquant ne peut pas fabriquer d'ordre sans la clé ; il pourrait au plus rejouer un ancien message authentique, et seulement s'il peut publier sur le broker du PSIM). Les compteurs (opérations faites, refusées, en erreur, ignorées, rejeux, accusés perdus) sont dans `<dataDir>\status.json`, rubrique `accessSync`.
+
+**Changer de clé.** Si la clé d'un contrôleur change (nouvelle clé dans le PSIM, nouveau fichier ici) et que la passerelle est redémarrée, le **compteur `seq` de ce contrôleur est remis à zéro** et le journal avertit : « cle de synchronisation changee depuis le dernier demarrage : numero de sequence remis a zero ». C'est sans danger, car les anciens messages, signés avec l'ancienne clé, ne passent plus la vérification de signature. Dans l'autre sens, une clé renouvelée côté PSIM **mais pas ici** donne des ordres « à signature fausse » ignorés sans accusé (tableau ci-dessous). Si le PSIM a perdu son compteur (restauration d'une sauvegarde plus ancienne), ses nouveaux `seq` sont inférieurs à celui de la passerelle : tout est ignoré comme rejeu ; le remède est de **changer la clé du contrôleur** (puis de redémarrer la passerelle).
+
+**À prévoir côté broker du PSIM (à faire par l'équipe PSIM).** La passerelle s'abonne à `psim/access/<controllerId>/sync` et publie sur `psim/access/<controllerId>/sync-ack`. Dans les droits du broker, le compte de chaque passerelle doit donc pouvoir **lire** `.../sync` et **écrire** `.../sync-ack`, **uniquement** pour les contrôleurs rattachés à cette passerelle (jamais de joker, jamais le topic d'un contrôleur d'une autre passerelle) ; inversement le PSIM publie sur `.../sync` et lit `.../sync-ack`. Le code du PSIM de cette branche ne contient pas encore ce côté : tant qu'il manque, la passerelle l'écrit dans le journal (voir « non autorisé pour ce compte » ci-dessous) et la synchronisation de ce contrôleur ne fonctionne pas, sans gêner le reste.
+
+**Dépannage de la synchronisation.** Les lignes du socle commencent par `[synchro]` (au plus une par minute et par sujet, avec le nombre de cas) :
+
+| Ligne du journal | Cause | Action |
+|---|---|---|
+| `[synchro] <id> : N ordre(s) de synchronisation mal forme(s) ignore(s)...` | Message qui ne respecte pas les formats (taille, champ en trop ou manquant, `opId`, `seq`, `sig`) | Chercher l'émetteur : le PSIM ne produit que des messages conformes ; sinon un autre client publie sur le topic |
+| `[synchro] <id> : N ordre(s) de synchronisation a signature fausse ignore(s) (sans accuse)` | Clé différente de celle du PSIM (renouvelée d'un seul côté, mauvais fichier, espace ou saut de ligne en trop), ou tentative de forgerie | Après un renouvellement : mettre la clé du PSIM dans le fichier et redémarrer. Sinon, **alerte de sécurité** : vérifier qui peut publier sur le broker |
+| `[synchro] <id> : N ordre(s) de synchronisation deja applique(s) ou plus ancien(s) ignore(s) (rejeu)` | Renvoi d'un ancien message, deux émetteurs, ou compteur du PSIM revenu en arrière | Si le PSIM a été restauré : changer la clé du contrôleur (remet le compteur à zéro). Sinon, chercher un rejeu |
+| `[synchro] <id> : N renvoi(s) d'une operation encore en cours ignore(s)...` | Le PSIM a renvoyé une opération longue avant la fin | Information : l'accusé partira à la fin |
+| `[synchro] <id> : N ordre(s) de synchronisation ignore(s) : 8 operations deja en attente` | Le module est lent ou bloqué | Voir le journal du module ; le PSIM renverra |
+| `[synchro] <id> : N ordre(s) de synchronisation sans module pour les executer (module arrete ou en echec) : accuse(s) « unreachable »` | Le module du contrôleur est arrêté ou n'a pas pu démarrer | Corriger la cause du module (autres lignes du journal) ; le PSIM réessaie |
+| `[synchro] <id> : N operation(s) de synchronisation faite(s)` | Information | Aucune |
+| `[synchro] <id> : N accuse(s) reemis pour une operation deja faite` | L'accusé précédent s'était perdu | Information |
+| `[synchro] <id> : N accuse(s) de synchronisation perdu(s) (liaison PSIM coupee ? ...)` | Liaison au PSIM coupée au moment de l'accusé | Vérifier la liaison ; le PSIM renverra l'opération |
+| `[synchro] <id> : synchronisation <type> seq N (op xxxxxxxx) -> refused (code)` ou `-> error (code)` | Résultat négatif du module (voir les codes dans sa page) ; peut être suivi de « le module n'a pas repondu en 300 s : etat du controleur inconnu », « reponse du module hors contrat » ou « le module a leve une exception (...) » | Voir la page du module (dépannage) |
+| `[synchro] ordre de synchronisation recu pour un controleur sans cle enregistree (« X ») : ignore` | Le PSIM publie pour un contrôleur que cette passerelle ne suit pas (pas de `syncKey`, mauvais `id`) | Comparer l'identifiant du PSIM et la clé `id` du module ; vérifier le rattachement du contrôleur à la bonne passerelle |
+| `[synchro] <id> : cle de synchronisation changee depuis le dernier demarrage : numero de sequence remis a zero` | Clé renouvelée | Attendu après un changement de clé ; sinon vérifier qui a modifié le fichier |
+| `[synchro] fichier d'etat illisible (...)` ou `fichier d'etat corrompu (...)` ou `fichier d'etat de version inconnue` | `access-sync-state.json` abîmé | La mémoire anti-rejeu repart à vide : sans gravité si le broker est de confiance ; vérifier le dossier |
+| `[synchro] ecriture du fichier d'etat impossible (...) : la memoire anti-rejeu ne survivra pas a un redemarrage` | `dataDir` non inscriptible ou plein | Donner au compte de service le droit d'écrire dans `dataDir` |
+| `[synchro] arret : N operation(s) de synchronisation non terminee(s)...` | Arrêt de la passerelle pendant une opération | Sans gravité : elle sera réexécutée si le PSIM la renvoie (opérations idempotentes) |
+| `controleur <id> non autorise pour ce compte (voir la liste des controleurs d'acces de PSIM_MQTT_GATEWAYS) : la synchronisation de ses titulaires ne sera pas recue` | Le broker refuse l'abonnement : droits du compte (voir « À prévoir côté broker ») | À faire par l'équipe PSIM : autoriser ce compte pour ce contrôleur |
+| `abonnement a la synchronisation du controleur <id> impossible (...)` | Erreur du broker à l'abonnement | Voir le message ; la passerelle réessaie à la reconnexion |
+| `ordre de synchronisation : erreur interne (...)` | Défaut interne | Relever la ligne et prévenir le support |
+| `controleur <id> : synchronisation des titulaires non enregistree, surveillance des portes seule (...)` | Le socle a refusé la déclaration : clé invalide, identifiant invalide, contrôleur déjà suivi par un autre module, module arrêté | Lire la cause entre parenthèses ; la surveillance des portes continue |
+| Le module refuse de démarrer, « configuration invalide » citant `syncKey` | La clé n'est pas 64 hexadécimaux minuscules | Recopier la clé du PSIM, sur une seule ligne |
 
 ## 5. Dépannage
 
@@ -273,7 +338,7 @@ Une faute ici n'est plus une fausse alarme : c'est une porte ouverte. Chaque rè
      {
        "id": "GACHE-1",
        "keyFile": "secrets/gache-1.key",
-       "module": "dahua-acces",
+       "module": "acces-dahua",
        "actions": { "unlock": { "maxS": 10 }, "lock": {} },
        "rest": "lock",
        "emergencyExit": false
@@ -281,12 +346,12 @@ Une faute ici n'est plus une fausse alarme : c'est une porte ouverte. Chaque rè
      {
        "id": "PORTAIL-1",
        "keyFile": "secrets/portail-1.key",
-       "module": "dahua-acces",
+       "module": "acces-dahua",
        "actions": { "open": { "maxS": 10 }, "close": { "maxS": 10 }, "stop": {} }
      }
    ]
    ```
-   (Cet exemple n'est **pas** dans `gateway\config.example.json` : il vise un module d'accès, `dahua-acces`, qui n'existe pas dans la configuration d'exemple ; l'exemple reste ainsi valide tel quel pour `npm run gateway:check-config`.)
+   (Cet exemple n'est **pas** dans `gateway\config.example.json`, qui déclare le module `acces-dahua` mais aucune section `actuators` (surveillance seule) : il faudrait y créer les fichiers de clés pour que `npm run gateway:check-config` reste valide. Le champ `module` doit être exactement le nom du module, ou son `label` s'il en a un.)
 4. `npm run gateway:check-config` liste chaque actionneur (module, actions, plafonds, source de la clé — jamais la clé). Puis `npm run gateway`. Au démarrage et à **chaque reconnexion**, la passerelle s'abonne à `psim/actuators/<id>/command` pour chaque actionneur, **un abonnement par actionneur** (QoS 0, jamais de joker).
 
 | Clé (par actionneur) | Rôle |

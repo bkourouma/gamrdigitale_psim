@@ -24,6 +24,8 @@
             "host": "192.168.10.20",
             "username": "psim",
             "password": { "$file": "secrets/acces-dahua-asc-entree.txt" },
+            "epoch": 0,
+            "syncKey": { "$file": "secrets/acces-dahua-asc-entree-sync.key" },
             "doors": { "1": "P-ENTREE", "2": "P-PARKING" },
             "actuators": {
               "SERRURE-ENTREE": { "door": 1, "type": "lock" },
@@ -45,6 +47,8 @@
             "id": "C3-ENTREE",
             "serial": "CGXH123456789",
             "kind": "controller",
+            "epoch": 0,
+            "syncKey": { "$file": "secrets/acces-zkteco-c3-entree-sync.key" },
             "doors": { "1": "P-PRINCIPALE", "2": "P-STOCK" },
             "actuators": { "serrure-principale": { "door": 1, "type": "lock", "pulseS": 5 } }
           }

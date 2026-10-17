@@ -2461,7 +2461,10 @@
         "gateway/test/acces-commun.test.ts",
         "gateway/test/acces-actuator.test.ts",
         "gateway/test/acces-dahua.test.ts",
-        "gateway/test/e2e-acces-dahua.test.ts"
+        "gateway/test/e2e-acces-dahua.test.ts",
+        "gateway/test/acces-sync.test.ts",
+        "gateway/test/accesssync.test.ts",
+        "gateway/test/e2e-acces-sync.test.ts"
       ],
       "history": [],
       "notes": "Entrée générique : créer une entrée par modèle (référence exacte relevée sur l'étiquette) avant tout pack. Les fichiers d'essais de la passerelle seront ajoutés ici quand ils existeront."
@@ -2491,7 +2494,10 @@
         "gateway/test/acces-commun.test.ts",
         "gateway/test/acces-actuator.test.ts",
         "gateway/test/acces-dahua.test.ts",
-        "gateway/test/e2e-acces-dahua.test.ts"
+        "gateway/test/e2e-acces-dahua.test.ts",
+        "gateway/test/acces-sync.test.ts",
+        "gateway/test/accesssync.test.ts",
+        "gateway/test/e2e-acces-sync.test.ts"
       ],
       "history": [],
       "notes": "Entrée générique : créer une entrée par modèle. Les gabarits biométriques restent dans le terminal (PRD, exigence non fonctionnelle 5)."
@@ -2594,7 +2600,10 @@
         "gateway/test/acces-commun.test.ts",
         "gateway/test/acces-actuator.test.ts",
         "gateway/test/acces-zkteco.test.ts",
-        "gateway/test/e2e-acces-zkteco.test.ts"
+        "gateway/test/e2e-acces-zkteco.test.ts",
+        "gateway/test/acces-sync.test.ts",
+        "gateway/test/accesssync.test.ts",
+        "gateway/test/e2e-acces-sync.test.ts"
       ],
       "history": [],
       "notes": "Entrée générique : les références exactes (C3, inBio) sont à relever sur le matériel et à confirmer sur le site du constructeur avant de créer une entrée par modèle."
@@ -2623,7 +2632,10 @@
         "gateway/test/acces-commun.test.ts",
         "gateway/test/acces-actuator.test.ts",
         "gateway/test/acces-zkteco.test.ts",
-        "gateway/test/e2e-acces-zkteco.test.ts"
+        "gateway/test/e2e-acces-zkteco.test.ts",
+        "gateway/test/acces-sync.test.ts",
+        "gateway/test/accesssync.test.ts",
+        "gateway/test/e2e-acces-sync.test.ts"
       ],
       "history": [],
       "notes": "Entrée générique : créer une entrée par modèle. Les gabarits biométriques restent dans le terminal."
