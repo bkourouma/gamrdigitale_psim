@@ -47,7 +47,9 @@ import type { SnapshotService } from './snapshots.ts';
 import type { DeviceImages } from './deviceimages.ts';
 import type { ProofService } from './proofpack.ts';
 import type { VideoService } from './video.ts';
-import type { Role } from './types.ts';
+import type { MountContext, Role } from './types.ts';
+import type { Agents } from './agents.ts';
+import type { Patrols } from './patrols.ts';
 
 export const SESSION_COOKIE = 'psim_session';
 
@@ -96,6 +98,11 @@ export interface ApiDeps {
   deviceImages?: DeviceImages;
   /** Dossier de preuve exportable par incident (GET /api/incidents/:id/proof). */
   proofs?: ProofService;
+  /** Application des agents (telephones, comptes, service, alarmes, SOS) et rondes (points, circuits, scans, main courante). */
+  agents?: Agents;
+  patrols?: Patrols;
+  /** Adresse publique du PSIM (PSIM_PUBLIC_URL) : base des URL d'appairage et d'etiquettes ; sinon celle de la requete. */
+  publicUrl?: string;
 }
 
 type AuthedRequest = Request & { session: Session };
@@ -451,7 +458,10 @@ export function createApp(deps: ApiDeps) {
       auditLockout(accountLocked ? userKey : ipKey, name || '?', ip);
       return void res.status(429).json({ error: 'Trop de tentatives, reessayer dans une minute' });
     }
-    const role = name && typeof password === 'string' ? checkCredentials(db, name, password) : null;
+    // Un compte « agent » ne se connecte jamais ici (code personnel sur un telephone appaire : /api/agent/login) : meme reponse
+    // qu'avec un mauvais mot de passe.
+    const checked = name && typeof password === 'string' ? checkCredentials(db, name, password) : null;
+    const role = checked === 'agent' ? null : checked;
     if (!role) {
       recordFailure(ipKey);
       recordFailure(userKey);
@@ -511,6 +521,11 @@ export function createApp(deps: ApiDeps) {
         return void res.status(403).json({ error: 'Une etape est requise sur votre compte avant de continuer', restricted: session.restricted });
       }
       if (roles.length > 0 && !roles.includes(session.role)) return void res.status(403).json({ error: 'Droits insuffisants' });
+      // Le role « agent » (application des agents) n'a acces qu'a /api/agent/* et a la lecture de son profil : toute route
+      // ouverte a « tout utilisateur connecte » est en realite reservee a l'exploitation (operateur, administrateur).
+      if (roles.length === 0 && session.role === 'agent' && !(req.method === 'GET' && req.path === '/api/me')) {
+        return void res.status(403).json({ error: 'Droits insuffisants' });
+      }
       (req as AuthedRequest).session = session;
       next();
     };
@@ -728,6 +743,13 @@ export function createApp(deps: ApiDeps) {
     // Le detecteur virtuel d'une regle de presence vit et meurt avec sa regle : le supprimer ici la laisserait orpheline.
     if (db.prepare('SELECT 1 AS x FROM presence_rule WHERE device_id = ?').get(id)) {
       throw new PsimError(409, 'Ce detecteur appartient a une regle de presence : modifier ou supprimer la regle');
+    }
+    // Idem pour le detecteur virtuel d'un circuit de ronde (P-<id>) ou d'un agent (A-<identifiant>).
+    if (deps.patrols && db.prepare("SELECT 1 AS x FROM patrol_route WHERE 'P-' || id = ?").get(id)) {
+      throw new PsimError(409, 'Ce detecteur appartient a un circuit de ronde : modifier ou archiver le circuit');
+    }
+    if (deps.agents && db.prepare("SELECT 1 AS x FROM agent_profile WHERE 'A-' || username = ?").get(id)) {
+      throw new PsimError(409, 'Ce detecteur appartient a un agent : le gerer depuis les agents');
     }
     engine.deleteDevice(actorOf(req), id);
     deps.video.closeFeed(id);
@@ -1036,6 +1058,34 @@ export function createApp(deps: ApiDeps) {
   }
   deps.deviceImages?.mount(app, { adminOnly, actorOf });
   deps.proofs?.mount(app, { anyUser, actorOf, roleOf: (req) => (req as AuthedRequest).session.role });
+
+  // ---- Application des agents et rondes (voir docs/AGENTS-RONDES.md) --------------------------
+
+  if (deps.agents || deps.patrols) {
+    const publicOrigin = (() => {
+      try {
+        return deps.publicUrl ? new URL(deps.publicUrl).origin : null;
+      } catch {
+        return null;
+      }
+    })();
+    const ctx: MountContext = {
+      sessionOf: (req) => sessionFromRequest(req),
+      adminOnly,
+      staff: requireRole('operator', 'admin'),
+      actorOf,
+      roleOf: (req) => (req as AuthedRequest).session.role,
+      json: (limit) => express.json({ limit }),
+      cookieSecure: deps.cookieSecure,
+      originOf: (req) => {
+        if (publicOrigin) return publicOrigin;
+        const forwarded = deps.trustProxy && typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].split(',')[0].trim() : '';
+        return `${deps.tls ? 'https' : req.protocol}://${forwarded || String(req.headers.host ?? 'localhost')}`;
+      },
+    };
+    deps.agents?.mount(app, ctx);
+    deps.patrols?.mount(app, ctx);
+  }
 
   // ---- Rapports et exports (lecture seule) -------------------------------------------------
 

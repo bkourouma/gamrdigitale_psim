@@ -72,7 +72,7 @@ function http(port: number, method: string, path: string, opts: { body?: string 
 interface Route {
   method: string;
   path: string;
-  guard: 'anyUser' | 'adminOnly' | 'none';
+  guard: 'anyUser' | 'adminOnly' | 'agent' | 'none';
 }
 
 /** Modules du serveur qui declarent des routes (tout server/*.ts : un module ajoute demain est analyse sans rien declarer ici). */
@@ -84,15 +84,19 @@ const ROUTE_FILES = readdirSync(join(ROOT, 'server'))
 function declaredRoutes(): Route[] {
   const src = ROUTE_FILES.map((f) => readFileSync(join(ROOT, 'server', f), 'utf8')).join('\n');
   const out: Route[] = [];
-  const re = /app\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*([A-Za-z_]+)/g;
+  const re = /app\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*([A-Za-z_]+(?:\.[A-Za-z_]+)?)/g;
   for (let m = re.exec(src); m; m = re.exec(src)) {
-    out.push({ method: m[1].toUpperCase(), path: m[2], guard: m[3] === 'anyUser' || m[3] === 'adminOnly' ? m[3] : 'none' });
+    // `staff` (operateur ou administrateur) = tout utilisateur d'exploitation ; `requireAgent` / `requirePhone` : application des
+    // agents (telephone appaire + session d'agent), ni session d'exploitation ni route publique.
+    const g = m[3];
+    const guard: Route['guard'] = g === 'anyUser' || g === 'adminOnly' ? g : g === 'staff' || g === 'ctx.staff' ? 'anyUser' : g === 'requireAgent' || g === 'agents.requireAgent' || g === 'requirePhone' ? 'agent' : 'none';
+    out.push({ method: m[1].toUpperCase(), path: m[2], guard });
   }
   return out;
 }
 
 /** Routes volontairement SANS garde de session (authentifiees autrement, ou publiques). Toute autre route sans garde est un defaut. */
-const PUBLIC = new Set(['GET /healthz', 'GET /api/demo-accounts', 'POST /api/login', 'POST /api/login/2fa', 'POST /api/logout', 'POST /api/ingest/:id', 'POST /api/ingest/:id/image']);
+const PUBLIC = new Set(['POST /api/agent/pair', 'POST /api/agent/logout', 'GET /api/agent-cert', 'GET /healthz', 'GET /api/demo-accounts', 'POST /api/login', 'POST /api/login/2fa', 'POST /api/logout', 'POST /api/ingest/:id', 'POST /api/ingest/:id/image']);
 
 const concrete = (path: string) => path.replace(/:zone/g, 'Accueil').replace(/:id/g, '1').replace(/:[A-Za-z]+/g, 'x');
 const key = (r: Route) => `${r.method} ${r.path}`;
@@ -104,6 +108,27 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
   let admin = '';
   let operator = '';
   let restricted = '';
+  let phoneCookie = '';
+  let agentCookie = '';
+  /** (Re)ouvre la session de l'agent d'essai : un corps hostile a pu verrouiller son code ou fermer sa session. */
+  const openAgentSession = async () => {
+    await http(port, 'PATCH', '/api/agents/ronde1', { cookie: admin, json: { unlock: true } });
+    // Adresse source neuve a chaque fois (PSIM_TRUST_PROXY) : les corps hostiles ont epuise la limite de la precedente.
+    const fresh = () => ({ 'X-Forwarded-For': `10.77.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}` });
+    const attempt = () => http(port, 'POST', '/api/agent/login', { cookie: phoneCookie, json: { username: 'ronde1', pin: '4821' }, headers: fresh() });
+    let r = phoneCookie ? await attempt() : null;
+    if (!r || r.status === 401) {
+      // Le telephone d'essai a pu etre revoque par la route de revocation (identifiant 1) : on en appaire un autre.
+      const phone = await http(port, 'POST', '/api/agent-phones', { cookie: admin, json: { label: 'Telephone essai' } });
+      assert.equal(phone.status, 201, output);
+      const paired = await http(port, 'POST', '/api/agent/pair', { json: { code: String(phone.body.pairUrl).split('#pair=')[1] }, headers: fresh() });
+      assert.equal(paired.status, 200, output);
+      phoneCookie = paired.cookie!;
+      r = await attempt();
+    }
+    assert.equal(r.status, 200, output);
+    agentCookie = `${phoneCookie}; ${r.cookie}`;
+  };
   const routes = declaredRoutes();
 
   const alive = async () => proc.exitCode === null && (await http(port, 'GET', '/healthz')).status === 200;
@@ -146,6 +171,10 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
     const created = await http(port, 'POST', '/api/users', { cookie: admin, json: { username: 'restreint', role: 'admin', password: 'Hippopotame-bleu-42-lune' } });
     assert.equal(created.status, 201);
     restricted = (await login('restreint', 'Hippopotame-bleu-42-lune')).cookie!;
+    // Application des agents : un agent, un telephone appaire et une session d'agent pour les routes /api/agent/*.
+    const agent = await http(port, 'POST', '/api/agents', { cookie: admin, json: { username: 'ronde1', displayName: 'Agent Essai', pin: '4821', zones: [] } });
+    assert.equal(agent.status, 201, output);
+    await openAgentSession();
   });
 
   after(() => proc?.kill());
@@ -176,7 +205,7 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
     });
 
     it("operateur : 403 sur toutes les routes d'administration, jamais 401/5xx sur les autres", async () => {
-      for (const r of routes.filter((x) => x.guard !== 'none')) {
+      for (const r of routes.filter((x) => x.guard !== 'none' && x.guard !== 'agent')) {
         if (r.path === '/api/onvif/discover') continue; // multidiffusion de 4 s : sans interet ici
         const res = await http(port, r.method, concrete(r.path), { cookie: operator, json: r.method === 'GET' ? undefined : {} });
         if (r.guard === 'adminOnly') assert.equal(res.status, 403, `${key(r)} en operateur`);
@@ -188,7 +217,7 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
 
     it("session restreinte (mot de passe a changer) : tout est refuse sauf les 4 routes de son compte", async () => {
       const allowed = new Set(['GET /api/me', 'POST /api/me/password', 'POST /api/me/2fa/setup', 'POST /api/me/2fa/enable']);
-      for (const r of routes.filter((x) => x.guard !== 'none')) {
+      for (const r of routes.filter((x) => x.guard !== 'none' && x.guard !== 'agent')) {
         if (allowed.has(key(r)) || r.path === '/api/onvif/discover') continue;
         const res = await http(port, r.method, concrete(r.path), { cookie: restricted, json: r.method === 'GET' ? undefined : {} });
         assert.equal(res.status, 403, `${key(r)} en session restreinte`);
@@ -244,9 +273,12 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
         for (const c of corpus) {
           if (r.method === 'GET') continue;
           const headers: Record<string, string> = c.contentType ? { 'Content-Type': c.contentType } : c.raw ? { 'Content-Type': 'application/json' } : {};
-          const res = await http(port, r.method, concrete(r.path), { cookie: admin, ...(c.raw !== undefined ? { body: c.raw } : { json: c.json }), headers });
+          const res = await http(port, r.method, concrete(r.path), { cookie: r.guard === 'agent' ? agentCookie : admin, ...(c.raw !== undefined ? { body: c.raw } : { json: c.json }), headers });
           if (res.status >= 500) failures.push(`${key(r)} <- ${c.name} : ${res.status} ${JSON.stringify(res.body).slice(0, 100)}`);
-          if (res.status === 401) admin = (await login('admin', ADMIN_PW)).cookie!; // une des routes a pu fermer la session : on se reconnecte
+          if (res.status === 401) {
+            admin = (await login('admin', ADMIN_PW)).cookie!;
+            if (r.guard === 'agent') await openAgentSession();
+          } // une des routes a pu fermer la session : on se reconnecte
         }
         assert.ok(await alive(), `le serveur est tombe apres ${key(r)} :\n${output.slice(-600)}`);
       }
@@ -260,11 +292,11 @@ describe('auto-test d intrusion (boite noire, serveur reel)', { timeout: 280_000
       for (const r of routes.filter((x) => x.method === 'GET' && x.guard !== 'none' && x.path !== '/api/onvif/discover')) {
         for (const p of params) {
           const path = r.path.replace(/:[A-Za-z]+/g, p);
-          const res = await http(port, 'GET', path, { cookie: admin }).catch((e) => ({ status: -1, body: String(e) }));
+          const res = await http(port, 'GET', path, { cookie: r.guard === 'agent' ? agentCookie : admin }).catch((e) => ({ status: -1, body: String(e) }));
           if (res.status >= 500 || res.status === -1) failures.push(`GET ${r.path} param « ${p.slice(0, 30)} » : ${res.status}`);
         }
         for (const q of queries) {
-          const res = await http(port, 'GET', concrete(r.path) + q, { cookie: admin }).catch((e) => ({ status: -1, body: String(e) }));
+          const res = await http(port, 'GET', concrete(r.path) + q, { cookie: r.guard === 'agent' ? agentCookie : admin }).catch((e) => ({ status: -1, body: String(e) }));
           if (res.status >= 500 || res.status === -1) failures.push(`GET ${r.path}${q.slice(0, 40)} : ${res.status}`);
         }
         assert.ok(await alive(), `tombe apres GET ${r.path}`);

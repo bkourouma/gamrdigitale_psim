@@ -51,6 +51,8 @@ import type { BackupStatus } from './system.ts';
 import { createHttpRedirect, createWebServer } from './tls.ts';
 import type { PsimEvent } from './types.ts';
 import { createUsersService } from './users.ts';
+import { createAgents } from './agents.ts';
+import { createPatrols } from './patrols.ts';
 import { createVideoService } from './video.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -515,6 +517,17 @@ const reportTimer = setInterval(() => {
   reportMail.tick().catch((err) => console.error('[psim] rapport periodique :', err));
 }, 60_000);
 
+// Application des agents (telephones appaires, service, alarmes, SOS) et rondes (points de controle, circuits, scans, main courante).
+const agents = createAgents({
+  db,
+  engine,
+  users,
+  certPath: config.tls.cert || null,
+  readSnapshot: (id) => snapshots?.read(id) ?? null,
+  liveStream: (cameraId, res) => video.attachViewer(cameraId, res),
+});
+const patrols = createPatrols({ db, engine, agents, dataDir });
+
 const app = createApp({
   db,
   engine,
@@ -557,6 +570,9 @@ const app = createApp({
   ingestToken: config.ingestToken.length >= MIN_INGEST_TOKEN_LENGTH ? config.ingestToken : '',
   deviceImages,
   proofs,
+  agents,
+  patrols,
+  publicUrl: notify.publicUrl,
 });
 
 const server: Server = createWebServer(app, tlsFiles);
@@ -589,7 +605,8 @@ server.on('upgrade', (req, socket, head) => {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   const session = sessionFromRequest(req);
   // Une session restreinte (mot de passe a changer, 2FA a activer) n'a pas acces au temps reel.
-  if (pathname !== '/ws' || !sameOrigin || !session || session.restricted || !token) {
+  // Le role « agent » n'a pas le temps reel du poste de garde (l'application interroge /api/agent/alarms).
+  if (pathname !== '/ws' || !sameOrigin || !session || session.restricted || session.role === 'agent' || !token) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return void socket.destroy();
   }
@@ -607,7 +624,7 @@ function sweepSockets(): void {
   for (const client of wss.clients) {
     const t = wsToken.get(client);
     const s = t ? getSession(t) : null;
-    if (!s || s.restricted) client.close(4401, 'session terminee');
+    if (!s || s.restricted || s.role === 'agent') client.close(4401, 'session terminee');
   }
 }
 
@@ -617,7 +634,7 @@ bus.on('event', (event: PsimEvent) => {
     if (client.readyState !== client.OPEN) continue;
     const t = wsToken.get(client);
     const s = t ? getSession(t) : null;
-    if (!s || s.restricted) client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
+    if (!s || s.restricted || s.role === 'agent') client.close(4401, 'session terminee'); // jamais d'evenement a une session revoquee
     else client.send(event.type === 'audit' && s.role !== 'admin' ? JSON.stringify({ type: 'audit', entry: maskAudit(event.entry, s.role) }) : message);
   }
 });
@@ -631,6 +648,8 @@ const tickTimer = setInterval(() => {
   try {
     arming?.tick(); // armements et desarmements dus au planning
     rules.tick(); // regles de presence : durees, plages horaires, repos
+    agents.tick(); // fin automatique des services, detecteurs d'agent acquittes
+    patrols.tick(); // rondes : debuts de plage, echeances, rondes incompletes ou ratees
     gatewayLink?.tick(); // passerelles deconnectees depuis trop longtemps
     if (lastTickAt - lastBeatAt >= 10_000) {
       lastBeatAt = lastTickAt;

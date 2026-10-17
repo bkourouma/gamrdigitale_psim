@@ -40,6 +40,14 @@ export const ADMIN_ONLY_DETAILS = new Set([
   'report_email_failed',
   'report_exported',
   'device_flapping',
+  // Application des agents : telephones appaires, connexions et verrous, lecture de l'historique des positions.
+  'agent_phone_created',
+  'agent_phone_paired',
+  'agent_phone_revoked',
+  'agent_login_failed',
+  'agent_locked',
+  'agent_unlocked',
+  'patrol_history_read',
 ]);
 
 export function maskAudit(entry: AuditEntry, role: Role): AuditEntry {
