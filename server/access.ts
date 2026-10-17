@@ -17,6 +17,8 @@
  * champs listes dans validateAccessField() sont gardes, tout champ inconnu est ignore.
  */
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import { checkDoorLink, doorModeFields, forgetDoorMode, migrateAccessRemote, parseDoorMode, recordDoorMode, remoteOf } from './accessremote.ts';
+import type { DoorMode, DoorRemote } from './accessremote.ts';
 import { PsimError } from './errors.ts';
 import { defaultFloorId } from './floors.ts';
 import { LATE_AFTER_MS } from './ingestmeta.ts';
@@ -171,6 +173,11 @@ export interface DoorView {
   emergencyExit: boolean;
   heldAlarmAfterS: number;
   actuatorId: string | null;
+  /** Dernier mode annonce par le controleur (F19), `null` tant qu'aucun message `door_mode` n'est arrive. */
+  doorMode: DoorMode | null;
+  doorModeLabel: string | null;
+  /** Heure (ms) du message qui a annonce ce mode. */
+  doorModeAt: number | null;
   state: DoorDisplay;
   stateLabel: string;
   stateHint: string;
@@ -206,7 +213,8 @@ export interface DoorDetail {
   door: DoorView;
   lastPassages: PassageView[];
   cameras: { id: string; name: string; status: string }[];
-  remote: { available: false; reason: string };
+  /** Ouverture a distance (F17) : possible ou non, et pourquoi (voir accessremote.ts). */
+  remote: DoorRemote;
 }
 
 /** Filtres de recherche tels que la route les recoit (chaines de la requete, ou valeurs deja typees) : tout est valide ici. */
@@ -377,6 +385,7 @@ CREATE TABLE IF NOT EXISTS access_setting (
   value TEXT NOT NULL
 );
 `);
+  migrateAccessRemote(db); // mode de porte (F19), un actionneur par porte (F17)
 }
 
 // ---- Validation du champ `access` -----------------------------------------------------------------------------------------
@@ -660,6 +669,15 @@ export function createAccess(opts: AccessOptions): AccessService {
       // 3. Etat physique de la porte (une porte non declaree n'a rien a mettre a jour : le passage est gardé quand meme).
       if (door) updateDoorState(door, device, event, state, meta, passage ? atDevice : null);
 
+      // 3 bis. Mode de porte (F19) : lu dans le champ `doorMode` quel que soit `event` ; valeur invalide ou porte non declaree : ignore.
+      if (door && msg !== null) {
+        const mode = parseDoorMode(Object.hasOwn(msg, 'doorMode') ? msg.doorMode : undefined);
+        if (mode !== null) {
+          const noted = recordDoorMode(db, device.id, mode, meta.eventAt);
+          if (noted.changed) audit('systeme', 'access_door_mode', { deviceId: device.id, details: clip(`mode de la porte : ${noted.previous ?? 'inconnu'} -> ${mode} (regle dans le controleur)`) });
+        }
+      }
+
       // 4. Controleur : dernier signe de vie et ecart d'horloge (seulement sur un passage en direct).
       const controllerId = passage ? passage.controllerId : door && state !== 'offline' && meta.lateMs < LATE_AFTER_MS ? door.controller_id : null;
       if (controllerId !== null) {
@@ -783,8 +801,9 @@ export function createAccess(opts: AccessOptions): AccessService {
   // ---- Portes ------------------------------------------------------------------------------------------------------------------
 
   const DOOR_SELECT = `SELECT a.*, c.name AS controller_name, d.name AS name, d.zone AS zone, d.floor_id AS floor_id, d.x AS x, d.y AS y,
-                              d.status AS status, d.last_seen AS last_seen, d.state_since AS state_since
-                         FROM access_door a JOIN device d ON d.id = a.detector_id JOIN access_controller c ON c.id = a.controller_id`;
+                              d.status AS status, d.last_seen AS last_seen, d.state_since AS state_since, m.mode AS door_mode, m.at AS door_mode_at
+                         FROM access_door a JOIN device d ON d.id = a.detector_id JOIN access_controller c ON c.id = a.controller_id
+                         LEFT JOIN access_door_mode m ON m.detector_id = a.detector_id`;
 
   function toDoorView(r: Row, cameraIds: string[]): DoorView {
     const doorState = r.door_state as DoorPhysical;
@@ -805,6 +824,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       emergencyExit: r.emergency_exit === 1,
       heldAlarmAfterS: r.held_alarm_after_s as number,
       actuatorId: (r.actuator_id as string | null) ?? null,
+      ...doorModeFields(r.door_mode, r.door_mode_at),
       state: shown.state,
       stateLabel: shown.label,
       stateHint: shown.hint,
@@ -872,7 +892,7 @@ export function createAccess(opts: AccessOptions): AccessService {
       name: r.name as string,
       status: r.status as string,
     }));
-    return { door: view, lastPassages, cameras, remote: { available: false, reason: 'Ouverture à distance : disponible avec le lot AC4' } };
+    return { door: view, lastPassages, cameras, remote: remoteOf(db, { kind: view.kind, emergencyExit: view.emergencyExit, actuatorId: view.actuatorId }) };
   }
 
   // ---- Recherche et export ------------------------------------------------------------------------------------------------------
@@ -1261,10 +1281,12 @@ export function createAccess(opts: AccessOptions): AccessService {
     if (f.controllerId === undefined) throw new PsimError(400, 'controllerId requis');
     if (f.doorNo === undefined) throw new PsimError(400, 'doorNo requis (1 a 4)');
     checkDoorNoFree(f.controllerId, f.doorNo, null);
+    // Lien avec l'actionneur (F17, F18) : controle sur la porte telle qu'elle sera creee.
+    if (f.actuatorId) checkDoorLink(db, { detectorId, kind: f.kind ?? 'door', emergencyExit: f.emergencyExit ?? false, actuatorId: f.actuatorId });
     sql(
       'INSERT INTO access_door (detector_id, controller_id, door_no, kind, emergency_exit, held_alarm_after_s, actuator_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(detectorId, f.controllerId, f.doorNo, f.kind ?? 'door', f.emergencyExit ? 1 : 0, f.heldAlarmAfterS ?? DEFAULT_HELD_ALARM_S, f.actuatorId ?? null);
-    audit(actor, 'access_door_declared', { deviceId: detectorId, details: clip(`porte n°${f.doorNo} du controleur ${f.controllerId}${f.emergencyExit ? ', issue de secours' : ''}`) });
+    audit(actor, 'access_door_declared', { deviceId: detectorId, details: clip(`porte n°${f.doorNo} du controleur ${f.controllerId}${f.emergencyExit ? ', issue de secours' : ''}${f.actuatorId ? `, actionneur ${f.actuatorId}` : ''}`) });
     return doorView(detectorId) as DoorView;
   }
 
@@ -1276,6 +1298,14 @@ export function createAccess(opts: AccessOptions): AccessService {
     const controllerId = f.controllerId ?? current.controller_id;
     const doorNo = f.doorNo ?? current.door_no;
     if (controllerId !== current.controller_id || doorNo !== current.door_no) checkDoorNoFree(controllerId, doorNo, id);
+    // Lien avec l'actionneur (F17, F18) : controle sur l'etat RESULTANT, des que le type, l'issue de secours ou le lien change. Une
+    // modification qui n'y touche pas (delai, numero...) n'est jamais bloquee par un ancien lien incoherent.
+    const nextKind = f.kind ?? current.kind;
+    const nextEmergency = f.emergencyExit ?? current.emergency_exit === 1;
+    const nextActuator = f.actuatorId === undefined ? current.actuator_id : f.actuatorId;
+    if (nextActuator !== null && (nextActuator !== current.actuator_id || nextKind !== current.kind || nextEmergency !== (current.emergency_exit === 1))) {
+      checkDoorLink(db, { detectorId: id, kind: nextKind, emergencyExit: nextEmergency, actuatorId: nextActuator });
+    }
     const changed: string[] = [];
     if (controllerId !== current.controller_id) changed.push('controleur');
     if (doorNo !== current.door_no) changed.push('numero');
@@ -1294,6 +1324,7 @@ export function createAccess(opts: AccessOptions): AccessService {
   function removeDoor(actor: string, id: string): void {
     const r = typeof id === 'string' && ID_PATTERN.test(id) ? sql('DELETE FROM access_door WHERE detector_id = ?').run(id) : null;
     if (!r || Number(r.changes) === 0) throw new PsimError(404, 'Porte introuvable');
+    forgetDoorMode(db, id);
     audit(actor, 'access_door_removed', { deviceId: id, details: "declaration retiree ; l'historique des passages est conserve jusqu'a la purge" });
   }
 

@@ -2,6 +2,7 @@ import express from 'express';
 import type { Express, Request, RequestHandler } from 'express';
 import { PsimError } from './engine.ts';
 import type { AccessService, ControllerInput, DoorInput, SearchFilters } from './access.ts';
+import type { EvacuationService } from './accessremote.ts';
 
 /**
  * Routes `/api/access/*` du controle d'acces (contrat : docs/ACCES.md § 3). Aucune regle metier ici : le service
@@ -35,8 +36,9 @@ function idOf(req: Request, what: string): string {
   return raw;
 }
 
-export function createAccessApi(access: AccessService, options: { now?: () => number } = {}): AccessApi {
+export function createAccessApi(access: AccessService, options: { now?: () => number; evacuation?: EvacuationService } = {}): AccessApi {
   const now = options.now ?? Date.now;
+  const { evacuation } = options;
 
   function mount(app: Express, guards: { anyUser: RequestHandler; adminOnly: RequestHandler; actorOf: (req: Request) => string }): void {
     // Noms lus tels quels par l'auto-test des routes (test/e2e-attack.test.ts) : chaque route porte `anyUser` ou `adminOnly`.
@@ -76,6 +78,18 @@ export function createAccessApi(access: AccessService, options: { now?: () => nu
       access.removeDoor(actorOf(req), idOf(req, 'Porte'));
       res.status(204).end();
     });
+
+    // ---- « Tout ouvrir » (F20) : administrateur seulement. Le service verifie le mot de passe, journalise et passe par les commandes ----
+    if (evacuation) {
+      app.get('/api/access/evacuation', adminOnly, (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(evacuation.preview());
+      });
+      app.post('/api/access/evacuation', adminOnly, json, (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(evacuation.run(actorOf(req), bodyOf(req)));
+      });
+    }
 
     // ---- Journal des passages : la requete est transmise telle quelle (le service valide et journalise l'auteur) ----
     app.get('/api/access/events', anyUser, (req, res) => {

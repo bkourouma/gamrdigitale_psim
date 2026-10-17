@@ -20,6 +20,7 @@ import { createJournalGuard } from './journal.ts';
 import { createEngine } from './engine.ts';
 import { createAccess } from './access.ts';
 import { createAccessApi } from './accessapi.ts';
+import { createEvacuation } from './accessremote.ts';
 import { createGatewayLink } from './gatewaylink.ts';
 import type { GatewayLink } from './gatewaylink.ts';
 import { acquireLock } from './lock.ts';
@@ -314,6 +315,8 @@ const actuators = createActuators({
   publish,
   httpAllow: parseAllowList(config.actuatorHttpHosts),
 });
+// « Tout ouvrir » (controle d'acces) : passe par le service des commandes, jamais directement vers une serrure.
+const evacuation = createEvacuation({ db, actuators, audit: (actor, action, ref) => engine.audit(actor, action, ref) });
 // Incident clos : ses commandes en attente sont annulees, ses commandes temporisees en cours ramenees a l'etat sur.
 bus.on('event', (event: PsimEvent) => {
   if (event.type === 'incident' && event.incident.status === 'closed') actuators.incidentChanged(event.incident.id, 'closed');
@@ -599,7 +602,7 @@ const app = createApp({
   deviceImages,
   actuators,
   proofs,
-  access: createAccessApi(access),
+  access: createAccessApi(access, { evacuation }),
   agents,
   patrols,
   publicUrl: notify.publicUrl,
