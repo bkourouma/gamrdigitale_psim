@@ -19,7 +19,7 @@ const ROOT = join(import.meta.dirname, '..');
 const WEB = join(ROOT, 'web');
 // Fins de ligne normalisees : le depot est extrait en CRLF sous Windows (core.autocrlf), les motifs ci-dessous sont ecrits en LF.
 const read = (file: string) => readFileSync(join(WEB, file), 'utf8').replace(/\r\n/g, '\n');
-const SERVER_USERS = readFileSync(join(ROOT, 'server', 'users.ts'), 'utf8');
+const SERVER_AGENTS = readFileSync(join(ROOT, 'server', 'agents.ts'), 'utf8');
 
 interface Win {
   days: number[];
@@ -314,13 +314,15 @@ describe('journal : lecture tolérante et libellés', () => {
 });
 
 describe('agents et téléphones : règles du contrat', () => {
-  it('l’identifiant d’un agent suit la règle des comptes du serveur', () => {
-    const server = /const USERNAME_PATTERN = (\/[^\n]+\/);/.exec(SERVER_USERS)?.[1];
-    assert.ok(server, 'regle d’identifiant du serveur');
+  it('l’identifiant d’un agent suit la règle de agents.ts (pas de point : le détecteur A-<identifiant> ne l’admet pas)', () => {
+    const server = /const AGENT_USERNAME = (\/[^\n]+\/);/.exec(SERVER_AGENTS)?.[1];
+    assert.ok(server, 'regle d’identifiant des agents du serveur');
     assert.equal(agents.AGENT_USERNAME.source, new RegExp(server.slice(1, -1)).source);
-    assert.equal(agents.AGENT_USERNAME.test('kouassi.yao'), true);
+    assert.equal(agents.AGENT_USERNAME.test('kouassi-yao'), true);
+    assert.equal(agents.AGENT_USERNAME.test('kouassi.yao'), false, 'le point est refusé : A-kouassi.yao n’est pas un identifiant d’équipement');
     assert.equal(agents.AGENT_USERNAME.test('Kouassi'), false);
     assert.equal(agents.AGENT_USERNAME.test('ab'), false);
+    assert.equal(agents.AGENT_USERNAME.test('a'.repeat(31)), false, 'A- + 31 caractères dépasse les 32 d’un identifiant d’équipement');
   });
 
   it('le code personnel a 4 à 6 chiffres exactement', () => {
@@ -377,5 +379,16 @@ describe('agents et téléphones : règles du contrat', () => {
     assert.doesNotMatch(src, /dataset\.(pin|code|pair)/i);
     assert.match(src, /Agent créé/);
     assert.match(src, /une seule fois|ne sera plus affiché/i);
+  });
+});
+
+describe('branchement dans l’interface du poste de garde (app.js)', () => {
+  const app = read('app.js');
+  it('les étages reçus après l’ouverture de l’écran Rondes le redessinent (page rechargée sur #/rondes)', () => {
+    assert.match(app, /patrolsView\.refresh\(\)/);
+    assert.match(read('patrols.js'), /refreshFloors\(\)/);
+  });
+  it('un compte agent n’ouvre jamais l’interface du poste : il est renvoyé vers son application', () => {
+    assert.match(app, /S\.me\?\.role === 'agent'[\s\S]{0,200}location\.replace\('\/agent\/'\)/);
   });
 });

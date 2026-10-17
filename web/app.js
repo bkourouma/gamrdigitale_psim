@@ -392,6 +392,7 @@ function applySnapshot(snap) {
   for (const f of S.floors) if (f.hasPlan) new Image().src = `/api/floors/${f.id}/plan?v=${f.planVersion}`;
   S.devices = new Map(snap.devices.map((d) => [d.id, d]));
   S.links = snap.links;
+  patrolsView.refresh(); // étages arrivés après l'ouverture de l'écran Rondes
   rulesView.refreshChoices(); // caméras ajoutées, renommées ou retirées pendant la saisie d'une règle
   S.arming = snap.arming ?? {};
   armingView.load(); // état détaillé des zones d'intrusion (planning, dérogations)
@@ -623,6 +624,11 @@ $('login-form').addEventListener('submit', async (e) => {
 });
 
 function showApp() {
+  // Un agent de terrain n'a rien à faire dans l'interface du poste de garde (le serveur lui refuse tout) : son application l'attend.
+  if (S.me?.role === 'agent') {
+    location.replace('/agent/');
+    return;
+  }
   $('login').hidden = true;
   document.querySelector('.skip').hidden = Boolean(S.me.restricted); // compte restreint : seule la fenêtre Mon compte
   if (S.me.restricted) {

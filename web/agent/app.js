@@ -38,7 +38,27 @@ let summary = { total: 0, unacked: 0 };
 let activeTab = 'alarms';
 let monitorTimer = null;
 let monitorTicks = 0;
-let hadShift = false;
+let hadShift = false; // un service a été en cours pendant cette session : seule sa disparition est une fin de service
+let meVersion = 0; // change à chaque profil adopté : écarte une réponse de /me devenue périmée (prise de service entre-temps)
+
+// ----------------------------------------------------------------------------------------------------- règles pures
+/**
+ * Où atterrit un agent connecté ? Toujours sur l'écran principal : un agent connecté (session ouverte sur un téléphone
+ * appairé) traite les alarmes même s'il n'a pas pris son service (décision du responsable). `offDuty` commande le bandeau
+ * « Je prends mon service ». Sans profil exploitable, retour à la connexion. Pur : testé sans navigateur.
+ */
+export function landingFor(profile) {
+  if (typeof profile?.username !== 'string' || !profile.username) return { screen: 'login', offDuty: false };
+  return { screen: 'main', offDuty: !profile.shift };
+}
+
+/**
+ * Le service vient-il de se terminer ? Seulement s'il a été en cours pendant cette session (`hadShift`) et qu'il ne l'est
+ * plus. Un agent qui n'a jamais pris son service n'a rien à « terminer » : ni message, ni effacement de la file locale.
+ */
+export function shiftJustEnded(hadShiftBefore, profile) {
+  return Boolean(hadShiftBefore) && Boolean(profile) && !profile.shift;
+}
 
 // ----------------------------------------------------------------------------------------------------- messages
 /** Message éphémère : role="status", 4 s (erreurs 8 s). */
@@ -177,12 +197,13 @@ async function checkSession(pairMessage = null) {
   return showLogin(pairMessage);
 }
 
-/** Pas de réseau au démarrage : on reprend avec le dernier profil connu, s'il y en a un en service. */
+/** Pas de réseau au démarrage : on reprend avec le dernier profil connu, en service ou non. */
 function offlineStart() {
   netOk = false;
   const saved = local.get(KEY_ME);
-  if (saved?.username && saved.shift) {
+  if (landingFor(saved).screen === 'main') {
     me = saved;
+    meVersion += 1;
     bootedOffline = true;
     void enterMain();
     return;
@@ -190,12 +211,18 @@ function offlineStart() {
   showNoNetwork();
 }
 
-function applyMe(next) {
+/** Retient le profil renvoyé par le serveur (mémoire + stockage local) sans changer d'écran. */
+function adoptMe(next) {
   me = next;
+  meVersion += 1;
   local.set(KEY_ME, me);
   local.set(KEY_LAST, { username: me.username, at: Date.now() });
-  if (me.shift) void enterMain();
-  else showService();
+}
+
+/** Un agent connecté arrive sur l'écran principal, en service ou non (le bandeau propose alors la prise de service). */
+function applyMe(next) {
+  adoptMe(next);
+  void enterMain();
 }
 
 // ----------------------------------------------------------------------------------------------------- appairage
@@ -359,6 +386,14 @@ function renderKeypad(agent) {
 }
 
 // ----------------------------------------------------------------------------------------------------- prise de service
+/** Demande la prise de service au serveur. Commun à l'écran « service » et au bandeau « hors service ». */
+async function requestShiftStart() {
+  const r = await api('/api/agent/shift/start', { method: 'POST' });
+  if (r.ok && r.data?.me) return { ok: true, me: r.data.me };
+  return { ok: false, message: r.network ? 'Pas de réseau. Réessayez dans un instant.' : r.error || 'Réponse inattendue du serveur.' };
+}
+
+/** Écran de reprise après une fin de service (la session reste ouverte) ; la prise de service y mène à l'écran principal. */
 function showService(message = null) {
   state = 'service';
   hadShift = false;
@@ -368,11 +403,11 @@ function showService(message = null) {
   start.addEventListener('click', async () => {
     start.disabled = true;
     error.textContent = '';
-    const r = await api('/api/agent/shift/start', { method: 'POST' });
+    const r = await requestShiftStart();
     start.disabled = false;
-    if (r.ok && r.data?.me) return applyMe(r.data.me);
+    if (r.ok) return applyMe(r.me);
     if (state !== 'service') return;
-    error.textContent = r.network ? 'Pas de réseau. Réessayez dans un instant.' : r.error;
+    error.textContent = r.message;
   });
   const zones = Array.isArray(me?.zones) ? me.zones : [];
   show(
@@ -509,6 +544,17 @@ function buildShell() {
     h('span', { class: 'sh-banner-go', text: 'Voir' }),
   );
 
+  // Hors service : l'agent traite quand même les alarmes ; ce bandeau lui propose de prendre son service (cible de 88 px).
+  const offError = h('p', { class: 'sh-error', role: 'alert' });
+  const offButton = h('button', { class: 'btn btn-ok sh-start', type: 'button', text: 'Je prends mon service', onClick: () => void startShiftFromBanner() });
+  const offDuty = h(
+    'section',
+    { class: 'sh-offduty', hidden: true, 'aria-label': 'Hors service' },
+    h('p', { class: 'sh-offduty-text', text: 'Vous êtes hors service. Vous pouvez traiter les alarmes.' }),
+    offButton,
+    offError,
+  );
+
   const panes = {
     alarms: h('div', { hidden: true }, alarms.el),
     ronde: h('div', { hidden: true }, ronde.el),
@@ -530,18 +576,41 @@ function buildShell() {
     { class: 'sh-main' },
     h('header', { class: 'sh-header' }, h('div', { class: 'sh-header-top' }, who, sos.holdButton({ variant: 'compact' })), statusRow),
     sos.statusEl,
+    offDuty,
     banner,
     h('div', { class: 'sh-panes' }, panes.alarms, panes.ronde, panes.sos),
     nav,
     logbook.el,
   );
-  shell = { el, whoName, whoService, online, netDot, statusRow, pendingCount: 0, badge, banner, bannerText, panes, tabs, counts };
+  shell = { el, whoName, whoService, online, netDot, statusRow, pendingCount: 0, badge, banner, bannerText, offDuty, offButton, offError, panes, tabs, counts };
 }
 
 function renderHeader() {
   if (!shell || !me) return;
   shell.whoName.textContent = me.displayName || me.username;
   shell.whoService.textContent = me.shift ? `Service depuis ${fmtClock(me.shift.startedAt)} · fin prévue ${fmtClock(me.shift.endsAt)}` : 'Hors service';
+  shell.offDuty.hidden = !landingFor(me).offDuty;
+  // « Terminer mon service » n'a de sens qu'en service (le serveur refuserait la fin d'un service qui n'existe pas).
+  for (const button of document.querySelectorAll('[data-end-service]')) button.hidden = !me.shift;
+}
+
+/** Prise de service depuis le bandeau : le profil est mis à jour sur place, l'écran, les alarmes et la file ne bougent pas. */
+async function startShiftFromBanner() {
+  const current = shell;
+  if (!current) return;
+  current.offButton.disabled = true;
+  current.offError.textContent = '';
+  const r = await requestShiftStart();
+  if (shell !== current) return; // l'écran a changé pendant l'appel (déconnexion, fin de session)
+  current.offButton.disabled = false;
+  if (!r.ok) {
+    current.offError.textContent = r.message;
+    return;
+  }
+  adoptMe(r.me);
+  hadShift = Boolean(me.shift);
+  renderHeader();
+  toast('Vous avez pris votre service.', 'ok');
 }
 
 function updateOnline() {
@@ -619,7 +688,7 @@ function setTab(name) {
 function accountButtons(afterAction) {
   return [
     h('button', { class: 'btn', type: 'button', text: 'Changer d’agent', onClick: () => void changeAgent(afterAction) }),
-    h('button', { class: 'btn btn-danger', type: 'button', text: 'Terminer mon service', onClick: () => void openEndSheet(afterAction) }),
+    h('button', { class: 'btn btn-danger', type: 'button', text: 'Terminer mon service', 'data-end-service': true, hidden: !me?.shift, onClick: () => void openEndSheet(afterAction) }),
   ];
 }
 
@@ -768,6 +837,7 @@ function stopMonitor() {
 /** Relit /me : confirme la session, met à jour l'en-tête, détecte la fin du service. */
 async function checkMe() {
   if (state !== 'main') return;
+  const version = meVersion;
   const r = await api('/api/agent/me');
   if (state !== 'main') return;
   if (r.network) {
@@ -779,10 +849,12 @@ async function checkMe() {
   updateOnline();
   if (!r.ok || !r.data?.me) return; // 401 : traité par le gestionnaire de session perdue
   bootedOffline = false;
-  me = r.data.me;
-  local.set(KEY_ME, me);
+  if (version !== meVersion) return; // le profil a changé pendant l'appel (prise de service) : cette réponse est périmée
+  const ended = shiftJustEnded(hadShift, r.data.me);
+  adoptMe(r.data.me);
+  if (me.shift) hadShift = true; // un service pris pendant la session (ici ou depuis la console) est suivi dès lors
   renderHeader();
-  if (hadShift && !me.shift) await shiftEnded();
+  if (ended) await shiftEnded();
 }
 
 async function shiftEnded() {

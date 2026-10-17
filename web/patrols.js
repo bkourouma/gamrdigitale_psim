@@ -445,7 +445,7 @@ export const zoneChoices = (zones, points) => uniq([...(Array.isArray(zones) ? z
 /**
  * Dépendances : api, h, icon, toast, dialogs, ui ({ field, setBusy, markInvalid, clearInvalid, copyButton, uid }), getMe,
  * getFloors() ([{ id, name, hasPlan, planVersion }]), getZones() (string[]), agents (agents-admin.js : loadAgents,
- * loadPhones, hide). Renvoie { show(), hide(), reset() }.
+ * loadPhones, hide). Renvoie { show(), hide(), reset(), refresh() }.
  */
 export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = () => null, getFloors = () => [], getZones = () => [], agents = null }) {
   const byId = (id) => document.getElementById(id);
@@ -680,7 +680,12 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
 
     // -------------------------------------------------------------- dessin
 
+    /** Empreinte des étages affichés : un état arrivé après l'ouverture de l'écran (page rechargée sur #/rondes) le redessine. */
+    const floorsSignature = () => JSON.stringify(floors().map((f) => [f.id, f.name, f.hasPlan, f.planVersion]));
+    let drawnFloors = null;
+
     function renderAll() {
+      drawnFloors = floorsSignature();
       st.floorId = currentFloor()?.id ?? null;
       fillFloors();
       renderZones();
@@ -1310,6 +1315,10 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
 
     return {
       activate: load,
+      /** Les étages du site ont changé ou viennent d'arriver : on redessine seulement s'ils diffèrent de ceux déjà dessinés. */
+      refreshFloors() {
+        if (built && st.loaded && !drag.active && drawnFloors !== floorsSignature()) renderAll();
+      },
       deactivate() {
         req += 1;
         flushNudge();
@@ -2558,5 +2567,10 @@ export function createPatrolsView({ api, h, icon, toast, dialogs, ui, getMe = ()
     agents?.hide?.();
   }
 
-  return { show, hide, reset };
+  /** Appelé à chaque état reçu du serveur : les étages arrivent parfois après l'ouverture de l'écran. */
+  function refresh() {
+    if (state.visible) modules.points?.refreshFloors?.();
+  }
+
+  return { show, hide, reset, refresh };
 }

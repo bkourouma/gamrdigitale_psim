@@ -547,6 +547,22 @@ noscript p {
   font-size: 1.4rem;
 }
 
+/* Bandeau « hors service » de l'écran principal : l'agent traite les alarmes, le bouton lui propose de prendre son service */
+.sh-offduty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 4px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.sh-offduty-text {
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
 /* Clavier à code */
 .sh-dots {
   display: flex;

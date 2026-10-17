@@ -8,6 +8,9 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
+// @ts-expect-error module JS de l'interface (sans types) ; son demarrage est garde par `typeof document`, import sans DOM
+import { landingFor, shiftJustEnded } from '../web/agent/app.js';
+
 const AGENT = join(import.meta.dirname, '..', 'web', 'agent');
 // Fins de ligne normalisees (le depot peut etre extrait en CRLF).
 const read = (file: string) => readFileSync(join(AGENT, file), 'utf8').replace(/\r\n/g, '\n');
@@ -104,6 +107,80 @@ describe('modules JavaScript de l\'application', () => {
     assert.match(app, /non appair/);
     assert.match(app, /setAuthLostHandler\(onAuthLost\)/);
     assert.match(app, /keepKinds: \['sos'\]/);
+  });
+});
+
+describe('agent connecte sans service : il traite les alarmes (decision du responsable)', () => {
+  const onDuty = { username: 'a.diallo', displayName: 'A. Diallo', shift: { startedAt: 1000, endsAt: 2000 } };
+  const offDuty = { username: 'a.diallo', displayName: 'A. Diallo', shift: null };
+
+  it('landingFor : connecte, en service ou non, arrive sur l\'ecran principal ; seul le hors service montre le bandeau', () => {
+    assert.deepEqual(landingFor(onDuty), { screen: 'main', offDuty: false });
+    assert.deepEqual(landingFor(offDuty), { screen: 'main', offDuty: true });
+    assert.deepEqual(landingFor({ username: 'a.diallo' }), { screen: 'main', offDuty: true }, 'shift absent = hors service');
+  });
+
+  it('landingFor : sans profil exploitable (hostile ou vide), retour a la connexion', () => {
+    for (const bad of [null, undefined, {}, { username: '' }, { username: 42 }, 'a.diallo', []]) {
+      assert.deepEqual(landingFor(bad), { screen: 'login', offDuty: false }, JSON.stringify(bad));
+    }
+  });
+
+  it('shiftJustEnded : jamais pour qui n\'a jamais eu de service (pas de « service termine », file locale conservee)', () => {
+    assert.equal(shiftJustEnded(false, offDuty), false);
+    assert.equal(shiftJustEnded(false, onDuty), false);
+    assert.equal(shiftJustEnded(false, null), false);
+  });
+
+  it('shiftJustEnded : la fin d\'un service qui a existe pendant la session garde son comportement', () => {
+    assert.equal(shiftJustEnded(true, offDuty), true);
+    assert.equal(shiftJustEnded(true, onDuty), false, 'toujours en service');
+    assert.equal(shiftJustEnded(true, null), false, 'pas de profil : pas de conclusion');
+  });
+
+  it('prise de service pendant la session : hadShift passe a vrai, puis la fin est detectee', () => {
+    // Meme enchainement que app.js : hadShift = Boolean(me.shift) apres la prise de service, puis relecture de /me.
+    let hadShift = Boolean(offDuty.shift);
+    assert.equal(shiftJustEnded(hadShift, offDuty), false);
+    hadShift = Boolean(onDuty.shift);
+    assert.equal(hadShift, true);
+    assert.equal(shiftJustEnded(hadShift, offDuty), true);
+  });
+
+  it('app.js : plus de garde de service a l\'arrivee ni au demarrage sans reseau', () => {
+    assert.doesNotMatch(app, /if \(me\.shift\) void enterMain\(\);\s*else showService\(\)/);
+    assert.doesNotMatch(app, /saved\?\.username && saved\.shift/);
+    assert.match(app, /function applyMe\(next\) \{\s*adoptMe\(next\);\s*void enterMain\(\);/);
+    assert.match(app, /landingFor\(saved\)\.screen === 'main'/);
+  });
+
+  it('app.js : bandeau « hors service » sur l\'ecran principal, bouton qui appelle la meme prise de service que showService', () => {
+    assert.match(app, /Vous êtes hors service\. Vous pouvez traiter les alarmes\./);
+    assert.match(app, /class: 'sh-offduty'/);
+    assert.match(app, /shell\.offDuty\.hidden = !landingFor\(me\)\.offDuty/);
+    assert.equal(app.match(/\/api\/agent\/shift\/start/g)?.length, 1, 'un seul appel de prise de service (factorise)');
+    assert.match(app, /async function requestShiftStart\(\)/);
+    assert.equal(app.match(/await requestShiftStart\(\)/g)?.length, 2, 'ecran service et bandeau');
+  });
+
+  it('app.js : la fin de service ne se declare que via shiftJustEnded, et une reponse /me perimee est ecartee', () => {
+    assert.match(app, /shiftJustEnded\(hadShift, r\.data\.me\)/);
+    assert.doesNotMatch(app, /hadShift && !me\.shift/);
+    assert.match(app, /if \(version !== meVersion\) return;/);
+    assert.match(app, /if \(me\.shift\) hadShift = true;/);
+  });
+
+  it('app.js : l\'envoi d\'une ronde et la main courante ne dependent pas du service', () => {
+    for (const file of ['ronde.js', 'logbook.js', 'alarms.js']) {
+      assert.doesNotMatch(read(file), /\.shift\b/, `${file} ne doit pas exiger de service`);
+    }
+    assert.match(app, /ronde\.start\(\);/);
+  });
+
+  it('agent.css : le bandeau est stylise (contraste fort) et le bouton garde une grande cible', () => {
+    const css = read('agent.css');
+    assert.match(css, /\.sh-offduty \{[^}]*background: var\(--warn-soft\)[^}]*color: var\(--warn-ink\)/);
+    assert.match(css, /\.sh-start \{\s*min-height: 88px/);
   });
 });
 
