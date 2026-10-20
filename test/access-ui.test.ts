@@ -1682,8 +1682,11 @@ function setup(opts: { admin?: boolean; routes?: Record<string, (call: Call) => 
   return { view, container, calls, toasts, dialogState, dialogBody, api };
 }
 
+const realDateNow = Date.now;
 describe('écran « Accès » : la vue dans un DOM minimal', () => {
   beforeEach(() => {
+    // Les jeux d'essai sont datés du 17/10/2026 : l'horloge de la vue est figée pour que « hier » et « aujourd'hui » ne dérivent pas.
+    Date.now = () => NOW;
     core.S.doors = new Map();
     core.S.floors = [];
     core.S.incidents = new Map();
@@ -1698,6 +1701,7 @@ describe('écran « Accès » : la vue dans un DOM minimal', () => {
     rafActive.clear();
   });
   afterEach(() => {
+    Date.now = realDateNow;
     fakeBody.replaceChildren();
   });
 
