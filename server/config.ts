@@ -82,6 +82,25 @@ function vonageConfig(): { apiBase: string; applicationId: string; privateKey: s
   return { apiBase, applicationId, privateKey, from, language };
 }
 
+/**
+ * Telephone Android du site comme passerelle d'appel (docs/TELEPHONE-ANDROID.md). Une adresse http(s) du telephone sur le
+ * reseau local ; remplace Vonage : les deux ensemble seraient ambigus, c'est une erreur de demarrage.
+ */
+function phoneGatewayConfig(): { url: string; token: string } {
+  const url = (env.PSIM_PHONE_GATEWAY_URL ?? '').trim();
+  const token = (env.PSIM_PHONE_GATEWAY_TOKEN ?? '').trim();
+  if (!url) return { url, token };
+  try {
+    if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('protocole');
+  } catch {
+    throw new Error('PSIM_PHONE_GATEWAY_URL est invalide : une adresse comme http://192.168.1.50:8080/psim-appel est attendue.');
+  }
+  if (env.PSIM_VONAGE_APPLICATION_ID || env.PSIM_VONAGE_PRIVATE_KEY_FILE || env.PSIM_VONAGE_FROM) {
+    throw new Error('PSIM_PHONE_GATEWAY_URL et PSIM_VONAGE_* sont deux facons de faire le meme appel : en garder une seule.');
+  }
+  return { url, token };
+}
+
 /** Liste separee par des virgules ou des espaces ; absente = liste vide. */
 function list(name: string): string[] {
   return (process.env[name] ?? '')
@@ -96,7 +115,11 @@ export function channelSetup(notify: typeof config.notify): { id: 'email' | 'tel
     { id: 'email', label: 'e-mail', configured: Boolean(notify.smtp.host && notify.smtp.from) },
     { id: 'telegram', label: 'Telegram', configured: Boolean(notify.telegram.token) },
     { id: 'whatsapp', label: 'WhatsApp', configured: Boolean(notify.whatsapp.token && notify.whatsapp.phoneId) },
-    { id: 'vonage', label: 'appel telephonique (Vonage)', configured: Boolean(notify.vonage.applicationId && notify.vonage.privateKey && notify.vonage.from) },
+    {
+      id: 'vonage',
+      label: notify.phoneGateway.url ? 'appel telephonique (telephone Android)' : 'appel telephonique (Vonage)',
+      configured: Boolean(notify.phoneGateway.url || (notify.vonage.applicationId && notify.vonage.privateKey && notify.vonage.from)),
+    },
   ];
 }
 
@@ -285,6 +308,8 @@ export const config = {
     // Appels vocaux Vonage (API Voice) : message lu par synthese vocale. Identifiant d'application, cle privee (fichier) et
     // numero appelant vont ensemble ; destinataires : numeros ci-dessous ou interface.
     vonage: vonageConfig(),
+    // Telephone Android du site comme passerelle d'appel (a la place de Vonage) : adresse sur le reseau local et secret partage.
+    phoneGateway: phoneGatewayConfig(),
     webhookSecret: process.env.PSIM_WEBHOOK_SECRET ?? '',
     recipients: {
       email: [list('PSIM_NOTIFY_EMAIL_L1'), list('PSIM_NOTIFY_EMAIL_L2')],

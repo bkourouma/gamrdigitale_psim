@@ -438,6 +438,46 @@ export function vonageChannel(cfg: VonageConfig, recipientsSource: Recipients): 
   };
 }
 
+export interface PhoneGatewayConfig {
+  /** Adresse du telephone-passerelle sur le reseau local, ex. http://192.168.1.50:8080/psim-appel */
+  url: string;
+  /** Secret partage avec la regle du telephone (facultatif, conseille) : secret. */
+  token: string;
+}
+
+/**
+ * Appel par un telephone Android du site (carte SIM, application d'automatisation comme MacroDroid) : un GET sur le reseau
+ * local, le telephone compose le numero par le reseau mobile. Meme canal « Appel telephonique » que Vonage (memes numeros,
+ * niveaux, zones, memes messages), sans fournisseur ni credit ; marche meme sans Internet. Aucune voix : le telephone sonne.
+ * « Accepte par le telephone » n'est pas « decroche » : comme pour Vonage, un appel s'ajoute aux canaux ecrits.
+ */
+export function phoneGatewayChannel(cfg: PhoneGatewayConfig, recipientsSource: Recipients): Channel | null {
+  const source = resolveRecipients(recipientsSource);
+  if (!cfg.url) return null;
+  return {
+    id: 'vonage',
+    label: 'Appel téléphonique', // identique au libelle de l'interface, qui s'en sert pour l'icone
+    accepts: (kind) => VONAGE_KINDS.includes(kind),
+    recipients: (level, scope) => source(level, scope).filter((r) => PHONE_E164.test(r)),
+    mask: maskPhone,
+    async send(message, phone) {
+      const url = new URL(cfg.url);
+      url.searchParams.set('number', phone);
+      url.searchParams.set('kind', message.kind);
+      url.searchParams.set('text', clip(spokenText(message), 200));
+      if (cfg.token) url.searchParams.set('token', cfg.token);
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'error' });
+      } catch {
+        // Le message d'origine de fetch contient l'adresse complete, donc le secret : on ne le propage pas.
+        throw new Error('Telephone-passerelle injoignable (allume, meme reseau, application lancee ?)');
+      }
+      if (!res.ok) throw new Error(`Telephone-passerelle HTTP ${res.status}${res.status === 401 || res.status === 403 ? ' : secret refuse (PSIM_PHONE_GATEWAY_TOKEN)' : ''}`);
+    },
+  };
+}
+
 /** Le canal webhook n'a pas de configuration propre : il existe toujours, ses destinataires peuvent etre ajoutes a chaud. */
 export function webhookChannel(cfg: { secret: string }, recipientsSource: Recipients): Channel {
   const source = resolveRecipients(recipientsSource);
@@ -487,6 +527,8 @@ export interface ChannelsConfig {
   whatsapp: WhatsappConfig;
   callmebot: { apiBase: string };
   vonage: VonageConfig;
+  /** Telephone Android du site comme passerelle d'appel : remplace Vonage pour le canal « Appel telephonique ». */
+  phoneGateway?: PhoneGatewayConfig;
   webhookSecret: string;
 }
 
@@ -500,7 +542,9 @@ export function buildChannels(cfg: ChannelsConfig, source: (channel: 'email' | '
     telegramChannel({ token: cfg.telegram.token, apiBase: cfg.telegram.apiBase }, (level, scope) => source('telegram', level, scope)),
     whatsappChannel({ ...cfg.whatsapp }, (level, scope) => source('whatsapp', level, scope)),
     callmebotChannel({ apiBase: cfg.callmebot.apiBase }, (level, scope) => source('callmebot', level, scope)),
-    vonageChannel({ ...cfg.vonage }, (level, scope) => source('vonage', level, scope)),
+    cfg.phoneGateway?.url
+      ? phoneGatewayChannel({ ...cfg.phoneGateway }, (level, scope) => source('vonage', level, scope))
+      : vonageChannel({ ...cfg.vonage }, (level, scope) => source('vonage', level, scope)),
     webhookChannel({ secret: cfg.webhookSecret }, (level, scope) => source('webhook', level, scope)),
   ].filter((c): c is Channel => c !== null);
 }

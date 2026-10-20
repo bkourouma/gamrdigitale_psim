@@ -365,7 +365,7 @@ notifier = createNotifier({
   publicUrl: notify.publicUrl,
   readSnapshot: (id) => snapshots?.read(id) ?? null,
   // Cles WhatsApp et Vonage comprises : jamais dans les journaux, meme si un service les renvoyait dans un message d'erreur.
-  secrets: [config.assist.apiKey, notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, notify.vonage.privateKey, ...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
+  secrets: [config.assist.apiKey, notify.smtp.password, notify.telegram.token, notify.webhookSecret, notify.whatsapp.token, notify.vonage.privateKey, notify.phoneGateway.token,...notify.recipients.callmebot.flat().map((r) => r.split(':')[1])],
 });
 // Actions de securite sur les comptes : inscrites au journal ET notifiees (un pirate qui enrole sa propre 2FA ne passe pas inapercu).
 const SECURITY_ACTIONS = new Set(['totp_enabled', 'totp_disabled', 'totp_reset', 'recovery_code_used', 'user_created', 'user_updated', 'user_deleted', 'password_reset']);
